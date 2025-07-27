@@ -1,0 +1,55 @@
+{
+  "recording_info": {
+    "filename": "integrated_recording_20250721_233228",
+    "sample_rate": 44100,
+    "channels": 1,
+    "duration": 27.68844723701477,
+    "start_time": 1753111948.766405
+  },
+  "pitch_data": [
+    {
+      "timestamp": 1753111951.8028674,
+      "frequency": 495.5056179775281,
+      "note_name": "B",
+      "octave": 4,
+      "cents_deviation": 5.677469009425806,
+      "volume": 0.010311183519661427,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753111956.6255484,
+      "frequency": 1696.1538461538462,
+      "note_name": "G#",
+      "octave": 6,
+      "cents_deviation": 36.02992439979289,
+      "volume": 0.008383529260754585,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753111961.4445045,
+      "frequency": 1002.2727272727273,
+      "note_name": "B",
+      "octave": 5,
+      "cents_deviation": 25.2396438043462,
+      "volume": 0.010278723202645779,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753111967.2866607,
+      "frequency": 459.375,
+      "note_name": "A#",
+      "octave": 4,
+      "cents_deviation": -25.39741469628467,
+      "volume": 0.006521956995129585,
+      "confidence": 0.8
+    }
+  ],
+  "statistics": {
+    "total_points": 4,
+    "valid_pitches": 4,
+    "frequency_range": {
+      "min": 459.375,
+      "max": 1696.1538461538462
+    }
+  }
+}

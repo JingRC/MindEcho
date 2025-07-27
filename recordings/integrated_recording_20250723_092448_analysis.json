@@ -1,0 +1,109 @@
+{
+  "recording_info": {
+    "filename": "integrated_recording_20250723_092448",
+    "sample_rate": 44100,
+    "channels": 1,
+    "duration": 34.296902656555176,
+    "start_time": 1753233888.066175
+  },
+  "pitch_data": [
+    {
+      "timestamp": 1753233892.0595293,
+      "frequency": 1696.1538461538462,
+      "note_name": "G#",
+      "octave": 6,
+      "cents_deviation": 36.02992439979289,
+      "volume": 0.022479116916656494,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233894.1619515,
+      "frequency": 832.0754716981132,
+      "note_name": "G#",
+      "octave": 5,
+      "cents_deviation": 3.0530406932641085,
+      "volume": 0.009367459453642368,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233896.3853695,
+      "frequency": 1225.0,
+      "note_name": "D#",
+      "octave": 6,
+      "cents_deviation": -27.35241556167125,
+      "volume": 0.0115098487585783,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233898.571104,
+      "frequency": 197.7578475336323,
+      "note_name": "G",
+      "octave": 3,
+      "cents_deviation": 15.477706264736923,
+      "volume": 0.006604478694498539,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233903.1392908,
+      "frequency": 604.1095890410959,
+      "note_name": "D",
+      "octave": 5,
+      "cents_deviation": 48.76811551308151,
+      "volume": 0.020823733881115913,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233905.324781,
+      "frequency": 595.9459459459459,
+      "note_name": "D",
+      "octave": 5,
+      "cents_deviation": 25.213547414362836,
+      "volume": 0.02376852184534073,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233908.255534,
+      "frequency": 1336.3636363636363,
+      "note_name": "E",
+      "octave": 6,
+      "cents_deviation": 23.2846429389582,
+      "volume": 0.008592515252530575,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233910.4446402,
+      "frequency": 639.1304347826087,
+      "note_name": "D#",
+      "octave": 5,
+      "cents_deviation": 46.32823803530073,
+      "volume": 0.05654953792691231,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233912.590938,
+      "frequency": 630.0,
+      "note_name": "D#",
+      "octave": 5,
+      "cents_deviation": 21.41796583514264,
+      "volume": 0.029537567868828773,
+      "confidence": 0.8
+    },
+    {
+      "timestamp": 1753233922.3433878,
+      "frequency": 722.9508196721312,
+      "note_name": "F#",
+      "octave": 5,
+      "cents_deviation": -40.327218906361395,
+      "volume": 0.011065090075135231,
+      "confidence": 0.8
+    }
+  ],
+  "statistics": {
+    "total_points": 10,
+    "valid_pitches": 10,
+    "frequency_range": {
+      "min": 197.7578475336323,
+      "max": 1696.1538461538462
+    }
+  }
+}
