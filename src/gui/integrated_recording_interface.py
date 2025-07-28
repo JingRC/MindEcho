@@ -13,6 +13,7 @@ from collections import deque
 import sounddevice as sd
 import wave
 import json
+import queue  # 添加queue模块，用于异步音频处理
 
 # 添加项目根目录到路径
 current_dir = Path(__file__).parent
@@ -90,10 +91,16 @@ class IntegratedAudioProcessor(QThread):
     def __init__(self):
         super().__init__()
         
-        # 录音参数
+        # 录音参数 - 优化音频缓冲区配置以解决input overflow
         self.sample_rate = 44100
         self.channels = 1
-        self.chunk_size = 1024
+        self.chunk_size = 256  # 进一步减小块大小，降低延迟 (512→256)
+        
+        # 音频缓冲区管理器 - 解决input overflow问题
+        self.audio_buffer_queue = queue.Queue(maxsize=100)  # 音频数据队列
+        self.processing_queue = queue.Queue(maxsize=50)     # 处理队列
+        self.buffer_overflow_count = 0
+        self.total_audio_frames = 0
         
         # 状态控制
         self.is_recording = False
@@ -104,14 +111,49 @@ class IntegratedAudioProcessor(QThread):
         self.audio_buffer = []
         self.audio_stream = None
         
+        # 异步音频处理线程
+        self.audio_processing_thread = None
+        self.is_audio_processing = False
+        
+        # 颤音检测相关
+        self.pitch_history = deque(maxlen=300)  # 增加历史长度，支持颤音检测
+        self.vibrato_detection_window = 60      # 颤音检测窗口
+        self.vibrato_threshold = 2.0            # 颤音深度阈值(Hz)
+        
         # 音高分析器
         self.pitch_analyzer = None
         self.overlapping_analyzer = None
+        
+        # 降噪处理器
+        try:
+            from src.audio_processing.noise_reduction import NoiseReductionProcessor
+            self.noise_processor = NoiseReductionProcessor(sample_rate=44100, frame_size=2048)
+            print("✅ IntegratedAudioProcessor: 降噪处理器初始化成功")
+        except ImportError as e:
+            print(f"❌ IntegratedAudioProcessor: 降噪处理器初始化失败: {e}")
+            self.noise_processor = None
         
         # 实时统计
         self.pitch_history = deque(maxlen=1000)  # 保存最近1000个音高点
         self.recording_start_time = None
         self.current_duration = 0
+        
+        # 性能相关属性
+        self.use_gpu_acceleration = False
+        self.performance_config = None
+        self.gpu_processor = None
+        
+        # 尝试初始化GPU处理器
+        try:
+            from src.audio_processing.gpu_accelerator import GPUAcceleratedProcessor
+            self.gpu_processor = GPUAcceleratedProcessor(self.sample_rate)
+            if self.gpu_processor.is_gpu_available():
+                print("✅ IntegratedAudioProcessor: GPU加速器可用")
+            else:
+                print("ℹ️ IntegratedAudioProcessor: GPU加速器不可用，使用CPU")
+        except ImportError:
+            print("ℹ️ IntegratedAudioProcessor: GPU加速器未安装")
+            self.gpu_processor = None
         
     def setup_analyzers(self):
         """设置分析器"""
@@ -136,6 +178,14 @@ class IntegratedAudioProcessor(QThread):
             self.error_occurred.emit(f"分析器初始化失败: {e}")
             return False
     
+    def set_noise_reduction_mode(self, mode):
+        """设置降噪模式"""
+        if self.noise_processor:
+            self.noise_processor.set_noise_reduction_mode(mode)
+            print(f"🔧 IntegratedAudioProcessor: 降噪模式设置为 {mode}")
+        else:
+            print("❌ IntegratedAudioProcessor: 降噪处理器未初始化")
+    
     def start_recording(self, filename=None, should_save=True):
         """开始录音"""
         try:
@@ -149,41 +199,117 @@ class IntegratedAudioProcessor(QThread):
             if not self.setup_analyzers():
                 return False
             
-            # 音频回调函数
+            # 音频回调函数 - 优化以减少input overflow，增加详细调试
             def audio_callback(indata, frames, time_info, status):
+                # 添加调试计数器
+                if not hasattr(self, '_callback_counter'):
+                    self._callback_counter = 0
+                    print("🎤 音频回调函数首次调用")
+                
+                self._callback_counter += 1
+                
                 if status:
-                    print(f"音频状态: {status}")
+                    # 只记录非overflow的状态信息，减少控制台输出
+                    if 'input overflow' in str(status).lower():
+                        self.buffer_overflow_count += 1
+                        # 每100次overflow才输出一次警告
+                        if self.buffer_overflow_count % 100 == 0:
+                            print(f"⚠️ 音频缓冲区溢出警告 (第{self.buffer_overflow_count}次)")
+                    else:
+                        print(f"🔊 音频状态: {status}")
                 
-                # 获取单声道数据
-                audio_data = indata[:, 0] if self.channels == 1 else indata
+                # 每1000次回调输出一次状态
+                if self._callback_counter % 1000 == 0:
+                    # 🔥 修复：RMS计算应该与实际处理的数据一致
+                    audio_data_preview = indata[:, 0] if self.channels == 1 else indata
+                    audio_rms = np.sqrt(np.mean(audio_data_preview ** 2))
+                    print(f"🎤 音频回调#{self._callback_counter}: RMS={audio_rms:.4f}, 帧数={frames}")
+                    print(f"     原始输入形状: {indata.shape}, 处理后形状: {audio_data_preview.shape}")
                 
-                # 保存录音数据
-                if self.is_recording and self.should_save:
-                    self.audio_buffer.extend(audio_data)
+                self.total_audio_frames += 1
                 
-                # 计算音频电平
-                audio_level = np.sqrt(np.mean(audio_data ** 2))
-                self.audio_level_updated.emit(float(audio_level))
+                # 获取单声道数据 - 🔥 关键修复：对于双声道输入，混合到单声道而不是只取第一个声道
+                if self.channels == 1 and indata.shape[1] > 1:
+                    # 双声道混合到单声道，保持音量
+                    audio_data = np.mean(indata, axis=1)  # 平均两个声道
+                    print(f"🔊 双声道混合: {indata.shape} → {audio_data.shape}, RMS={np.sqrt(np.mean(audio_data**2)):.4f}")
+                else:
+                    audio_data = indata[:, 0] if len(indata.shape) > 1 else indata
                 
-                # 实时音高分析
-                if self.is_recording:
-                    self.process_audio_for_pitch(audio_data)
+                # 快速将数据加入队列，避免阻塞音频线程
+                # 只要音频流启动就处理数据，不管是否录音
+                try:
+                    # 非阻塞入队 - 添加调试信息
+                    if not self.audio_buffer_queue.full():
+                        self.audio_buffer_queue.put_nowait({
+                            'data': audio_data.copy(),
+                            'timestamp': time.time(),
+                            'should_save': self.is_recording and self.should_save
+                        })
+                        # 每100次入队输出一次调试信息
+                        if hasattr(self, '_enqueue_counter'):
+                            self._enqueue_counter += 1
+                            if self._enqueue_counter % 100 == 0:
+                                queue_size = self.audio_buffer_queue.qsize()
+                                print(f"📦 音频入队#{self._enqueue_counter}: 队列大小={queue_size}")
+                        else:
+                            self._enqueue_counter = 1
+                            print("📦 音频数据开始入队")
+                    else:
+                        # 队列满时，移除最老的数据
+                        try:
+                            self.audio_buffer_queue.get_nowait()
+                            self.audio_buffer_queue.put_nowait({
+                                'data': audio_data.copy(),
+                                'timestamp': time.time(),
+                                'should_save': self.is_recording and self.should_save
+                            })
+                            if not hasattr(self, '_queue_full_warned'):
+                                print("⚠️ 音频队列满，开始覆盖旧数据")
+                                self._queue_full_warned = True
+                        except queue.Empty:
+                            pass
                 
-                # 更新录音进度
-                if self.recording_start_time:
-                    self.current_duration = time.time() - self.recording_start_time
-                    self.recording_progress.emit(self.current_duration)
+                except Exception as e:
+                    print(f"音频队列错误: {e}")
+                
+                # 计算音频电平（简化版本，减少计算）- 添加Qt对象检查
+                try:
+                    audio_level = np.sqrt(np.mean(audio_data ** 2))
+                    # 检查Qt对象是否仍然有效
+                    if not self.isFinished():
+                        self.audio_level_updated.emit(float(audio_level))
+                except RuntimeError:
+                    # Qt对象已被销毁，停止回调
+                    print("⚠️ 音频回调: Qt对象已销毁，停止信号发送")
+                    return
+                
+                # 更新录音进度 - 添加Qt对象检查
+                try:
+                    if self.recording_start_time and not self.isFinished():
+                        self.current_duration = time.time() - self.recording_start_time
+                        self.recording_progress.emit(self.current_duration)
+                except RuntimeError:
+                    # Qt对象已被销毁，停止录音进度更新
+                    print("⚠️ 音频回调: Qt对象已销毁，停止录音进度更新")
+                    return
             
-            # 启动音频流
+            # 启动音频流 - 修复参数错误，移除无效标志
             self.audio_stream = sd.InputStream(
                 callback=audio_callback,
                 samplerate=self.sample_rate,
                 channels=self.channels,
-                blocksize=self.chunk_size,
+                blocksize=self.chunk_size,  # 使用更小的blocksize (256)
+                latency='low',              # 低延迟模式
                 dtype=np.float32
+                # 移除无效参数: clip_off, dither_off, never_drop_input
             )
             
             self.audio_stream.start()
+            
+            # 启动异步音频处理线程
+            self.start_audio_processing_thread()
+            
             self.is_recording = True
             
             start_msg = "开始录音和实时分析" if should_save else "开始实时分析（不保存）"
@@ -195,32 +321,10 @@ class IntegratedAudioProcessor(QThread):
             self.error_occurred.emit(f"启动录音失败: {e}")
             return False
     
-    def process_audio_for_pitch(self, audio_data):
-        """处理音频进行音高分析"""
-        try:
-            current_time = time.time()
-            
-            # 简化处理：直接使用简单音高检测，避免复杂的重叠帧分析
-            if len(audio_data) >= 512:  # 确保有足够的数据
-                frequency = self.simple_pitch_detection(audio_data)
-                if frequency > 50:  # 过滤噪声
-                    note_info = self.frequency_to_note_info(frequency)
-                    
-                    pitch_data = {
-                        'timestamp': current_time,
-                        'frequency': frequency,
-                        'confidence': 0.8,  # 默认置信度
-                        'note_info': note_info
-                    }
-                    
-                    self.pitch_history.append(pitch_data)
-                    self.pitch_detected.emit(pitch_data)
-                        
-        except Exception as e:
-            print(f"音高分析错误: {e}")
+    # 原process_audio_for_pitch方法已移除，使用异步版本process_audio_for_pitch_async
     
     def simple_pitch_detection(self, audio_data):
-        """简单的音高检测（使用自相关方法）"""
+        """简单的音高检测（改进版本，支持GPU加速）"""
         try:
             # 确保数据长度合适
             if len(audio_data) < 512:
@@ -230,7 +334,25 @@ class IntegratedAudioProcessor(QThread):
             if len(audio_data) > 2048:
                 audio_data = audio_data[:2048]
             
-            # 应用窗函数
+            # 如果启用GPU加速且可用，使用GPU处理
+            if self.use_gpu_acceleration and self.gpu_processor and self.gpu_processor.is_gpu_available():
+                try:
+                    frequency, confidence = self.gpu_processor.accelerated_yin_detection(audio_data, 0.25)
+                    if frequency > 60 and confidence > 0.3:
+                        # GPU加速检测成功
+                        if hasattr(self, '_gpu_debug_counter'):
+                            self._gpu_debug_counter += 1
+                            if self._gpu_debug_counter % 100 == 0:  # 每100帧输出一次
+                                print(f"🚀 GPU检测成功: {frequency:.1f}Hz (置信度: {confidence:.2f})")
+                        else:
+                            self._gpu_debug_counter = 1
+                            print("🚀 GPU音高检测开始")
+                        return frequency
+                except Exception as e:
+                    print(f"⚠️ GPU检测失败，回退到CPU: {e}")
+                    # 继续使用CPU处理
+            
+            # CPU处理：应用窗函数
             windowed = audio_data * np.hanning(len(audio_data))
             
             # 自相关方法检测音高
@@ -238,9 +360,9 @@ class IntegratedAudioProcessor(QThread):
             correlation = correlation[len(correlation)//2:]
             
             # 找到第一个峰值后的最大峰值
-            # 忽略前面的低频部分
-            min_period = int(self.sample_rate / 800)  # 最高800Hz
-            max_period = int(self.sample_rate / 80)   # 最低80Hz
+            # 改进：支持更宽的音高范围 (60-1000Hz)
+            min_period = int(self.sample_rate / 1000)  # 最高1000Hz，支持高音
+            max_period = int(self.sample_rate / 60)    # 最低60Hz，支持低音
             
             if max_period < len(correlation):
                 search_range = correlation[min_period:max_period]
@@ -248,14 +370,36 @@ class IntegratedAudioProcessor(QThread):
                     peak_index = np.argmax(search_range) + min_period
                     frequency = self.sample_rate / peak_index
                     
-                    # 验证频率范围
-                    if 80 <= frequency <= 800:
-                        return frequency
+                    # 验证频率范围和置信度 - 极低阈值检测所有可能音高
+                    if 30 <= frequency <= 2000:  # 扩展频率范围 (40-2000 → 30-2000)
+                        # 简单的置信度检查
+                        peak_correlation = correlation[peak_index]
+                        base_correlation = correlation[0] if correlation[0] > 0 else 1e-10
+                        confidence = peak_correlation / base_correlation
+                        
+                        if confidence > 0.05:  # 极低置信度阈值 (0.1 → 0.05)
+                            # 添加调试输出
+                            if hasattr(self, '_simple_debug_counter'):
+                                self._simple_debug_counter += 1
+                                if self._simple_debug_counter % 20 == 0:  # 更频繁输出
+                                    print(f"🎵 CPU检测成功: {frequency:.1f}Hz (置信度: {confidence:.3f})")
+                            else:
+                                self._simple_debug_counter = 1
+                                print("🎯 CPU音高检测开始调试模式")
+                            return frequency
+                        else:
+                            # 低置信度，可能是噪声
+                            if hasattr(self, '_low_confidence_counter'):
+                                self._low_confidence_counter += 1
+                                if self._low_confidence_counter % 100 == 0:  # 更频繁输出过滤信息
+                                    print(f"🔍 过滤低置信度信号: {frequency:.1f}Hz (置信度: {confidence:.3f})")
+                            else:
+                                self._low_confidence_counter = 1
             
             return 0
                 
         except Exception as e:
-            print(f"简单音高检测错误: {e}")
+            print(f"音高检测错误: {e}")
             return 0
     
     def frequency_to_note_info(self, frequency):
@@ -290,6 +434,9 @@ class IntegratedAudioProcessor(QThread):
         try:
             self.is_recording = False
             
+            # 停止异步音频处理线程
+            self.stop_audio_processing_thread()
+            
             if self.audio_stream:
                 self.audio_stream.stop()
                 self.audio_stream.close()
@@ -300,14 +447,14 @@ class IntegratedAudioProcessor(QThread):
             if self.should_save and self.audio_buffer and self.recording_filename:
                 output_file = self.save_recording()
             
-            # 准备分析结果
+            # 准备分析结果（添加安全检查）
             analysis_results = {
                 'total_pitches': len(self.pitch_history),
                 'recording_duration': self.current_duration,
-                'pitches': [p['frequency'] for p in self.pitch_history],
-                'timestamps': [p['timestamp'] for p in self.pitch_history],
-                'confidences': [p['confidence'] for p in self.pitch_history],
-                'note_sequence': [p['note_info'] for p in self.pitch_history]
+                'pitches': [p.get('frequency', 0) for p in self.pitch_history],
+                'timestamps': [p.get('timestamp', 0) for p in self.pitch_history],
+                'confidences': [p.get('confidence', 0.8) for p in self.pitch_history],  # 🔧 修复：使用get方法安全访问
+                'note_sequence': [p.get('note_info', {}) for p in self.pitch_history]   # 🔧 修复：使用get方法安全访问
             }
             
             self.recording_finished.emit(output_file or "", analysis_results)
@@ -368,6 +515,522 @@ class IntegratedAudioProcessor(QThread):
             return None
 
 
+    def start_audio_processing_thread(self):
+        """启动异步音频处理线程"""
+        if self.is_audio_processing:
+            print("⚠️ 音频处理线程已在运行")
+            return
+        
+        self.is_audio_processing = True
+        self.audio_processing_thread = threading.Thread(target=self._audio_processing_loop, daemon=True)
+        self.audio_processing_thread.start()
+        print("✅ 异步音频处理线程启动")
+        
+        # 验证线程是否真的启动了
+        import time
+        time.sleep(0.1)  # 给线程一点启动时间
+        if self.audio_processing_thread.is_alive():
+            print("✅ 音频处理线程状态: 运行中")
+        else:
+            print("❌ 音频处理线程状态: 未启动")
+    
+    def stop_audio_processing_thread(self):
+        """停止异步音频处理线程"""
+        try:
+            print("🔄 正在停止异步音频处理线程...")
+            self.is_audio_processing = False
+            if self.audio_processing_thread and self.audio_processing_thread.is_alive():
+                self.audio_processing_thread.join(timeout=2.0)  # 等待最多2秒
+                if self.audio_processing_thread.is_alive():
+                    print("⚠️ 音频处理线程未能正常停止")
+                else:
+                    print("✅ 异步音频处理线程已停止")
+            else:
+                print("✅ 异步音频处理线程已停止")
+        except Exception as e:
+            print(f"❌ 停止音频处理线程错误: {e}")
+    
+    def _audio_processing_loop(self):
+        """音频处理循环 - 在独立线程中运行"""
+        processing_interval = 1.0 / 120  # 目标120Hz处理频率，支持颤音检测
+        
+        # 添加调试计数器
+        loop_counter = 0
+        print("🔄 音频处理循环开始运行")
+        
+        while self.is_audio_processing:
+            start_time = time.time()
+            loop_counter += 1
+            
+            # 从队列获取音频数据进行处理
+            audio_packets = []
+            try:
+                # 一次性获取多个音频包
+                for _ in range(3):  # 最多获取3个包
+                    if not self.audio_buffer_queue.empty():
+                        packet = self.audio_buffer_queue.get_nowait()
+                        audio_packets.append(packet)
+                    else:
+                        break
+            except queue.Empty:
+                pass
+            
+            # 首次获取到数据时的调试信息
+            if audio_packets and loop_counter <= 10:
+                print(f"🎵 音频处理循环首次获取数据! 循环#{loop_counter}, 音频包数量={len(audio_packets)}")
+            
+            # 每1000次循环输出一次状态
+            if loop_counter % 1000 == 0:
+                queue_size = self.audio_buffer_queue.qsize()
+                print(f"🔄 异步处理状态: 循环#{loop_counter}, 队列大小={queue_size}, 音频包={len(audio_packets)}")
+                # 如果队列始终为空，提示可能的问题
+                if queue_size == 0 and loop_counter > 2000:
+                    print("⚠️ 音频队列持续为空，可能音频流未正确启动")
+            
+            if audio_packets:
+                # 处理录音保存
+                for packet in audio_packets:
+                    if packet['should_save']:
+                        self.audio_buffer.extend(packet['data'])
+                
+                # 合并音频数据进行音频分析
+                combined_audio = np.concatenate([p['data'] for p in audio_packets])
+                
+                # 添加调试信息
+                if loop_counter % 2000 == 0:  # 每2000次循环输出一次
+                    print(f"🎵 音频数据: {len(combined_audio)}样本, RMS={np.sqrt(np.mean(combined_audio**2)):.4f}")
+                
+                # 如果数据足够，进行音高分析
+                if len(combined_audio) >= 256:
+                    self.process_audio_for_pitch_async(combined_audio)
+            
+            # 控制处理频率
+            elapsed = time.time() - start_time
+            if elapsed < processing_interval:
+                time.sleep(processing_interval - elapsed)
+    
+    def process_audio_for_pitch_async(self, audio_data):
+        """异步音高分析 - 在处理线程中运行，支持环境噪音智能过滤"""
+        try:
+            current_time = time.time()
+            audio_rms = np.sqrt(np.mean(audio_data ** 2))
+            
+            # 🔥 使用新的环境噪音智能检测系统
+            frequency = self.detect_pitch_with_vibrato(audio_data)
+            
+            # 环境噪音模式：返回0，不显示音高曲线
+            if frequency == 0:
+                return 0
+            
+            # 🎤 歌声模式：应用降噪处理进一步净化音频
+            processed_audio = audio_data
+            if self.noise_processor and self.noise_processor.noise_reduction_mode != "关闭":
+                try:
+                    processed_audio = self.noise_processor.process_audio(audio_data)
+                    # 检查降噪是否过度抑制了歌声信号
+                    processed_rms = np.sqrt(np.mean(processed_audio ** 2))
+                    if processed_rms < audio_rms * 0.2:  # 如果降噪后歌声减弱超过80%
+                        # 降噪过强时使用原始歌声信号
+                        processed_audio = audio_data
+                        if hasattr(self, '_denoise_warning_counter'):
+                            self._denoise_warning_counter += 1
+                            if self._denoise_warning_counter % 200 == 0:
+                                print(f"⚠️ 歌声保护: 降噪过强，使用原始信号 (RMS: {audio_rms:.4f} → {processed_rms:.4f})")
+                        else:
+                            self._denoise_warning_counter = 1
+                            print("🎤 歌声保护模式: 监控降噪强度")
+                except Exception as e:
+                    print(f"降噪处理错误: {e}")
+                    processed_audio = audio_data
+            
+            # 使用降噪后的音频进行精确音高检测
+            refined_frequency = self.detect_pitch_with_vibrato(processed_audio)
+            
+            # 选择最佳检测结果
+            final_frequency = refined_frequency if refined_frequency > 0 else frequency
+            
+            # 对比调试：显示歌声检测结果
+            if final_frequency > 0:
+                if hasattr(self, '_voice_comparison_counter'):
+                    self._voice_comparison_counter += 1
+                    if self._voice_comparison_counter % 50 == 0:
+                        print(f"🔍 音高对比: 原始={frequency:.1f}Hz, 降噪后={refined_frequency:.1f}Hz (RMS: {audio_rms:.4f})")
+                else:
+                    self._voice_comparison_counter = 1
+                    print("🔍 开始歌声音高对比调试")
+            
+            # 使用最终检测的音高作为后续处理的frequency
+            frequency = final_frequency
+            confidence = 0.8 if frequency > 0 else 0
+            
+            # 构建音高数据 - 进一步降低阈值
+            if frequency > 20:  # 极低有效音高阈值 (30Hz → 20Hz)
+                note_info = self.frequency_to_note_info(frequency)
+                
+                # 检测颤音
+                vibrato_info = self.detect_vibrato(frequency, current_time)
+                
+                pitch_data = {
+                    'timestamp': current_time,
+                    'frequency': frequency,
+                    'confidence': confidence,
+                    'note_info': note_info,
+                    'has_pitch': True,
+                    'audio_rms': audio_rms,
+                    'vibrato_info': vibrato_info
+                }
+                
+                # 保存历史数据 - 检查Qt对象是否有效
+                try:
+                    if not self.isFinished():
+                        self.pitch_history.append({
+                            'frequency': frequency,
+                            'timestamp': current_time,
+                            'confidence': pitch_data.get('confidence', 0.8),  # 🔧 修复：添加confidence字段
+                            'note_info': pitch_data.get('note_info', {})      # 🔧 修复：添加note_info字段
+                        })
+                        self.pitch_detected.emit(pitch_data)
+                    else:
+                        print("⚠️ 异步处理: Qt对象已销毁，停止历史数据保存")
+                        return
+                except RuntimeError:
+                    print("⚠️ 异步处理: Qt对象访问错误，停止处理")
+                    return
+                
+                # 调试输出（降低频率）
+                vibrato_text = ""
+                if vibrato_info['has_vibrato']:
+                    vibrato_text = f" - {vibrato_info['description']}"
+                
+                if hasattr(self, '_async_debug_counter'):
+                    self._async_debug_counter += 1
+                    if self._async_debug_counter % 50 == 0:
+                        print(f"🎵 异步检测: {frequency:.1f}Hz{vibrato_text}")
+                else:
+                    self._async_debug_counter = 1
+                    print("🚀 异步音频处理开始")
+            else:
+                # 环境噪音模式或无音高：保持时间轴连续但不显示音高曲线
+                timestamp_data = {
+                    'timestamp': current_time,
+                    'frequency': 0,
+                    'confidence': 0,
+                    'note_info': None,
+                    'has_pitch': False,
+                    'audio_rms': audio_rms,
+                    'vibrato_info': {'has_vibrato': False}
+                }
+                
+                # 调试输出环境噪音状态
+                if hasattr(self, '_noise_debug_counter'):
+                    self._noise_debug_counter += 1
+                    if self._noise_debug_counter % 200 == 0:
+                        print(f"⏸️ 环境噪音时间: {current_time:.2f}s (RMS: {audio_rms:.4f}) - 时间轴继续推进")
+                else:
+                    self._noise_debug_counter = 1
+                    print("⏸️ 进入环境噪音模式 - 时间轴继续，音调线断开")
+                
+                # 检查Qt对象是否有效再发送信号
+                if not self.isFinished():
+                    self.pitch_detected.emit(timestamp_data)
+        
+        except Exception as e:
+            print(f"异步音高分析错误: {e}")
+            # 错误时也发送时间戳保持时间轴连续
+            try:
+                if not self.isFinished():  # 检查Qt对象是否有效
+                    timestamp_data = {
+                        'timestamp': time.time(),
+                        'frequency': 0,
+                        'confidence': 0,
+                        'note_info': None,
+                        'has_pitch': False,
+                        'audio_rms': 0,
+                        'vibrato_info': {'has_vibrato': False}
+                    }
+                    self.pitch_detected.emit(timestamp_data)
+            except RuntimeError:
+                print("⚠️ 异步处理: Qt对象已销毁，停止信号发送")
+    
+    def detect_pitch_with_vibrato(self, audio_data):
+        """音高检测，针对颤音优化 + 环境噪音智能过滤"""
+        try:
+            # 添加音频输入增益和调试
+            if not hasattr(self, '_detection_call_count'):
+                self._detection_call_count = 0
+                print("🎯 音高检测函数首次调用")
+                # 初始化环境噪音检测
+                self._noise_baseline = []
+                self._recent_rms = []
+                self._singing_detected = False
+                self._silence_frames = 0
+                
+            self._detection_call_count += 1
+            
+            # 计算原始音频信息
+            original_rms = np.sqrt(np.mean(audio_data ** 2))
+            original_max = np.max(np.abs(audio_data))
+            
+            # 🔥 环境噪音智能检测
+            self._recent_rms.append(original_rms)
+            if len(self._recent_rms) > 50:  # 保持最近50帧的RMS历史
+                self._recent_rms.pop(0)
+            
+            # 建立环境噪音基准
+            if len(self._noise_baseline) < 100:  # 前100帧建立基准
+                self._noise_baseline.append(original_rms)
+                if len(self._noise_baseline) == 100:
+                    noise_threshold = np.mean(self._noise_baseline) + 2 * np.std(self._noise_baseline)
+                    print(f"� 环境噪音基准建立: 平均RMS={np.mean(self._noise_baseline):.4f}, 阈值={noise_threshold:.4f}")
+                    self._noise_threshold = max(noise_threshold, 0.01)  # 最小阈值0.01
+                return 0  # 建立基准期间不检测音高
+            
+            # 🎤 唱歌检测算法
+            current_rms = original_rms
+            noise_threshold = self._noise_threshold
+            
+            # 动态调整噪音阈值（适应环境变化）
+            if len(self._recent_rms) >= 20:
+                recent_avg = np.mean(self._recent_rms[-20:])
+                if recent_avg < noise_threshold * 0.7:  # 环境变安静了
+                    self._noise_threshold = max(recent_avg * 1.5, 0.005)
+                    if self._detection_call_count % 500 == 0:
+                        print(f"� 噪音阈值自适应调整: {noise_threshold:.4f} → {self._noise_threshold:.4f}")
+            
+            # 判断是否在唱歌
+            singing_signal = current_rms > self._noise_threshold * 1.2  # 需要明显高于噪音
+            
+            # 唱歌状态检测
+            if singing_signal:
+                self._singing_detected = True
+                self._silence_frames = 0
+                if self._detection_call_count % 100 == 0:
+                    print(f"🎤 检测到歌声: RMS={current_rms:.4f} > 阈值={self._noise_threshold * 1.2:.4f}")
+            else:
+                self._silence_frames += 1
+                # 连续15帧静音才认为停止唱歌（允许短暂换气）
+                if self._silence_frames > 15:
+                    if self._singing_detected:
+                        print(f"🔇 歌声结束，回到环境噪音模式 (静音帧数: {self._silence_frames})")
+                    self._singing_detected = False
+            
+            # 🔥 只在检测到唱歌时才进行音高分析
+            if not self._singing_detected:
+                if self._detection_call_count % 200 == 0:
+                    print(f"🔇 环境噪音模式: RMS={current_rms:.4f} ≤ 阈值={self._noise_threshold * 1.2:.4f}")
+                return 0  # 环境噪音时返回0
+            
+            # 🔥 音频增益控制（仅在检测到歌声时）
+            if current_rms < 0.02:  # 歌声信号仍然较弱时放大
+                target_rms = 0.05
+                gain_factor = min(target_rms / (current_rms + 1e-10), 20.0)  # 最大放大20倍
+                audio_data = audio_data * gain_factor
+                
+                if hasattr(self, '_gain_debug_counter'):
+                    self._gain_debug_counter += 1
+                    if self._gain_debug_counter % 50 == 1:
+                        print(f"🔊 歌声增益: RMS {current_rms:.4f} → {np.sqrt(np.mean(audio_data**2)):.4f} (放大{gain_factor:.1f}倍)")
+                else:
+                    self._gain_debug_counter = 1
+            
+            # 详细调试输出（仅在歌声模式）
+            if self._detection_call_count % 100 == 0:
+                enhanced_rms = np.sqrt(np.mean(audio_data ** 2))
+                print(f"🎵 歌声音高检测: 原始RMS={current_rms:.4f}, 增强后RMS={enhanced_rms:.4f}")
+            
+            # 🔥 改进的音高检测算法 - 修复1002.3Hz错误
+            # 预处理：高通滤波去除低频噪音
+            from scipy import signal
+            nyquist = self.sample_rate / 2
+            high_freq = 80 / nyquist  # 80Hz高通
+            if high_freq < 0.99:
+                b, a = signal.butter(2, high_freq, btype='high')
+                audio_data = signal.filtfilt(b, a, audio_data)
+            
+            # 🔥 关键修复：使用加窗的短时音高检测，避免边界效应
+            # 使用汉明窗减少频谱泄漏
+            windowed = audio_data * np.hamming(len(audio_data))
+            
+            # 🔥 修复相关算法：使用归一化相关
+            # 计算归一化自相关，避免找到错误峰值
+            correlation = np.correlate(windowed, windowed, mode='full')
+            correlation = correlation[len(correlation)//2:]
+            
+            # 归一化相关函数，避免数值问题
+            if correlation[0] > 0:
+                correlation = correlation / correlation[0]
+            else:
+                return 0  # 信号太弱
+            
+            # 🔥 修复搜索范围 - 更严格的人声范围
+            min_freq = 80   # 人声最低频率
+            max_freq = 800  # 人声最高频率（避免1002.3Hz错误）
+            
+            min_period = max(int(self.sample_rate / max_freq), 10)  # 最短周期
+            max_period = min(int(self.sample_rate / min_freq), len(correlation) - 1)  # 最长周期
+            
+            if max_period <= min_period:
+                return 0
+            
+            # 🔥 关键修复：避免边界效应，使用更保守的搜索范围
+            safe_max_period = min(max_period, len(correlation) // 2)  # 只搜索前半部分
+            if safe_max_period <= min_period:
+                return 0
+            
+            search_range = correlation[min_period:safe_max_period]
+            if len(search_range) == 0:
+                return 0
+            
+            # 🔥 改进峰值检测：寻找最显著的峰值，而不是最大值
+            # 使用峰值检测算法，避免边界噪声
+            try:
+                from scipy.signal import find_peaks
+                peaks, properties = find_peaks(search_range, height=0.1, distance=5)
+                
+                if len(peaks) == 0:
+                    return 0
+                
+                # 选择最高的峰值
+                best_peak_idx = peaks[np.argmax(search_range[peaks])]
+                peak_index = best_peak_idx + min_period
+            except ImportError:
+                # 如果scipy不可用，使用简单的峰值检测
+                # 但是避免直接使用argmax，而是寻找局部最大值
+                peak_idx = 0
+                max_val = search_range[0]
+                for i in range(1, len(search_range) - 1):
+                    # 寻找局部最大值：比左右邻居都大
+                    if (search_range[i] > search_range[i-1] and 
+                        search_range[i] > search_range[i+1] and 
+                        search_range[i] > max_val):
+                        max_val = search_range[i]
+                        peak_idx = i
+                
+                if max_val <= 0.1:  # 峰值太小
+                    return 0
+                
+                peak_index = peak_idx + min_period
+            
+            # 计算频率
+            frequency = self.sample_rate / peak_index
+            
+            # 🔥 严格验证频率范围
+            if not (min_freq <= frequency <= max_freq):
+                if self._detection_call_count % 50 == 0:
+                    print(f"❌ 频率超出人声范围: {frequency:.1f}Hz (应在{min_freq}-{max_freq}Hz)")
+                return 0
+            
+            # 置信度计算 - 使用峰值与周围的对比
+            peak_correlation = correlation[peak_index]
+            
+            # 计算局部噪声水平（峰值周围的平均值）
+            noise_window = 5
+            start_idx = max(0, peak_index - noise_window)
+            end_idx = min(len(correlation), peak_index + noise_window + 1)
+            local_noise = np.mean(correlation[start_idx:end_idx])
+            
+            # 改进的置信度计算
+            if local_noise > 0:
+                confidence = peak_correlation / local_noise
+            else:
+                confidence = 0
+            
+            # 🔥 严格的音高验证（仅接受人声频率范围）
+            valid_frequency = 80 <= frequency <= 800  # 人声主要频率范围
+            valid_confidence = confidence > 0.15  # 提高置信度要求
+            
+            if self._detection_call_count % 50 == 0:
+                status = "✅通过" if (valid_frequency and valid_confidence) else "❌过滤"
+                print(f"🎵 歌声音高: {frequency:.1f}Hz, 置信度: {confidence:.3f} {status}")
+                if not valid_frequency:
+                    print(f"   ❌ 频率不在人声范围: {frequency:.1f}Hz 不在 80-800Hz 内")
+                if not valid_confidence:
+                    print(f"   ❌ 置信度过低: {confidence:.3f} < 0.15")
+            
+            if valid_frequency and valid_confidence:
+                # 成功检测到人声音高
+                if hasattr(self, '_voice_success_counter'):
+                    self._voice_success_counter += 1
+                    if self._voice_success_counter % 10 == 1:
+                        print(f"🎤 人声检测成功: {frequency:.1f}Hz (置信度: {confidence:.3f})")
+                else:
+                    self._voice_success_counter = 1
+                    print("🎤 人声音高检测启动")
+                
+                return frequency
+            else:
+                return 0
+        
+        except Exception as e:
+            print(f"❌ 音高检测错误: {e}")
+            return 0
+    
+    def detect_vibrato(self, current_frequency, current_time):
+        """检测颤音"""
+        vibrato_info = {
+            'has_vibrato': False,
+            'rate': 0.0,
+            'depth': 0.0,
+            'description': ''
+        }
+        
+        try:
+            if len(self.pitch_history) < self.vibrato_detection_window:
+                return vibrato_info
+            
+            # 获取最近的音高历史
+            recent_history = list(self.pitch_history)[-self.vibrato_detection_window:]
+            frequencies = [h['frequency'] for h in recent_history]
+            times = [h['timestamp'] for h in recent_history]
+            
+            if len(frequencies) < 20:
+                return vibrato_info
+            
+            # 音高变化分析
+            freq_array = np.array(frequencies)
+            time_array = np.array(times)
+            
+            # 去除趋势，只看振动
+            mean_freq = np.mean(freq_array)
+            freq_detrend = freq_array - mean_freq
+            
+            # 计算变化幅度
+            pitch_variation = np.std(freq_detrend)
+            
+            # 检测周期性
+            if pitch_variation > self.vibrato_threshold:
+                # 简单的周期性检测
+                autocorr = np.correlate(freq_detrend, freq_detrend, mode='full')
+                autocorr = autocorr[len(autocorr)//2:]
+                
+                if len(autocorr) > 5:
+                    # 寻找周期性峰值
+                    search_range = autocorr[2:min(30, len(autocorr))]
+                    if len(search_range) > 0:
+                        max_idx = np.argmax(search_range) + 2
+                        max_autocorr = search_range[max_idx - 2]
+                        
+                        # 估算颤音频率
+                        if len(times) > 1:
+                            time_interval = (times[-1] - times[0]) / len(times)
+                            vibrato_period = max_idx * time_interval
+                            vibrato_rate = 1.0 / vibrato_period if vibrato_period > 0 else 0
+                            
+                            # 判断是否为有效颤音 (3-12Hz)
+                            if 3.0 <= vibrato_rate <= 12.0 and max_autocorr > 0.2:
+                                vibrato_info.update({
+                                    'has_vibrato': True,
+                                    'rate': vibrato_rate,
+                                    'depth': pitch_variation,
+                                    'description': f"颤音 {vibrato_rate:.1f}Hz，深度±{pitch_variation:.1f}Hz"
+                                })
+        
+        except Exception as e:
+            print(f"颤音检测错误: {e}")
+        
+        return vibrato_info
+
+
 class ECGStylePitchVisualizer(QWidget):
     """心电图式音高可视化器（支持交互拖拽）"""
     
@@ -377,7 +1040,7 @@ class ECGStylePitchVisualizer(QWidget):
         # 可视化参数
         self.time_window = 16.0  # 显示时间窗口（秒）- 修改为16秒
         self.max_points = 1024   # 最大显示点数 (64fps * 16秒)
-        self.update_interval = 15  # 更新间隔（ms）- 约67fps刷新
+        self.update_interval = 50  # 更新间隔（ms）- 20fps刷新（优化性能）
         
         # 交互参数
         self.y_view_center = 4.0  # 音高视图中心（C4）
@@ -410,6 +1073,17 @@ class ECGStylePitchVisualizer(QWidget):
         self.confidence_data = deque(maxlen=max_data_points)  
         self.note_data = deque(maxlen=max_data_points)
         
+        # 时间轴管理（支持断续音调曲线）
+        self.start_time = None
+        self.current_global_time = 0.0
+        self.is_recording_active = False
+        self.last_pitch_time = 0
+        
+        # 添加时间更新定时器（支持断续音调曲线）
+        self.time_update_timer = QTimer()
+        self.time_update_timer.timeout.connect(self.update_time_axis)
+        self.time_update_interval = 50  # 50ms更新一次，确保平滑的时间轴
+        
         # 用于美观渐变线条的存储
         self.gradient_lines = []
         self.highlight_point = None
@@ -420,6 +1094,9 @@ class ECGStylePitchVisualizer(QWidget):
         # 音高范围映射
         self.setup_pitch_mapping()
         
+        # 初始化性能管理器
+        self.setup_performance_manager()
+        
         # 初始化UI
         self.init_ui()
         
@@ -427,6 +1104,71 @@ class ECGStylePitchVisualizer(QWidget):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
         self.update_timer.start(self.update_interval)
+    
+    def start_time_tracking(self):
+        """开始时间追踪（录音开始时调用）"""
+        if self.start_time is None:
+            self.start_time = time.time()
+        
+        self.is_recording_active = True
+        self.time_update_timer.start(self.time_update_interval)
+        print(f"⏰ 开始时间追踪，基准时间: {self.start_time}")
+    
+    def stop_time_tracking(self):
+        """停止时间追踪（录音停止时调用）"""
+        self.is_recording_active = False
+        self.time_update_timer.stop()
+        print(f"⏸️ 停止时间追踪，当前时长: {self.current_global_time:.2f}秒")
+    
+    def update_time_axis(self):
+        """更新时间轴（支持断续音调曲线）"""
+        if self.start_time is None or not self.is_recording_active:
+            return
+        
+        # 更新当前全局时间
+        self.current_global_time = time.time() - self.start_time
+        
+        # 检查是否需要触发显示更新（当没有音高数据时）
+        if hasattr(self, 'last_pitch_time') and time.time() - self.last_pitch_time > 0.5:
+            # 超过0.5秒没有音高数据，但时间轴需要继续推进
+            if self.auto_follow and self.auto_scroll_enabled:
+                if self.current_global_time > self.center_display_time:
+                    self.time_offset = self.current_global_time - self.center_display_time
+                    self.update_scrollbars()
+    
+    def clear_data(self):
+        """清除所有数据（包括断续曲线）"""
+        self.pitch_data.clear()
+        self.time_data.clear()
+        self.confidence_data.clear()
+        self.note_data.clear()
+        
+        # 重置时间追踪变量
+        self.start_time = None
+        self.current_global_time = 0.0
+        self.last_pitch_time = 0
+        
+        # 清理主音调线
+        if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+            self.pitch_line.set_data([], [])
+        
+        # 🔥 清理断续曲线的所有段线条
+        if hasattr(self, '_segment_lines'):
+            for line in self._segment_lines:
+                try:
+                    line.remove()
+                except:
+                    pass
+            self._segment_lines = []
+        
+        # 清理段信息
+        if hasattr(self, '_segments'):
+            self._segments = []
+        
+        if hasattr(self, 'canvas'):
+            self.canvas.draw_idle()
+        
+        print("🗑️ 数据已清除（包括断续曲线）")
     
     def setup_colors(self):
         """设置颜色配置"""
@@ -448,6 +1190,10 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 线条粗细设置
         self.current_linewidth = 0.6  # 默认线条粗细（心电图模式推荐极细）
+        
+        # 打印频率控制
+        self.ecg_print_counter = 0
+        self.ecg_print_interval = 50  # 每50次调用只打印一次
     
     def setup_pitch_mapping(self):
         """设置音高映射（详细音名显示）"""
@@ -477,6 +1223,27 @@ class ECGStylePitchVisualizer(QWidget):
         # 设置Y轴范围（可调节）
         self.y_min = 0   # C0
         self.y_max = 8   # C8
+    
+    def setup_performance_manager(self):
+        """设置性能管理器"""
+        try:
+            from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+            from src.audio_processing.gpu_accelerator import GPUAcceleratedProcessor
+            
+            self.performance_manager = get_performance_manager()
+            self.gpu_accelerator = GPUAcceleratedProcessor()
+            
+            # 默认使用平衡模式
+            self.current_performance_mode = PerformanceMode.BALANCED
+            
+            print("✅ 性能管理器初始化成功")
+            print(f"   GPU加速: {'✅ 可用' if self.gpu_accelerator.is_gpu_available() else '❌ 不可用'}")
+            
+        except ImportError as e:
+            print(f"⚠️ 性能管理器初始化失败: {e}")
+            self.performance_manager = None
+            self.gpu_accelerator = None
+            self.current_performance_mode = None
     
     def init_ui(self):
         """初始化用户界面（带滚动条）"""
@@ -639,6 +1406,46 @@ class ECGStylePitchVisualizer(QWidget):
         self.display_mode.currentTextChanged.connect(self.on_display_mode_changed)
         controls_row1_layout.addWidget(self.display_mode)
         
+        # 性能模式选择
+        controls_row1_layout.addWidget(QLabel(" | 性能:"))
+        self.performance_mode = QComboBox()
+        self.performance_mode.addItems([
+            "安静模式",      # 最低配置，节省资源  
+            "平衡模式",      # 合理优化配置
+            "高性能模式"     # 充分利用计算资源
+        ])
+        self.performance_mode.setCurrentText("平衡模式")  # 默认平衡模式
+        self.performance_mode.currentTextChanged.connect(self.on_performance_mode_changed)
+        self.performance_mode.setToolTip(
+            "安静模式: 最低资源消耗，15Hz检测频率\n"
+            "平衡模式: 合理性能与质量平衡，30Hz检测频率\n"
+            "高性能模式: 充分利用计算资源，60Hz检测频率，GPU加速"
+        )
+        self.performance_mode.setStyleSheet("""
+            QComboBox {
+                background-color: #2E2E2E;
+                border: 1px solid #505050;
+                border-radius: 3px;
+                padding: 3px 8px;
+                min-width: 80px;
+            }
+            QComboBox:hover {
+                background-color: #3E3E3E;
+                border: 1px solid #707070;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::item {
+                background-color: #2E2E2E;
+                color: white;
+                padding: 5px;
+            }
+            QComboBox::item:selected {
+                background-color: #006600;
+            }
+        """)
+        controls_row1_layout.addWidget(self.performance_mode)
         
         # 智能缩放控制（简化版）
         zoom_group = QGroupBox("缩放控制")
@@ -1226,7 +2033,7 @@ class ECGStylePitchVisualizer(QWidget):
             return is_main_note and is_core_range  # 仅显示C3-C6的主音
     
     def draw_interactive_note_labels(self, y_start, y_end):
-        """绘制交互式音调标签（根据当前音高智能高亮显示）"""
+        """绘制交互式音调标签（确保始终显示，不受音高检测状态影响）"""
         if not hasattr(self, 'current_pitch_y'):
             self.current_pitch_y = 4.0
         if not hasattr(self, 'current_pitch_active'):
@@ -1260,86 +2067,38 @@ class ECGStylePitchVisualizer(QWidget):
                     # 计算与当前音高的距离（用于透明度和高亮）
                     distance = abs(y_pos - current_center)
                     
-                    # 分层透明度系统
+                    # 修复：确保音调标注始终显示，使用统一的显示逻辑
+                    if semitone == 0:  # C音特殊高亮
+                        alpha = 1.0
+                        color = '#FFFF88'
+                        font_size = 11
+                        font_weight = 'bold'
+                    elif semitone in [2, 4, 5, 7, 9, 11]:  # 白键
+                        alpha = 0.8
+                        color = self.text_color
+                        font_size = 10
+                        font_weight = 'normal'
+                    else:  # 黑键
+                        alpha = 0.5
+                        color = self.text_color
+                        font_size = 9
+                        font_weight = 'normal'
+                    
+                    # 当前音高高亮（仅在有活跃音高时进行额外高亮）
                     if self.current_pitch_active:
-                        # 5.0x缩放时使用与非录音一致的透明度逻辑，避免显示过多标签
-                        if self.zoom_level >= 4.5:  # 5.0x全音区显示
-                            if semitone == 0:  # C音特殊高亮
-                                alpha = 1.0
-                                color = '#FFFF88'
-                                font_size = 11
-                                font_weight = 'bold'
-                            elif semitone in [2, 4, 5, 7, 9, 11]:  # 白键
-                                alpha = 0.8
-                                color = self.text_color
-                                font_size = 10
-                                font_weight = 'normal'
-                            else:  # 黑键
-                                alpha = 0.5
-                                color = self.text_color
-                                font_size = 9
-                                font_weight = 'normal'
-                            
-                            # 添加当前音高的额外高亮（不改变透明度，只改变颜色）
-                            if distance <= 0.2:
-                                color = '#FFD700'  # 金色高亮
-                                font_weight = 'bold'
-                            elif distance <= 0.5:
-                                color = '#FFC107'  # 橙色
-                                font_weight = 'bold'
-                            elif distance <= 1.0:
-                                color = '#FFEB3B'  # 黄色
-                        else:
-                            # 其他缩放级别使用原有的距离动态逻辑
-                            if distance <= 0.2:  # 非常接近当前音高
-                                alpha = 1.0
-                                color = '#FFD700'  # 金色高亮
-                                font_weight = 'bold'
-                            elif distance <= 0.5:  # 临近半音
-                                alpha = 0.9
-                                color = '#FFC107'  # 橙色
-                                font_weight = 'bold'
-                            elif distance <= 1.0:  # 临近全音
-                                alpha = 0.8
-                                color = '#FFEB3B'  # 黄色
-                                font_weight = 'normal'
-                            elif distance <= 2.0:  # 同八度内
-                                alpha = 0.6
-                                color = self.text_color
-                                font_weight = 'normal'
-                            else:  # 远距离
-                                alpha = 0.3
-                                color = self.text_color
-                                font_weight = 'normal'
-                            
-                            # 其他缩放级别使用距离动态字体
-                            if distance <= 0.2:
-                                font_size = 12
-                            elif distance <= 0.5:
-                                font_size = 11
-                            elif distance <= 1.0:
-                                font_size = 10
-                            elif distance <= 2.0:
-                                font_size = 9
-                            else:
-                                font_size = 8
-                    else:
-                        # 无活跃音高时，使用标准显示
-                        if semitone == 0:  # C音特殊高亮
+                        if distance <= 0.2:  # 非常接近当前音高
                             alpha = 1.0
-                            color = '#FFFF88'
-                            font_size = 11
+                            color = '#FFD700'  # 金色高亮
                             font_weight = 'bold'
-                        elif semitone in [2, 4, 5, 7, 9, 11]:  # 白键
-                            alpha = 0.8
-                            color = self.text_color
-                            font_size = 10
-                            font_weight = 'normal'
-                        else:  # 黑键
-                            alpha = 0.5
-                            color = self.text_color
-                            font_size = 9
-                            font_weight = 'normal'
+                            font_size = 12
+                        elif distance <= 0.5:  # 临近半音
+                            alpha = max(alpha, 0.9)
+                            color = '#FFC107'  # 橙色
+                            font_weight = 'bold'
+                            font_size = 11
+                        elif distance <= 1.0:  # 临近全音
+                            alpha = max(alpha, 0.8)
+                            color = '#FFEB3B'  # 黄色
                     
                     # 根据显示范围调整透明度（确保边缘渐变）
                     view_distance = min(abs(y_pos - y_start), abs(y_pos - y_end))
@@ -1353,7 +2112,7 @@ class ECGStylePitchVisualizer(QWidget):
                                    fontsize=font_size, ha='right', va='center',
                                    color=color, alpha=alpha, fontweight=font_weight)
                         
-                        # 5.0x缩放时不添加额外网格线，避免视觉干扰
+                        # 活跃音高的网格线（仅在当前音高附近显示）
                         if self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5:
                             line_alpha = alpha * 0.3
                             self.ax.axhline(y=y_pos, color=color, linestyle=':', 
@@ -1576,27 +2335,32 @@ class ECGStylePitchVisualizer(QWidget):
             self.h_scrollbar.blockSignals(False)
     
     def add_pitch_data(self, pitch_data):
-        """添加音高数据（支持历史数据存储）"""
+        """添加音高数据（支持历史数据存储和断续音调曲线）"""
         try:
             frequency = pitch_data.get('frequency', 0)
             confidence = pitch_data.get('confidence', 0)
             timestamp = pitch_data.get('timestamp', time.time())
             note_info = pitch_data.get('note_info', {})
+            has_pitch = pitch_data.get('has_pitch', frequency > 0)
             
-            if frequency > 0:
+            # 计算全局时间（从开始到现在的总时间）- 修复NoneType错误
+            if not hasattr(self, 'start_time') or self.start_time is None:
+                self.start_time = timestamp
+                print(f"🕐 设置开始时间: {self.start_time}")
+            
+            global_time = timestamp - self.start_time
+            
+            # 总是更新当前全局时间，保持时间轴推进
+            self.current_global_time = global_time
+            
+            if has_pitch and frequency > 0:
                 # 转换频率到Y轴位置（精确到半音）
                 midi_number = 69 + 12 * np.log2(frequency / 440)  # A4 = 440Hz = MIDI 69
                 octave = int(midi_number // 12) - 1
                 semitone = int(midi_number % 12)
                 y_pos = octave + semitone / 12
                 
-                # 计算全局时间（从开始到现在的总时间）
-                if not hasattr(self, 'start_time'):
-                    self.start_time = timestamp
-                
-                global_time = timestamp - self.start_time
-                
-                # 添加数据
+                # 只有在有音高时才添加到音高数据中
                 self.pitch_data.append(y_pos)
                 self.time_data.append(global_time)
                 self.confidence_data.append(confidence)
@@ -1609,26 +2373,10 @@ class ECGStylePitchVisualizer(QWidget):
                 
                 # 调试信息（每10个数据点打印一次）
                 if len(self.pitch_data) % 10 == 0:
-                    print(f"音高数据点: {len(self.pitch_data)}, 最新: {y_pos:.2f}, 时间: {global_time:.2f}s")
+                    print(f"✅ 音高数据点: {len(self.pitch_data)}, 最新: {y_pos:.2f}, 时间: {global_time:.2f}s")
                 
-                # 自动跟随功能
+                # 自动跟随功能（只在有音高时调整音高轴）
                 if self.auto_follow and self.auto_scroll_enabled:
-                    # 新的滚动逻辑：第8秒之前不滚动，第8秒后开始滚动
-                    if global_time <= self.center_display_time:
-                        # 前8秒：时间偏移保持为0，显示从0到16秒的内容
-                        self.time_offset = 0.0
-                    else:
-                        # 第8秒后：开始滚动，保持音调曲线在屏幕中央生成
-                        # 计算需要的时间偏移，使当前时间点在屏幕中央（8秒位置）
-                        self.time_offset = global_time - self.center_display_time
-                        
-                        # 确保时间偏移不超过最大历史时间限制
-                        max_offset = max(0, self.max_history_time - self.time_window)
-                        self.time_offset = min(self.time_offset, max_offset)
-                        
-                        # 实时更新滚动条位置，确保滚动条与时间偏移同步
-                        self.update_scrollbars()
-                    
                     # 音高轴自动跟随（平滑移动到新音高区域）
                     current_display_range = self.y_view_range / self.zoom_level
                     margin = current_display_range * 0.2  # 20%的边距
@@ -1648,19 +2396,140 @@ class ECGStylePitchVisualizer(QWidget):
                         # 如果视图中心有明显变化，立即更新轴范围以保持缩放一致性
                         if abs(self.y_view_center - old_center) > 0.01:
                             self.update_axis_ranges()
+            else:
+                # 无音高时，仍然更新时间相关状态，但不添加音高数据点
+                # 这样音调线条会断开，但时间轴继续推进
+                self.current_pitch_active = False
+                
+                # 调试信息（每200帧打印一次）
+                if hasattr(self, '_no_pitch_counter'):
+                    self._no_pitch_counter += 1
+                    if self._no_pitch_counter % 200 == 0:
+                        audio_rms = pitch_data.get('audio_rms', 0)
+                        print(f"⏸️ 无音高时间: {global_time:.2f}s (RMS: {audio_rms:.4f}) - 时间轴继续推进")
+                else:
+                    self._no_pitch_counter = 1
+                    print("⏸️ 进入无音高模式 - 时间轴继续，音调线断开")
+            
+            # 时间轴自动跟随（无论是否有音高都要处理）
+            if self.auto_follow and self.auto_scroll_enabled:
+                # 新的滚动逻辑：第8秒之前不滚动，第8秒后开始滚动
+                if global_time <= self.center_display_time:
+                    # 前8秒：时间偏移保持为0，显示从0到16秒的内容
+                    self.time_offset = 0.0
+                else:
+                    # 第8秒后：开始滚动，保持音调曲线在屏幕中央生成
+                    # 计算需要的时间偏移，使当前时间点在屏幕中央（8秒位置）
+                    self.time_offset = global_time - self.center_display_time
+                    
+                    # 确保时间偏移不超过最大历史时间限制
+                    max_offset = max(0, self.max_history_time - self.time_window)
+                    self.time_offset = min(self.time_offset, max_offset)
+                    
+                    # 实时更新滚动条位置，确保滚动条与时间偏移同步
+                    self.update_scrollbars()
                 
         except Exception as e:
             print(f"添加音高数据错误: {e}")
     
+    def update_time_axis(self):
+        """更新时间轴（支持断续音调曲线模式）"""
+        try:
+            if not self.is_recording_active:
+                return
+            
+            # 计算当前全局时间
+            current_time = time.time()
+            if self.start_time is None:
+                self.start_time = current_time
+            
+            self.current_global_time = current_time - self.start_time
+            
+            # 如果有新音高数据，记录最后音高时间
+            if len(self.pitch_data) > 0:
+                latest_pitch_time = self.time_data[-1] if self.time_data else 0
+                if latest_pitch_time > self.last_pitch_time:
+                    self.last_pitch_time = latest_pitch_time
+            
+            # 检查是否长时间没有音高数据（超过0.5秒认为是静音/换气）
+            time_since_last_pitch = self.current_global_time - self.last_pitch_time
+            
+            # 无论是否有音高数据，都要更新时间相关的UI元素
+            if self.auto_follow and self.auto_scroll_enabled:
+                # 新的滚动逻辑：第8秒之前不滚动，第8秒后开始滚动
+                if self.current_global_time <= self.center_display_time:
+                    # 前8秒：时间偏移保持为0，显示从0到16秒的内容
+                    self.time_offset = 0.0
+                else:
+                    # 第8秒后：开始滚动，保持时间轴在屏幕中央生成
+                    self.time_offset = self.current_global_time - self.center_display_time
+                    
+                    # 确保时间偏移不超过最大历史时间限制
+                    max_offset = max(0, self.max_history_time - self.time_window)
+                    self.time_offset = min(self.time_offset, max_offset)
+                
+                # 更新滚动条位置
+                self.update_scrollbars()
+            
+            # 即使没有新音高数据，也要刷新显示（显示时间轴推进）
+            if time_since_last_pitch > 0.1:  # 超过100ms没有音高数据
+                # 不更新音高数据，但更新轴范围显示时间推进
+                try:
+                    if hasattr(self, 'ax') and self.main_plot_area == self.canvas:
+                        # 更新X轴范围以显示当前时间窗口
+                        time_start = self.time_offset
+                        time_end = self.time_offset + self.time_window
+                        
+                        current_xlim = self.ax.get_xlim()
+                        if abs(current_xlim[0] - time_start) > 0.1 or abs(current_xlim[1] - time_end) > 0.1:
+                            self.ax.set_xlim(time_start, time_end)
+                            self.canvas.draw_idle()
+                except Exception as e:
+                    # 静默处理绘制错误
+                    pass
+                    
+        except Exception as e:
+            print(f"时间轴更新错误: {e}")
+    
+    def start_time_tracking(self):
+        """开始时间追踪（录音开始时调用）"""
+        self.is_recording_active = True
+        self.start_time = time.time()
+        self.current_global_time = 0.0
+        self.last_pitch_time = 0
+        self.time_update_timer.start(self.time_update_interval)
+        print("🕐 开始时间轴追踪（支持断续音调曲线）")
+    
+    def stop_time_tracking(self):
+        """停止时间追踪（录音停止时调用）"""
+        self.is_recording_active = False
+        self.time_update_timer.stop()
+        print("⏹️ 停止时间轴追踪")
+
     def update_display(self):
-        """更新显示（支持历史数据查看）"""
+        """更新显示（支持历史数据查看和断续音调曲线）"""
         if len(self.pitch_data) == 0:
             return
         
         try:
-            # 调试信息
-            if len(self.pitch_data) % 20 == 0:  # 每20个数据点打印一次
-                print(f"更新显示: 总数据{len(self.pitch_data)}点, pitch_line存在: {hasattr(self, 'pitch_line')}")
+            # 🚀 智能更新优化：避免过度重复计算
+            current_data_size = len(self.pitch_data)
+            current_time_window = (self.time_offset, self.time_offset + self.time_window)
+            
+            # 检查是否需要更新（避免无意义的重复计算）
+            if hasattr(self, '_last_update_state'):
+                last_size, last_window = self._last_update_state
+                if (current_data_size == last_size and 
+                    current_time_window == last_window and 
+                    current_data_size > 0):
+                    return  # 数据和窗口都没变化，跳过更新
+            
+            # 更新状态记录
+            self._last_update_state = (current_data_size, current_time_window)
+            
+            # 调试信息（减少冗余输出）
+            if current_data_size % 20 == 0:  # 每20个数据点打印一次
+                print(f"更新显示: 总数据{current_data_size}点, pitch_line存在: {hasattr(self, 'pitch_line')}")
             
             # 根据当前时间偏移过滤数据
             time_start = self.time_offset
@@ -1683,7 +2552,80 @@ class ECGStylePitchVisualizer(QWidget):
             pitches = [self.pitch_data[i] for i in valid_indices]
             confidences = [self.confidence_data[i] for i in valid_indices]
             
-            # 根据显示模式更新
+            # 🔥 关键修复：创建断续音调曲线
+            # 检测时间间隔，如果时间间隔过大（换气），则断开曲线
+            if len(times) > 1:
+                # 🚀 智能段分割：缓存计算结果，避免重复计算
+                segments_cache_key = (times[0], times[-1], len(times))
+                
+                if (hasattr(self, '_segments_cache') and 
+                    hasattr(self, '_segments_cache_key') and 
+                    self._segments_cache_key == segments_cache_key):
+                    # 使用缓存的段分割结果
+                    segments = self._segments_cache
+                else:
+                    # 重新计算段分割
+                    segments = []  # 存储连续的音调段
+                    current_segment_times = [times[0]]
+                    current_segment_pitches = [pitches[0]]
+                    detected_gaps = []  # 记录检测到的换气段
+                    
+                    for i in range(1, len(times)):
+                        time_gap = times[i] - times[i-1]
+                        
+                        # 如果时间间隔小于0.3秒，认为是连续的歌声
+                        if time_gap < 0.3:
+                            current_segment_times.append(times[i])
+                            current_segment_pitches.append(pitches[i])
+                        else:
+                            # 时间间隔过大，保存当前段并开始新段
+                            if len(current_segment_times) > 1:  # 至少需要2个点才能画线
+                                segments.append((current_segment_times.copy(), current_segment_pitches.copy()))
+                            
+                            # 记录换气段信息
+                            detected_gaps.append({
+                                'time_gap': time_gap,
+                                'prev_time': times[i-1],
+                                'new_time': times[i]
+                            })
+                            
+                            # 开始新的音调段
+                            current_segment_times = [times[i]]
+                            current_segment_pitches = [pitches[i]]
+                    
+                    # 添加最后一段
+                    if len(current_segment_times) > 1:
+                        segments.append((current_segment_times, current_segment_pitches))
+                    
+                    # 缓存结果
+                    self._segments_cache = segments
+                    self._segments_cache_key = segments_cache_key
+                    
+                    # 🎯 智能日志：仅在段数发生变化时输出
+                    if (not hasattr(self, '_last_segments_count') or 
+                        self._last_segments_count != len(segments) or
+                        len(detected_gaps) > 0):
+                        
+                        # 只输出新检测到的换气段
+                        for gap in detected_gaps:
+                            print(f"🔇 检测到换气段: 时间间隔={gap['time_gap']:.2f}s, "
+                                  f"前段结束于{gap['prev_time']:.2f}s, 新段开始于{gap['new_time']:.2f}s")
+                        
+                        if len(segments) > 0:
+                            print(f"🎵 绘制音调段 {len(segments)}: {sum(len(seg[0]) for seg in segments)}个点, "
+                                  f"时间范围={segments[0][0][0]:.2f}s-{segments[-1][0][-1]:.2f}s")
+                            print(f"✅ 断续音调曲线绘制完成: {len(segments)}个独立音调段")
+                        
+                        self._last_segments_count = len(segments)
+                
+                # 绘制所有音调段（断续的）
+                self.draw_segmented_pitch_line(segments)
+                
+            else:
+                # 只有一个数据点，直接绘制
+                self.pitch_line.set_data(times, pitches)
+            
+            # 根据显示模式进行额外处理
             display_mode = self.display_mode.currentText() if hasattr(self, 'display_mode') else "心电图模式"
             
             if display_mode == "心电图模式":
@@ -1692,49 +2634,55 @@ class ECGStylePitchVisualizer(QWidget):
                     self.switch_display_widget(use_pyqtgraph=False)
                 
                 # 心电图模式：更细的线条，提高颤音等细节显示清晰度
-                self.pitch_line.set_data(times, pitches)
-                self.update_ecg_mode(times, pitches, confidences)
+                # 注意：这里不再使用set_data，因为已经在draw_segmented_pitch_line中处理
+                if hasattr(self, '_last_display_mode') and self._last_display_mode != "心电图模式":
+                    print("💚 切换到心电图模式（断续曲线）")
+                self._last_display_mode = "心电图模式"
                 
             elif display_mode == "彩色渐变":
                 # 彩色渐变模式：使用优化的Matplotlib LineCollection超细渐变
-                print(f"🎨 超细平滑彩色渐变模式 - 数据点数: {len(times)}")
+                print(f"🎨 超细平滑彩色渐变模式（断续）- 数据点数: {len(times)}")
                 
                 # 强制使用优化的Matplotlib LineCollection方案
-                print("✨ 使用优化的Matplotlib超细渐变方案")
+                print("✨ 使用优化的Matplotlib超细渐变方案（断续版本）")
                 # 确保使用Matplotlib组件
                 if self.main_plot_area != self.canvas:
                     self.switch_display_widget(use_pyqtgraph=False)
                 
-                # 尝试添加超细平滑的渐变效果
+                # 尝试添加超细平滑的渐变效果（断续版本）
                 gradient_success = False
                 try:
-                    result = self.update_beautiful_pitch_line(times, pitches, confidences)
-                    gradient_success = (result is not False)
-                    if gradient_success:
-                        print("✅ 彩色渐变LineCollection创建成功")
+                    # 为每个音调段创建渐变效果
+                    if hasattr(self, '_segments') and self._segments:
+                        for seg_times, seg_pitches in self._segments:
+                            result = self.update_beautiful_pitch_line(seg_times, seg_pitches, 
+                                                                    [0.8] * len(seg_pitches))
+                            gradient_success = (result is not False)
+                        if gradient_success:
+                            print("✅ 断续彩色渐变LineCollection创建成功")
                 except Exception as e:
-                    print(f"⚠️ 彩色渐变创建失败: {e}")
+                    print(f"⚠️ 断续彩色渐变创建失败: {e}")
                     gradient_success = False
                 
-                # 如果渐变失败，提供彩色回退方案（不是绿色！）
+                # 如果渐变失败，使用断续彩色回退方案
                 if not gradient_success:
-                    print("🔄 使用彩色回退方案...")
-                    self.pitch_line.set_data(times, pitches)
-                    # 使用彩色而不是绿色
+                    print("🔄 使用断续彩色回退方案...")
+                    # draw_segmented_pitch_line已经处理了断续绘制
                     import colorsys
                     if len(pitches) > 0:
                         avg_pitch = sum(pitches) / len(pitches)
                         hue = ((avg_pitch - 1.0) % 6.0) / 6.0
                         rgb = colorsys.hsv_to_rgb(hue, 0.8, 1.0)
-                        self.pitch_line.set_color(rgb)
+                        if hasattr(self, 'pitch_line'):
+                            self.pitch_line.set_color(rgb)
                     else:
-                        self.pitch_line.set_color('#FF6600')  # 橙色作为默认
-                    self.pitch_line.set_linewidth(self.current_linewidth)  # 使用用户设置的线条粗细
-                    self.pitch_line.set_alpha(0.9)
+                        if hasattr(self, 'pitch_line'):
+                            self.pitch_line.set_color('#FF6600')  # 橙色作为默认
                 else:
                     # 渐变成功，隐藏背景线
-                    self.pitch_line.set_data([], [])
-                    self.pitch_line.set_alpha(0.0)
+                    if hasattr(self, 'pitch_line'):
+                        self.pitch_line.set_data([], [])
+                        self.pitch_line.set_alpha(0.0)
             
             # 只在使用Matplotlib时更新坐标轴和刷新
             if self.main_plot_area == self.canvas:
@@ -1760,6 +2708,65 @@ class ECGStylePitchVisualizer(QWidget):
             
             # 每次显示更新时也同步更新滚动条，确保实时响应
             self.update_scrollbars()
+            
+        except Exception as e:
+            print(f"❌ 更新显示错误: {e}")
+    
+    def draw_segmented_pitch_line(self, segments):
+        """绘制断续的音调曲线（每段独立绘制，换气段不连接）"""
+        try:
+            # 存储段信息供其他函数使用
+            self._segments = segments
+            
+            if not segments:
+                self.pitch_line.set_data([], [])
+                return
+            
+            # 清除现有的音调线
+            self.pitch_line.set_data([], [])
+            
+            # 清除之前的段线条（如果存在）
+            if hasattr(self, '_segment_lines'):
+                for line in self._segment_lines:
+                    try:
+                        line.remove()
+                    except:
+                        pass
+            
+            # 为每个连续段创建独立的线条
+            self._segment_lines = []
+            
+            for i, (seg_times, seg_pitches) in enumerate(segments):
+                if len(seg_times) < 2:  # 至少需要2个点才能画线
+                    continue
+                
+                # 为每段创建独立的线条
+                line, = self.ax.plot(seg_times, seg_pitches, 
+                                   color=self.line_color,
+                                   linewidth=self.current_linewidth,
+                                   alpha=0.8,
+                                   solid_capstyle='round',
+                                   solid_joinstyle='round')
+                
+                self._segment_lines.append(line)
+                
+                # 调试信息（每5段打印一次）
+                if i % 5 == 0:
+                    print(f"🎵 绘制音调段 {i+1}: {len(seg_times)}个点, "
+                          f"时间范围={seg_times[0]:.2f}s-{seg_times[-1]:.2f}s")
+            
+            print(f"✅ 断续音调曲线绘制完成: {len(segments)}个独立音调段")
+            
+        except Exception as e:
+            print(f"❌ 绘制断续音调曲线错误: {e}")
+            # 回退到普通绘制
+            if segments:
+                all_times = []
+                all_pitches = []
+                for seg_times, seg_pitches in segments:
+                    all_times.extend(seg_times)
+                    all_pitches.extend(seg_pitches)
+                self.pitch_line.set_data(all_times, all_pitches)
             
         except Exception as e:
             print(f"更新显示错误: {e}")
@@ -1930,7 +2937,10 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 心电图模式专注于精细音高变化分析
         # 可调节线条粗细以适应不同的分析需求
-        print(f"💚 心电图模式：{self.current_linewidth:.1f}px绿线，数据点={len(times)}")
+        # 控制打印频率，避免刷屏
+        self.ecg_print_counter += 1
+        if self.ecg_print_counter % self.ecg_print_interval == 0:
+            print(f"💚 心电图模式：{self.current_linewidth:.1f}px绿线，数据点={len(times)} (第{self.ecg_print_counter}次更新)")
     
     def update_frequency_mode(self, times, pitches, confidences):
         """频率曲线模式"""
@@ -2045,6 +3055,92 @@ class ECGStylePitchVisualizer(QWidget):
             QTimer.singleShot(100, lambda: self.apply_linewidth(self.current_linewidth))
         
         print(f"🔄 显示模式切换到: {mode}，将保持当前线条粗细: {getattr(self, 'current_linewidth', 0.6):.1f}px")
+    
+    def on_performance_mode_changed(self, mode_name):
+        """性能模式改变处理"""
+        if not self.performance_manager:
+            print("⚠️ 性能管理器未初始化")
+            return
+        
+        try:
+            from src.audio_processing.performance_manager import PerformanceMode
+            
+            # 映射模式名称到枚举
+            mode_mapping = {
+                "安静模式": PerformanceMode.QUIET,
+                "平衡模式": PerformanceMode.BALANCED,
+                "高性能模式": PerformanceMode.HIGH_PERFORMANCE
+            }
+            
+            if mode_name in mode_mapping:
+                new_mode = mode_mapping[mode_name]
+                success = self.performance_manager.set_performance_mode(new_mode)
+                
+                if success:
+                    self.current_performance_mode = new_mode
+                    
+                    # 获取新的配置
+                    config = self.performance_manager.get_current_config()
+                    
+                    # 应用配置到音频处理器（如果存在）
+                    if hasattr(self, 'audio_processor') and self.audio_processor:
+                        self.apply_performance_config_to_processor(config)
+                    
+                    # 获取性能优化信息
+                    optimization = self.performance_manager.optimize_for_realtime()
+                    
+                    print(f"🎯 性能模式切换成功: {mode_name}")
+                    print(f"   预期检测频率: {optimization['predicted_actual_frequency']:.1f}Hz")
+                    print(f"   GPU加速: {'✅' if config.use_gpu_acceleration else '❌'}")
+                    print(f"   线程数: {config.thread_pool_size}")
+                    print(f"   内存缓冲: {config.memory_buffer_mb}MB")
+                    
+                    # 显示性能建议
+                    recommendations = optimization['recommendations']
+                    if recommendations:
+                        print("💡 性能建议:")
+                        for rec in recommendations:
+                            print(f"   {rec}")
+                    
+                    # 更新状态显示
+                    self.update_status_display()
+                    
+                else:
+                    print(f"❌ 性能模式切换失败: {mode_name}")
+            else:
+                print(f"❌ 未知的性能模式: {mode_name}")
+                
+        except Exception as e:
+            print(f"❌ 性能模式切换错误: {e}")
+    
+    def apply_performance_config_to_processor(self, config):
+        """将性能配置应用到音频处理器"""
+        try:
+            if hasattr(self.audio_processor, 'chunk_size'):
+                # 更新块大小
+                old_chunk_size = self.audio_processor.chunk_size
+                self.audio_processor.chunk_size = config.chunk_size
+                print(f"🔧 更新块大小: {old_chunk_size} → {config.chunk_size}")
+            
+            # 更新增强处理器的参数（如果存在）
+            if hasattr(self.audio_processor, 'enhanced_yin_processor'):
+                if hasattr(self.audio_processor.enhanced_yin_processor, 'yin_threshold'):
+                    self.audio_processor.enhanced_yin_processor.yin_threshold = config.yin_threshold
+                    print(f"🔧 更新YIN阈值: {config.yin_threshold}")
+            
+            # 设置GPU加速（如果可用）
+            if config.use_gpu_acceleration and self.gpu_accelerator and self.gpu_accelerator.is_gpu_available():
+                # 启用GPU加速标志
+                self.audio_processor.use_gpu_acceleration = True
+                print("🚀 启用GPU加速")
+            else:
+                # 禁用GPU加速
+                if hasattr(self.audio_processor, 'use_gpu_acceleration'):
+                    self.audio_processor.use_gpu_acceleration = False
+                print("💻 使用CPU处理")
+            
+        except Exception as e:
+            print(f"⚠️ 应用性能配置失败: {e}")
     
     def on_linewidth_preset_changed(self, preset_text):
         """线条粗细预设改变"""
@@ -2420,16 +3516,79 @@ class ECGStylePitchVisualizer(QWidget):
         self.note_data.clear()
         
         # 重置时间相关变量
-        if hasattr(self, 'start_time'):
-            delattr(self, 'start_time')
+        self.start_time = None
+        self.current_global_time = 0.0
+        self.last_pitch_time = 0
+        self.is_recording_active = False
+        
+        # 停止时间追踪定时器
+        if hasattr(self, 'time_update_timer'):
+            self.time_update_timer.stop()
         
         self.pitch_line.set_data([], [])
         self.canvas.draw()
         
         # 更新状态
         self.update_status_display()
-
-
+    
+    def start_time_tracking(self):
+        """开始时间追踪（支持断续音调曲线）"""
+        self.start_time = time.time()
+        self.current_global_time = 0.0
+        self.is_recording_active = True
+        self.last_pitch_time = 0
+        
+        # 启动时间更新定时器
+        self.time_update_timer.start(self.time_update_interval)
+        print("🕒 开始时间追踪 - 支持断续音调曲线")
+    
+    def stop_time_tracking(self):
+        """停止时间追踪"""
+        self.is_recording_active = False
+        
+        # 停止时间更新定时器
+        if hasattr(self, 'time_update_timer'):
+            self.time_update_timer.stop()
+        
+        print("⏹️ 停止时间追踪")
+    
+    def update_time_axis(self):
+        """更新时间轴（支持断续音调曲线）"""
+        if not self.is_recording_active or self.start_time is None:
+            return
+        
+        try:
+            # 更新全局时间
+            self.current_global_time = time.time() - self.start_time
+            
+            # 检查是否需要更新时间偏移（自动滚动）
+            if self.auto_follow and self.auto_scroll_enabled:
+                if self.current_global_time > self.center_display_time:
+                    # 第8秒后开始滚动，保持音调曲线在屏幕中央生成
+                    new_offset = self.current_global_time - self.center_display_time
+                    
+                    # 只有在时间偏移有显著变化时才更新
+                    if abs(new_offset - self.time_offset) > 0.1:
+                        self.time_offset = new_offset
+                        
+                        # 确保时间偏移不超过最大历史时间限制
+                        max_offset = max(0, self.max_history_time - self.time_window)
+                        self.time_offset = min(self.time_offset, max_offset)
+                        
+                        # 更新显示
+                        self.update_axis_ranges()
+            
+            # 每秒更新一次状态显示
+            if hasattr(self, '_last_status_update'):
+                if self.current_global_time - self._last_status_update >= 1.0:
+                    self.update_status_display()
+                    self._last_status_update = self.current_global_time
+            else:
+                self._last_status_update = self.current_global_time
+                
+        except Exception as e:
+            print(f"❌ 时间轴更新错误: {e}")
+    
 class IntegratedRecordingInterface(QMainWindow):
     """集成录音与分析界面主窗口"""
     
@@ -2449,6 +3608,15 @@ class IntegratedRecordingInterface(QMainWindow):
         # 音频处理器
         self.audio_processor = IntegratedAudioProcessor()
         
+        # 降噪处理器
+        try:
+            from src.audio_processing.noise_reduction import NoiseReductionProcessor
+            self.noise_processor = NoiseReductionProcessor(sample_rate=44100, frame_size=2048)
+            print("✅ 降噪处理器初始化成功")
+        except ImportError as e:
+            print(f"❌ 降噪处理器初始化失败: {e}")
+            self.noise_processor = None
+        
         # 统计数据
         self.total_pitches_detected = 0
         self.recording_duration = 0
@@ -2462,10 +3630,55 @@ class IntegratedRecordingInterface(QMainWindow):
         self.init_ui()
         self.setup_connections()
         
+        # 🔧 移除自动启动实时分析 - 只有用户主动录音时才启动
+        # QTimer.singleShot(1000, self.start_realtime_analysis)  # 已禁用
+        
         # 状态定时器
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status_display)
         self.status_timer.start(100)  # 100ms更新一次
+    
+    def start_realtime_analysis(self):
+        """启动实时音高分析（不录音模式）"""
+        try:
+            print("🎤 自动启动实时音高分析...")
+            # 启动音频流进行实时分析，但不录音
+            if self.audio_processor.start_recording(should_save=False):
+                print("✅ 实时音高分析已启动")
+                self.is_analyzing = True
+                # 更新UI状态
+                if hasattr(self, 'status_label'):
+                    self.update_status_display()
+            else:
+                print("❌ 启动实时音高分析失败")
+        except Exception as e:
+            print(f"❌ 启动实时音高分析错误: {e}")
+    
+    def closeEvent(self, event):
+        """窗口关闭事件处理 - 确保所有资源正确释放"""
+        try:
+            print("🔄 正在关闭MindEcho...")
+            
+            # 停止音频处理器
+            if hasattr(self, 'audio_processor') and self.audio_processor:
+                self.audio_processor.stop_recording()
+                # 等待线程停止
+                if self.audio_processor.isRunning():
+                    self.audio_processor.wait(3000)  # 等待最多3秒
+                    if self.audio_processor.isRunning():
+                        self.audio_processor.terminate()  # 强制终止
+                        print("⚠️ 音频处理器被强制终止")
+                
+            # 停止状态定时器
+            if hasattr(self, 'status_timer'):
+                self.status_timer.stop()
+            
+            print("✅ MindEcho已安全关闭")
+            event.accept()
+            
+        except Exception as e:
+            print(f"❌ 关闭窗口错误: {e}")
+            event.accept()  # 即使出错也要关闭窗口
     
     def init_ui(self):
         """初始化用户界面"""
@@ -2607,6 +3820,42 @@ class IntegratedRecordingInterface(QMainWindow):
         self.save_checkbox.toggled.connect(self.on_save_mode_changed)
         params_layout.addWidget(self.save_checkbox)
         
+        # 降噪控制
+        params_layout.addWidget(QLabel("降噪模式:"))
+        self.noise_reduction_combo = QComboBox()
+        self.noise_reduction_combo.addItems([
+            "关闭",
+            "基础频域降噪", 
+            "AI降噪",
+            "高级音乐保护"
+        ])
+        self.noise_reduction_combo.setCurrentText("关闭")
+        self.noise_reduction_combo.currentTextChanged.connect(self.on_noise_reduction_changed)
+        self.noise_reduction_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2C2C2C;
+                border: 2px solid #4A90E2;
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: white;
+                font-size: 12px;
+            }
+            QComboBox:hover {
+                border-color: #66BB6A;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid white;
+                margin-right: 5px;
+            }
+        """)
+        params_layout.addWidget(self.noise_reduction_combo)
+        
         params_layout.addStretch()
         layout.addLayout(params_layout)
         
@@ -2687,6 +3936,11 @@ class IntegratedRecordingInterface(QMainWindow):
         self.performance_label = QLabel("性能: 良好")
         system_status_layout.addWidget(self.performance_label)
         
+        # 降噪状态显示
+        self.noise_status_label = QLabel("降噪: 关闭")
+        self.noise_status_label.setStyleSheet("font-size: 12px; color: #CCCCCC;")
+        system_status_layout.addWidget(self.noise_status_label)
+        
         # 清除数据按钮
         clear_button = QPushButton("清除可视化数据")
         clear_button.clicked.connect(self.visualizer.clear_data)
@@ -2734,6 +3988,9 @@ class IntegratedRecordingInterface(QMainWindow):
             # 启动录音
             if self.audio_processor.start_recording(filename, should_save):
                 self.is_recording = True
+                self.is_analyzing = True  # 录音时也是分析状态
+                
+                print(f"✅ 录音已启动: 文件={filename}, 保存={should_save}")
                 
                 # 更新UI
                 self.main_record_button.setText("停止录音")
@@ -2762,6 +4019,9 @@ class IntegratedRecordingInterface(QMainWindow):
                 # 清除可视化
                 self.visualizer.clear_data()
                 
+                # 开始时间追踪（支持断续音调曲线）
+                self.visualizer.start_time_tracking()
+                
         except Exception as e:
             QMessageBox.critical(self, "录音错误", f"启动录音失败: {e}")
     
@@ -2770,6 +4030,9 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             self.audio_processor.stop_recording()
             self.is_recording = False
+            
+            # 停止时间追踪
+            self.visualizer.stop_time_tracking()
             
             # 更新UI
             self.main_record_button.setText("开始录音分析")
@@ -2819,8 +4082,52 @@ class IntegratedRecordingInterface(QMainWindow):
         mode_text = "保存录音" if checked else "不保存录音"
         self.system_status_label.setText(f"状态: {mode_text}")
     
+    def on_noise_reduction_changed(self, mode):
+        """降噪模式改变回调"""
+        try:
+            # 同时设置主窗口和音频处理器的降噪模式
+            if self.noise_processor:
+                self.noise_processor.set_noise_reduction_mode(mode)
+            
+            # 设置音频处理器的降噪模式
+            if hasattr(self, 'audio_processor') and self.audio_processor:
+                self.audio_processor.set_noise_reduction_mode(mode)
+                
+            # 更新降噪状态显示
+            if mode == "关闭":
+                status_msg = "降噪: 关闭"
+                status_style = "font-size: 12px; color: #CCCCCC;"
+            elif mode == "基础频域降噪":
+                status_msg = "降噪: 频域降噪 🎵"
+                status_style = "font-size: 12px; color: #4CAF50; font-weight: bold;"
+            elif mode == "AI降噪":
+                status_msg = "降噪: AI降噪 🤖 (开发中)"
+                status_style = "font-size: 12px; color: #FFC107; font-weight: bold;"
+            elif mode == "高级音乐保护":
+                status_msg = "降噪: 音乐保护 🎼 (开发中)"
+                status_style = "font-size: 12px; color: #FFC107; font-weight: bold;"
+            else:
+                status_msg = f"降噪: {mode}"
+                status_style = "font-size: 12px; color: #CCCCCC;"
+            
+            # 更新降噪状态标签
+            self.noise_status_label.setText(status_msg)
+            self.noise_status_label.setStyleSheet(status_style)
+            
+            print(f"🔧 降噪模式已切换到: {mode}")
+            
+            # 如果AI降噪或高级音乐保护，显示提示
+            if mode in ["AI降噪", "高级音乐保护"]:
+                print(f"ℹ️  {mode} 功能正在开发中，当前不进行降噪处理")
+                
+        except Exception as e:
+            print(f"❌ 切换降噪模式时出错: {e}")
+            if hasattr(self, 'noise_status_label'):
+                self.noise_status_label.setText("降噪: 错误")
+                self.noise_status_label.setStyleSheet("font-size: 12px; color: #F44336;")
+    
     def on_pitch_detected(self, pitch_data):
-        """音高检测回调"""
+        """音高检测回调（支持断续音调曲线模式）"""
         try:
             # 更新统计
             self.total_pitches_detected += 1
@@ -2828,8 +4135,9 @@ class IntegratedRecordingInterface(QMainWindow):
             # 更新当前音高信息
             frequency = pitch_data.get('frequency', 0)
             note_info = pitch_data.get('note_info', {})
+            has_pitch = pitch_data.get('has_pitch', frequency > 0)
             
-            if frequency > 0:
+            if has_pitch and frequency > 0:
                 self.current_frequency = frequency
                 
                 if note_info:
@@ -2844,8 +4152,19 @@ class IntegratedRecordingInterface(QMainWindow):
                 else:
                     self.current_note = "--"
                     self.current_note_label.setText("当前音符: --")
+            else:
+                # 无音高时显示"静音"状态，但不清除上一个音符信息
+                # 这样用户可以看到最后检测到的音符和当前的静音状态
+                if not hasattr(self, '_silence_counter'):
+                    self._silence_counter = 0
+                self._silence_counter += 1
+                
+                # 每100帧更新一次静音状态显示
+                if self._silence_counter % 100 == 0:
+                    audio_rms = pitch_data.get('audio_rms', 0)
+                    self.current_note_label.setText(f"当前音符: -- (静音中, RMS: {audio_rms:.4f})")
             
-            # 发送到可视化器
+            # 发送到可视化器（无论是否有音高）
             self.visualizer.add_pitch_data(pitch_data)
             
         except Exception as e:

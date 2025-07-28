@@ -114,6 +114,14 @@ def launch_enhanced_mode():
     print("功能包括:")
     print("  • 实时音频录制")
     print("  • 实时音高检测分析 (64fps)")
+    print("  • 🎯 增强YIN音高检测算法（智能环境噪音过滤）")
+    print("  • 🔇 智能降噪系统（基础频域降噪+AI降噪+音乐保护）")
+    print("    - 环境噪音智能识别和过滤")
+    print("    - 音高稳定性验证（智能区分噪音和真实高音）")
+    print("    - 支持女高音、乐器高音等宽频域检测（60Hz-2000Hz）")
+    print("    - 谐波结构验证（区分音乐音高和环境噪音）")
+    print("    - 自适应降噪强度调整")
+    print("    - 谐波结构保护")
     print("  • 交互式心电图可视化（智能缩放+滚动条导航）")
     print("  • 🔍 专业缩放系统（手动滑块+5档预设：0.5x/0.8x/1.5x/2.5x/5.0x）")
     print("  • 🖊️ 控制面板可调节线条粗细（8个预设+自定义滑块：0.1px-5.0px）")
@@ -152,11 +160,18 @@ def launch_standard_mode():
     print("  • 基础播放")
     
     try:
-        from src.gui.pyqt6_main_window import main as pyqt_main
+        # 优先尝试集成录音界面
+        from src.gui.integrated_recording_interface import main as pyqt_main
         pyqt_main()
-    except ImportError as e:
-        print(f"❌ 标准版启动失败: {e}")
-        return False
+    except ImportError:
+        try:
+            # 备选：尝试其他可用的PyQt界面
+            from src.gui.enhanced_main_window import main as enhanced_main
+            enhanced_main()
+        except ImportError as e:
+            print(f"❌ 标准版启动失败: {e}")
+            print("建议使用增强版（选项1）获得完整功能")
+            return False
     except Exception as e:
         print(f"❌ 标准版运行错误: {e}")
         return False
@@ -272,6 +287,20 @@ def show_help():
     print("🚀 增强版功能:")
     print("  • 一体化录音与实时音高分析界面")
     print("  • 64fps高频音高检测 (重叠帧分析)")
+    print("  • 🎯 增强YIN音高检测算法")
+    print("    - 环境噪音智能识别（基于能量、频谱平坦度、零交叉率）")
+    print("    - 音高稳定性验证（智能区分环境噪音和真实音高变化）") 
+    print("    - 宽频域支持（60Hz-2000Hz，包含女高音、乐器高音）")
+    print("    - 谐波验证机制（防止八度错误，区分音乐和噪音）")
+    print("    - 连续性跟踪（高频音高需2帧确认，低频需3帧确认）")
+    print("  • 🔇 智能多模式降噪系统")
+    print("    - 基础频域降噪 (改进的频谱减法+陷波滤波)")
+    print("    - 环境噪音过滤器（50/60/100/120Hz等电源噪声）")
+    print("    - 自适应降噪强度（根据音高动态调整）")
+    print("    - 音乐感知谱减法（保护谐波结构）")
+    print("    - 瞬态检测器（避免降噪破坏音乐瞬态）")
+    print("    - AI降噪 (开发中)")
+    print("    - 高级音乐保护降噪 (开发中)")
     print("  • 交互式心电图可视化（智能缩放+滚动条+拖拽操作）")
     print("  • 智能标注系统（根据缩放级别自动调整密度）")
     print("  • 详细音名显示（C4, D4, E4等完整十二平均律）")

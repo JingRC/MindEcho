@@ -19,14 +19,16 @@ class OverlappingFrameAnalyzer:
     def __init__(self, sample_rate=44100, frame_size=256, overlap=84):
         self.sample_rate = sample_rate
         self.frame_size = frame_size  # 音框长度
-        self.overlap = overlap  # 重叠点数
-        self.hop_size = frame_size - overlap  # 跳跃大小 = 256 - 84 = 172
         
-        # 计算音框率：sample_rate / hop_size = 44100 / 172 ≈ 256帧/秒
-        # 但我们需要64帧/秒，所以调整hop_size
+        # 计算合理的参数以达到64帧/秒
         target_frame_rate = 64  # 目标64帧/秒
         self.hop_size = int(sample_rate / target_frame_rate)  # 689样本
-        self.overlap = frame_size - self.hop_size  # 重新计算重叠
+        
+        # 确保frame_size >= hop_size，避免负重叠
+        if self.frame_size < self.hop_size:
+            self.frame_size = self.hop_size + 128  # 增加frame_size，保证有重叠
+        
+        self.overlap = self.frame_size - self.hop_size  # 重新计算重叠
         
         print(f"音框参数:")
         print(f"  帧长度: {self.frame_size} 样本 ({self.frame_size/sample_rate*1000:.1f}ms)")
