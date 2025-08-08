@@ -1,0 +1,796 @@
+{
+  "system_info": {
+    "os": "Windows-11-10.0.26100-SP0",
+    "portaudio": [
+      1246976,
+      "PortAudio V19.7.0-devel, revision unknown"
+    ],
+    "default_input": 1,
+    "default_output": 6
+  },
+  "devices": [
+    {
+      "id": 0,
+      "name": "Microsoft 声音映射器 - Input",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 0,
+      "hostapi_name": "MME"
+    },
+    {
+      "id": 1,
+      "name": "麦克风 (2- HECATE G4 Pro)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 0,
+      "hostapi_name": "MME"
+    },
+    {
+      "id": 2,
+      "name": "麦克风阵列 (Realtek(R) Audio)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 0,
+      "hostapi_name": "MME"
+    },
+    {
+      "id": 3,
+      "name": "CABLE Output (VB-Audio Virtual ",
+      "max_input_channels": 16,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 0,
+      "hostapi_name": "MME"
+    },
+    {
+      "id": 4,
+      "name": "虚拟麦克风 (VB-Audio Cable A)",
+      "max_input_channels": 8,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 0,
+      "hostapi_name": "MME"
+    },
+    {
+      "id": 12,
+      "name": "主声音捕获驱动程序",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 1,
+      "hostapi_name": "Windows DirectSound"
+    },
+    {
+      "id": 13,
+      "name": "麦克风 (2- HECATE G4 Pro)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 1,
+      "hostapi_name": "Windows DirectSound"
+    },
+    {
+      "id": 14,
+      "name": "麦克风阵列 (Realtek(R) Audio)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 1,
+      "hostapi_name": "Windows DirectSound"
+    },
+    {
+      "id": 15,
+      "name": "CABLE Output (VB-Audio Virtual Cable)",
+      "max_input_channels": 16,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 1,
+      "hostapi_name": "Windows DirectSound"
+    },
+    {
+      "id": 16,
+      "name": "虚拟麦克风 (VB-Audio Cable A)",
+      "max_input_channels": 8,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 1,
+      "hostapi_name": "Windows DirectSound"
+    },
+    {
+      "id": 30,
+      "name": "麦克风阵列 (Realtek(R) Audio)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 48000.0,
+      "hostapi": 2,
+      "hostapi_name": "Windows WASAPI"
+    },
+    {
+      "id": 31,
+      "name": "CABLE Output (VB-Audio Virtual Cable)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 48000.0,
+      "hostapi": 2,
+      "hostapi_name": "Windows WASAPI"
+    },
+    {
+      "id": 32,
+      "name": "虚拟麦克风 (VB-Audio Cable A)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 2,
+      "hostapi_name": "Windows WASAPI"
+    },
+    {
+      "id": 33,
+      "name": "麦克风 (2- HECATE G4 Pro)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 192000.0,
+      "hostapi": 2,
+      "hostapi_name": "Windows WASAPI"
+    },
+    {
+      "id": 36,
+      "name": "电脑扬声器 (Realtek HD Audio output with SST)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 48000.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 37,
+      "name": "Mic in at front panel (black) (Mic in at front panel (black))",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 38,
+      "name": "立体声混音 (Realtek HD Audio Stereo input)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 48000.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 40,
+      "name": "麦克风阵列 (Realtek HD Audio Mic input)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 44,
+      "name": "CABLE-A Output (VB-Audio CABLE-A)",
+      "max_input_channels": 8,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 47,
+      "name": "麦克风 (MicIn)",
+      "max_input_channels": 2,
+      "max_output_channels": 0,
+      "default_samplerate": 192000.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 49,
+      "name": "CABLE Output (VB-Audio Point)",
+      "max_input_channels": 16,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    },
+    {
+      "id": 51,
+      "name": "Input (VB-Audio Point)",
+      "max_input_channels": 16,
+      "max_output_channels": 0,
+      "default_samplerate": 44100.0,
+      "hostapi": 3,
+      "hostapi_name": "Windows WDM-KS"
+    }
+  ],
+  "optimal_configs": [
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 32,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62600>",
+      "theoretical_latency_ms": 0.16666666666666666,
+      "priority": 100,
+      "monitoring_test": {
+        "success": false,
+        "error": "Error opening Stream: Invalid device [PaErrorCode -9996]",
+        "error_type": "PortAudioError"
+      }
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 64,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62630>",
+      "theoretical_latency_ms": 0.3333333333333333,
+      "priority": 100,
+      "monitoring_test": {
+        "success": false,
+        "error": "Error opening Stream: Invalid device [PaErrorCode -9996]",
+        "error_type": "PortAudioError"
+      }
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 32,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62570>",
+      "theoretical_latency_ms": 0.16666666666666666,
+      "priority": 95,
+      "monitoring_test": {
+        "success": false,
+        "error": "Error opening Stream: Unanticipated host error [PaErrorCode -9999]: 'AUDCLNT_E_WRONG_ENDPOINT_TYPE' [Windows WASAPI error -2004287485]",
+        "error_type": "PortAudioError"
+      }
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 64,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA625A0>",
+      "theoretical_latency_ms": 0.3333333333333333,
+      "priority": 95
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 128,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62210>",
+      "theoretical_latency_ms": 0.6666666666666666,
+      "priority": 95
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 128,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62480>",
+      "theoretical_latency_ms": 0.6666666666666666,
+      "priority": 90
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 256,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA626C0>",
+      "theoretical_latency_ms": 1.3333333333333333,
+      "priority": 90
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 256,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62690>",
+      "theoretical_latency_ms": 1.3333333333333333,
+      "priority": 85
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 32,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA620F0>",
+      "theoretical_latency_ms": 0.6666666666666666,
+      "priority": 80
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 64,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA61FD0>",
+      "theoretical_latency_ms": 1.3333333333333333,
+      "priority": 80
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 32,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62240>",
+      "theoretical_latency_ms": 0.6666666666666666,
+      "priority": 80
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 64,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62270>",
+      "theoretical_latency_ms": 1.3333333333333333,
+      "priority": 80
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 512,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62720>",
+      "theoretical_latency_ms": 2.6666666666666665,
+      "priority": 80
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 32,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA61A00>",
+      "theoretical_latency_ms": 0.6666666666666666,
+      "priority": 75
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 64,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA61FA0>",
+      "theoretical_latency_ms": 1.3333333333333333,
+      "priority": 75
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 128,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62000>",
+      "theoretical_latency_ms": 2.6666666666666665,
+      "priority": 75
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 32,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA621B0>",
+      "theoretical_latency_ms": 0.6666666666666666,
+      "priority": 75
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 64,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62060>",
+      "theoretical_latency_ms": 1.3333333333333333,
+      "priority": 75
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 128,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA621E0>",
+      "theoretical_latency_ms": 2.6666666666666665,
+      "priority": 75
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 512,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA626F0>",
+      "theoretical_latency_ms": 2.6666666666666665,
+      "priority": 75
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 128,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62030>",
+      "theoretical_latency_ms": 2.6666666666666665,
+      "priority": 70
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62120>",
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 70
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 128,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA620C0>",
+      "theoretical_latency_ms": 2.6666666666666665,
+      "priority": 70
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62300>",
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 70
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 32,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62420>",
+      "theoretical_latency_ms": 0.7256235827664399,
+      "priority": 70
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 64,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62450>",
+      "theoretical_latency_ms": 1.4512471655328798,
+      "priority": 70
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62090>",
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 65
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA622D0>",
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 65
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 32,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62390>",
+      "theoretical_latency_ms": 0.7256235827664399,
+      "priority": 65
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 64,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA619A0>",
+      "theoretical_latency_ms": 1.4512471655328798,
+      "priority": 65
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 128,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA623C0>",
+      "theoretical_latency_ms": 2.9024943310657596,
+      "priority": 65
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 512,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62180>",
+      "theoretical_latency_ms": 10.666666666666666,
+      "priority": 60
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 512,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62360>",
+      "theoretical_latency_ms": 10.666666666666666,
+      "priority": 60
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 128,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA622A0>",
+      "theoretical_latency_ms": 2.9024943310657596,
+      "priority": 60
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 256,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA624E0>",
+      "theoretical_latency_ms": 5.804988662131519,
+      "priority": 60
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 512,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62150>",
+      "theoretical_latency_ms": 10.666666666666666,
+      "priority": 55
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 512,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62330>",
+      "theoretical_latency_ms": 10.666666666666666,
+      "priority": 55
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 256,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA624B0>",
+      "theoretical_latency_ms": 5.804988662131519,
+      "priority": 55
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 512,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62540>",
+      "theoretical_latency_ms": 11.609977324263038,
+      "priority": 50
+    },
+    {
+      "device_id": 32,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 44100,
+      "blocksize": 512,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62510>",
+      "theoretical_latency_ms": 11.609977324263038,
+      "priority": 45
+    },
+    {
+      "device_id": 0,
+      "device_name": "Microsoft 声音映射器 - Input",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 1,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 2,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 3,
+      "device_name": "CABLE Output (VB-Audio Virtual ",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 4,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 12,
+      "device_name": "主声音捕获驱动程序",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 13,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 14,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 15,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 16,
+      "device_name": "虚拟麦克风 (VB-Audio Cable A)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 30,
+      "device_name": "麦克风阵列 (Realtek(R) Audio)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    },
+    {
+      "device_id": 31,
+      "device_name": "CABLE Output (VB-Audio Virtual Cable)",
+      "samplerate": 48000,
+      "blocksize": 256,
+      "mode": "directsound",
+      "settings": null,
+      "theoretical_latency_ms": 5.333333333333333,
+      "priority": 10
+    }
+  ],
+  "test_timestamp": "2025-08-06 18:20:25",
+  "tested_configs": [
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 32,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62600>",
+      "theoretical_latency_ms": 0.16666666666666666,
+      "priority": 100,
+      "monitoring_test": {
+        "success": false,
+        "error": "Error opening Stream: Invalid device [PaErrorCode -9996]",
+        "error_type": "PortAudioError"
+      }
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 64,
+      "mode": "exclusive",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62630>",
+      "theoretical_latency_ms": 0.3333333333333333,
+      "priority": 100,
+      "monitoring_test": {
+        "success": false,
+        "error": "Error opening Stream: Invalid device [PaErrorCode -9996]",
+        "error_type": "PortAudioError"
+      }
+    },
+    {
+      "device_id": 33,
+      "device_name": "麦克风 (2- HECATE G4 Pro)",
+      "samplerate": 192000,
+      "blocksize": 32,
+      "mode": "shared",
+      "settings": "<sounddevice.WasapiSettings object at 0x00000209FDA62570>",
+      "theoretical_latency_ms": 0.16666666666666666,
+      "priority": 95,
+      "monitoring_test": {
+        "success": false,
+        "error": "Error opening Stream: Unanticipated host error [PaErrorCode -9999]: 'AUDCLNT_E_WRONG_ENDPOINT_TYPE' [Windows WASAPI error -2004287485]",
+        "error_type": "PortAudioError"
+      }
+    }
+  ]
+}

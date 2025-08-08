@@ -1,0 +1,12 @@
+{
+  "name": "麦克风 (2- HECATE G4 Pro) - 极致模式",
+  "device": 24,
+  "samplerate": 192000,
+  "blocksize": 32,
+  "channels": 1,
+  "settings": "<sounddevice.WasapiSettings object at 0x000001A5B230E120>",
+  "expected_latency": "0.17ms",
+  "driver_type": "wasapi_exclusive",
+  "quality_rating": "极致",
+  "verified": true
+}
