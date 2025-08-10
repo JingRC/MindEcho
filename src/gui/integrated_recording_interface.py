@@ -6,6 +6,32 @@ MindEcho 集成录音与实时音高分析界面
 import sys
 import os
 import time
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
+
+@dataclass
+class PitchFrame:
+    """Phase1: 统一的音高帧结构 (仍通过 to_dict 兼容旧UI)。"""
+    timestamp: float
+    f0_raw: float
+    f0_smooth: float
+    confidence: float
+    note_info: Optional[Dict[str, Any]]
+    has_pitch: bool
+    audio_rms: float
+    vibrato_info: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'timestamp': self.timestamp,
+            'frequency': self.f0_smooth,  # 旧字段名 frequency -> 平滑后的频率
+            'raw_frequency': self.f0_raw,
+            'confidence': self.confidence,
+            'note_info': self.note_info,
+            'has_pitch': self.has_pitch,
+            'audio_rms': self.audio_rms,
+            'vibrato_info': self.vibrato_info
+        }
 import threading
 import numpy as np
 from pathlib import Path
@@ -25,7 +51,7 @@ class HecateDeviceMapper:
     @staticmethod
     def get_working_hecate_config():
         """获取经过验证的HECATE工作配置"""
-        # 基于测试结果：设备33完美工作
+        # 基于测试结果：设备33工作稳定，使用固定最优参数
         return {
             'device_id': 33,
             'device_name': '麦克风 (2- HECATE G4 Pro)',
@@ -34,7 +60,7 @@ class HecateDeviceMapper:
             'channels': 1,
             'latency_ms': 0.17,
             'driver_type': 'WASAPI',
-            'extra_settings': None,  # 使用默认WASAPI设置
+            'extra_settings': None,
             'verified': True
         }
     
@@ -66,131 +92,53 @@ class HecateDeviceMapper:
     
     @staticmethod
     def find_optimal_hecate_device():
-        """查找最优HECATE设备配置"""
+        """查找最优HECATE设备配置（简化版，避免先前残余代码破坏结构）"""
         try:
             devices = sd.query_devices()
-            
-            # 优先级列表：基于测试结果
-            priority_devices = [33, 1, 13]  # 设备33最佳，1和13为备用
-            
+            priority_devices = [33, 1, 13]
             for device_id in priority_devices:
-                if len(devices) > device_id:
-                    device = devices[device_id]
-                    device_name = device.get('name', '')
-                    
-                    if 'HECATE' in device_name or 'G4 Pro' in device_name:
-                        # 测试此设备是否可用
-                        try:
-                            # 尝试创建测试流
-                            with sd.InputStream(
-                                device=device_id,
-                                channels=1,
-                                samplerate=192000 if device_id == 33 else 44100,
-                                blocksize=32,
-                                dtype=np.float32
-                            ) as test_stream:
-                                test_stream.start()
-                                time.sleep(0.1)
-                                
-                                if test_stream.active:
-                                    return {
-                                        'device_id': device_id,
-                                        'device_name': device_name,
-                                        'samplerate': 192000 if device_id == 33 else 44100,
-                                        'blocksize': 32,
-                                        'channels': 1,
-                                        'verified': True
-                                    }
-                        except Exception as e:
-                            print(f"设备{device_id}测试失败: {e}")
-                            continue
-            
+                if device_id < len(devices):
+                    name = devices[device_id].get('name', '')
+                    if 'HECATE' in name or 'G4 Pro' in name:
+                        return {
+                            'device_id': device_id,
+                            'device_name': name,
+                            'samplerate': 192000 if device_id == 33 else 44100,
+                            'blocksize': 32,
+                            'channels': 1,
+                            'latency_ms': 0.17 if device_id == 33 else 1.0,
+                            'driver_type': 'WASAPI',
+                            'extra_settings': None,
+                            'verified': True
+                        }
             return None
-            
-        except Exception as e:
-            print(f"查找HECATE设备失败: {e}")
+        except Exception:
             return None
 
-# 🚀 配置全局低延迟音频设置（Windows专业优化）
-print("🎵 正在配置专业级低延迟音频设置...")
-
-# 强制启用低延迟模式（通常<10ms）
-sd.default.latency = 'low'
-print("✅ 强制低延迟模式已启用: 'low' (目标<10ms)")
-
-# 设置float32格式减少量化失真
-sd.default.dtype = 'float32' 
-print("✅ 高精度格式已设置: float32 (避免整型转换失真)")
-
-# 检测并配置专业音频设备支持
-try:
-    # 尝试检测ASIO设备
-    devices = sd.query_devices()
-    asio_devices = [d for d in devices if 'ASIO' in str(d.get('name', '')) or d.get('max_input_channels', 0) > 2]
-    
-    if asio_devices:
-        print(f"🎧 检测到 {len(asio_devices)} 个专业音频设备 (支持ASIO)")
-        for i, device in enumerate(asio_devices[:3]):  # 显示前3个
-            print(f"   ├─ {device.get('name', 'Unknown')}: {device.get('max_input_channels', 0)}输入/{device.get('max_output_channels', 0)}输出")
-    else:
-        print("📡 未检测到ASIO设备，将使用DirectSound/WASAPI模式")
-        
-    # 设置缓冲区大小建议
-    print("🔧 推荐缓冲区配置:")
-    print("   ├─ 超低延迟: 64样本@48kHz (1.33ms) - 专业录音")
-    print("   ├─ 低延迟: 128样本@48kHz (2.67ms) - 实时监听")
-    print("   └─ 稳定模式: 256样本@48kHz (5.33ms) - 兼容性优先")
-    
-except Exception as e:
-    print(f"⚠️ 音频设备检测失败: {e}")
-
-print("🚀 全局低延迟音频配置完成！")
-
-# 性能分析装饰器
-def profile(func):
-    """性能分析装饰器：测量函数执行时间"""
-    def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = func(*args, **kwargs)
-        elapsed = (time.perf_counter() - start) * 1000
-        if elapsed > 5:  # 只记录耗时超过5ms的函数
-            print(f"🔍 {func.__name__} 耗时: {elapsed:.3f}ms")
-        return result
-    return wrapper
-
-# 延迟测量工具类
+# 延迟测量器（恢复丢失的类）
 class LatencyMeasurer:
-    """延迟测量与统计工具"""
-    def __init__(self, window_size=100):
-        self.timestamps = []
-        self.window_size = window_size
-        
-    def record_latency(self, input_time, current_time):
-        """记录单次延迟"""
-        latency = (current_time - input_time) * 1000  # 转换为毫秒
-        self.timestamps.append(latency)
-        if len(self.timestamps) > self.window_size:
-            self.timestamps.pop(0)  # 保持窗口大小
-    
+    def __init__(self, window_size=200):
+        self.timestamps = deque(maxlen=window_size)
+
+    def add_sample(self, value_ms: float):
+        self.timestamps.append(value_ms)
+
     def get_stats(self):
-        """获取延迟统计信息"""
         if not self.timestamps:
             return None
+        arr = np.array(self.timestamps)
         return {
-            'avg': np.mean(self.timestamps),
-            'max': np.max(self.timestamps),
-            'min': np.min(self.timestamps),
-            'std': np.std(self.timestamps),
-            'count': len(self.timestamps)
+            'avg': float(np.mean(arr)),
+            'max': float(np.max(arr)),
+            'min': float(np.min(arr)),
+            'std': float(np.std(arr)),
+            'count': int(len(arr))
         }
-    
+
     def print_stats(self):
-        """打印延迟统计"""
         stats = self.get_stats()
         if stats:
-            print(f"🎧 延迟统计: 平均{stats['avg']:.2f}ms, "
-                  f"最大{stats['max']:.2f}ms, 最小{stats['min']:.2f}ms, "
-                  f"标准差{stats['std']:.2f}ms (样本数:{stats['count']})")
+            print(f"🎧 延迟统计: 平均{stats['avg']:.2f}ms, 最大{stats['max']:.2f}ms, 最小{stats['min']:.2f}ms, 标准差{stats['std']:.2f}ms (样本数:{stats['count']})")
 
 # 音频处理优化工具
 class AudioProcessor:
@@ -200,7 +148,6 @@ class AudioProcessor:
         self.smooth_state = 0.0
         self.alpha = 0.1  # IIR滤波器平滑系数
         
-    @profile
     def fast_smoothing(self, data):
         """使用IIR滤波器实现低延迟平滑"""
         if len(data) == 0:
@@ -215,14 +162,12 @@ class AudioProcessor:
         self.smooth_state = smoothed[-1]  # 保存状态
         return smoothed
     
-    @profile
     def compute_gain(self, audio_chunk):
         """快速RMS计算与增益调整"""
         rms = np.sqrt(np.mean(np.square(audio_chunk)))
         target_rms = 0.12
         return np.clip(target_rms / (rms + 1e-6), 1.0, 2.5)
     
-    @profile
     def optimized_audio_process(self, input_data, enable_smooth=True):
         """优化的音频处理流水线（极简化版本，减少电流音）"""
         # 🔥 输入验证
@@ -396,30 +341,7 @@ class IntegratedAudioProcessor(QThread):
         self.buffer_overflow_count = 0
         self.total_audio_frames = 0
         
-        # 监听模式优化参数
-        self.monitoring_stream = None
-        self.is_monitoring_only = False
-        self.monitoring_should_save = False
-        self.monitoring_filename = None
-        
-        # 🎯 全局音频流管理
-        self.is_global_monitoring_active = False
-        self.active_audio_stream = None  # 统一的音频流管理
-        self.monitoring_mode = None  # 'basic', 'unified', 'professional'
-        
-        # 🚀 零延迟优化的监听配置（独立线程+零拷贝）
-        self.professional_monitoring_config = {
-            'sample_rate': 48000,      # 48kHz标准高品质
-            'block_size': 2,           # 2样本稳定块
-            'use_float32': True,       # 32位浮点精度
-            'zero_copy_mode': True,    # 零拷贝模式
-            'dedicated_thread': True,  # 独立处理线程
-            'memory_preallocated': True, # 内存预分配
-            'direct_memory_access': True, # 直接内存访问
-            'bypass_unnecessary_copy': True, # 绕过不必要的复制
-            'optimized_data_path': True,     # 优化数据路径
-            'minimal_processing_chain': True # 最小处理链
-        }
+    # （Visualizer 相关参数应在 ECGStylePitchVisualizer 内部，不应出现在此处）
         
         # 状态控制 - 🔥 已在上方初始化
         # self.is_recording = False
@@ -1671,6 +1593,75 @@ class IntegratedAudioProcessor(QThread):
             print(f"🔧 IntegratedAudioProcessor: 降噪模式设置为 {mode}")
         else:
             print("❌ IntegratedAudioProcessor: 降噪处理器未初始化")
+
+    def _reset_pitch_analysis_state(self, reason: str = ""):
+        """统一重置音高分析相关的内部状态，确保不同启动路径获得一致结果。
+        reason: 触发原因便于调试。"""
+        try:
+            self.pitch_history.clear()
+        except Exception:
+            pass
+        # 清除平滑/跳变抑制内部变量
+        for attr in ["_last_stable_frequency", "_freq_smooth", "_pitch_analysis_counter", "_audio_accumulator_buffer", "_last_raw_frequency"]:
+            if hasattr(self, attr):
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    setattr(self, attr, None)
+        print(f"🔄 重置音高分析状态完成: {reason}")
+
+    # ========= 音高后处理（Phase1: 提取独立逻辑） ========= #
+    def _post_process_pitch(self, raw_frequency: float) -> float:
+        """对原始检测频率执行跳变抑制与平滑，返回平滑后的频率。
+        - 保留 raw_frequency 以供 vibrato 与调试
+        - self._last_stable_frequency / self._freq_smooth 维护内部状态
+        """
+        if raw_frequency <= 0:
+            return 0.0
+
+        if not hasattr(self, '_last_stable_frequency'):
+            self._last_stable_frequency = 0.0
+        if not hasattr(self, '_freq_smooth'):
+            self._freq_smooth = 0.0
+
+        # ====== 异常大幅下跳快速复位逻辑 ======
+        # 说明: 之前算法在遇到 800Hz -> 150Hz 这类巨大下降时会“拉回”导致 smooth 远高于真实 raw
+        # 当出现显著下降且之前频率较高，很可能是进入新音或前面是假高频/噪声，应直接重置平滑状态
+        if (self._last_stable_frequency > 300 and
+            raw_frequency < self._last_stable_frequency * 0.45 and  # 大幅下降
+            self._last_stable_frequency - raw_frequency > 180):     # 绝对差值
+            # 直接复位，防止高位残留造成后续多帧粘滞
+            self._freq_smooth = raw_frequency
+            self._last_stable_frequency = raw_frequency
+            return raw_frequency
+
+        # 跳变抑制
+        if self._last_stable_frequency > 0:
+            jump = abs(raw_frequency - self._last_stable_frequency)
+            if jump > max(150, self._last_stable_frequency * 0.35):  # 更温和参数
+                raw_frequency = self._last_stable_frequency + (raw_frequency - self._last_stable_frequency) * 0.25
+
+        # 指数平滑
+        alpha = 0.25  # 较低 alpha 保留 vibrato 细节
+        if self._freq_smooth == 0:
+            self._freq_smooth = raw_frequency
+        else:
+            self._freq_smooth = alpha * raw_frequency + (1 - alpha) * self._freq_smooth
+
+        smooth = self._freq_smooth
+        # ====== 平滑结果异常抑制 ======
+        # 若平滑值远高于当前 raw（>1.6倍）且 raw 合理，说明上一高值拖拽导致“悬浮” —— 限制回落速度
+        if raw_frequency > 0 and smooth > raw_frequency * 1.6:
+            smooth = raw_frequency * 1.6
+        # 若平滑值远低于 raw（极端快速上跳被压制），允许稍快跟随
+        if raw_frequency > 0 and raw_frequency > self._last_stable_frequency * 1.8:
+            # 加速上行：重新加权
+            smooth = self._last_stable_frequency * 0.4 + raw_frequency * 0.6
+
+        # 合理范围裁剪
+        smooth = max(50, min(2500, smooth))
+        self._last_stable_frequency = smooth
+        return smooth
     
     def start_recording(self, filename=None, should_save=True):
         """开始录音"""
@@ -1686,6 +1677,9 @@ class IntegratedAudioProcessor(QThread):
                 if self.should_save:
                     self.audio_buffer = []  # 只有需要保存时才清空缓冲区
                 
+                # 🔁 统一：在监听基础上转入录音必须重置音高相关状态，保证与“直接录音”一致
+                self._reset_pitch_analysis_state(reason="monitor->record switch")
+
                 # 🔥 重要修复：确保录音时全局监控的音频处理线程会进行音高检测
                 print("🔥 全局监控模式录音：强制启用音高检测处理")
                 
@@ -1701,6 +1695,9 @@ class IntegratedAudioProcessor(QThread):
             # 🎯 重要：录音模式下需要确保音高检测正常工作
             self.is_monitoring_only = False  # 录音时不是纯监听模式，需要完整音频处理
             
+            # 统一重置分析状态
+            self._reset_pitch_analysis_state(reason="fresh record start")
+
             # 设置分析器
             if not self.setup_analyzers():
                 return False
@@ -2015,12 +2012,12 @@ class IntegratedAudioProcessor(QThread):
             
             self._audio_accumulator.extend(audio_data)
             
-            # 累积到至少512样本再检测（保证检测质量）
-            if len(self._audio_accumulator) < 512:
+            # 累积到至少256样本再检测（减小等待，提升实时性）
+            if len(self._audio_accumulator) < 256:
                 return 0
             
-            # 取最新的1024样本进行检测
-            detection_data = np.array(self._audio_accumulator[-1024:])
+            # 取最新的768样本进行检测（更短窗口降低延迟）
+            detection_data = np.array(self._audio_accumulator[-768:])
             
             # 保持累积器在合理大小
             if len(self._audio_accumulator) > 2048:
@@ -2053,8 +2050,8 @@ class IntegratedAudioProcessor(QThread):
             
             # 找到第一个峰值后的最大峰值
             # 改进：支持更宽的音高范围，适应96kHz采样率
-            min_period = int(self.sample_rate / 3000)  # 最高3000Hz，支持极高音
-            max_period = int(self.sample_rate / 60)    # 最低60Hz，支持超低音
+            min_period = int(self.sample_rate / 2000)  # 降低上限提升鲁棒性
+            max_period = int(self.sample_rate / 70)    # 提高低频稳定性
             
             if max_period < len(correlation):
                 search_range = correlation[min_period:max_period]
@@ -2069,7 +2066,7 @@ class IntegratedAudioProcessor(QThread):
                         base_correlation = correlation[0] if correlation[0] > 0 else 1e-10
                         confidence = peak_correlation / base_correlation
                         
-                        if confidence > 0.2:  # 适中的置信度阈值
+                        if confidence > 0.15:  # 略微降低阈值提升灵敏度
                             # 每200次检测输出一次调试信息
                             if hasattr(self, '_cpu_debug_counter'):
                                 self._cpu_debug_counter += 1
@@ -2607,9 +2604,14 @@ class IntegratedAudioProcessor(QThread):
                 try:
                     # 音频数据处理
                     if self.channels == 1 and indata.shape[1] > 1:
-                        audio_data = (indata[:, 0] + indata[:, 1]) * 0.5
+                        raw_audio = (indata[:, 0] + indata[:, 1]) * 0.5
                     else:
-                        audio_data = indata[:, 0] if len(indata.shape) > 1 else indata.flatten()
+                        raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata.flatten()
+
+                    # 👉 关键差异修复：录音直接模式与监听模式音高结果差异大的根源之一
+                    # 之前：监听路径对原始数据做了多步增益/平滑后才入队，导致波形被改写 => 音高不同
+                    # 现在：始终把“原始未处理”数据(raw_audio)送入分析队列，独立于监听增强处理
+                    audio_data = raw_audio.copy()
                     
                     # 智能音量增强（基于HECATE特性优化）
                     if hasattr(self, 'hecate_volume_booster') and self.hecate_volume_booster['enabled']:
@@ -2657,10 +2659,10 @@ class IntegratedAudioProcessor(QThread):
                         if self.is_recording and self.should_save:
                             self.audio_buffer.extend(audio_data)
                         
-                        # 🔥 重要修复：音频数据分析处理 - 确保数据进入正确的队列
+            # 🔥 重要修复：分析用队列使用 raw_audio 保持与纯录音一致
                         if not self.audio_buffer_queue.full():
                             self.audio_buffer_queue.put_nowait({
-                                'data': audio_data.copy(),
+                'data': raw_audio.copy(),
                                 'timestamp': time.time(),
                                 'should_save': self.is_recording and self.should_save
                             })
@@ -2682,12 +2684,15 @@ class IntegratedAudioProcessor(QThread):
                     except Exception as process_error:
                         print(f"⚠️ HECATE音频处理错误: {process_error}")
                     
-                    # 音频输出
-                    if outdata.shape[1] == 1:
-                        outdata[:, 0] = audio_data
+                    # 音频输出（仅在启用监听回传时）
+                    if self.monitor_audio_passthrough:
+                        if outdata.shape[1] == 1:
+                            outdata[:, 0] = audio_data  # 输出仍可用增强/平滑后的版本
+                        else:
+                            outdata[:, 0] = audio_data
+                            outdata[:, 1] = audio_data
                     else:
-                        outdata[:, 0] = audio_data
-                        outdata[:, 1] = audio_data
+                        outdata.fill(0)
                         
                 except Exception as e:
                     outdata.fill(0)
@@ -2858,6 +2863,8 @@ class IntegratedAudioProcessor(QThread):
                             
                             # 🎯 启动流并设为全局音频流
                             self.monitoring_stream.start()
+                            # 启用监听回传
+                            self.monitor_audio_passthrough = True
                             self.active_audio_stream = self.monitoring_stream
                             print("🎧 HECATE G4 Pro全局监听已启动")
                             print("✨ 特性: 192kHz原生采样 + 超低延迟 + 专业音质")
@@ -3038,6 +3045,7 @@ class IntegratedAudioProcessor(QThread):
                             
                             # 🎯 启动流并设为全局音频流
                             self.monitoring_stream.start()
+                            self.monitor_audio_passthrough = True
                             self.active_audio_stream = self.monitoring_stream
                             self.channels = config['channels']  # 更新全局通道数
                             print("🎧 HECATE备用设备全局监听已启动")
@@ -3136,6 +3144,7 @@ class IntegratedAudioProcessor(QThread):
                         
                         # 🎯 启动流并设为全局音频流
                         self.monitoring_stream.start()
+                        self.monitor_audio_passthrough = True
                         self.active_audio_stream = self.monitoring_stream
                         print("🎧 通用全局监听已启动")
                         
@@ -3271,9 +3280,12 @@ class IntegratedAudioProcessor(QThread):
                         # 🎵 高品质音频路由
                         if self.channels == 1 and indata.shape[1] > 1:
                             # 高品质立体声到单声道混合
-                            audio_data = (indata[:, 0] + indata[:, 1]) * 0.5
+                            raw_audio = (indata[:, 0] + indata[:, 1]) * 0.5
                         else:
-                            audio_data = indata[:, 0] if len(indata.shape) > 1 else indata.flatten()
+                            raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata.flatten()
+
+                        # 👉 与纯录音保持一致：分析队列使用原始 raw_audio，监听耳返音频可做处理
+                        audio_data = raw_audio.copy()
                         
                         # 🎤 优化的智能音量增强（针对大音量/高音快速响应）
                         if self.intelligent_volume_booster['enabled']:
@@ -3358,12 +3370,15 @@ class IntegratedAudioProcessor(QThread):
                             manual_volume = self.intelligent_volume_booster.get('manual_volume', 1.0)
                             audio_data = audio_data * manual_volume
                         
-                        # �🎵 高品质音频输出
-                        if outdata.shape[1] == 1:
-                            outdata[:, 0] = audio_data
+                        # �🎵 高品质音频输出（受监听回传开关控制）
+                        if self.monitor_audio_passthrough:
+                            if outdata.shape[1] == 1:
+                                outdata[:, 0] = audio_data
+                            else:
+                                outdata[:, 0] = audio_data
+                                outdata[:, 1] = audio_data
                         else:
-                            outdata[:, 0] = audio_data
-                            outdata[:, 1] = audio_data
+                            outdata.fill(0)
                         
                         # 🔥 优化延迟监控（减少打印频率，降低回调延迟）
                         if hasattr(self, '_opt_frame_counter'):
@@ -3542,6 +3557,17 @@ class IntegratedAudioProcessor(QThread):
                             # 立体声输出（保持声像）
                             outdata[:, 0] = audio_data  # 左声道
                             outdata[:, 1] = audio_data  # 右声道
+
+                        # 🔥 补充：把原始raw_audio送入分析队列（避免处理后波形影响音高）
+                        try:
+                            if not self.audio_buffer_queue.full():
+                                self.audio_buffer_queue.put_nowait({
+                                    'data': raw_audio.copy(),
+                                    'timestamp': time.time(),
+                                    'should_save': self.is_recording and self.should_save
+                                })
+                        except Exception:
+                            pass
                         
                         # 🔥 实时延迟监控（精确测量）
                         if hasattr(self, '_monitor_frame_counter'):
@@ -3665,18 +3691,12 @@ class IntegratedAudioProcessor(QThread):
                         # 构建流参数
                         stream_params = {
                             'channels': self.channels,
-                            'blocksize': config['block'],
-                            'callback': professional_monitoring_callback,
-                            'dtype': np.float32
+                            'dtype': 'float32'
                         }
-                        
-                        # 为WASAPI设备使用特定采样率和设备
                         if 'device' in config:
                             stream_params['device'] = config['device']
-                            stream_params['samplerate'] = config['rate']
                             print(f"🎯 专业监听使用WASAPI设备{config['device']}@{config['rate']}Hz")
-                        else:
-                            stream_params['samplerate'] = config['rate']
+                        stream_params['samplerate'] = config['rate']
                         
                         # 添加可选参数
                         if config['latency']:
@@ -3712,6 +3732,7 @@ class IntegratedAudioProcessor(QThread):
                 
                 # 启动专业监听流
                 self.monitoring_stream.start()
+                self.monitor_audio_passthrough = True
                 print("� 拍掌同步专业监听已启动")
                 print("✨ 特性: 零延迟直通模式 + 瞬态绕过处理 + 拍掌同步优化")
                 print("� 优化: 1样本@48kHz(0.021ms) + 直通优先 + 最小处理")
@@ -3740,6 +3761,7 @@ class IntegratedAudioProcessor(QThread):
         """停止纯音频监听（显示性能统计）"""
         try:
             self.is_monitoring_only = False
+            self.monitor_audio_passthrough = False  # 关闭回传
             
             # 🔥 生成最终延迟统计报告（修复计算错误）
             if hasattr(self, 'latency_timestamps') and len(self.latency_timestamps) > 10:
@@ -3949,6 +3971,13 @@ class IntegratedAudioProcessor(QThread):
         else:
             print("⚠️ 智能音量增强器未初始化")
 
+    # =============== 监听回传开关接口 ===============
+    def set_monitor_passthrough(self, enabled: bool):
+        """设置是否将监听音频回传到耳机输出"""
+        self.monitor_audio_passthrough = bool(enabled)
+        print(f"🎧 监听回传已{'开启' if enabled else '关闭'}")
+        return self.monitor_audio_passthrough
+
     def start_audio_processing_thread(self):
         """启动异步音频处理线程"""
         if self.is_audio_processing:
@@ -3994,7 +4023,22 @@ class IntegratedAudioProcessor(QThread):
     
     def _audio_processing_loop(self):
         """音频处理循环 - 在独立线程中运行"""
-        processing_interval = 1.0 / 120  # 目标120Hz处理频率，支持颤音检测
+        # 改为自适应：按帧可用性运行；增加最大迭代防止CPU占满
+        target_hz = 150.0  # 目标最大分析频率
+        processing_interval = 1.0 / target_hz
+
+        # 引入固定窗与hop，减少“攒一堆再分析”造成的卡顿
+        if not hasattr(self, '_frame_config_initialized'):
+            self._frame_window_sec = 0.04   # 40ms窗口
+            self._frame_hop_sec = 0.01      # 10ms步长
+            self._frame_window = int(self.sample_rate * self._frame_window_sec)
+            self._frame_hop = int(self.sample_rate * self._frame_hop_sec)
+            if self._frame_window < 256:
+                self._frame_window = 512
+            if self._frame_hop < 64:
+                self._frame_hop = 128
+            self._frame_buffer = []
+            self._frame_config_initialized = True
         
         # 🔥 记录处理开始时间用于检测频率计算
         self.processing_start_time = time.time()
@@ -4020,18 +4064,15 @@ class IntegratedAudioProcessor(QThread):
                     print(f"   🎯 is_monitoring_only={getattr(self, 'is_monitoring_only', 'Not set')}")
                     print(f"   🎯 should_save={getattr(self, 'should_save', 'Not set')}")
             
-            # 从队列获取音频数据进行处理
+            # 从队列取尽可能多的数据（限制单次批量，平滑分配）
             audio_packets = []
             try:
-                # 一次性获取多个音频包
-                for _ in range(3):  # 最多获取3个包
-                    if not self.audio_buffer_queue.empty():
-                        packet = self.audio_buffer_queue.get_nowait()
-                        audio_packets.append(packet)
-                    else:
-                        break
+                max_batch = 6
+                while not self.audio_buffer_queue.empty() and len(audio_packets) < max_batch:
+                    packet = self.audio_buffer_queue.get_nowait()
+                    audio_packets.append(packet)
             except queue.Empty:
-                pass
+                audio_packets = audio_packets
             
             # 🔥 强制调试：每100次循环检查队列状态
             if loop_counter % 100 == 0:
@@ -4064,78 +4105,44 @@ class IntegratedAudioProcessor(QThread):
                     print(f"   📊 音频流状态: {getattr(self, 'audio_stream', 'None')}")
             
             if audio_packets:
-                # 🔥 关键修复：无论什么模式都进行音高检测
-                
-                # 处理录音保存
-                for packet in audio_packets:
-                    if packet['should_save']:
-                        self.audio_buffer.extend(packet['data'])
-                
-                # 🔥 关键修复：优化音频数据累积处理
                 try:
-                    combined_audio = np.concatenate([p['data'] for p in audio_packets])
-                    
-                    # 🔥 重要修复：建立音频累积器，确保有足够的数据进行检测
-                    if not hasattr(self, '_audio_accumulator_buffer'):
-                        self._audio_accumulator_buffer = []
-                    
-                    # 将新数据添加到累积器
-                    self._audio_accumulator_buffer.extend(combined_audio)
-                    
-                    # 🔥 关键修复：确保累积器不会无限增长
-                    max_buffer_size = int(self.sample_rate * 2)  # 最多保持2秒的数据
-                    if len(self._audio_accumulator_buffer) > max_buffer_size:
-                        # 保留最新的数据
-                        self._audio_accumulator_buffer = self._audio_accumulator_buffer[-max_buffer_size:]
-                    
-                    # 添加调试信息
-                    if loop_counter % 100 == 0:  # 🔥 更频繁的调试
-                        current_rms = np.sqrt(np.mean(combined_audio**2))
-                        buffer_size = len(self._audio_accumulator_buffer)
-                        print(f"🎵 音频累积: 当前={len(combined_audio)}样本, 累积器={buffer_size}样本, RMS={current_rms:.4f}")
-                    
-                    # 🔥 关键修复：使用足够的数据进行音高分析
-                    analysis_size = int(self.sample_rate * 0.1)  # 100ms的数据用于分析
-                    if len(self._audio_accumulator_buffer) >= analysis_size:
-                        # 取最新的数据进行分析
-                        analysis_data = np.array(self._audio_accumulator_buffer[-analysis_size:])
-                        
-                        if loop_counter <= 20 or loop_counter % 200 == 0:
-                            print(f"🎵 执行音高分析: 数据长度={len(analysis_data)}, RMS={np.sqrt(np.mean(analysis_data**2)):.4f}")
-                        
-                        # 🔥 关键修复：录音分析模式下执行音高检测，纯监听模式跳过
-                        # 判断条件：is_recording=True 或者 (全局监听且非纯监听模式)
+                    # 保存需求处理
+                    for packet in audio_packets:
+                        if packet['should_save']:
+                            self.audio_buffer.extend(packet['data'])
+
+                    # 累加帧缓冲
+                    for packet in audio_packets:
+                        self._frame_buffer.extend(packet['data'])
+
+                    # 维护最大长度（2秒）
+                    max_len = int(self.sample_rate * 2)
+                    if len(self._frame_buffer) > max_len:
+                        self._frame_buffer = self._frame_buffer[-max_len:]
+
+                    produced = 0
+                    # 按固定 hop 产出多个帧，保持节奏稳定
+                    while len(self._frame_buffer) >= self._frame_window and produced < 4:  # 限制单循环帧数
+                        frame = np.array(self._frame_buffer[:self._frame_window])
+                        self._frame_buffer = self._frame_buffer[self._frame_hop:]
+                        produced += 1
+
                         should_analyze_pitch = (
-                            getattr(self, 'is_recording', False) or  # 录音模式
-                            (self.is_global_monitoring_active and not getattr(self, 'is_monitoring_only', False))  # 监听+录音模式
+                            getattr(self, 'is_recording', False) or
+                            (self.is_global_monitoring_active and not getattr(self, 'is_monitoring_only', False))
                         )
-                        
                         if should_analyze_pitch:
-                            # 录音分析模式：执行音高分析
-                            self.process_audio_for_pitch_async(analysis_data)
-                            if loop_counter <= 5 or loop_counter % 200 == 0:
-                                print("🎵 录音分析模式：执行音高检测")
-                        else:
-                            # 纯监听模式：跳过音高分析，只播放声音
-                            if loop_counter <= 5 or loop_counter % 500 == 0:
-                                print("🎧 纯监听模式：跳过音高分析，仅播放声音")
-                    else:
-                        if loop_counter <= 20:
-                            print(f"⏳ 音频数据累积中: {len(self._audio_accumulator_buffer)} < {analysis_size}, 等待更多数据")
-                            
+                            self.process_audio_for_pitch_async(frame)
+                    if produced and loop_counter % 150 == 0:
+                        print(f"🎵 固定帧分析: 本轮输出 {produced} 帧, 缓冲剩余 {len(self._frame_buffer)} 样本")
                 except Exception as audio_error:
-                    print(f"❌ 音频数据处理错误: {audio_error}")
-                    print(f"   音频包数量: {len(audio_packets)}")
-                    for i, packet in enumerate(audio_packets):
-                        if 'data' in packet:
-                            print(f"   包{i}: 数据类型={type(packet['data'])}, 长度={len(packet['data']) if hasattr(packet['data'], '__len__') else 'N/A'}")
-                        else:
-                            print(f"   包{i}: 缺少data字段")
+                    print(f"❌ 帧化处理错误: {audio_error}")
                     continue
             
             # 控制处理频率
             elapsed = time.time() - start_time
             if elapsed < processing_interval:
+                # 轻微 sleep 释放GIL, 维持目标频率
                 time.sleep(processing_interval - elapsed)
     
     def process_audio_for_pitch_async(self, audio_data):
@@ -4151,8 +4158,26 @@ class IntegratedAudioProcessor(QThread):
                 print("🔍 音高分析函数首次调用")
             
             self._pitch_analysis_counter += 1
-            
+            # 先记录当前时间
             current_time = time.time()
+            # 诊断：帧间隔统计（修复先使用后定义的错误）
+            if not hasattr(self, '_diag_last_pitch_time'):
+                self._diag_last_pitch_time = current_time
+                self._diag_pitch_intervals = deque(maxlen=300)
+                self._diag_pitch_last_report = current_time
+            else:
+                pitch_interval = current_time - self._diag_last_pitch_time
+                if 0 < pitch_interval < 1.0:
+                    self._diag_pitch_intervals.append(pitch_interval)
+                self._diag_last_pitch_time = current_time
+                if current_time - self._diag_pitch_last_report > 2.0 and self._diag_pitch_intervals:
+                    avg_pi = sum(self._diag_pitch_intervals)/len(self._diag_pitch_intervals)
+                    max_pi = max(self._diag_pitch_intervals)
+                    sorted_pi = sorted(self._diag_pitch_intervals)
+                    p95_pi = sorted_pi[int(0.95*len(sorted_pi)) - 1] if len(sorted_pi) >= 5 else max_pi
+                    est_fps = 1.0/avg_pi if avg_pi > 0 else 0.0
+                    print(f"🎯 分析帧诊断: 平均间隔={avg_pi*1000:.1f}ms, 最大={max_pi*1000:.1f}ms, p95={p95_pi*1000:.1f}ms, 估计FPS={est_fps:.1f}")
+                    self._diag_pitch_last_report = current_time
             audio_rms = np.sqrt(np.mean(audio_data ** 2))
             
             # 前几次调用的详细调试
@@ -4181,53 +4206,115 @@ class IntegratedAudioProcessor(QThread):
                     print(f"❌ 降噪处理错误: {e}")
                     processed_audio = audio_data
             
-            # 🎯 单一音高检测：只调用一次 detect_pitch_with_vibrato
-            frequency = self.detect_pitch_with_vibrato(processed_audio)
+            # ========= 呼吸/静音判定 (避免假高频 2500Hz) ========= #
+            if not hasattr(self, '_last_valid_pitch_time'):
+                self._last_valid_pitch_time = current_time
+
+            breath_rms_threshold = 0.004  # 低于此RMS基本认为是呼吸/静音
+            min_voice_rms = 0.002         # 极低噪声下直接判无音高
+
+            # 若 RMS 极低，直接判定无音高（不更新平滑状态）
+            if audio_rms < min_voice_rms:
+                frame = PitchFrame(
+                    timestamp=current_time,
+                    f0_raw=0.0,
+                    f0_smooth=0.0,
+                    confidence=0.0,
+                    note_info=None,
+                    has_pitch=False,
+                    audio_rms=audio_rms,
+                    vibrato_info={'has_vibrato': False}
+                )
+                self.pitch_detected.emit(frame.to_dict())
+                return
+
+            # 🎯 单一音高检测：只调用一次 detect_pitch_with_vibrato，得到 raw 频率
+            raw_frequency = self.detect_pitch_with_vibrato(processed_audio)
+
+            # ========= 假高频 / 呼吸尖峰抑制 ========= #
+            spurious_high = False
+            if raw_frequency > 0:
+                # 条件1：超高频且能量低（典型呼吸尖峰）
+                if raw_frequency > 1700 and audio_rms < 0.02:
+                    spurious_high = True
+                # 条件2：相对上一稳定频率跳变倍数过大且信号不强
+                if not spurious_high and hasattr(self, '_last_stable_frequency') and self._last_stable_frequency > 0:
+                    if raw_frequency > self._last_stable_frequency * 2.5 and audio_rms < 0.02:
+                        spurious_high = True
+                # 条件3：呼吸期（RMS 在静音与正常之间）且高频>1500
+                if not spurious_high and breath_rms_threshold > audio_rms >= min_voice_rms and raw_frequency > 1500:
+                    spurious_high = True
+
+            if spurious_high:
+                # 不更新平滑状态，直接视为无音高（制造时间间隔用于段断开）
+                frame = PitchFrame(
+                    timestamp=current_time,
+                    f0_raw=0.0,
+                    f0_smooth=0.0,
+                    confidence=0.0,
+                    note_info=None,
+                    has_pitch=False,
+                    audio_rms=audio_rms,
+                    vibrato_info={'has_vibrato': False}
+                )
+                self.pitch_detected.emit(frame.to_dict())
+                return
+
+            # Phase1: 后处理（跳变抑制 + 平滑）仅在非假高频情况下执行
+            smooth_frequency = self._post_process_pitch(raw_frequency) if raw_frequency > 0 else 0.0
             
             # 🔥 关键修复：大幅降低有效音高的最低要求
-            if frequency > 10:  # 🔥 极低有效音高阈值 (20Hz → 10Hz)
-                note_info = self.frequency_to_note_info(frequency)
+            if smooth_frequency > 10:  # 🔥 极低有效音高阈值 (20Hz → 10Hz)
+                note_info = self.frequency_to_note_info(smooth_frequency)
                 
                 # 检测颤音
-                vibrato_info = self.detect_vibrato(frequency, current_time)
+                vibrato_info = self.detect_vibrato(raw_frequency, current_time)  # 用 raw 频率
                 
-                pitch_data = {
-                    'timestamp': current_time,
-                    'frequency': frequency,
-                    'confidence': 0.9,  # 🔥 固定高置信度，避免UI过滤
-                    'note_info': note_info,
-                    'has_pitch': True,
-                    'audio_rms': audio_rms,
-                    'vibrato_info': vibrato_info
-                }
+                # 简单置信度占位：后续可从检测器返回值改造
+                confidence = 0.9 if raw_frequency > 0 else 0.0
+
+                # Phase1: 使用 PitchFrame 抽象（仍向外发 dict 保持兼容）
+                frame = PitchFrame(
+                    timestamp=current_time,
+                    f0_raw=raw_frequency,
+                    f0_smooth=smooth_frequency,
+                    confidence=confidence,
+                    note_info=note_info,
+                    has_pitch=True,
+                    audio_rms=audio_rms,
+                    vibrato_info=vibrato_info
+                )
+                pitch_data = frame.to_dict()
                 
                 # 🔥 强制保存历史数据和发送信号
                 try:
                     self.pitch_history.append({
-                        'frequency': frequency,
+                        'frequency': smooth_frequency,
                         'timestamp': current_time,
-                        'confidence': 0.9,
+                        'confidence': confidence,
                         'note_info': note_info
                     })
                     self.pitch_detected.emit(pitch_data)
                     
                     # 成功检测调试输出
                     if self._pitch_analysis_counter % 10 == 0:
-                        print(f"🎵✅ 音高成功: {frequency:.1f}Hz → {note_info.get('note_name', 'N/A')}{note_info.get('octave', '')}")
+                        print(f"🎵✅ 音高成功(raw={raw_frequency:.1f}Hz, smooth={smooth_frequency:.1f}Hz) → {note_info.get('note_name', 'N/A')}{note_info.get('octave', '')}")
                 except Exception as emit_error:
                     print(f"❌ 信号发送失败: {emit_error}")
                     
             else:
                 # 🔥 即使没有检测到音高，也发送时间戳保持连续性
-                timestamp_data = {
-                    'timestamp': current_time,
-                    'frequency': 0,
-                    'confidence': 0,
-                    'note_info': None,
-                    'has_pitch': False,
-                    'audio_rms': audio_rms,
-                    'vibrato_info': {'has_vibrato': False}
-                }
+                frame = PitchFrame(
+                    timestamp=current_time,
+                    f0_raw=0.0,
+                    f0_smooth=0.0,
+                    confidence=0.0,
+                    note_info=None,
+                    has_pitch=False,
+                    audio_rms=audio_rms,
+                    vibrato_info={'has_vibrato': False}
+                )
+                timestamp_data = frame.to_dict()
                 try:
                     self.pitch_detected.emit(timestamp_data)
                 except Exception:
@@ -4718,95 +4805,144 @@ class IntegratedAudioProcessor(QThread):
 
 class ECGStylePitchVisualizer(QWidget):
     """心电图式音高可视化器（支持交互拖拽）"""
-    
+
     def __init__(self):
         super().__init__()
-        
-        # 音频处理器引用（由父窗口设置）
-        self.audio_processor = None
-        
-        # 可视化参数
-        self.time_window = 16.0  # 显示时间窗口（秒）- 修改为16秒
-        self.max_points = 1024   # 最大显示点数 (64fps * 16秒)
-        self.update_interval = 50  # 更新间隔（ms）- 20fps刷新（优化性能）
-        
-        # 交互参数
-        self.y_view_center = 4.0  # 音高视图中心（C4）
-        self.y_view_range = 3.0   # 音高视图范围（±3个八度）
-        self.time_offset = 0.0    # 时间偏移量（用于查看历史数据）
-        self.max_history_time = 300.0  # 最大历史时间（300秒，5分钟）
-        
-        # 横轴滚动控制参数
-        self.center_display_time = 8.0  # 音调曲线在屏幕中央生成的时间点（8秒）
-        self.auto_scroll_enabled = True  # 自动滚动功能开关
-        
-        # 智能缩放参数
-        self.zoom_level = 1.0     # 缩放级别（0.1到5.0）
-        self.auto_scale = True    # 自动调整标注密度
-        self.auto_follow = True   # 自动跟随最新音高区域
-        
-        # 拖拽状态
+
+        # ================== 基础与参数 ==================
+        self.audio_processor = None  # 运行时再注入
+        self.time_window = 16.0
+        self.max_points = 1024
+        self.update_interval = 33  # ~30FPS
+
+        # ================== 诊断统计 ==================
+        self._diag_last_display_time = None
+        self._diag_display_intervals = deque(maxlen=120)
+        self._diag_add_to_display_latencies = deque(maxlen=200)
+        self._diag_pending_points = 0
+
+        # ================== 交互与视图 ==================
+        self.y_view_center = 4.0
+        self.y_view_range = 3.0
+        self.time_offset = 0.0
+        self.max_history_time = 300.0
+        self.center_display_time = 8.0  # 8 秒后开始让当前点居中滚动
+        self.auto_scroll_enabled = True
+        self.zoom_level = 1.0
+        self.auto_scale = True
+        self.auto_follow = True
+        self.freeze_y_center = True  # 锁定纵轴中心
+        self._initial_y_center = self.y_view_center
+        self._last_warn_y_shift = 0.0
+        # 标签位置设定：使用轴坐标 0 + 像素轻微左移，不再使用负轴坐标避免整体消失
+        self.label_x_frac = 0.0
+        self.label_left_pixel_offset = -6  # (px) 左移避免遮挡最左侧细节点
+        self._last_manual_scroll_time = 0.0
+
+        # ================== 拖拽状态 ==================
         self.dragging = False
         self.drag_start_pos = None
         self.drag_start_y_center = None
         self.drag_start_time_offset = None
-        
-        # 数据存储（扩展为历史数据，支持更长时间录制）
-        # 使用更大的缓冲区：64fps * 300秒 = 19200个数据点
+
+        # ================== 数据缓冲 ==================
         max_data_points = int(64 * self.max_history_time)
         print(f"📊 初始化数据缓冲区: {max_data_points} 个数据点 ({self.max_history_time}秒)")
-        
         self.pitch_data = deque(maxlen=max_data_points)
         self.time_data = deque(maxlen=max_data_points)
-        self.confidence_data = deque(maxlen=max_data_points)  
+        self.confidence_data = deque(maxlen=max_data_points)
         self.note_data = deque(maxlen=max_data_points)
-        
-        # 时间轴管理（支持断续音调曲线）
+
+        # ================== 时间轴状态 ==================
         self.start_time = None
         self.current_global_time = 0.0
         self.is_recording_active = False
         self.last_pitch_time = 0
-        
-        # 添加时间更新定时器（支持断续音调曲线）
+
+        # ================== 定时器 ==================
         self.time_update_timer = QTimer()
         self.time_update_timer.timeout.connect(self.update_time_axis)
-        self.time_update_interval = 50  # 50ms更新一次，确保平滑的时间轴
-        
-        # 用于美观渐变线条的存储
+        self.time_update_interval = 50
+        # 🚀 快速轻量帧定时器 & 目标帧率控制
+        self.target_fps = 28.0  # 目标重帧 FPS
+        self._min_heavy_interval = 1.0 / self.target_fps
+        self.fast_update_interval_ms = 15  # 高频tick（用于平滑与轻帧判定）
+        self.fast_update_timer = QTimer()
+        self.fast_update_timer.timeout.connect(self._fast_update_tick)
+        self.fast_update_timer.start(self.fast_update_interval_ms)
+        self._last_fast_tick = 0.0
+        self._fast_skip_accum = 0
+
+        # ================== 绘制辅助 ==================
         self.gradient_lines = []
         self.highlight_point = None
-        
-        # 🔥 初始化强制重绘标志，防止滚动后音调线消失
         self._force_redraw_on_next_update = False
-        
-        # 颜色配置
+
+        # ================== 初始化组件 ==================
         self.setup_colors()
-        
-        # 音高范围映射
         self.setup_pitch_mapping()
-        
-        # 初始化性能管理器
         self.setup_performance_manager()
-        
-        # 初始化UI
         self.init_ui()
-    
+
+        # ================== 调试控制 ==================
+        self.debug_flags = {
+            'display_diag': True,
+            'segment_log': True,
+            'incremental_miss': True
+        }
+        self._seg_timing_samples = deque(maxlen=120)
+        self._draw_timing_samples = deque(maxlen=120)
+        self._diag_last_perf_report = 0
+        self._last_log_times = {
+            'vocal_protect': 0.0,
+            'segment_draw': 0.0,
+            'display_diag': 0.0
+        }
+        self._vocal_protect_active = False
+
+        self._seg_timing_samples = deque(maxlen=120)
+        self._draw_timing_samples = deque(maxlen=120)
+        self._diag_last_perf_report = 0
+        # ===== 日志节流控制 =====
+        self._last_log_times = {
+            'vocal_protect': 0.0,
+            'segment_draw': 0.0,
+            'display_diag': 0.0
+        }
+        self._vocal_protect_active = False
+
+    def _reset_display_diagnostics(self):
+        """重置显示相关诊断统计，避免历史数据污染新阶段均值。"""
+        self._diag_last_display_time = None
+        self._diag_display_intervals.clear()
+        self._diag_add_to_display_latencies.clear()
+        self._diag_pending_points = 0
+        # 也重置性能采样，防止停用后旧值残留
+        self._seg_timing_samples.clear()
+        self._draw_timing_samples.clear()
+        self._diag_last_perf_report = 0
+        self._last_log_times['display_diag'] = 0.0
+        # 强制下一次刷新不早返回
+        if hasattr(self, '_last_update_state'):
+            self._last_update_state = (-1, (-1,-1), -999)
+
     def set_audio_processor(self, audio_processor):
-        """设置音频处理器引用"""
         self.audio_processor = audio_processor
         print("🔗 音频处理器引用已设置到可视化器")
-        
-        # 更新定时器
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
         self.update_timer.start(self.update_interval)
+        print(f"🖥️ 可视化刷新定时器启动: {self.update_interval}ms")
     
     def start_time_tracking(self):
         """开始时间追踪（录音开始时调用）"""
         if self.start_time is None:
             self.start_time = time.time()
-        
+
         self.is_recording_active = True
+        # 开始新会话重置诊断
+        if hasattr(self, '_reset_display_diagnostics'):
+            self._reset_display_diagnostics()
         self.time_update_timer.start(self.time_update_interval)
         print(f"⏰ 开始时间追踪，基准时间: {self.start_time}")
     
@@ -4814,23 +4950,39 @@ class ECGStylePitchVisualizer(QWidget):
         """停止时间追踪（录音停止时调用）"""
         self.is_recording_active = False
         self.time_update_timer.stop()
+        # 停止时也重置，后续查看历史不再继续累计
+        if hasattr(self, '_reset_display_diagnostics'):
+            self._reset_display_diagnostics()
         print(f"⏸️ 停止时间追踪，当前时长: {self.current_global_time:.2f}秒")
     
     def update_time_axis(self):
         """更新时间轴（支持断续音调曲线）"""
         if self.start_time is None or not self.is_recording_active:
             return
-        
+
+        now_ts = time.time()
         # 更新当前全局时间
-        self.current_global_time = time.time() - self.start_time
-        
-        # 检查是否需要触发显示更新（当没有音高数据时）
-        if hasattr(self, 'last_pitch_time') and time.time() - self.last_pitch_time > 0.5:
-            # 超过0.5秒没有音高数据，但时间轴需要继续推进
-            if self.auto_follow and self.auto_scroll_enabled:
-                if self.current_global_time > self.center_display_time:
-                    self.time_offset = self.current_global_time - self.center_display_time
-                    self.update_scrollbars()
+        self.current_global_time = now_ts - self.start_time
+
+        # 是否处于手动滚动冻结期（2秒内不自动改写 time_offset）
+        manual_freeze = (now_ts - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
+
+        if self.auto_follow and self.auto_scroll_enabled and not manual_freeze:
+            if self.current_global_time > self.center_display_time:
+                self.time_offset = self.current_global_time - self.center_display_time
+                max_offset = max(0, self.max_history_time - self.time_window)
+                self.time_offset = min(self.time_offset, max_offset)
+                self.update_scrollbars()
+            else:
+                self.time_offset = 0.0
+
+        # 没有新数据也让显示推进（延迟>100ms由 update_display 自行刷新）
+        if hasattr(self, 'last_pitch_time') and self.current_global_time - self.last_pitch_time > 0.5:
+            # 触发一次轻量刷新以推进时间轴（不改变数据）
+            try:
+                self.update_display()
+            except Exception:
+                pass
     
     def clear_data(self):
         """清除所有数据（包括断续曲线）"""
@@ -5659,6 +5811,21 @@ class ECGStylePitchVisualizer(QWidget):
         # 保存现有的彩色渐变effects
         saved_gradient_lines = []
         saved_highlight_point = None
+        # 保存分段曲线对象（避免被 clear 抹掉后下一帧才重绘导致的闪烁 / 丢失感）
+        saved_segment_lines = []
+        saved_segment_points = []
+        try:
+            if hasattr(self, '_segment_lines') and self._segment_lines:
+                for ln in self._segment_lines:
+                    if ln in self.ax.lines:
+                        saved_segment_lines.append(ln)
+            if hasattr(self, '_segment_points') and self._segment_points:
+                for pts in self._segment_points:
+                    # segment points 是 PathCollection, 位于 collections
+                    if pts in self.ax.collections:
+                        saved_segment_points.append(pts)
+        except Exception:
+            pass
         
         if hasattr(self, 'gradient_lines') and self.gradient_lines:
             # 保存gradient_lines中的collections
@@ -5688,6 +5855,21 @@ class ECGStylePitchVisualizer(QWidget):
             print("🔄 恢复高亮点")
             self.ax.add_collection(saved_highlight_point)
             self.highlight_point = saved_highlight_point
+
+        # 恢复分段曲线（保持对象身份，避免重复创建）
+        if saved_segment_lines or saved_segment_points:
+            try:
+                for ln in saved_segment_lines:
+                    if ln.axes is None:
+                        self.ax.add_line(ln)
+                for pts in saved_segment_points:
+                    if pts not in self.ax.collections:
+                        self.ax.add_collection(pts)
+                # 重新赋回引用，防止被外部认为已失效
+                self._segment_lines = saved_segment_lines
+                self._segment_points = saved_segment_points
+            except Exception as _rec_e:
+                print(f"⚠️ 重新挂载分段曲线失败: {_rec_e}")
 
     def setup_ecg_grid(self):
         """设置心电图式网格（智能标注）"""
@@ -5753,6 +5935,12 @@ class ECGStylePitchVisualizer(QWidget):
         y_min = self.y_view_center - actual_range
         y_max = self.y_view_center + actual_range
         self.ax.set_ylim(y_min, y_max)
+        # 如果启用freeze但中心已变化，发出一次性监控日志
+        if getattr(self, 'freeze_y_center', False):
+            drift = abs(self.y_view_center - getattr(self, '_initial_y_center', self.y_view_center))
+            if drift > 0.05 and abs(drift - getattr(self, '_last_warn_y_shift', 0.0)) > 0.02:
+                print(f"⚠️ [YDRIFT-DETECT] update_axis_ranges drift={drift:.3f} center={self.y_view_center:.3f}")
+                self._last_warn_y_shift = drift
     
     def should_show_note_label(self, octave, semitone, y_pos):
         """基于缩放级别决定是否显示音符标签"""
@@ -5795,15 +5983,35 @@ class ECGStylePitchVisualizer(QWidget):
     
     def draw_interactive_note_labels(self, y_start, y_end):
         """绘制交互式音调标签（确保始终显示，不受音高检测状态影响）"""
+        # 清理旧标签文本，避免累计
+        if hasattr(self, '_note_label_texts') and self._note_label_texts:
+            for _t in list(self._note_label_texts):
+                try:
+                    _t.remove()
+                except Exception:
+                    pass
+        self._note_label_texts = []
+        # 清理旧的活跃高亮临时横线
+        if not hasattr(self, '_active_note_highlight_lines'):
+            self._active_note_highlight_lines = []
+        else:
+            for _ln in list(self._active_note_highlight_lines):
+                try:
+                    if _ln in self.ax.lines:
+                        _ln.remove()
+                except Exception:
+                    pass
+            self._active_note_highlight_lines.clear()
         if not hasattr(self, 'current_pitch_y'):
             self.current_pitch_y = 4.0
         if not hasattr(self, 'current_pitch_active'):
             self.current_pitch_active = False
         
-        # 固定标签位置在左侧（不随时间偏移移动）
-        current_xlim = self.ax.get_xlim()
-        x_min = current_xlim[0]  # 当前视图的左边界
-        label_x = x_min + (current_xlim[1] - current_xlim[0]) * 0.02  # 固定在视图左侧2%位置
+        # 使用轴坐标(0~1) + blended transform，把标签整体放到左外侧，避免遮挡数据点
+        import matplotlib.transforms as mtransforms
+        if not hasattr(self, '_axis_blended_transform'):
+            self._axis_blended_transform = mtransforms.blended_transform_factory(self.ax.transAxes, self.ax.transData)
+        label_x = self.label_x_frac
         
         # 当前音高区域（用于高亮计算）
         current_center = self.current_pitch_y if self.current_pitch_active else self.y_view_center
@@ -5868,16 +6076,29 @@ class ECGStylePitchVisualizer(QWidget):
                     
                     # 只显示在有效透明度范围内的标签
                     if alpha >= 0.2:
-                        # 绘制音符标签
-                        self.ax.text(label_x, y_pos, note_full, 
-                                   fontsize=font_size, ha='right', va='center',
-                                   color=color, alpha=alpha, fontweight=font_weight)
+                        # 绘制音符标签（左侧固定 2% 位置，使用 bbox 提升可读性）
+                        txt = self.ax.text(label_x, y_pos, note_full,
+                                           fontsize=font_size, ha='right', va='center',
+                                           color=color, alpha=alpha, fontweight=font_weight,
+                                           transform=self._axis_blended_transform,
+                                           clip_on=False,
+                                           zorder=50,
+                                           bbox=dict(facecolor=self.bg_color, edgecolor='none', pad=0.2, alpha=0.55))
+                        # 额外像素左移
+                        try:
+                            txt.set_x(self.ax.transAxes.inverted().transform(
+                                (self.ax.transAxes.transform((label_x,0))[0] + self.label_left_pixel_offset,
+                                 0))[0])
+                        except Exception:
+                            pass
+                        self._note_label_texts.append(txt)
                         
                         # 活跃音高的网格线（仅在当前音高附近显示）
                         if self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5:
                             line_alpha = alpha * 0.3
-                            self.ax.axhline(y=y_pos, color=color, linestyle=':', 
-                                          linewidth=0.8, alpha=line_alpha)
+                            ln = self.ax.axhline(y=y_pos, color=color, linestyle=':',
+                                                 linewidth=0.8, alpha=line_alpha, zorder=5)
+                            self._active_note_highlight_lines.append(ln)
     
     def setup_sparse_grid(self, y_start, y_end):
         """稀疏网格模式（只显示八度线）"""
@@ -5933,22 +6154,70 @@ class ECGStylePitchVisualizer(QWidget):
     
     def update_axis_ranges(self):
         """更新坐标轴范围（支持缩放）"""
-        # 更新Y轴范围（音高，考虑缩放级别）
+        # 如果启用纵轴锁定（freeze_y_center），保持最初锁定的Y范围不随数据滚动变化
+        if getattr(self, 'freeze_y_center', False):
+            # 确定当前X轴范围（仍需随时间滚动）
+            if hasattr(self, '_last_render_window'):
+                x_min, x_max = self._last_render_window
+            else:
+                x_min = self.time_offset
+                x_max = self.time_offset + self.time_window
+            self.ax.set_xlim(x_min, x_max)
+
+            # 首次锁定：记录当时的Y范围（避免之后因 zoom_level 或 center 计算被改写）
+            if not hasattr(self, '_locked_y_limits') or self._locked_y_limits is None:
+                self._locked_y_limits = self.ax.get_ylim()
+            else:
+                # 强制使用锁定范围
+                self.ax.set_ylim(*self._locked_y_limits)
+
+            # 冻结模式下也刷新标签使其始终出现在当前左边界
+            try:
+                y_min, y_max = self.ax.get_ylim()
+                self.draw_interactive_note_labels(y_min, y_max)
+            except Exception:
+                pass
+
+            # 在锁定模式下无须每帧重建网格，避免闪烁；仅在显式缩放/解锁时再调用 setup_ecg_grid
+            self.canvas.draw_idle()
+            return
+
+        # 正常（未锁定）模式：根据当前中心与缩放计算Y范围
         actual_range = self.y_view_range / self.zoom_level
         y_min = self.y_view_center - actual_range
         y_max = self.y_view_center + actual_range
         self.ax.set_ylim(y_min, y_max)
-        
-        # 更新X轴范围（时间）
-        x_min = self.time_offset
-        x_max = self.time_offset + self.time_window
+
+        # 更新X轴范围（时间）优先使用最后渲染窗口，避免显示落后导致旧右边界（如5.21s）卡住
+        if hasattr(self, '_last_render_window'):
+            x_min, x_max = self._last_render_window
+        else:
+            x_min = self.time_offset
+            x_max = self.time_offset + self.time_window
         self.ax.set_xlim(x_min, x_max)
-        
+
         # 重新设置网格（无论是否有数据都要设置）
         self.setup_ecg_grid()
-        
+
         # 强制刷新画布以确保时间轴标签正确显示
         self.canvas.draw_idle()
+
+    # ================= Y轴锁定控制 =================
+    def lock_y_axis(self):
+        """显式锁定当前Y轴范围，防止后续被自动缩放或跟随修改"""
+        self.freeze_y_center = True
+        self._locked_y_limits = self.ax.get_ylim()
+        self._initial_y_center = (self._locked_y_limits[0] + self._locked_y_limits[1]) / 2.0
+        print(f"🔒 锁定Y轴: {self._locked_y_limits}")
+
+    def unlock_y_axis(self):
+        """解除Y轴锁定，允许根据中心/缩放重新计算"""
+        prev_limits = getattr(self, '_locked_y_limits', None)
+        self.freeze_y_center = False
+        self._locked_y_limits = None
+        print(f"🔓 解锁Y轴 (之前={prev_limits})，即将重新计算网格")
+        # 解除锁定后立刻重建网格以反映当前中心和 zoom
+        self.update_axis_ranges()
     
     def on_mouse_press(self, event):
         """鼠标按下事件"""
@@ -6124,6 +6393,7 @@ class ECGStylePitchVisualizer(QWidget):
     def add_pitch_data(self, pitch_data):
         """添加音高数据（支持历史数据存储和断续音调曲线）"""
         try:
+            add_receive_time = time.time()
             frequency = pitch_data.get('frequency', 0)
             confidence = pitch_data.get('confidence', 0)
             timestamp = pitch_data.get('timestamp', time.time())
@@ -6170,8 +6440,8 @@ class ECGStylePitchVisualizer(QWidget):
                 if len(self.pitch_data) % 10 == 0:
                     print(f"✅ 音高数据点: {len(self.pitch_data)}, 最新: {y_pos:.2f}, 时间: {global_time:.2f}s")
                 
-                # 自动跟随功能（只在有音高时调整音高轴）
-                if self.auto_follow and self.auto_scroll_enabled:
+                # 自动跟随功能（只在有音高且未锁定纵轴时调整音高轴）
+                if self.auto_follow and self.auto_scroll_enabled and not getattr(self, 'freeze_y_center', False):
                     # 音高轴自动跟随（平滑移动到新音高区域）
                     current_display_range = self.y_view_range / self.zoom_level
                     margin = current_display_range * 0.2  # 20%的边距
@@ -6189,8 +6459,11 @@ class ECGStylePitchVisualizer(QWidget):
                         self.y_view_center = self.y_view_center * 0.8 + target_center * 0.2
                         
                         # 如果视图中心有明显变化，立即更新轴范围以保持缩放一致性
-                        if abs(self.y_view_center - old_center) > 0.01:
+                        shift = abs(self.y_view_center - old_center)
+                        if shift > 0.01:
                             self.update_axis_ranges()
+                            if shift > 0.25:
+                                print(f"⚠️ [YDRIFT] auto-follow center shift={shift:.2f} new_center={self.y_view_center:.2f}")
             else:
                 # 无音高时，仍然更新时间相关状态，但不添加音高数据点
                 # 这样音调线条会断开，但时间轴继续推进
@@ -6215,6 +6488,9 @@ class ECGStylePitchVisualizer(QWidget):
                 else:
                     # 第8秒后：开始滚动，保持音调曲线在屏幕中央生成
                     # 计算需要的时间偏移，使当前时间点在屏幕中央（8秒位置）
+                    if not hasattr(self, '_auto_scroll_started'):
+                        print(f"▶ 自动滚动启动: t={global_time:.2f}s (center={self.center_display_time}s)")
+                        self._auto_scroll_started = True
                     self.time_offset = global_time - self.center_display_time
                     
                     # 确保时间偏移不超过最大历史时间限制
@@ -6223,9 +6499,60 @@ class ECGStylePitchVisualizer(QWidget):
                     
                     # 实时更新滚动条位置，确保滚动条与时间偏移同步
                     self.update_scrollbars()
+
+            # 触发一次即时刷新（去除0.5秒后批量突显）
+            # === 增量刷新节流与分段快速追加 ===
+            # 仅记录新增点，由 update_display 中的增量逻辑处理，避免短时间重复全量重算
+            if not hasattr(self, '_new_points_since_last_draw'):
+                self._new_points_since_last_draw = 0
+            self._new_points_since_last_draw += 1
+            # Push 策略：若距离上次重帧超出最小间隔则立即重绘，否则仍合并
+            now_push = add_receive_time
+            if not hasattr(self, '_last_heavy_redraw_time'):
+                self._last_heavy_redraw_time = 0.0
+            gap = now_push - getattr(self, '_last_heavy_redraw_time', 0.0)
+            if gap >= self._min_heavy_interval * 0.95:  # 5% 余量
+                self._pending_instant_update = False
+                try:
+                    self.update_display()
+                except Exception as _e_push:
+                    print(f"⚠️ push重绘失败: {_e_push}")
+            else:
+                if not hasattr(self, '_pending_instant_update') or not self._pending_instant_update:
+                    self._pending_instant_update = True
+                    QTimer.singleShot(0, self._instant_refresh)
+
+            # 诊断: 记录进入但尚未显示的点数
+            self._diag_pending_points += 1
+            # 暂存接收时间，用于在 update_display 中计算延迟
+            self._last_add_pitch_receive_time = add_receive_time
                 
         except Exception as e:
             print(f"添加音高数据错误: {e}")
+
+    def _instant_refresh(self):
+        """即时刷新封装，合并短时间内的多次 add 调用。"""
+        try:
+            self._pending_instant_update = False
+            self.update_display()
+        except Exception:
+            pass
+
+    def _fast_update_tick(self):
+        """高频轻量刷新：无新点时仅驱动轻量帧以保持平滑滚动。"""
+        if not getattr(self, 'is_recording_active', False):
+            return
+        now_t = time.time()
+        # 若有新点，fast tick 不做额外事情（push 已经触发）
+        if getattr(self, '_new_points_since_last_draw', 0) == 0:
+            # 距离最近一次重帧时间过短则跳过，避免过度调用
+            if hasattr(self, '_last_heavy_redraw_time') and (now_t - self._last_heavy_redraw_time) < self._min_heavy_interval * 0.6:
+                return
+        try:
+            self.update_display()
+        except Exception as e:
+            if hasattr(self, 'debug_flags') and self.debug_flags.get('perf_verbose'):
+                print(f"⚠️ fast tick 异常: {e}")
     
     def update_time_axis(self):
         """更新时间轴（支持断续音调曲线模式）"""
@@ -6257,6 +6584,9 @@ class ECGStylePitchVisualizer(QWidget):
                     self.time_offset = 0.0
                 else:
                     # 第8秒后：开始滚动，保持时间轴在屏幕中央生成
+                    if not hasattr(self, '_auto_scroll_started'):
+                        print(f"▶ 自动滚动启动: t={self.current_global_time:.2f}s (center={self.center_display_time}s)")
+                        self._auto_scroll_started = True
                     self.time_offset = self.current_global_time - self.center_display_time
                     
                     # 确保时间偏移不超过最大历史时间限制
@@ -6307,6 +6637,138 @@ class ECGStylePitchVisualizer(QWidget):
             return
         
         try:
+            t_start = time.time()
+            now = t_start
+            # 帧调试标志（集中初始化，供后续使用）
+            frame_trace = bool(getattr(self, 'debug_flags', {}).get('frame_trace', False))
+            perf_verbose = bool(getattr(self, 'debug_flags', {}).get('perf_verbose', False))
+            frame_cpu_start = t_start
+            if frame_trace:
+                print("[FRAME] ==== 新帧 begin t={:.3f}s total_pts={} new_pts={} ====".format(
+                    (now - getattr(self, 'start_time', now)) if getattr(self, 'start_time', None) else now % 1000,
+                    len(self.pitch_data), getattr(self, '_new_points_since_last_draw', 0)))
+            # 统计刷新间隔（包含轻量帧）
+            # 修复: 初始化时属性已存在但值为 None（__init__ 里设为 None），原逻辑使用 hasattr 会进入减法路径导致 now - None 异常
+            if (not hasattr(self, '_diag_last_display_time')) or (self._diag_last_display_time is None):
+                self._diag_last_display_time = now
+            else:
+                interval = now - self._diag_last_display_time
+                # 只记录合理区间，过滤极端长间隔（避免停止后噪声影响统计）
+                if 0 <= interval < 5.0:
+                    self._diag_display_intervals.append(interval)
+                self._diag_last_display_time = now
+            if not hasattr(self, '_total_frame_count'):
+                self._total_frame_count = 0
+            self._total_frame_count += 1
+            # =============== 轻量/重帧策略 (抗卡顿强化) ===============
+            if not hasattr(self, '_last_heavy_redraw_time'):
+                self._last_heavy_redraw_time = 0.0
+            if not hasattr(self, '_light_frame_count'):
+                self._light_frame_count = 0
+            if not hasattr(self, '_aggressive_mode'):
+                self._aggressive_mode = True  # 激进平滑模式开关
+            if not hasattr(self, '_heavy_redraw_base'):
+                self._heavy_redraw_base = 0.035
+            # 激进模式进一步压缩基线
+            base_target = 0.028 if self._aggressive_mode else 0.035
+            # 若存在最近的自适应压缩历史则平滑过渡
+            self._heavy_redraw_base = (self._heavy_redraw_base*0.6 + base_target*0.4)
+            adaptive_factor = 1.0
+            if self._draw_timing_samples:
+                recent = list(self._draw_timing_samples)[-30:] if len(self._draw_timing_samples) > 30 else list(self._draw_timing_samples)
+                avg_draw = sum(recent)/len(recent)
+                if avg_draw > 8:
+                    adaptive_factor = 1.6
+                elif avg_draw < 3 and getattr(self, '_stutter_events', 0) > 5:
+                    adaptive_factor = 0.7  # 更积极收紧
+            heavy_interval_threshold = self._heavy_redraw_base * adaptive_factor
+            # 最近延迟窗口（避免全历史拉高平均）
+            if self._diag_add_to_display_latencies:
+                _lat_list = list(self._diag_add_to_display_latencies)[-120:]
+                sl = sorted(_lat_list)
+                p90_lat = sl[int(0.9*len(sl))-1] if len(sl) > 5 else 0
+                p50_lat = sl[int(0.5*len(sl))-1] if len(sl) > 1 else 0
+                # 若 p90 延迟 >50ms 或 p50 >35ms 说明输出滞后，主动再收紧重帧阈值
+                if (p90_lat > 0.050 or p50_lat > 0.035):
+                    if not hasattr(self,'_last_latency_compress') or (now - self._last_latency_compress) > 0.4:
+                        heavy_interval_threshold *= 0.72  # 压缩 28%
+                        self._last_latency_compress = now
+                        if frame_trace:
+                            print(f"[FRAME_ADAPT] latency compress p50={p50_lat*1000:.1f}ms p90={p90_lat*1000:.1f}ms new_thr={heavy_interval_threshold*1000:.1f}ms")
+            # 最新延迟判断: 如果 add→display 延迟 >80ms 强制重帧
+            force_latency_redraw = False
+            if self._diag_add_to_display_latencies:
+                last_lat = self._diag_add_to_display_latencies[-1]
+                if last_lat > 0.080:
+                    force_latency_redraw = True
+            # 轻量帧条件：无新点 + 自动跟随阶段 + 未到重帧间隔 + 无强制延迟重绘
+            if (getattr(self, '_new_points_since_last_draw', 0) == 0 and
+                getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
+                self.time_data and self.time_data[-1] > self.center_display_time and
+                (now - self._last_heavy_redraw_time) < heavy_interval_threshold and
+                not force_latency_redraw):
+                try:
+                    time_start = self.time_offset
+                    time_end = self.time_offset + self.time_window
+                    if self.time_data[-1] <= self.center_display_time:
+                        time_start = 0.0
+                        time_end = self.time_window
+                    if hasattr(self, 'ax'):
+                        cur_xlim = self.ax.get_xlim()
+                        if abs(cur_xlim[0] - time_start) > 1e-3 or abs(cur_xlim[1] - time_end) > 1e-3:
+                            self.ax.set_xlim(time_start, time_end)
+                            self.canvas.draw_idle()
+                    self._light_frame_count += 1
+                    if frame_trace:
+                        print(f"[FRAME] 轻量帧 skip heavy redraw gap={(now - self._last_heavy_redraw_time)*1000:.1f}ms thr={heavy_interval_threshold*1000:.0f}ms lat_force={force_latency_redraw}")
+                    self.update_status_display()
+                    self.update_scrollbars()
+                    return
+                except Exception:
+                    pass
+            # 诊断: 计算从上次显示到本次的间隔
+            if self._diag_last_display_time is not None:
+                try:
+                    interval = now - self._diag_last_display_time
+                    if 0 <= interval < 5.0:
+                        self._diag_display_intervals.append(interval)
+                except TypeError:
+                    # 防御: 若出现 None 导致的类型错误，直接重置
+                    pass
+            self._diag_last_display_time = now
+            # 诊断: 如果有待显示点，估算延迟
+            if hasattr(self, '_last_add_pitch_receive_time'):
+                latency = now - self._last_add_pitch_receive_time
+                # 只记录合理范围 (<1s) 的延迟
+                if 0 <= latency < 1.0:
+                    self._diag_add_to_display_latencies.append(latency)
+            if self._diag_pending_points > 0:
+                self._diag_pending_points = 0  # 已消费
+            # 每2秒打印一次诊断统计
+            if not hasattr(self, '_diag_last_report'):
+                self._diag_last_report = now
+            if now - self._diag_last_report > 2.0 and self._diag_display_intervals:
+                # 仅统计最近 200 帧，避免历史拖慢
+                recent_int = list(self._diag_display_intervals)[-200:]
+                avg_interval = sum(recent_int)/len(recent_int)
+                max_interval = max(recent_int)
+                si = sorted(recent_int)
+                p50_int = si[int(0.5*len(si))-1]
+                p90_int = si[int(0.9*len(si))-1] if len(si) > 10 else max_interval
+                p95_int = si[int(0.95*len(si))-1] if len(si) > 20 else max_interval
+                if self._diag_add_to_display_latencies:
+                    lat_recent = list(self._diag_add_to_display_latencies)[-200:]
+                    sl = sorted(lat_recent)
+                    avg_latency = sum(lat_recent)/len(lat_recent)
+                    p50_latency = sl[int(0.5*len(sl))-1]
+                    p90_latency = sl[int(0.9*len(sl))-1] if len(sl) > 10 else sl[-1]
+                    p95_latency = sl[int(0.95*len(sl))-1] if len(sl) > 20 else sl[-1]
+                else:
+                    avg_latency = p50_latency = p90_latency = p95_latency = 0
+                print("⏱️ 显示诊断: int_avg={:.1f}ms p50={:.1f} p90={:.1f} p95={:.1f} max={:.1f} | lat_avg={:.1f}ms p50={:.1f} p90={:.1f} p95={:.1f} nLat={}".format(
+                    avg_interval*1000, p50_int*1000, p90_int*1000, p95_int*1000, max_interval*1000,
+                    avg_latency*1000, p50_latency*1000, p90_latency*1000, p95_latency*1000, len(self._diag_add_to_display_latencies)))
+                self._diag_last_report = now
             # 🚀 智能更新优化：避免过度重复计算
             current_data_size = len(self.pitch_data)
             current_time_window = (self.time_offset, self.time_offset + self.time_window)
@@ -6322,6 +6784,8 @@ class ECGStylePitchVisualizer(QWidget):
             elif scroll_triggered:
                 # 滚轮触发的重绘，确保至少执行一次完整重绘
                 self._scroll_triggered_redraw = False  # 重置标志
+                # 记录手动滚动时间，短时间内冻结自动滚动
+                self._last_manual_scroll_time = now
                 force_redraw = True  # 强制重绘
             elif hasattr(self, '_last_update_state'):
                 last_size, last_window, last_y_center = self._last_update_state
@@ -6335,18 +6799,64 @@ class ECGStylePitchVisualizer(QWidget):
             self._last_update_state = (current_data_size, current_time_window, current_y_center)
             
             # 调试信息（减少冗余输出）
-            if current_data_size % 20 == 0:  # 每20个数据点打印一次
-                print(f"更新显示: 总数据{current_data_size}点, pitch_line存在: {hasattr(self, 'pitch_line')}")
+            if self.debug_flags.get('display_diag') and current_data_size % 40 == 0:
+                real_fps = 0.0
+                if self._diag_display_intervals:
+                    avg_int = sum(self._diag_display_intervals)/len(self._diag_display_intervals)
+                    real_fps = 1.0/avg_int if avg_int>0 else 0
+                print(f"[DISP_DIAG] 总数据={current_data_size} pitch_line={hasattr(self, 'pitch_line')} light_frames={getattr(self,'_light_frame_count',0)} total_frames={self._total_frame_count} realFPS={real_fps:.1f}")
             
             # 根据当前时间偏移过滤数据
+            # 动态窗口策略：录制早期(<完整窗口)时右侧边界跟随最新时间，避免一开始就铺满16秒导致8秒居中逻辑失效
             time_start = self.time_offset
-            time_end = self.time_offset + self.time_window
+            desired_end = self.time_offset + self.time_window
+            latest_time = self.time_data[-1] if self.time_data else 0.0
+            # 修复：仅在 <= center_display_time(8s) 阶段保持窗口[0,16]，8s 后尊重 time_offset 以保证居中滚动
+            if latest_time <= self.center_display_time:
+                time_start = 0.0
+                desired_end = self.time_window
+            time_end = desired_end
+            # 记录最新渲染窗口供 axis 同步，防止仍显示旧右边界（例如卡在5.21s）
+            self._last_render_window = (time_start, time_end)
             
-            # 过滤时间窗口内的数据
-            valid_indices = []
-            for i, t in enumerate(self.time_data):
-                if time_start <= t <= time_end:
-                    valid_indices.append(i)
+            # 过滤时间窗口内的数据（保持顺序）
+            # 修复：原实现只前向递增start_idx，向左/回到早期时间会丢失旧点
+            # 统一使用bisect二分定位窗口起始索引，支持双向滚动；性能O(logN)
+            # 为避免 deque 在某些极端情况下与 bisect/索引交互导致意外 slice 对象索引错误，用列表拷贝做局部只读视图
+            _time_seq = list(self.time_data)
+            data_len = len(_time_seq)
+            if data_len == 0:
+                valid_indices = []
+            else:
+                import bisect
+                try:
+                    start_idx = bisect.bisect_left(_time_seq, time_start - 1e-6)
+                except Exception as _bis_e:
+                    print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} time_start={time_start:.4f}")
+                    # 回退线性查找
+                    start_idx = 0
+                    while start_idx < data_len and _time_seq[start_idx] < time_start - 1e-6:
+                        start_idx += 1
+                # 仍向后线性扩展到窗口结束（数据局部连续，线性更快）
+                end_idx = start_idx
+                while end_idx < data_len and _time_seq[end_idx] <= time_end + 1e-6:
+                    end_idx += 1
+                valid_indices = list(range(start_idx, end_idx))
+                # 记录用于下一帧（允许轻微回退缓存1个点）
+                self._last_window_start_index = max(0, start_idx - 1)
+                # 调试：可选打印一次方向变化（节流）
+                if hasattr(self, '_last_window_start_index_real'):
+                    if start_idx < getattr(self, '_last_window_start_index_real_previous', start_idx+1):
+                        # 向后滚动发生
+                        if self.debug_flags.get('segment_log') and not hasattr(self, '_last_backward_scroll_logged'):
+                            print(f"🔁 回退滚动重建窗口: start_idx={start_idx}")
+                            self._last_backward_scroll_logged = True
+                    else:
+                        # 正向滚动恢复可再次允许一次回退日志
+                        if hasattr(self, '_last_backward_scroll_logged'):
+                            delattr(self, '_last_backward_scroll_logged')
+                self._last_window_start_index_real_previous = start_idx
+                self._last_window_start_index_real = start_idx
             
             if not valid_indices:
                 # 清空显示
@@ -6355,82 +6865,158 @@ class ECGStylePitchVisualizer(QWidget):
                 return
             
             # 提取有效数据
-            times = [self.time_data[i] for i in valid_indices]
-            pitches = [self.pitch_data[i] for i in valid_indices]
-            confidences = [self.confidence_data[i] for i in valid_indices]
+            try:
+                times = [_time_seq[i] for i in valid_indices]
+                pitches = [self.pitch_data[i] for i in valid_indices]
+                confidences = [self.confidence_data[i] for i in valid_indices]
+            except TypeError as _idx_e:
+                # 捕获可能的 slice 索引异常，输出详细上下文
+                print(f"[INDEX_ERR] {type(_idx_e).__name__}: {_idx_e} valid_indices_sample={valid_indices[:10]} len_valid={len(valid_indices)} data_len={data_len}")
+                print(f"[INDEX_STATE] start_idx={valid_indices[0] if valid_indices else 'NA'} end_idx={(valid_indices[-1] if valid_indices else 'NA')} time_window=({time_start:.3f},{time_end:.3f})")
+                import traceback as _tb
+                print("[INDEX_TRACE]" + ''.join(_tb.format_exc()))
+                # 回退：直接整窗截取（线性扫描）
+                times = _time_seq
+                pitches = list(self.pitch_data)
+                confidences = list(self.confidence_data)
+            phase_after_window = time.time()
+            if 'frame_trace' in locals() and frame_trace:
+                print("[FRAME] 窗口过滤 点数={} 用时={:.2f}ms".format(len(times), (phase_after_window - frame_cpu_start)*1000))
             
-            # 🔥 关键修复：创建断续音调曲线
-            # 检测时间间隔，如果时间间隔过大（换气），则断开曲线
+            # 断续段分割：增量优化（新增点 / 窗口平移 / 超时 才重算）
+            segments = []
+            recompute_needed = False
             if len(times) > 1:
-                # 🚀 智能段分割：缓存计算结果，避免重复计算
-                segments_cache_key = (times[0], times[-1], len(times))
-                
-                if (hasattr(self, '_segments_cache') and 
-                    hasattr(self, '_segments_cache_key') and 
-                    self._segments_cache_key == segments_cache_key):
-                    # 使用缓存的段分割结果
+                now_time = now
+                if not hasattr(self, '_last_segments_recompute'):
+                    self._last_segments_recompute = 0.0
+                prev_window = getattr(self, '_segments_cache_window', None)
+                window_shift = 0.0
+                if prev_window:
+                    window_shift = abs(time_start - prev_window[0])
+                # 条件：有新点 OR 窗口平移>0.02s OR 距上次重算>0.10s
+                if getattr(self, '_new_points_since_last_draw', 0) > 0:
+                    recompute_needed = True
+                elif window_shift > 0.02:
+                    recompute_needed = True
+                elif (now_time - self._last_segments_recompute) > 0.10:
+                    recompute_needed = True
+                if (hasattr(self, '_segments_cache') and not recompute_needed and
+                    prev_window and prev_window == (time_start, time_end)):
                     segments = self._segments_cache
+                    if self.debug_flags.get('segment_log'):
+                        if not hasattr(self, '_last_cache_hit_log') or now_time - self._last_cache_hit_log > 1.0:
+                            print(f"[SEG_DIAG] cache_hit window=({time_start:.2f},{time_end:.2f}) pts_cached={sum(len(s[0]) for s in segments)} segs={len(segments)} shift={window_shift:.3f}s dt={(now_time-self._last_segments_recompute)*1000:.0f}ms")
+                            self._last_cache_hit_log = now_time
                 else:
-                    # 重新计算段分割
-                    segments = []  # 存储连续的音调段
+                    seg_t0 = time.time()
+                    detected_gaps = []
                     current_segment_times = [times[0]]
                     current_segment_pitches = [pitches[0]]
-                    detected_gaps = []  # 记录检测到的换气段
-                    
                     for i in range(1, len(times)):
                         time_gap = times[i] - times[i-1]
-                        
-                        # 如果时间间隔小于0.3秒，认为是连续的歌声
                         if time_gap < 0.3:
                             current_segment_times.append(times[i])
                             current_segment_pitches.append(pitches[i])
                         else:
-                            # 时间间隔过大，保存当前段并开始新段
-                            if len(current_segment_times) > 1:  # 至少需要2个点才能画线
+                            if len(current_segment_times) >= 1:
                                 segments.append((current_segment_times.copy(), current_segment_pitches.copy()))
-                            
-                            # 记录换气段信息
-                            detected_gaps.append({
-                                'time_gap': time_gap,
-                                'prev_time': times[i-1],
-                                'new_time': times[i]
-                            })
-                            
-                            # 开始新的音调段
+                            detected_gaps.append({'time_gap': time_gap,'prev_time': times[i-1],'new_time': times[i]})
                             current_segment_times = [times[i]]
                             current_segment_pitches = [pitches[i]]
-                    
-                    # 添加最后一段
-                    if len(current_segment_times) > 1:
+                    if len(current_segment_times) >= 1:
                         segments.append((current_segment_times, current_segment_pitches))
-                    
-                    # 缓存结果
                     self._segments_cache = segments
-                    self._segments_cache_key = segments_cache_key
-                    
-                    # 🎯 智能日志：仅在段数发生变化时输出
-                    if (not hasattr(self, '_last_segments_count') or 
-                        self._last_segments_count != len(segments) or
-                        len(detected_gaps) > 0):
-                        
-                        # 只输出新检测到的换气段
-                        for gap in detected_gaps:
-                            print(f"🔇 检测到换气段: 时间间隔={gap['time_gap']:.2f}s, "
-                                  f"前段结束于{gap['prev_time']:.2f}s, 新段开始于{gap['new_time']:.2f}s")
-                        
-                        if len(segments) > 0:
-                            print(f"🎵 绘制音调段 {len(segments)}: {sum(len(seg[0]) for seg in segments)}个点, "
-                                  f"时间范围={segments[0][0][0]:.2f}s-{segments[-1][0][-1]:.2f}s")
-                            print(f"✅ 断续音调曲线绘制完成: {len(segments)}个独立音调段")
-                        
-                        self._last_segments_count = len(segments)
-                
-                # 绘制所有音调段（断续的）
+                    self._segments_cache_window = (time_start, time_end)
+                    self._last_segments_recompute = now_time
+                    seg_dur = (time.time() - seg_t0) * 1000
+                    self._seg_timing_samples.append(seg_dur)
+                    if recompute_needed and getattr(self, '_new_points_since_last_draw', 0) > 0:
+                        if (self.debug_flags.get('segment_log') and
+                            (not hasattr(self, '_last_segments_count') or self._last_segments_count != len(segments) or len(detected_gaps) > 0)):
+                            for gap in detected_gaps:
+                                print(f"[SEG] gap={gap['time_gap']:.2f}s prev={gap['prev_time']:.2f}s new={gap['new_time']:.2f}s")
+                            if segments:
+                                print(f"[SEG] segments={len(segments)} pts={sum(len(seg[0]) for seg in segments)} range={segments[0][0][0]:.2f}-{segments[-1][0][-1]:.2f}s seg_dur={seg_dur:.1f}ms shift={window_shift:.3f}s dt={(now_time-self._last_segments_recompute)*1000:.0f}ms")
+                            self._last_segments_count = len(segments)
+                    if 'frame_trace' in locals() and frame_trace:
+                        print("[FRAME] 分段处理 segs={} 重算?={} seg_time={:.2f}ms cache_window={} shift={:.3f}s".format(
+                            len(segments), recompute_needed, seg_dur if 'seg_dur' in locals() else 0.0, getattr(self,'_segments_cache_window',None), window_shift))
+
+                    # === 细节点可视性诊断 / 异常检测 ===
+                    try:
+                        total_visible_points = sum(len(seg[0]) for seg in segments)
+                        single_point_segs = sum(1 for seg in segments if len(seg[0]) == 1)
+                        window_span = time_end - time_start
+                        now_diag = now_time
+                        if not hasattr(self, '_diag_last_fine_log'):
+                            self._diag_last_fine_log = 0
+                        if not hasattr(self, '_prev_visible_point_count'):
+                            self._prev_visible_point_count = total_visible_points
+                            self._prev_single_point_segs = single_point_segs
+                            self._prev_visible_window = (time_start, time_end)
+                            self._last_visible_time_set = set()
+
+                        # 生成当前可见 time 集合（取整到 4ms 以压缩）
+                        cur_time_set = set()
+                        for seg_times, _sp in segments:
+                            for tval in seg_times:
+                                if time_start - 1e-6 <= tval <= time_end + 1e-6:
+                                    cur_time_set.add(round(tval, 4))
+
+                        # 检测丢失：上一帧仍在窗口、当前窗口几乎未左移（<0.05s）且大量点消失
+                        if hasattr(self, '_last_visible_time_set') and self._last_visible_time_set:
+                            prev_window_start, prev_window_end = self._prev_visible_window
+                            window_shift = abs(prev_window_start - time_start)
+                            if window_shift < 0.05 and len(self._last_visible_time_set) > 0:
+                                missing_prev = [tv for tv in self._last_visible_time_set if tv not in cur_time_set]
+                                # 排除由于窗口右移自然滑出左边界的点
+                                missing_in_window = [tv for tv in missing_prev if tv >= time_start]
+                                if missing_in_window:
+                                    loss_ratio = len(missing_in_window) / max(1, len(self._last_visible_time_set))
+                                    if loss_ratio > 0.15:  # 阈值：可见点骤减>15%
+                                        print(f"⚠️ [FINE_LOSS] abrupt loss ratio={loss_ratio*100:.1f}% lost={len(missing_in_window)} prev_total={len(self._last_visible_time_set)} window=({time_start:.2f},{time_end:.2f}) segs={len(segments)} single_seg={single_point_segs}")
+                                        # 触发一次强制重绘标志，便于后续定位
+                                        self._force_redraw_on_next_update = True
+
+                        # 定期记录状态（1.2s节流）
+                        if now_diag - self._diag_last_fine_log > 1.2:
+                            print(f"[FINE] win=({time_start:.2f},{time_end:.2f}) span={window_span:.2f}s pts={total_visible_points} segs={len(segments)} single_seg={single_point_segs} cache={'no' if recompute_needed else 'maybe'}")
+                            self._diag_last_fine_log = now_diag
+
+                        # 保存当前状态
+                        self._prev_visible_point_count = total_visible_points
+                        self._prev_single_point_segs = single_point_segs
+                        self._prev_visible_window = (time_start, time_end)
+                        self._last_visible_time_set = cur_time_set
+                    except Exception as _fine_e:
+                        if self.debug_flags.get('segment_log'):
+                            print(f"[FINE_DIAG_ERR] { _fine_e }")
                 self.draw_segmented_pitch_line(segments)
-                
             else:
-                # 只有一个数据点，直接绘制
                 self.pitch_line.set_data(times, pitches)
+            self._new_points_since_last_draw = 0
+            draw_dur = (time.time() - t_start) * 1000
+            self._draw_timing_samples.append(draw_dur)
+            self._last_heavy_redraw_time = now
+            if ('frame_trace' in locals() and frame_trace) or (perf_verbose and draw_dur > 12):
+                print(f"[FRAME] 重绘完成 CPU耗时={draw_dur:.1f}ms segs={len(segments) if 'segments' in locals() else 0} pts={len(times)}")
+
+            # 周期性性能打印（与原显示诊断区分）
+            if self.debug_flags.get('display_diag'):
+                if now - getattr(self, '_diag_last_perf_report', 0) > 2.5:
+                    if self._seg_timing_samples:
+                        seg_avg = sum(self._seg_timing_samples)/len(self._seg_timing_samples)
+                        seg_max = max(self._seg_timing_samples)
+                    else:
+                        seg_avg = seg_max = 0
+                    if self._draw_timing_samples:
+                        draw_avg = sum(self._draw_timing_samples)/len(self._draw_timing_samples)
+                        draw_max = max(self._draw_timing_samples)
+                    else:
+                        draw_avg = draw_max = 0
+                    print(f"[DISP] seg_avg={seg_avg:.1f}ms seg_max={seg_max:.1f}ms draw_avg={draw_avg:.1f}ms draw_max={draw_max:.1f}ms")
+                    self._diag_last_perf_report = now
             
             # 根据显示模式进行额外处理
             display_mode = self.display_mode.currentText() if hasattr(self, 'display_mode') else "心电图模式"
@@ -6508,16 +7094,52 @@ class ECGStylePitchVisualizer(QWidget):
                     abs(current_ylim[1] - expected_y_max) > 0.1):
                     self.update_axis_ranges()
                 
-                self.canvas.draw_idle()
+                # 推迟到末尾统一 draw_idle，避免多次调度
+                pass
             
             # 更新状态显示
             self.update_status_display()
             
             # 每次显示更新时也同步更新滚动条，确保实时响应
             self.update_scrollbars()
+            # ---- 末尾帧总结 ----
+            total_cpu = (time.time() - frame_cpu_start) * 1000
+            if ('frame_trace' in locals() and frame_trace) or (perf_verbose and total_cpu > 15):
+                print(f"[FRAME] 结束 total_cpu={total_cpu:.1f}ms heavy_draw={draw_dur:.1f}ms window=({time_start:.2f},{time_end:.2f}) zoom={self.zoom_level:.2f} next_heavy_gap_target={heavy_interval_threshold*1000:.0f}ms")
+            # 统计异常刷新间隔（卡顿触发）
+            if not hasattr(self, '_stutter_events'): self._stutter_events = 0
+            if self._diag_display_intervals:
+                last_interval = self._diag_display_intervals[-1]
+                if last_interval > 0.15:  # 150ms 认为肉眼可见卡顿
+                    self._stutter_events += 1
+                    if perf_verbose:
+                        print("⚠️ [STUTTER] interval={:.1f}ms total_cpu={:.1f}ms new_pts={} cache_hit?={} segs={} light_frames={}".format(
+                            last_interval*1000,
+                            total_cpu,
+                            getattr(self,'_new_points_since_last_draw',0),
+                            (not recompute_needed and hasattr(self,'_segments_cache_window') and self._segments_cache_window==(time_start,time_end)),
+                            len(segments) if 'segments' in locals() else 0,
+                            getattr(self,'_light_frame_count',0)))
+            # 定期输出卡顿统计
+            if perf_verbose and (now - getattr(self, '_last_stutter_report',0)) > 5:
+                st = self._stutter_events
+                total_frames = len(self._diag_display_intervals)
+                if total_frames:
+                    ratio = st/total_frames*100
+                    avg_int = sum(self._diag_display_intervals)/total_frames*1000
+                    p95_int = sorted(self._diag_display_intervals)[int(0.95*total_frames)-1]*1000 if total_frames>5 else 0
+                    print(f"[STATS] frames={total_frames} stutters={st} stutter%={ratio:.1f}% avgInt={avg_int:.1f}ms p95Int={p95_int:.1f}ms heavyDrawAvg={(sum(self._draw_timing_samples)/len(self._draw_timing_samples)):.1f}ms")
+                self._last_stutter_report = now
             
         except Exception as e:
-            print(f"❌ 更新显示错误: {e}")
+            import traceback, sys
+            print(f"❌ 更新显示错误: {type(e).__name__}: {e}")
+            # 输出栈追踪与关键状态快照，便于定位 slice 来源
+            print(''.join(traceback.format_exc()))
+            try:
+                print(f"[STATE_SNAPSHOT] len_time={len(getattr(self,'time_data',[]))} len_pitch={len(getattr(self,'pitch_data',[]))} last_time={getattr(self,'time_data',[-1])[-1] if getattr(self,'time_data',None) else 'NA'} window=({getattr(self,'time_offset','?')},{getattr(self,'time_offset','?') + getattr(self,'time_window',0)}) new_pts={getattr(self,'_new_points_since_last_draw','?')} heavy_gap={(time.time()-getattr(self,'_last_heavy_redraw_time',0)) if hasattr(self,'_last_heavy_redraw_time') else 'NA'}")
+            except Exception as _snap_e:
+                print(f"[STATE_SNAPSHOT_ERR] {_snap_e}")
     
     def draw_segmented_pitch_line(self, segments):
         """绘制断续的音调曲线（每段独立绘制，换气段不连接）"""
@@ -6530,68 +7152,130 @@ class ECGStylePitchVisualizer(QWidget):
                 self.canvas.draw_idle()  # 🔥 修复：即使没有段也要重绘画布
                 return
             
-            # 清除现有的音调线
-            self.pitch_line.set_data([], [])
-            
-            # 清除之前的段线条（如果存在）
-            if hasattr(self, '_segment_lines'):
-                for line in self._segment_lines:
-                    try:
-                        line.remove()
-                    except:
-                        pass
-            
-            # 清除之前的细节点（如果存在）
-            if hasattr(self, '_segment_points'):
-                for points in self._segment_points:
-                    try:
-                        points.remove()
-                    except:
-                        pass
+            # 增量策略：保留已有对象，按段索引更新，减少闪烁并保持>8秒自动滚动时细节点可见
+            if not hasattr(self, '_segment_lines'):
+                self._segment_lines = []
+            if not hasattr(self, '_segment_points'):
                 self._segment_points = []
-            
-            # 为每个连续段创建独立的线条
-            self._segment_lines = []
-            
+
+            # 隐藏原整体线（使用分段显示）
+            self.pitch_line.set_data([], [])
+
+            curve_rgb = tuple(c/255.0 for c in (141, 182, 0))
+            detail_rgb = tuple(c/255.0 for c in (100, 149, 237))
+
+            # 如果段数量减少，移除多余对象
+            if len(self._segment_lines) > len(segments):
+                for extra in self._segment_lines[len(segments):]:
+                    try: extra.remove()
+                    except: pass
+                self._segment_lines = self._segment_lines[:len(segments)]
+            if len(self._segment_points) > len(segments):
+                for extra in self._segment_points[len(segments):]:
+                    try: extra.remove()
+                    except: pass
+                self._segment_points = self._segment_points[:len(segments)]
+
+            # 尺寸计算函数：保证细节点在高缩放/低缩放下都可见
+            def _calc_marker_size():
+                base_w = float(getattr(self, 'current_linewidth', 0.6))
+                # 线宽与缩放综合：放大倍数越大点可适当变小，反之放大
+                zoom = float(getattr(self, 'zoom_level', 1.0))
+                # 期望直径（points单位）
+                diameter = max(1.6, min(base_w * 3.2 / (0.6 if zoom < 1 else min(zoom, 3.0)), 4.0))
+                # matplotlib scatter s = points^2
+                return diameter ** 2
+
+            loop_start = time.time()
+            worst_seg_cpu = 0.0
+            worst_seg_idx = -1
+            import time as _tmod
             for i, (seg_times, seg_pitches) in enumerate(segments):
-                if len(seg_times) < 2:  # 至少需要2个点才能画线
-                    continue
-                
-                # 为每段创建独立的线条 - 使用苹果绿色
-                curve_color = (141, 182, 0)  # 苹果绿
-                detail_color = (100, 149, 237)  # 矢车菊蓝
-                
-                # 将RGB值转换为0-1范围
-                curve_rgb = tuple(c/255.0 for c in curve_color)
-                detail_rgb = tuple(c/255.0 for c in detail_color)
-                
-                line, = self.ax.plot(seg_times, seg_pitches, 
-                                   color=curve_rgb,
-                                   linewidth=self.current_linewidth,
-                                   alpha=0.8,  # 适当的透明度
-                                   solid_capstyle='round',
-                                   solid_joinstyle='round')
-                
-                self._segment_lines.append(line)
-                
-                # 添加细节点 - 使用矢车菊蓝色，0.1px大小
-                points = self.ax.scatter(seg_times, seg_pitches,
-                                       s=0.1,  # 0.1px大小的点
-                                       c=detail_rgb,  # 矢车菊蓝色
-                                       alpha=0.9,  # 稍高的透明度
-                                       zorder=10)  # 确保点在线条之上
-                
-                # 保存点引用以便后续清理
-                if not hasattr(self, '_segment_points'):
-                    self._segment_points = []
-                self._segment_points.append(points)
-                
-                # 调试信息（每5段打印一次）
-                if i % 5 == 0:
-                    print(f"🎵 绘制音调段 {i+1}: {len(seg_times)}个点, "
-                          f"时间范围={seg_times[0]:.2f}s-{seg_times[-1]:.2f}s")
+                seg_loop_start = _tmod.time()
+                # 允许单点段（显示细节点）
+                if i >= len(self._segment_lines):
+                    # 新建 line
+                    if len(seg_times) >= 2:
+                        line, = self.ax.plot(seg_times, seg_pitches,
+                                             color=curve_rgb,
+                                             linewidth=self.current_linewidth,
+                                             alpha=0.85,
+                                             solid_capstyle='round',
+                                             solid_joinstyle='round')
+                    else:
+                        line, = self.ax.plot(seg_times, seg_pitches,
+                                             color=curve_rgb,
+                                             linewidth=self.current_linewidth,
+                                             alpha=0.0)
+                    self._segment_lines.append(line)
+                    s_val = _calc_marker_size()
+                    pts = self.ax.scatter(seg_times, seg_pitches,
+                                          s=s_val,
+                                          c=detail_rgb,
+                                          alpha=0.95,
+                                          linewidths=0,
+                                          zorder=11)
+                    self._segment_points.append(pts)
+                else:
+                    line = self._segment_lines[i]
+                    # 若被 ax.clear() 移除，重新挂载
+                    if line.axes is None or line not in self.ax.lines:
+                        try:
+                            self.ax.add_line(line)
+                        except Exception:
+                            pass
+                    if len(seg_times) >= 2:
+                        line.set_data(seg_times, seg_pitches)
+                        line.set_alpha(0.85)
+                        line.set_linewidth(self.current_linewidth)
+                    else:
+                        line.set_data(seg_times, seg_pitches)
+                        line.set_alpha(0.0)
+                    # 处理散点
+                    old_pts = self._segment_points[i]
+                    if old_pts not in self.ax.collections:
+                        try:
+                            self.ax.add_collection(old_pts)
+                        except Exception:
+                            pass
+                    s_val = _calc_marker_size()
+                    try:
+                        import numpy as np
+                        offs = np.column_stack((seg_times, seg_pitches)) if len(seg_times) else np.empty((0, 2))
+                        old_pts.set_offsets(offs)
+                        old_pts.set_sizes([s_val] * (len(seg_times) if len(seg_times) else 1))
+                        old_pts.set_alpha(0.95 if len(seg_times) else 0.0)
+                        old_pts.set_zorder(12)
+                    except Exception:
+                        try:
+                            if old_pts in self.ax.collections:
+                                old_pts.remove()
+                        except Exception:
+                            pass
+                        new_pts = self.ax.scatter(seg_times, seg_pitches,
+                                                  s=s_val,
+                                                  c=detail_rgb,
+                                                  alpha=0.95,
+                                                  linewidths=0,
+                                                  zorder=12)
+                        self._segment_points[i] = new_pts
+
+                if self.debug_flags.get('segment_log') and i % 8 == 0:
+                    print(f"[SEG_DRAW] 段{i+1} 点数={len(seg_times)} 范围={seg_times[0]:.2f}-{seg_times[-1]:.2f}s")
+                seg_cpu = (_tmod.time() - seg_loop_start)*1000
+                if seg_cpu > worst_seg_cpu:
+                    worst_seg_cpu = seg_cpu
+                    worst_seg_idx = i
+            total_seg_cpu = (time.time() - loop_start)*1000
+            if getattr(self,'debug_flags',{}).get('perf_verbose', False) and total_seg_cpu > 4:
+                print(f"[SEG_PERF] segs={len(segments)} total_seg_cpu={total_seg_cpu:.2f}ms worst_seg={worst_seg_idx+1} worst_cpu={worst_seg_cpu:.2f}ms")
             
-            print(f"✅ 断续音调曲线绘制完成: {len(segments)}个独立音调段")
+            # 停止录音后确保所有多点段的线保持可见
+            if not getattr(self, 'is_recording_active', True):
+                for line in self._segment_lines:
+                    if hasattr(line, 'get_xdata') and len(line.get_xdata()) >= 2:
+                        line.set_alpha(0.8)
+            print(f"✅ 断续音调曲线绘制完成: {len(segments)}个独立音调段 (增量更新)")
             
             # 🔥 关键修复：绘制完成后必须重绘画布
             self.canvas.draw_idle()
@@ -7638,22 +8322,13 @@ class ECGStylePitchVisualizer(QWidget):
         self.start_time = time.time()
         self.current_global_time = 0.0
         self.is_recording_active = True
-        self.last_pitch_time = 0
-        
         # 启动时间更新定时器
-        self.time_update_timer.start(self.time_update_interval)
-        print("🕒 开始时间追踪 - 支持断续音调曲线")
-    
-    def stop_time_tracking(self):
-        """停止时间追踪"""
-        self.is_recording_active = False
-        
-        # 停止时间更新定时器
         if hasattr(self, 'time_update_timer'):
-            self.time_update_timer.stop()
-        
-        print("⏹️ 停止时间追踪")
-    
+            self.time_update_timer.start(self.time_update_interval)
+        # 重置自动滚动偏移
+        self.time_offset = 0.0
+        if hasattr(self, 'update_status_display'):
+            self.update_status_display()
     def update_time_axis(self):
         """更新时间轴（支持断续音调曲线）"""
         if not self.is_recording_active or self.start_time is None:
@@ -7663,21 +8338,21 @@ class ECGStylePitchVisualizer(QWidget):
             # 更新全局时间
             self.current_global_time = time.time() - self.start_time
             
-            # 检查是否需要更新时间偏移（自动滚动）
-            if self.auto_follow and self.auto_scroll_enabled:
+            # 手动滚动冻结逻辑：最近 2 秒用户交互则暂不自动滚动
+            manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
+
+            if self.auto_follow and self.auto_scroll_enabled and not manual_freeze:
                 if self.current_global_time > self.center_display_time:
-                    # 第8秒后开始滚动，保持音调曲线在屏幕中央生成
                     new_offset = self.current_global_time - self.center_display_time
-                    
-                    # 只有在时间偏移有显著变化时才更新
-                    if abs(new_offset - self.time_offset) > 0.1:
+                    if abs(new_offset - self.time_offset) > 0.05:  # 更灵敏，减少滞后
                         self.time_offset = new_offset
-                        
-                        # 确保时间偏移不超过最大历史时间限制
                         max_offset = max(0, self.max_history_time - self.time_window)
                         self.time_offset = min(self.time_offset, max_offset)
-                        
-                        # 更新显示
+                        self.update_axis_ranges()
+                else:
+                    # 初期阶段保持 offset=0，窗口缩放在 update_display 中处理
+                    if self.time_offset != 0.0:
+                        self.time_offset = 0.0
                         self.update_axis_ranges()
             
             # 每秒更新一次状态显示
@@ -9513,12 +10188,21 @@ class IntegratedRecordingInterface(QMainWindow):
                 print("🎯 开始更新检测统计显示")
             
             # 更新当前音高信息
-            frequency = pitch_data.get('frequency', 0)
+            frequency = pitch_data.get('frequency', 0)  # 平滑后的
+            raw_frequency = pitch_data.get('raw_frequency', None)
             note_info = pitch_data.get('note_info', {})
             has_pitch = pitch_data.get('has_pitch', frequency > 0)
             
             if has_pitch and frequency > 0:
+                # 记录平滑频率用于原逻辑
                 self.current_frequency = frequency
+                # 增加调试：显示 raw vs smooth（仅首次若开启）
+                if raw_frequency is not None:
+                    if not hasattr(self, '_raw_smooth_debug'):
+                        self._raw_smooth_debug = 0
+                    self._raw_smooth_debug += 1
+                    if self._raw_smooth_debug <= 10:
+                        print(f"🎯 UI接收频率: raw={raw_frequency:.2f}Hz smooth={frequency:.2f}Hz diff={abs(raw_frequency-frequency):.2f}Hz")
                 
                 if note_info:
                     note_name = note_info.get('note_name', '--')
@@ -9566,7 +10250,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 print("🎵 开始音高精度验证...")
             
             if self._pitch_precision_debug_counter <= 50 and has_pitch and frequency > 0:
-                print(f"🎵 音高精度#{self._pitch_precision_debug_counter}: 输入={frequency:.3f}Hz → 最终Y轴应为精确值")
+                if raw_frequency is not None:
+                    print(f"🎵 音高精度#{self._pitch_precision_debug_counter}: raw={raw_frequency:.3f}Hz smooth={frequency:.3f}Hz")
+                else:
+                    print(f"🎵 音高精度#{self._pitch_precision_debug_counter}: 输入={frequency:.3f}Hz")
             
         except Exception as e:
             print(f"处理音高数据错误: {e}")
