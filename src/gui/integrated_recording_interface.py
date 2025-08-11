@@ -340,6 +340,43 @@ class IntegratedAudioProcessor(QThread):
         # self.processing_queue = queue.Queue(maxsize=50)     # 🔥 已在上方初始化
         self.buffer_overflow_count = 0
         self.total_audio_frames = 0
+
+        # ===== 日志节流工具（与可视化器解耦的精简版本） =====
+        self._rate_limit_state = {}
+        def _log_rate_limit(key: str, msg: str, interval: float = 0.6):
+            now = time.time()
+            state = self._rate_limit_state.get(key, {'last': 0.0, 'suppressed': 0})
+            if now - state['last'] >= interval:
+                if state['suppressed'] > 0:
+                    print(f"{msg} (+{state['suppressed']} more)")
+                else:
+                    print(msg)
+                state['last'] = now
+                state['suppressed'] = 0
+            else:
+                state['suppressed'] += 1
+            self._rate_limit_state[key] = state
+        self._log_rate_limit = _log_rate_limit
+
+        # ===== 调试标志（处理线程本地）=====
+        # 防止在回调中访问 self.debug_flags 抛出 AttributeError
+        # 仅包含本线程实际使用的键；可与可视化器的 debug_flags 独立
+        self.debug_flags = {
+            'latency_warn_verbose': True,     # 输出延迟警告详细信息
+            'vocal_protect_verbose': True,    # 输出声带保护逻辑细节（若实现）
+            'summary_enabled': True,          # 周期性统计汇总
+            'perf_verbose': False,            # 额外性能日志（默认关闭）
+            'display_diag': False,            # 显示层诊断（处理线程中通常不用）
+            'segment_log': False              # 分段调试（处理线程中通常不用）
+        }
+        # 🔧 统计计数器（回调中引用，避免 AttributeError）
+        self._stat_counters = {
+            'vocal_protect': 0,
+            'high_latency': 0,
+            'segments_recomputed': 0,
+            'segment_cache_hits': 0
+        }
+        # 兼容性保障：若后续代码仍直接访问 self.debug_flags.get(...) 则不会再报错
         
     # （Visualizer 相关参数应在 ECGStylePitchVisualizer 内部，不应出现在此处）
         
@@ -1872,9 +1909,11 @@ class IntegratedAudioProcessor(QThread):
                     
                     # 延迟警告
                     if total_latency > 1.0:
-                        print(f"⚠️ 延迟偏高: {total_latency:.2f}ms > 1.0ms")
+                        if self.debug_flags.get('latency_warn_verbose'):
+                            self._log_rate_limit('high_latency', f"⚠️ 延迟偏高: {total_latency:.2f}ms > 1.0ms", interval=0.5)
+                        self._stat_counters['high_latency'] += 1
                     else:
-                        print(f"✅ 延迟良好: {total_latency:.2f}ms")
+                        self._log_rate_limit('latency_ok', f"✅ 延迟良好: {total_latency:.2f}ms", interval=0.8)
                     
                     # 清理旧数据
                     self._processing_times = []
@@ -2413,9 +2452,11 @@ class IntegratedAudioProcessor(QThread):
                         
                         # 监听延迟警告
                         if total_monitoring_latency > 1.0:
-                            print(f"⚠️ 监听延迟偏高: {total_monitoring_latency:.2f}ms > 1.0ms")
+                            if self.debug_flags.get('latency_warn_verbose'):
+                                self._log_rate_limit('high_latency_monitor', f"⚠️ 监听延迟偏高: {total_monitoring_latency:.2f}ms > 1.0ms", interval=0.5)
+                            self._stat_counters['high_latency'] += 1
                         else:
-                            print(f"✅ 监听延迟良好: {total_monitoring_latency:.2f}ms")
+                            self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好: {total_monitoring_latency:.2f}ms", interval=0.8)
                         
                         # 清理旧数据
                         self._monitoring_processing_times = []
@@ -4196,12 +4237,14 @@ class IntegratedAudioProcessor(QThread):
                     
                     # 🔥 重要修复：如果降噪过度抑制了歌声信号，使用原始信号
                     if processed_rms < original_rms * 0.3:  # 如果降噪后信号减弱超过70%
-                        print(f"🔧 歌声保护: 降噪过强({processed_rms:.4f} < {original_rms * 0.3:.4f})，使用原始信号")
+                        if self.debug_flags.get('vocal_protect_verbose'):
+                            self._log_rate_limit('vocal_protect', f"🔧 歌声保护: 降噪过强({processed_rms:.4f} < {original_rms * 0.3:.4f})，使用原始信号", interval=0.3)
+                        self._stat_counters['vocal_protect'] += 1
                         processed_audio = audio_data  # 使用原始信号保护歌声
                     
                     if self._pitch_analysis_counter % 100 == 0:
                         rms_change_percent = ((processed_rms - original_rms) / original_rms * 100) if original_rms > 0 else 0
-                        print(f"� 降噪状态: RMS {original_rms:.4f} → {processed_rms:.4f} ({rms_change_percent:+.1f}%)")
+                        self._log_rate_limit('noise_status', f"📉 降噪状态: RMS {original_rms:.4f} → {processed_rms:.4f} ({rms_change_percent:+.1f}%)", interval=1.0)
                 except Exception as e:
                     print(f"❌ 降噪处理错误: {e}")
                     processed_audio = audio_data
@@ -4808,35 +4851,30 @@ class ECGStylePitchVisualizer(QWidget):
 
     def __init__(self):
         super().__init__()
-
         # ================== 基础与参数 ==================
         self.audio_processor = None  # 运行时再注入
         self.time_window = 16.0
         self.max_points = 1024
         self.update_interval = 33  # ~30FPS
 
-        # ================== 诊断统计 ==================
-        self._diag_last_display_time = None
-        self._diag_display_intervals = deque(maxlen=120)
-        self._diag_add_to_display_latencies = deque(maxlen=200)
-        self._diag_pending_points = 0
-
-        # ================== 交互与视图 ==================
+        # ===== 视图 / 历史窗口初始化 =====
+        self.max_history_time = 300.0
         self.y_view_center = 4.0
         self.y_view_range = 3.0
         self.time_offset = 0.0
-        self.max_history_time = 300.0
-        self.center_display_time = 8.0  # 8 秒后开始让当前点居中滚动
+        self.center_display_time = 8.0
         self.auto_scroll_enabled = True
         self.zoom_level = 1.0
+        self.base_y_view_range = self.y_view_range
+        self._last_zoom_preset_logged = None
         self.auto_scale = True
         self.auto_follow = True
-        self.freeze_y_center = True  # 锁定纵轴中心
+        # 默认不锁定，允许缩放/滚动立即生效
+        self.freeze_y_center = False
         self._initial_y_center = self.y_view_center
         self._last_warn_y_shift = 0.0
-        # 标签位置设定：使用轴坐标 0 + 像素轻微左移，不再使用负轴坐标避免整体消失
         self.label_x_frac = 0.0
-        self.label_left_pixel_offset = -6  # (px) 左移避免遮挡最左侧细节点
+        self.label_left_pixel_offset = -6
         self._last_manual_scroll_time = 0.0
 
         # ================== 拖拽状态 ==================
@@ -4863,10 +4901,9 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_update_timer = QTimer()
         self.time_update_timer.timeout.connect(self.update_time_axis)
         self.time_update_interval = 50
-        # 🚀 快速轻量帧定时器 & 目标帧率控制
-        self.target_fps = 28.0  # 目标重帧 FPS
+        self.target_fps = 28.0
         self._min_heavy_interval = 1.0 / self.target_fps
-        self.fast_update_interval_ms = 15  # 高频tick（用于平滑与轻帧判定）
+        self.fast_update_interval_ms = 15
         self.fast_update_timer = QTimer()
         self.fast_update_timer.timeout.connect(self._fast_update_tick)
         self.fast_update_timer.start(self.fast_update_interval_ms)
@@ -4888,28 +4925,73 @@ class ECGStylePitchVisualizer(QWidget):
         self.debug_flags = {
             'display_diag': True,
             'segment_log': True,
-            'incremental_miss': True
+            'incremental_miss': True,
+            'vocal_protect_verbose': True,
+            'latency_warn_verbose': True,
+            'summary_enabled': True
         }
+        # 性能/绘制采样容器
         self._seg_timing_samples = deque(maxlen=120)
         self._draw_timing_samples = deque(maxlen=120)
         self._diag_last_perf_report = 0
+        # 速率限制日志 & 统计
         self._last_log_times = {
             'vocal_protect': 0.0,
             'segment_draw': 0.0,
             'display_diag': 0.0
         }
-        self._vocal_protect_active = False
-
-        self._seg_timing_samples = deque(maxlen=120)
-        self._draw_timing_samples = deque(maxlen=120)
-        self._diag_last_perf_report = 0
-        # ===== 日志节流控制 =====
-        self._last_log_times = {
-            'vocal_protect': 0.0,
-            'segment_draw': 0.0,
-            'display_diag': 0.0
+        self._pending_counts = {}
+        self._stat_counters = {
+            'vocal_protect': 0,
+            'high_latency': 0,
+            'segments_recomputed': 0,
+            'segment_cache_hits': 0
         }
+        self._summary_interval = 2.0
+        self._last_summary_time = time.time()
         self._vocal_protect_active = False
+        # 显示诊断容器
+        self._diag_last_display_time = None
+        self._diag_display_intervals = []
+        self._diag_add_to_display_latencies = []
+        self._diag_pending_points = 0
+        self._diag_last_report = 0.0
+        # 日志辅助
+        import time as _t
+        def _log_rate_limit(key: str, msg: str, interval: float = 0.5):
+            now = _t.time()
+            last = self._last_log_times.get(key, 0.0)
+            if now - last >= interval:
+                pending = self._pending_counts.get(key, 0)
+                if pending > 0:
+                    print(f"{msg} (+{pending} more)")
+                    self._pending_counts[key] = 0
+                else:
+                    print(msg)
+                self._last_log_times[key] = now
+            else:
+                self._pending_counts[key] = self._pending_counts.get(key, 0) + 1
+        self._log_rate_limit = _log_rate_limit
+        def _maybe_summary():
+            if not self.debug_flags.get('summary_enabled'):
+                return
+            now = _t.time()
+            if now - self._last_summary_time >= self._summary_interval:
+                dur = now - self._last_summary_time
+                vp = self._stat_counters['vocal_protect']
+                hl = self._stat_counters['high_latency']
+                sre = self._stat_counters['segments_recomputed']
+                sch = self._stat_counters['segment_cache_hits']
+                fps_est = 0.0
+                if self._draw_timing_samples:
+                    avg_interval = sum(self._draw_timing_samples)/len(self._draw_timing_samples)
+                    if avg_interval > 0:
+                        fps_est = 1000.0/avg_interval
+                print(f"[SUMMARY {dur:.1f}s] vocalProtect={vp} highLatency={hl} segRecompute={sre} segCacheHit={sch} fps~={fps_est:.1f}")
+                for k in self._stat_counters:
+                    self._stat_counters[k] = 0
+                self._last_summary_time = now
+        self._maybe_summary = _maybe_summary
 
     def _reset_display_diagnostics(self):
         """重置显示相关诊断统计，避免历史数据污染新阶段均值。"""
@@ -4986,6 +5068,11 @@ class ECGStylePitchVisualizer(QWidget):
     
     def clear_data(self):
         """清除所有数据（包括断续曲线）"""
+        # ===== 诊断：清除前快照 =====
+        try:
+            self.debug_dump_axis_artists(context_tag="before_clear")
+        except Exception:
+            pass
         self.pitch_data.clear()
         self.time_data.clear()
         self.confidence_data.clear()
@@ -5009,6 +5096,17 @@ class ECGStylePitchVisualizer(QWidget):
         # 清理主音调线
         if hasattr(self, 'pitch_line') and self.pitch_line is not None:
             self.pitch_line.set_data([], [])
+            try:
+                self.pitch_line.set_alpha(0.0)
+            except Exception:
+                pass
+            # 移除对象引用，避免后续误用旧实例
+            try:
+                if self.pitch_line in self.ax.lines:
+                    self.pitch_line.remove()
+            except Exception:
+                pass
+            self.pitch_line = None
         
         # 🔥 清理断续曲线的所有段线条
         if hasattr(self, '_segment_lines'):
@@ -5018,6 +5116,15 @@ class ECGStylePitchVisualizer(QWidget):
                 except:
                     pass
             self._segment_lines = []
+        # 🔥 清理断续曲线的散点集合
+        if hasattr(self, '_segment_points'):
+            for pts in self._segment_points:
+                try:
+                    if pts in self.ax.collections:
+                        pts.remove()
+                except Exception:
+                    pass
+            self._segment_points = []
         
         # 清理段信息
         if hasattr(self, '_segments'):
@@ -5032,11 +5139,174 @@ class ECGStylePitchVisualizer(QWidget):
                 except:
                     pass
             self.gradient_lines = []
+        # 清理高亮前端粒子
+        if hasattr(self, 'highlight_point') and self.highlight_point is not None:
+            try:
+                if self.highlight_point in self.ax.collections:
+                    self.highlight_point.remove()
+            except Exception:
+                pass
+            self.highlight_point = None
+        # 清理动态音符标签
+        if hasattr(self, '_note_label_texts'):
+            for t in self._note_label_texts:
+                try: t.remove()
+                except Exception: pass
+            self._note_label_texts = []
+        # 清理活动音符高亮线
+        if hasattr(self, '_active_note_highlight_lines'):
+            for ln in self._active_note_highlight_lines:
+                try:
+                    if ln in self.ax.lines: ln.remove()
+                except Exception: pass
+            self._active_note_highlight_lines = []
+        # 重置当前活动音高状态
+        self.current_pitch_active = False
+        if hasattr(self, 'current_pitch_y'):
+            self.current_pitch_y = self.y_view_center if hasattr(self, 'y_view_center') else 4.0
+
+        # 🔍 深度清理：移除可能残留的高 zorder 线条 (>=9 视为数据/高亮层)，保留网格 (低 zorder)
+        try:
+            for ln in list(self.ax.lines):
+                z = getattr(ln, 'get_zorder', lambda: 0)()
+                if z >= 9:  # 数据/高亮/曲线/段线
+                    try: ln.remove()
+                    except Exception: pass
+        except Exception:
+            pass
+
+        # 彻底清轴后 立即重建网格 + 音名标签（用户期望“初始网格”而不是裸 0.0/0.2 数字刻度）
+        try:
+            self.ax.cla()
+            self.ax.set_facecolor(self.bg_color)
+            # 立即重建（不再等待新数据），保持视觉一致性
+            try:
+                self.setup_ecg_grid(create_pitch_line=True)
+                # 明确取消延迟标记
+                self._needs_grid_rebuild = False
+                self._suppress_updates_until_new_data = False
+            except Exception as _grid_e:
+                print(f"⚠️ clear_data 内部重建网格失败: {_grid_e}; 将退回延迟模式")
+                # 退回延迟模式
+                self._needs_grid_rebuild = True
+                self._suppress_updates_until_new_data = True
+        except Exception as _regrid_e:
+            print(f"⚠️ 清除时轴 cla 失败: {_regrid_e}")
         
         if hasattr(self, 'canvas'):
             self.canvas.draw_idle()
         
         print("🗑️ 数据已清除（包括断续曲线和缓存状态）")
+        # ===== 诊断：清除后快照 =====
+        try:
+            self.debug_dump_axis_artists(context_tag="after_clear")
+        except Exception:
+            pass
+
+    def purge_visual_elements(self):
+        """强制移除所有潜在残留的高层绘制元素（PathCollection/Line2D/Text）。"""
+        try:
+            # 移除高 zorder 线条
+            for ln in list(self.ax.lines):
+                try:
+                    if getattr(ln, 'get_zorder', lambda:0)() >= 9:
+                        ln.remove()
+                except Exception:
+                    pass
+            # 移除数据集合（散点/渐变等）
+            for coll in list(self.ax.collections):
+                try:
+                    if getattr(coll, 'get_zorder', lambda:0)() >= 9:
+                        coll.remove()
+                except Exception:
+                    pass
+            # 移除音符文本（依据典型格式 A-G 或含 # / b + 八度数字）
+            import re
+            note_pat = re.compile(r'^[A-G][#b]?\d$')
+            for txt in list(self.ax.texts):
+                try:
+                    if note_pat.match(txt.get_text()):
+                        txt.remove()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"⚠️ purge_visual_elements 失败: {e}")
+    
+    # ================= 诊断辅助：列出当前轴对象 =================
+    def debug_dump_axis_artists(self, context_tag: str = "runtime"):
+        """打印当前轴上所有相关 Artist（线条/集合/文本）用于诊断残留。
+
+        context_tag: 调用场景标记 (before_clear / after_clear / manual)
+        """
+        if not hasattr(self, 'ax'):
+            print(f"[debug_dump_axis_artists:{context_tag}] ❌ 无 ax")
+            return
+        try:
+            lines_info = []
+            for i, ln in enumerate(list(self.ax.lines)):
+                try:
+                    lines_info.append({
+                        'idx': i,
+                        'id': hex(id(ln)),
+                        'cls': ln.__class__.__name__,
+                        'z': getattr(ln, 'get_zorder', lambda:0)(),
+                        'label': ln.get_label(),
+                        'color': getattr(ln, 'get_color', lambda:None)(),
+                        'alpha': getattr(ln, 'get_alpha', lambda:None)(),
+                        'npts': len(ln.get_xdata()) if hasattr(ln, 'get_xdata') else None
+                    })
+                except Exception:
+                    pass
+            colls_info = []
+            for i, coll in enumerate(list(self.ax.collections)):
+                try:
+                    npts = None
+                    if hasattr(coll, 'get_offsets'):
+                        try:
+                            npts = len(coll.get_offsets())
+                        except Exception:
+                            npts = 'err'
+                    colls_info.append({
+                        'idx': i,
+                        'id': hex(id(coll)),
+                        'cls': coll.__class__.__name__,
+                        'z': getattr(coll, 'get_zorder', lambda:0)(),
+                        'label': getattr(coll, 'get_label', lambda:None)(),
+                        'alpha': getattr(coll, 'get_alpha', lambda:None)(),
+                        'npts': npts
+                    })
+                except Exception:
+                    pass
+            texts_info = []
+            for i, txt in enumerate(list(self.ax.texts)):
+                try:
+                    texts_info.append({
+                        'idx': i,
+                        'id': hex(id(txt)),
+                        'txt': txt.get_text(),
+                        'z': getattr(txt, 'get_zorder', lambda:0)(),
+                        'color': txt.get_color(),
+                        'alpha': txt.get_alpha()
+                    })
+                except Exception:
+                    pass
+            print(f"[debug_dump_axis_artists:{context_tag}] lines={len(lines_info)} collections={len(colls_info)} texts={len(texts_info)}")
+            if lines_info:
+                for info in lines_info:
+                    print(f"  Line#{info['idx']} z={info['z']} npts={info['npts']} color={info['color']} alpha={info['alpha']} label={info['label']} id={info['id']}")
+            if colls_info:
+                for info in colls_info:
+                    print(f"  Coll#{info['idx']} z={info['z']} npts={info['npts']} alpha={info['alpha']} label={info['label']} cls={info['cls']} id={info['id']}")
+            if texts_info:
+                shown = 0
+                for info in texts_info:
+                    if shown >= 25:
+                        print(f"  ... 其余 {len(texts_info)-shown} 条文本省略 ...")
+                        break
+                    print(f"  Text#{info['idx']} z={info['z']} '{info['txt']}' color={info['color']} alpha={info['alpha']} id={info['id']}")
+                    shown += 1
+        except Exception as e:
+            print(f"[debug_dump_axis_artists:{context_tag}] 失败: {e}")
     
     def setup_colors(self):
         """设置颜色配置"""
@@ -5871,8 +6141,9 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception as _rec_e:
                 print(f"⚠️ 重新挂载分段曲线失败: {_rec_e}")
 
-    def setup_ecg_grid(self):
-        """设置心电图式网格（智能标注）"""
+    def setup_ecg_grid(self, create_pitch_line: bool = True):
+        """设置心电图式网格（智能标注）
+        create_pitch_line: 是否创建/恢复数据线对象（清除后可跳过以保持空白初始状态）"""
         # 保存现有的pitch_line数据
         existing_line_data = None
         if hasattr(self, 'pitch_line') and self.pitch_line in self.ax.lines:
@@ -5887,218 +6158,217 @@ class ECGStylePitchVisualizer(QWidget):
         # 隐藏Y轴的数字刻度，只保留音名标注
         self.ax.set_yticklabels([])
         self.ax.tick_params(axis='y', which='both', left=False, right=False)
-        
-        # 根据当前视图范围设置网格
-        y_start = self.y_view_center - self.y_view_range / self.zoom_level
-        y_end = self.y_view_center + self.y_view_range / self.zoom_level
-        
+        # 根据缩放级别选择可见半范围（zoom 越大显示越多音调）
+        half_range = self.compute_half_range()
+        # 拖动后保持中心可见
+        self.clamp_y_center(half_range)
+        y_start = self.y_view_center - half_range
+        y_end = self.y_view_center + half_range
+        # 对整体允许的物理范围做硬裁剪（假设支持 0-8 八度）
+        if y_start < 0:
+            shift = -y_start
+            y_start += shift
+            y_end += shift
+        if y_end > 8:
+            shift = y_end - 8
+            y_start -= shift
+            y_end -= shift
+
         # 计算显示范围（八度数）
         display_range = y_end - y_start
-        
+
         # 智能标注密度控制
         if self.auto_scale:
-            # 根据缩放级别和显示范围智能调整标注
-            if display_range > 6:  # 显示范围大于6个八度，只显示八度线和C音
+            if display_range > 6:
                 self.setup_sparse_grid(y_start, y_end)
-            elif display_range > 3:  # 显示范围3-6个八度，显示主要音符
+            elif display_range > 3:
                 self.setup_medium_grid(y_start, y_end)
-            else:  # 显示范围小于3个八度，显示所有音符
+            else:
                 self.setup_dense_grid(y_start, y_end)
         else:
-            # 手动模式，总是显示详细标注
             self.setup_dense_grid(y_start, y_end)
-        
+
         # 时间网格线
         time_start = self.time_offset
         time_end = self.time_offset + self.time_window
         for second in range(int(time_start), int(time_end) + 2):
             if time_start <= second <= time_end:
-                self.ax.axvline(x=second, color=self.grid_color, 
-                               linestyle='--', linewidth=0.5, alpha=0.5)
-        
-        # 确保pitch_line存在并恢复数据
-        self.pitch_line, = self.ax.plot([], [], color=self.line_color, 
-                                       linewidth=self.current_linewidth, alpha=1.0, zorder=10)
-        
-        # 如果有保存的数据，恢复它
-        if existing_line_data is not None and len(existing_line_data[0]) > 0:
-            self.pitch_line.set_data(existing_line_data[0], existing_line_data[1])
-        
-        # 强制设置正确的坐标轴范围（防止ax.clear()重置范围）
-        # X轴范围（时间）
+                self.ax.axvline(x=second, color=self.grid_color,
+                                linestyle='--', linewidth=0.5, alpha=0.5)
+
+        if create_pitch_line:
+            # 确保pitch_line存在并恢复数据
+            self.pitch_line, = self.ax.plot([], [], color=self.line_color,
+                                            linewidth=self.current_linewidth, alpha=1.0, zorder=10)
+            if existing_line_data is not None and len(existing_line_data[0]) > 0:
+                self.pitch_line.set_data(existing_line_data[0], existing_line_data[1])
+        else:
+            # 标记为空线对象占位（避免其它代码访问时报错）
+            self.pitch_line = None
+
+        # X轴范围保持 16 秒窗口
         x_min = self.time_offset
         x_max = self.time_offset + self.time_window
         self.ax.set_xlim(x_min, x_max)
-        
-        # Y轴范围（音高，考虑缩放级别）
-        actual_range = self.y_view_range / self.zoom_level
-        y_min = self.y_view_center - actual_range
-        y_max = self.y_view_center + actual_range
-        self.ax.set_ylim(y_min, y_max)
-        # 如果启用freeze但中心已变化，发出一次性监控日志
+
+        # Y轴范围（音高）
+        self.ax.set_ylim(y_start, y_end)
+
+        # 纵轴漂移监控（锁定模式下）
         if getattr(self, 'freeze_y_center', False):
             drift = abs(self.y_view_center - getattr(self, '_initial_y_center', self.y_view_center))
             if drift > 0.05 and abs(drift - getattr(self, '_last_warn_y_shift', 0.0)) > 0.02:
-                print(f"⚠️ [YDRIFT-DETECT] update_axis_ranges drift={drift:.3f} center={self.y_view_center:.3f}")
+                print(f"⚠️ [YDRIFT-DETECT] setup_ecg_grid drift={drift:.3f} center={self.y_view_center:.3f}")
                 self._last_warn_y_shift = drift
     
-    def should_show_note_label(self, octave, semitone, y_pos):
-        """基于缩放级别决定是否显示音符标签"""
-        # 检查是否在中音区核心范围内（C3-C6）
-        is_core_range = 3 <= octave <= 6
-        
-        # 检查是否是主音（C音，即semitone=0）
-        is_main_note = semitone == 0
-        
-        # 检查是否是关键半音（C、D、E、F、G、A、B，即白键）
-        is_white_key = semitone in [0, 2, 4, 5, 7, 9, 11]
-        
-        # 检查是否是重要音程点（C、F、G，即完全音程）
-        is_perfect_interval = semitone in [0, 5, 7]  # C、F、G
-        
-        # 检查是否是扩展核心范围（C2-C7）
-        is_extended_range = 2 <= octave <= 7
-        
-        # 根据缩放级别决定显示策略
-        if self.zoom_level >= 4.5:  # 5.0x 全音区显示 - 改进：显示主要音符避免过密
-            # 显示C音和白键，避免黑键造成过密
-            return is_main_note or is_white_key
-        elif self.zoom_level >= 2.0:  # 2.5x 八度主音显示
-            return is_main_note or (is_core_range and is_white_key)
-        elif self.zoom_level >= 1.2:  # 1.5x 中音区聚焦 - 重新设计，更稀疏
-            # 核心策略：显示更少但更重要的音符，避免重叠
-            if is_core_range:
-                # 在核心范围内，只显示C、F、G（完全音程）
-                return is_perfect_interval
-            elif is_extended_range:
-                # 在扩展范围内，只显示主音
-                return is_main_note
-            else:
-                # 其他范围，只显示主音
-                return is_main_note
-        elif self.zoom_level >= 0.7:  # 0.8x 基础八度框架
-            return is_main_note  # 仅显示各八度主音
-        else:  # 0.5x 中央聚焦
-            return is_main_note and is_core_range  # 仅显示C3-C6的主音
+    # should_show_note_label 逻辑已被各 zoom 模式的严格规则替换
     
     def draw_interactive_note_labels(self, y_start, y_end):
-        """绘制交互式音调标签（确保始终显示，不受音高检测状态影响）"""
-        # 清理旧标签文本，避免累计
-        if hasattr(self, '_note_label_texts') and self._note_label_texts:
-            for _t in list(self._note_label_texts):
-                try:
-                    _t.remove()
-                except Exception:
-                    pass
+        """绘制交互式音调标签 (重新精简 & 修复缩进，5.0x 保持十二平均律垂直位置)"""
+        # 清理旧元素
+        if hasattr(self, '_note_label_texts'):
+            for t in self._note_label_texts:
+                try: t.remove()
+                except Exception: pass
         self._note_label_texts = []
-        # 清理旧的活跃高亮临时横线
-        if not hasattr(self, '_active_note_highlight_lines'):
-            self._active_note_highlight_lines = []
-        else:
-            for _ln in list(self._active_note_highlight_lines):
+        if hasattr(self, '_active_note_highlight_lines'):
+            for ln in self._active_note_highlight_lines:
                 try:
-                    if _ln in self.ax.lines:
-                        _ln.remove()
-                except Exception:
-                    pass
+                    if ln in self.ax.lines: ln.remove()
+                except Exception: pass
             self._active_note_highlight_lines.clear()
-        if not hasattr(self, 'current_pitch_y'):
-            self.current_pitch_y = 4.0
-        if not hasattr(self, 'current_pitch_active'):
-            self.current_pitch_active = False
-        
-        # 使用轴坐标(0~1) + blended transform，把标签整体放到左外侧，避免遮挡数据点
+        else:
+            self._active_note_highlight_lines = []
+        # 保障字段
+        if not hasattr(self, 'current_pitch_y'): self.current_pitch_y = 4.0
+        if not hasattr(self, 'current_pitch_active'): self.current_pitch_active = False
+        # 变换
         import matplotlib.transforms as mtransforms
         if not hasattr(self, '_axis_blended_transform'):
             self._axis_blended_transform = mtransforms.blended_transform_factory(self.ax.transAxes, self.ax.transData)
         label_x = self.label_x_frac
-        
-        # 当前音高区域（用于高亮计算）
         current_center = self.current_pitch_y if self.current_pitch_active else self.y_view_center
-        
-        # 智能显示范围：当前视图范围 + 额外缓冲区
-        display_start = max(0, y_start - 1)  # 扩展显示范围
-        display_end = min(8, y_end + 1)
-        
-        # 遍历整个显示范围内的音符
+        # 显示缓冲
+        display_start = max(0.0, y_start - 1.0)
+        display_end = min(8.0, y_end + 1.0)
+        profile = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+        self._current_zoom_profile = profile
+        mode = profile.get('mode')
+        filt = profile['note_filter']
+        fixed_mode = mode in ('zoom_0_5','zoom_0_8')
+        # 遍历十二平均律位置
         for octave in range(int(display_start), int(display_end) + 1):
             for semitone in range(12):
-                y_pos = octave + semitone / 12
-                if display_start <= y_pos <= display_end:
-                    # 基于缩放级别的智能标签过滤
-                    should_show = self.should_show_note_label(octave, semitone, y_pos)
-                    if not should_show:
+                # 模式过滤
+                if mode == 'zoom_0_5':
+                    if not (semitone == 0 and 3 <= octave <= 5):
                         continue
-                        
-                    note_name = self.note_names[semitone]
-                    note_full = f"{note_name}{octave}"
-                    
-                    # 计算与当前音高的距离（用于透明度和高亮）
-                    distance = abs(y_pos - current_center)
-                    
-                    # 修复：确保音调标注始终显示，使用统一的显示逻辑
-                    if semitone == 0:  # C音特殊高亮
-                        alpha = 1.0
-                        color = '#FFFF88'
-                        font_size = 11
-                        font_weight = 'bold'
-                    elif semitone in [2, 4, 5, 7, 9, 11]:  # 白键
-                        alpha = 0.8
-                        color = self.text_color
-                        font_size = 10
-                        font_weight = 'normal'
-                    else:  # 黑键
-                        alpha = 0.5
-                        color = self.text_color
-                        font_size = 9
-                        font_weight = 'normal'
-                    
-                    # 当前音高高亮（仅在有活跃音高时进行额外高亮）
-                    if self.current_pitch_active:
-                        if distance <= 0.2:  # 非常接近当前音高
-                            alpha = 1.0
-                            color = '#FFD700'  # 金色高亮
-                            font_weight = 'bold'
-                            font_size = 12
-                        elif distance <= 0.5:  # 临近半音
-                            alpha = max(alpha, 0.9)
-                            color = '#FFC107'  # 橙色
-                            font_weight = 'bold'
-                            font_size = 11
-                        elif distance <= 1.0:  # 临近全音
-                            alpha = max(alpha, 0.8)
-                            color = '#FFEB3B'  # 黄色
-                    
-                    # 根据显示范围调整透明度（确保边缘渐变）
-                    view_distance = min(abs(y_pos - y_start), abs(y_pos - y_end))
-                    if view_distance < 0.5:
-                        alpha *= (view_distance / 0.5)  # 边缘渐变效果
-                    
-                    # 只显示在有效透明度范围内的标签
-                    if alpha >= 0.2:
-                        # 绘制音符标签（左侧固定 2% 位置，使用 bbox 提升可读性）
-                        txt = self.ax.text(label_x, y_pos, note_full,
-                                           fontsize=font_size, ha='right', va='center',
-                                           color=color, alpha=alpha, fontweight=font_weight,
-                                           transform=self._axis_blended_transform,
-                                           clip_on=False,
-                                           zorder=50,
-                                           bbox=dict(facecolor=self.bg_color, edgecolor='none', pad=0.2, alpha=0.55))
-                        # 额外像素左移
-                        try:
-                            txt.set_x(self.ax.transAxes.inverted().transform(
-                                (self.ax.transAxes.transform((label_x,0))[0] + self.label_left_pixel_offset,
-                                 0))[0])
-                        except Exception:
-                            pass
-                        self._note_label_texts.append(txt)
-                        
-                        # 活跃音高的网格线（仅在当前音高附近显示）
-                        if self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5:
-                            line_alpha = alpha * 0.3
-                            ln = self.ax.axhline(y=y_pos, color=color, linestyle=':',
-                                                 linewidth=0.8, alpha=line_alpha, zorder=5)
-                            self._active_note_highlight_lines.append(ln)
+                elif mode == 'zoom_0_8':
+                    if semitone != 0: continue
+                elif mode == 'zoom_1_5':
+                    if semitone not in (0,5,7): continue
+                elif mode == 'zoom_2_5':
+                    if 3 <= octave <= 5:
+                        if semitone not in (0,2,4,5,7,9,11): continue
+                    else:
+                        if semitone not in (0,5,7): continue
+                elif mode == 'zoom_5_0':
+                    pass
+                else:
+                    if not filt(octave, semitone): continue
+                # 统一再次通过 filter 保障
+                if not filt(octave, semitone):
+                    continue
+                y_pos = octave + semitone / 12.0
+                if not (display_start <= y_pos <= display_end):
+                    continue
+                note_full = f"{self.note_names[semitone]}{octave}"
+                distance = abs(y_pos - current_center)
+                # 样式层级
+                if mode == 'zoom_5_0':
+                    if semitone == 0:
+                        font_size = 11; alpha = 1.0; color = '#FFFF88'; font_weight = 'bold'
+                    elif semitone in (2,4,5,7,9,11):
+                        font_size = 10; alpha = 0.80; color = self.text_color; font_weight = 'normal'
+                    else:
+                        font_size = 9; alpha = 0.52; color = self.text_color; font_weight = 'normal'
+                elif mode == 'zoom_0_5':
+                    font_size = 12; alpha = 1.0; color = '#FFFF88'; font_weight = 'bold'
+                elif mode == 'zoom_2_5' and not (3 <= octave <= 5):
+                    if semitone == 0:
+                        font_size = 11; alpha = 0.9; color = '#FFFFAA'; font_weight = 'bold'
+                    else:
+                        font_size = 9; alpha = 0.55; color = self.text_color; font_weight = 'normal'
+                elif semitone == 0:
+                    font_size = 11; alpha = 1.0; color = '#FFFF88'; font_weight = 'bold'
+                elif semitone in (2,4,5,7,9,11):
+                    font_size = 10; alpha = 0.8; color = self.text_color; font_weight = 'normal'
+                else:
+                    font_size = 9; alpha = 0.5; color = self.text_color; font_weight = 'normal'
+                if self.current_pitch_active:
+                    if distance <= 0.2:
+                        font_size = max(font_size, 12); alpha = 1.0; color = '#FFD700'; font_weight = 'bold'
+                    elif distance <= 0.5:
+                        alpha = max(alpha, 0.9); color = '#FFC107'; font_weight = 'bold'
+                    elif distance <= 1.0:
+                        alpha = max(alpha, 0.8); color = '#FFEB3B'
+                # 边缘淡出（固定模式主音 & 全局边界C0/C8 不淡出）
+                apply_fade = True
+                if (fixed_mode and semitone == 0) or (semitone == 0 and octave in (0,8)):
+                    apply_fade = False
+                if apply_fade:
+                    vd = min(abs(y_pos - y_start), abs(y_pos - y_end))
+                    if vd < 0.5:
+                        alpha *= (vd / 0.5)
+                if alpha < 0.2:
+                    continue
+                txt = self.ax.text(label_x, y_pos, note_full,
+                                   fontsize=font_size, ha='right', va='center',
+                                   color=color, alpha=alpha, fontweight=font_weight,
+                                   transform=self._axis_blended_transform,
+                                   clip_on=False, zorder=50,
+                                   bbox=dict(facecolor=self.bg_color, edgecolor='none', pad=0.2, alpha=0.55))
+                try:
+                    base_px = self.ax.transAxes.transform((label_x,0))[0]
+                    extra_px = 0
+                    if mode == 'zoom_5_0':  # 水平交错：奇数半音再左移 4px
+                        if semitone % 2 == 1:
+                            extra_px = -4
+                    new_axes_x = self.ax.transAxes.inverted().transform(
+                        (base_px + self.label_left_pixel_offset + extra_px, 0))[0]
+                    txt.set_x(new_axes_x)
+                except Exception:
+                    pass
+                self._note_label_texts.append(txt)
+                if self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5:
+                    ln_alpha = alpha * 0.3
+                    try:
+                        ln = self.ax.axhline(y=y_pos, color=color, linestyle=':', linewidth=0.8, alpha=ln_alpha, zorder=5)
+                        self._active_note_highlight_lines.append(ln)
+                    except Exception:
+                        pass
+        # 边界标签保障（滚动模式）
+        if mode in ('zoom_1_5','zoom_2_5','zoom_5_0'):
+            for boundary_oct in (0,8):
+                if not (y_start - 0.001 <= boundary_oct <= y_end + 0.001):
+                    continue
+                wanted = f"C{boundary_oct}"
+                if any(t.get_text() == wanted for t in self._note_label_texts):
+                    continue
+                txt = self.ax.text(label_x, boundary_oct, wanted,
+                                   fontsize=12, ha='right', va='center',
+                                   color='#FFFFAA', alpha=0.95, fontweight='bold',
+                                   transform=self._axis_blended_transform,
+                                   clip_on=False, zorder=60,
+                                   bbox=dict(facecolor=self.bg_color, edgecolor='none', pad=0.25, alpha=0.65))
+                try:
+                    base_px = self.ax.transAxes.transform((label_x,0))[0]
+                    new_axes_x = self.ax.transAxes.inverted().transform(
+                        (base_px + self.label_left_pixel_offset, 0))[0]
+                    txt.set_x(new_axes_x)
+                except Exception:
+                    pass
+                self._note_label_texts.append(txt)
     
     def setup_sparse_grid(self, y_start, y_end):
         """稀疏网格模式（只显示八度线）"""
@@ -6114,40 +6384,60 @@ class ECGStylePitchVisualizer(QWidget):
     
     def setup_medium_grid(self, y_start, y_end):
         """中等密度网格（显示主要音符）"""
+        profile = getattr(self, '_current_zoom_profile', None)
+        if not profile:
+            profile = self._get_zoom_profile(); self._current_zoom_profile = profile
+        filt = profile['note_filter']
         for octave in range(max(0, int(y_start)), min(9, int(y_end) + 2)):
-            # 八度线
-            y_pos = octave
-            if y_start <= y_pos <= y_end:
-                self.ax.axhline(y=y_pos, color=self.grid_color, linestyle='-', 
-                               linewidth=1.5, alpha=0.8)
-            
-            # 主要音符网格线
-            major_notes = [0, 2, 4, 5, 7, 9, 11]  # C, D, E, F, G, A, B
-            for semitone in major_notes:
+            y_oct = octave
+            if y_start <= y_oct <= y_end:
+                self.ax.axhline(y=y_oct, color=self.grid_color, linestyle='-', linewidth=1.2, alpha=0.75)
+            for semitone in (0,2,4,5,7,9,11):
+                if semitone == 0 or not filt(octave, semitone):
+                    continue
                 y_pos = octave + semitone / 12
-                if y_start <= y_pos <= y_end and semitone != 0:
-                    self.ax.axhline(y=y_pos, color=self.grid_color, 
-                                   linestyle=':', linewidth=0.8, alpha=0.6)
+                if y_start <= y_pos <= y_end:
+                    self.ax.axhline(y=y_pos, color=self.grid_color, linestyle=':', linewidth=0.7, alpha=0.5)
         
         # 使用智能交互式标签
         self.draw_interactive_note_labels(y_start, y_end)
     
     def setup_dense_grid(self, y_start, y_end):
         """密集网格模式（显示所有音符）"""
+        profile = getattr(self, '_current_zoom_profile', None)
+        if not profile:
+            profile = self._get_zoom_profile(); self._current_zoom_profile = profile
+        filt = profile['note_filter']
+        mode = profile.get('mode')
         for octave in range(max(0, int(y_start)), min(9, int(y_end) + 2)):
-            # 八度线
-            y_pos = octave
-            if y_start <= y_pos <= y_end:
-                self.ax.axhline(y=y_pos, color=self.grid_color, linestyle='-', 
-                               linewidth=1.5, alpha=0.8)
-            
-            # 所有半音网格线
+            y_oct = octave
+            if y_start <= y_oct <= y_end:
+                self.ax.axhline(y=y_oct, color=self.grid_color, linestyle='-', linewidth=1.0, alpha=0.65)
             for semitone in range(12):
+                if semitone == 0 or not filt(octave, semitone):
+                    continue
                 y_pos = octave + semitone / 12
-                if y_start <= y_pos <= y_end and semitone != 0:
-                    alpha = 0.6 if semitone in [2, 4, 7, 9, 11] else 0.3
-                    self.ax.axhline(y=y_pos, color=self.grid_color, 
-                                   linestyle=':', linewidth=0.8, alpha=alpha)
+                if y_start <= y_pos <= y_end:
+                    if mode == 'zoom_5_0':
+                        # 5.0 模式：黑键最淡，白键次之
+                        if semitone in [1,3,6,8,10]:
+                            alpha = 0.18; lw = 0.4
+                        elif semitone in [2,4,7,9,11]:
+                            alpha = 0.36; lw = 0.5
+                        else:
+                            alpha = 0.5; lw = 0.55
+                    elif mode == 'zoom_2_5':
+                        if 3 <= octave <= 5:
+                            if semitone in [2,4,7,9,11]:
+                                alpha = 0.50; lw = 0.55
+                            else:
+                                alpha = 0.35; lw = 0.45
+                        else:
+                            alpha = 0.28; lw = 0.45
+                    else:
+                        alpha = 0.55 if semitone in [2,4,7,9,11] else 0.32
+                        lw = 0.55
+                    self.ax.axhline(y=y_pos, color=self.grid_color, linestyle=':', linewidth=lw, alpha=alpha)
         
         # 使用智能交互式标签
         self.draw_interactive_note_labels(y_start, y_end)
@@ -6170,6 +6460,10 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 # 强制使用锁定范围
                 self.ax.set_ylim(*self._locked_y_limits)
+            try:
+                print(f"[AXIS LOCKED] ylim={self._locked_y_limits}")
+            except Exception:
+                pass
 
             # 冻结模式下也刷新标签使其始终出现在当前左边界
             try:
@@ -6183,10 +6477,38 @@ class ECGStylePitchVisualizer(QWidget):
             return
 
         # 正常（未锁定）模式：根据当前中心与缩放计算Y范围
-        actual_range = self.y_view_range / self.zoom_level
-        y_min = self.y_view_center - actual_range
-        y_max = self.y_view_center + actual_range
+        half_range = self.compute_half_range()
+        profile = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+        # 更新当前可视半范围供拖拽换算使用
+        self.y_view_range = half_range
+        if profile.get('disable_v_scroll'):
+            # 固定模式直接根据规范设置范围
+            if profile['mode'] == 'zoom_0_8':
+                y_min, y_max = 0.0, 8.0
+                self.y_view_center = 4.0
+            else:  # zoom_0_5
+                # 保证完整覆盖 C3,C4,C5 三个标签 (含上下边界微扩展避免边界裁剪)
+                y_min, y_max = 2.95, 5.05
+                self.y_view_center = 4.0
+        else:
+            # 可滚动模式：限制中心避免超出 0-8
+            self.clamp_y_center(half_range)
+            y_min = self.y_view_center - half_range
+            y_max = self.y_view_center + half_range
+            if y_min < 0:
+                shift = -y_min; y_min += shift; y_max += shift; self.y_view_center += shift
+            if y_max > 8:
+                shift = y_max - 8; y_min -= shift; y_max -= shift; self.y_view_center -= shift
         self.ax.set_ylim(y_min, y_max)
+        try:
+            print(f"[AXIS] mode={profile.get('mode')} center={self.y_view_center:.2f} ylim=({y_min:.2f},{y_max:.2f})")
+        except Exception:
+            pass
+        # 记录当前内部 profile 半范围与可滚动状态，便于诊断“看起来没动”问题
+        try:
+            print(f"[AXIS DIAG] half_range={half_range:.2f} disable_scroll={profile.get('disable_v_scroll')} center={self.y_view_center:.2f}")
+        except Exception:
+            pass
 
         # 更新X轴范围（时间）优先使用最后渲染窗口，避免显示落后导致旧右边界（如5.21s）卡住
         if hasattr(self, '_last_render_window'):
@@ -6250,10 +6572,14 @@ class ECGStylePitchVisualizer(QWidget):
         fig_height = self.figure.get_figheight() * self.figure.dpi
         fig_width = self.figure.get_figwidth() * self.figure.dpi
         
-        # 垂直拖拽调整音高范围
-        dy_data = -dy / fig_height * (self.y_view_range * 2) * 2  # 负号因为屏幕坐标向下为正
-        new_y_center = self.drag_start_y_center + dy_data
-        self.y_view_center = max(1.5, min(6.5, new_y_center))  # 限制在合理范围内
+        # 垂直拖拽调整音高范围（若允许）
+        prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+        if not prof.get('disable_v_scroll'):
+            if not hasattr(self, 'y_view_range'):
+                self.y_view_range = self.compute_half_range()
+            dy_data = -dy / fig_height * (self.y_view_range * 2)
+            new_y_center = self.drag_start_y_center + dy_data
+            self.y_view_center = max(1.0, min(7.0, new_y_center))
         
         # 水平拖拽调整时间偏移
         dx_data = -dx / fig_width * self.time_window * 1.5  # 负号实现反向拖拽
@@ -6271,6 +6597,9 @@ class ECGStylePitchVisualizer(QWidget):
         """鼠标滚轮事件（上下移动音高视图）"""
         if event.inaxes != self.ax:
             return
+        prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+        if prof.get('disable_v_scroll'):
+            return  # 不允许滚动
         
         # 滚轮上下移动音高视图中心
         scroll_sensitivity = 0.3  # 滚动敏感度
@@ -6280,8 +6609,14 @@ class ECGStylePitchVisualizer(QWidget):
             delta_y = -scroll_sensitivity
         
         # 更新音高视图中心
+        prev_center = self.y_view_center
         new_y_center = self.y_view_center + delta_y
-        self.y_view_center = max(1.5, min(6.5, new_y_center))  # 限制在合理范围内
+        self.y_view_center = max(0.5, min(7.5, new_y_center))
+        try:
+            print(f"[MWHEEL] mode={prof.get('mode')} delta={delta_y:+.2f} center={self.y_view_center:.3f} Δ={self.y_view_center-prev_center:+.3f}")
+        except Exception:
+            pass
+        self._user_overrode_center = True
         
         # 🔥 完全按照vertical_scroll的模式处理，确保一致性
         # 先更新坐标轴范围
@@ -6309,18 +6644,35 @@ class ECGStylePitchVisualizer(QWidget):
         return True
     
     def on_vertical_scroll(self, value):
-        """垂直滚动条事件（控制音高视图中心）"""
-        # 将滚动条值 (0-100) 映射到音高范围 (1.5-6.5)
-        # 滚动条顶部(0)对应高音(6.5)，底部(100)对应低音(1.5)
-        normalized_value = (100 - value) / 100.0  # 反转映射
-        self.y_view_center = 1.5 + normalized_value * 5.0
-        
-        # 更新显示
+        """垂直滚动条事件（控制音高视图中心, 遵从 zoom profile 的 disable_v_scroll）"""
+        prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+        if prof.get('disable_v_scroll'):
+            # 强制保持其指定中心
+            fc = prof.get('force_center', 4.0)
+            if self.y_view_center != fc:
+                self.y_view_center = fc
+                self.update_axis_ranges()
+            self.update_scrollbars()
+            return
+        half_range = self.compute_half_range()
+        min_center = half_range
+        max_center = 8.0 - half_range
+        normalized_value = (100 - value) / 100.0
+        self.y_view_center = min_center + normalized_value * (max_center - min_center)
+        self._user_overrode_center = True
+        try:
+            print(f"[VSCROLL] value={value} center={self.y_view_center:.3f} half={half_range:.2f} bounds=({min_center:.2f},{max_center:.2f}) mode={prof.get('mode')}")
+        except Exception:
+            pass
         self.update_axis_ranges()
-        
-        # 🔥 修复音调线消失问题：强制重新绘制音调线数据
+        # 立即同步以避免下一次刷新覆盖视觉效果
+        self.update_scrollbars()
+        try:
+            ylim = self.ax.get_ylim()
+            print(f"[VSCROLL AXIS] mode={prof.get('mode')} ylim={ylim}")
+        except Exception:
+            pass
         if len(self.pitch_data) > 0:
-            # 强制更新显示，确保音调线在垂直滚动后重新绘制
             self._force_redraw_on_next_update = True
             self.update_display()
         else:
@@ -6367,11 +6719,38 @@ class ECGStylePitchVisualizer(QWidget):
     def update_scrollbars(self):
         """更新滚动条位置以同步当前视图状态"""
         if hasattr(self, 'v_scrollbar'):
-            # 更新垂直滚动条
-            scroll_value = int((self.y_view_center - 1.5) / 5.0 * 100)
-            self.v_scrollbar.blockSignals(True)
-            self.v_scrollbar.setValue(100 - scroll_value)
-            self.v_scrollbar.blockSignals(False)
+            prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+            half_range = self.compute_half_range()
+            if prof.get('disable_v_scroll'):
+                # 0.5x 需固定显示 C3-C5; 0.8x 固定全区中心
+                fc = prof.get('force_center', 4.0)
+                self.y_view_center = fc
+                self.v_scrollbar.setEnabled(False)
+                self.v_scrollbar.blockSignals(True)
+                self.v_scrollbar.setValue(50)
+                self.v_scrollbar.blockSignals(False)
+            else:
+                self.v_scrollbar.setEnabled(True)
+                min_center = half_range
+                max_center = 8.0 - half_range
+                # 不主动改写 center，只在极端越界时校正
+                changed = False
+                if self.y_view_center < min_center:
+                    self.y_view_center = min_center; changed = True
+                elif self.y_view_center > max_center:
+                    self.y_view_center = max_center; changed = True
+                if max_center > min_center:
+                    ratio = (self.y_view_center - min_center) / (max_center - min_center)
+                else:
+                    ratio = 0.5
+                scroll_value = int((1.0 - ratio) * 100)
+                try:
+                    print(f"[SCROLLBAR SYNC] mode={prof.get('mode')} center={self.y_view_center:.2f} half={half_range} val={scroll_value} changed={changed}")
+                except Exception:
+                    pass
+                self.v_scrollbar.blockSignals(True)
+                self.v_scrollbar.setValue(scroll_value)
+                self.v_scrollbar.blockSignals(False)
         
         if hasattr(self, 'h_scrollbar'):
             # 更新水平滚动条 - 适应新的滚动逻辑
@@ -6411,6 +6790,15 @@ class ECGStylePitchVisualizer(QWidget):
             self.current_global_time = global_time
             
             if has_pitch and frequency > 0:
+                # 若清除后尚未重建网格，先构建一次
+                if getattr(self, '_needs_grid_rebuild', False):
+                    try:
+                        self.setup_ecg_grid(create_pitch_line=True)
+                        self._needs_grid_rebuild = False
+                    except Exception as _rg_e:
+                        print(f"⚠️ 网格重建失败: {_rg_e}")
+                if getattr(self, '_suppress_updates_until_new_data', False):
+                    self._suppress_updates_until_new_data = False
                 # 🔥 修复音高精度丢失问题：保持完整的小数精度
                 # 转换频率到Y轴位置（保持连续精度，不量化到半音）
                 midi_number = 69 + 12 * np.log2(frequency / 440)  # A4 = 440Hz = MIDI 69
@@ -6443,7 +6831,8 @@ class ECGStylePitchVisualizer(QWidget):
                 # 自动跟随功能（只在有音高且未锁定纵轴时调整音高轴）
                 if self.auto_follow and self.auto_scroll_enabled and not getattr(self, 'freeze_y_center', False):
                     # 音高轴自动跟随（平滑移动到新音高区域）
-                    current_display_range = self.y_view_range / self.zoom_level
+                    # 新缩放模型：compute_half_range() 已直接返回当前可见半范围
+                    current_display_range = self.compute_half_range()
                     margin = current_display_range * 0.2  # 20%的边距
                     
                     # 检查是否需要调整视图中心
@@ -6468,6 +6857,9 @@ class ECGStylePitchVisualizer(QWidget):
                 # 无音高时，仍然更新时间相关状态，但不添加音高数据点
                 # 这样音调线条会断开，但时间轴继续推进
                 self.current_pitch_active = False
+                # 抑制期不进行显示刷新
+                if getattr(self, '_suppress_updates_until_new_data', False):
+                    return
                 
                 # 调试信息（每200帧打印一次）
                 if hasattr(self, '_no_pitch_counter'):
@@ -6633,6 +7025,8 @@ class ECGStylePitchVisualizer(QWidget):
 
     def update_display(self):
         """更新显示（支持历史数据查看和断续音调曲线）"""
+        if getattr(self, '_suppress_updates_until_new_data', False):
+            return
         if len(self.pitch_data) == 0:
             return
         
@@ -6808,16 +7202,21 @@ class ECGStylePitchVisualizer(QWidget):
             
             # 根据当前时间偏移过滤数据
             # 动态窗口策略：录制早期(<完整窗口)时右侧边界跟随最新时间，避免一开始就铺满16秒导致8秒居中逻辑失效
-            time_start = self.time_offset
-            desired_end = self.time_offset + self.time_window
+            # === 轴窗口 & 数据窗口分离 ===
+            # 轴显示窗口(视觉范围)
+            axis_start = self.time_offset
+            axis_end = self.time_offset + self.time_window
             latest_time = self.time_data[-1] if self.time_data else 0.0
-            # 修复：仅在 <= center_display_time(8s) 阶段保持窗口[0,16]，8s 后尊重 time_offset 以保证居中滚动
             if latest_time <= self.center_display_time:
-                time_start = 0.0
-                desired_end = self.time_window
-            time_end = desired_end
-            # 记录最新渲染窗口供 axis 同步，防止仍显示旧右边界（例如卡在5.21s）
-            self._last_render_window = (time_start, time_end)
+                axis_start = 0.0
+                axis_end = self.time_window
+            # 数据窗口：向左保留一个缓冲尾迹，减少“段块截尾”视觉感
+            if not hasattr(self, '_tail_buffer_sec'):
+                self._tail_buffer_sec = 0.4  # 可调：0.3~0.6
+            data_start = max(0.0, axis_start - self._tail_buffer_sec)
+            data_end = axis_end
+            # 记录最近渲染窗口（轴窗口）
+            self._last_render_window = (axis_start, axis_end)
             
             # 过滤时间窗口内的数据（保持顺序）
             # 修复：原实现只前向递增start_idx，向左/回到早期时间会丢失旧点
@@ -6830,16 +7229,16 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 import bisect
                 try:
-                    start_idx = bisect.bisect_left(_time_seq, time_start - 1e-6)
+                    start_idx = bisect.bisect_left(_time_seq, data_start - 1e-6)
                 except Exception as _bis_e:
-                    print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} time_start={time_start:.4f}")
+                    print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} data_start={data_start:.4f}")
                     # 回退线性查找
                     start_idx = 0
-                    while start_idx < data_len and _time_seq[start_idx] < time_start - 1e-6:
+                    while start_idx < data_len and _time_seq[start_idx] < data_start - 1e-6:
                         start_idx += 1
                 # 仍向后线性扩展到窗口结束（数据局部连续，线性更快）
                 end_idx = start_idx
-                while end_idx < data_len and _time_seq[end_idx] <= time_end + 1e-6:
+                while end_idx < data_len and _time_seq[end_idx] <= data_end + 1e-6:
                     end_idx += 1
                 valid_indices = list(range(start_idx, end_idx))
                 # 记录用于下一帧（允许轻微回退缓存1个点）
@@ -6872,7 +7271,7 @@ class ECGStylePitchVisualizer(QWidget):
             except TypeError as _idx_e:
                 # 捕获可能的 slice 索引异常，输出详细上下文
                 print(f"[INDEX_ERR] {type(_idx_e).__name__}: {_idx_e} valid_indices_sample={valid_indices[:10]} len_valid={len(valid_indices)} data_len={data_len}")
-                print(f"[INDEX_STATE] start_idx={valid_indices[0] if valid_indices else 'NA'} end_idx={(valid_indices[-1] if valid_indices else 'NA')} time_window=({time_start:.3f},{time_end:.3f})")
+                print(f"[INDEX_STATE] start_idx={valid_indices[0] if valid_indices else 'NA'} end_idx={(valid_indices[-1] if valid_indices else 'NA')} axis_window=({axis_start:.3f},{axis_end:.3f}) data_window=({data_start:.3f},{data_end:.3f})")
                 import traceback as _tb
                 print("[INDEX_TRACE]" + ''.join(_tb.format_exc()))
                 # 回退：直接整窗截取（线性扫描）
@@ -6883,7 +7282,7 @@ class ECGStylePitchVisualizer(QWidget):
             if 'frame_trace' in locals() and frame_trace:
                 print("[FRAME] 窗口过滤 点数={} 用时={:.2f}ms".format(len(times), (phase_after_window - frame_cpu_start)*1000))
             
-            # 断续段分割：增量优化（新增点 / 窗口平移 / 超时 才重算）
+            # 断续段分割：增量优化（新增点 / 数据窗口平移 / 超时 才重算）
             segments = []
             recompute_needed = False
             if len(times) > 1:
@@ -6893,7 +7292,8 @@ class ECGStylePitchVisualizer(QWidget):
                 prev_window = getattr(self, '_segments_cache_window', None)
                 window_shift = 0.0
                 if prev_window:
-                    window_shift = abs(time_start - prev_window[0])
+                    # 使用数据窗口起点比较（含 tail 缓冲）
+                    window_shift = abs(data_start - prev_window[0])
                 # 条件：有新点 OR 窗口平移>0.02s OR 距上次重算>0.10s
                 if getattr(self, '_new_points_since_last_draw', 0) > 0:
                     recompute_needed = True
@@ -6902,12 +7302,15 @@ class ECGStylePitchVisualizer(QWidget):
                 elif (now_time - self._last_segments_recompute) > 0.10:
                     recompute_needed = True
                 if (hasattr(self, '_segments_cache') and not recompute_needed and
-                    prev_window and prev_window == (time_start, time_end)):
+                    prev_window and prev_window == (data_start, data_end)):
                     segments = self._segments_cache
                     if self.debug_flags.get('segment_log'):
                         if not hasattr(self, '_last_cache_hit_log') or now_time - self._last_cache_hit_log > 1.0:
-                            print(f"[SEG_DIAG] cache_hit window=({time_start:.2f},{time_end:.2f}) pts_cached={sum(len(s[0]) for s in segments)} segs={len(segments)} shift={window_shift:.3f}s dt={(now_time-self._last_segments_recompute)*1000:.0f}ms")
+                            print(f"[SEG_DIAG] cache_hit dataWin=({data_start:.2f},{data_end:.2f}) axisWin=({axis_start:.2f},{axis_end:.2f}) pts_cached={sum(len(s[0]) for s in segments)} segs={len(segments)} shift={window_shift:.3f}s dt={(now_time-self._last_segments_recompute)*1000:.0f}ms")
                             self._last_cache_hit_log = now_time
+                        # 统计 cache 命中
+                        if hasattr(self, '_stat_counters'):
+                            self._stat_counters['segment_cache_hits'] = self._stat_counters.get('segment_cache_hits', 0) + 1
                 else:
                     seg_t0 = time.time()
                     detected_gaps = []
@@ -6927,7 +7330,7 @@ class ECGStylePitchVisualizer(QWidget):
                     if len(current_segment_times) >= 1:
                         segments.append((current_segment_times, current_segment_pitches))
                     self._segments_cache = segments
-                    self._segments_cache_window = (time_start, time_end)
+                    self._segments_cache_window = (data_start, data_end)
                     self._last_segments_recompute = now_time
                     seg_dur = (time.time() - seg_t0) * 1000
                     self._seg_timing_samples.append(seg_dur)
@@ -6937,57 +7340,59 @@ class ECGStylePitchVisualizer(QWidget):
                             for gap in detected_gaps:
                                 print(f"[SEG] gap={gap['time_gap']:.2f}s prev={gap['prev_time']:.2f}s new={gap['new_time']:.2f}s")
                             if segments:
-                                print(f"[SEG] segments={len(segments)} pts={sum(len(seg[0]) for seg in segments)} range={segments[0][0][0]:.2f}-{segments[-1][0][-1]:.2f}s seg_dur={seg_dur:.1f}ms shift={window_shift:.3f}s dt={(now_time-self._last_segments_recompute)*1000:.0f}ms")
+                                print(f"[SEG] segments={len(segments)} pts={sum(len(seg[0]) for seg in segments)} range={segments[0][0][0]:.2f}-{segments[-1][0][-1]:.2f}s seg_dur={seg_dur:.1f}ms shift={window_shift:.3f}s dt={(now_time-self._last_segments_recompute)*1000:.0f}ms tail={self._tail_buffer_sec:.2f}s")
                             self._last_segments_count = len(segments)
+                            if hasattr(self, '_stat_counters'):
+                                self._stat_counters['segments_recomputed'] = self._stat_counters.get('segments_recomputed', 0) + 1
                     if 'frame_trace' in locals() and frame_trace:
-                        print("[FRAME] 分段处理 segs={} 重算?={} seg_time={:.2f}ms cache_window={} shift={:.3f}s".format(
-                            len(segments), recompute_needed, seg_dur if 'seg_dur' in locals() else 0.0, getattr(self,'_segments_cache_window',None), window_shift))
+                        print("[FRAME] 分段处理 segs={} 重算?={} seg_time={:.2f}ms cache_data_window={} axisWin=({:.2f},{:.2f}) shift={:.3f}s tail={:.2f}s".format(
+                            len(segments), recompute_needed, seg_dur if 'seg_dur' in locals() else 0.0, getattr(self,'_segments_cache_window',None), axis_start, axis_end, window_shift, self._tail_buffer_sec))
 
                     # === 细节点可视性诊断 / 异常检测 ===
                     try:
                         total_visible_points = sum(len(seg[0]) for seg in segments)
                         single_point_segs = sum(1 for seg in segments if len(seg[0]) == 1)
-                        window_span = time_end - time_start
+                        window_span = axis_end - axis_start
                         now_diag = now_time
                         if not hasattr(self, '_diag_last_fine_log'):
                             self._diag_last_fine_log = 0
                         if not hasattr(self, '_prev_visible_point_count'):
                             self._prev_visible_point_count = total_visible_points
                             self._prev_single_point_segs = single_point_segs
-                            self._prev_visible_window = (time_start, time_end)
+                            self._prev_visible_window = (axis_start, axis_end)
                             self._last_visible_time_set = set()
 
                         # 生成当前可见 time 集合（取整到 4ms 以压缩）
                         cur_time_set = set()
                         for seg_times, _sp in segments:
                             for tval in seg_times:
-                                if time_start - 1e-6 <= tval <= time_end + 1e-6:
+                                if axis_start - 1e-6 <= tval <= axis_end + 1e-6:
                                     cur_time_set.add(round(tval, 4))
 
                         # 检测丢失：上一帧仍在窗口、当前窗口几乎未左移（<0.05s）且大量点消失
                         if hasattr(self, '_last_visible_time_set') and self._last_visible_time_set:
                             prev_window_start, prev_window_end = self._prev_visible_window
-                            window_shift = abs(prev_window_start - time_start)
+                            window_shift = abs(prev_window_start - axis_start)
                             if window_shift < 0.05 and len(self._last_visible_time_set) > 0:
                                 missing_prev = [tv for tv in self._last_visible_time_set if tv not in cur_time_set]
                                 # 排除由于窗口右移自然滑出左边界的点
-                                missing_in_window = [tv for tv in missing_prev if tv >= time_start]
+                                missing_in_window = [tv for tv in missing_prev if tv >= axis_start]
                                 if missing_in_window:
                                     loss_ratio = len(missing_in_window) / max(1, len(self._last_visible_time_set))
                                     if loss_ratio > 0.15:  # 阈值：可见点骤减>15%
-                                        print(f"⚠️ [FINE_LOSS] abrupt loss ratio={loss_ratio*100:.1f}% lost={len(missing_in_window)} prev_total={len(self._last_visible_time_set)} window=({time_start:.2f},{time_end:.2f}) segs={len(segments)} single_seg={single_point_segs}")
+                                        print(f"⚠️ [FINE_LOSS] abrupt loss ratio={loss_ratio*100:.1f}% lost={len(missing_in_window)} prev_total={len(self._last_visible_time_set)} axisWin=({axis_start:.2f},{axis_end:.2f}) dataWin=({data_start:.2f},{data_end:.2f}) segs={len(segments)} single_seg={single_point_segs}")
                                         # 触发一次强制重绘标志，便于后续定位
                                         self._force_redraw_on_next_update = True
 
                         # 定期记录状态（1.2s节流）
                         if now_diag - self._diag_last_fine_log > 1.2:
-                            print(f"[FINE] win=({time_start:.2f},{time_end:.2f}) span={window_span:.2f}s pts={total_visible_points} segs={len(segments)} single_seg={single_point_segs} cache={'no' if recompute_needed else 'maybe'}")
+                            print(f"[FINE] axisWin=({axis_start:.2f},{axis_end:.2f}) dataWin=({data_start:.2f},{data_end:.2f}) span={window_span:.2f}s pts={total_visible_points} segs={len(segments)} single_seg={single_point_segs} cache={'no' if recompute_needed else 'maybe'} tail={self._tail_buffer_sec:.2f}s")
                             self._diag_last_fine_log = now_diag
 
                         # 保存当前状态
                         self._prev_visible_point_count = total_visible_points
                         self._prev_single_point_segs = single_point_segs
-                        self._prev_visible_window = (time_start, time_end)
+                        self._prev_visible_window = (axis_start, axis_end)
                         self._last_visible_time_set = cur_time_set
                     except Exception as _fine_e:
                         if self.debug_flags.get('segment_log'):
@@ -7084,12 +7489,16 @@ class ECGStylePitchVisualizer(QWidget):
                 current_ylim = self.ax.get_ylim()
                 
                 # 计算考虑缩放的实际Y轴范围
-                actual_y_range = self.y_view_range / self.zoom_level
+                # 新缩放：直接使用 compute_half_range() 作为半范围
+                actual_y_range = self.compute_half_range()
                 expected_y_min = self.y_view_center - actual_y_range
                 expected_y_max = self.y_view_center + actual_y_range
                 
-                if (abs(current_xlim[0] - time_start) > 0.1 or 
-                    abs(current_xlim[1] - time_end) > 0.1 or
+                # 兼容：若上段未定义（防御）
+                axis_start = locals().get('axis_start', getattr(self,'time_offset',0.0))
+                axis_end = locals().get('axis_end', axis_start + getattr(self,'time_window',16.0))
+                if (abs(current_xlim[0] - axis_start) > 0.1 or 
+                    abs(current_xlim[1] - axis_end) > 0.1 or
                     abs(current_ylim[0] - expected_y_min) > 0.1 or
                     abs(current_ylim[1] - expected_y_max) > 0.1):
                     self.update_axis_ranges()
@@ -7105,7 +7514,7 @@ class ECGStylePitchVisualizer(QWidget):
             # ---- 末尾帧总结 ----
             total_cpu = (time.time() - frame_cpu_start) * 1000
             if ('frame_trace' in locals() and frame_trace) or (perf_verbose and total_cpu > 15):
-                print(f"[FRAME] 结束 total_cpu={total_cpu:.1f}ms heavy_draw={draw_dur:.1f}ms window=({time_start:.2f},{time_end:.2f}) zoom={self.zoom_level:.2f} next_heavy_gap_target={heavy_interval_threshold*1000:.0f}ms")
+                print(f"[FRAME] 结束 total_cpu={total_cpu:.1f}ms heavy_draw={draw_dur:.1f}ms axisWin=({axis_start:.2f},{axis_end:.2f}) dataWin=({data_start:.2f},{data_end:.2f}) zoom={self.zoom_level:.2f} next_heavy_gap_target={heavy_interval_threshold*1000:.0f}ms tail={self._tail_buffer_sec:.2f}s")
             # 统计异常刷新间隔（卡顿触发）
             if not hasattr(self, '_stutter_events'): self._stutter_events = 0
             if self._diag_display_intervals:
@@ -7276,6 +7685,9 @@ class ECGStylePitchVisualizer(QWidget):
                     if hasattr(line, 'get_xdata') and len(line.get_xdata()) >= 2:
                         line.set_alpha(0.8)
             print(f"✅ 断续音调曲线绘制完成: {len(segments)}个独立音调段 (增量更新)")
+            # 周期性摘要输出（低频，避免淹没日志）
+            if hasattr(self, '_maybe_summary'):
+                self._maybe_summary()
             
             # 🔥 关键修复：绘制完成后必须重绘画布
             self.canvas.draw_idle()
@@ -8000,45 +8412,170 @@ class ECGStylePitchVisualizer(QWidget):
         """缩放级别改变"""
         self.zoom_level = value / 10.0  # 1-50 映射到 0.1-5.0
         self.zoom_label.setText(f"{self.zoom_level:.1f}x")
-        
-        # 更新预设按钮的高亮状态
+        # 重新获取并应用 zoom profile
+        self._apply_zoom_profile_center()
+        try:
+            prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+            print(f"[ZOOM CHANGED] slider_value={value} zoom={self.zoom_level:.2f} mode={prof.get('mode')}")
+        except Exception:
+            pass
         self.update_preset_button_highlight()
-        
-        # 更新显示
+        # 刷新显示
         self.update_axis_ranges()
-        self.canvas.draw()
-        
-        # 更新状态显示
+        self.update_scrollbars()
+        if hasattr(self, 'canvas'):
+            self.canvas.draw()
         self.update_status_display()
     
     def set_zoom_preset(self, zoom_level):
         """设置预设缩放级别"""
         # 更新滑块位置
         slider_value = int(zoom_level * 10)
-        self.zoom_slider.setValue(slider_value)
-        
-        # 更新缩放级别（这会触发 on_zoom_changed）
+        # 防止触发 valueChanged -> on_zoom_changed 造成双重应用与日志混乱
+        if hasattr(self, 'zoom_slider'):
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(slider_value)
+            self.zoom_slider.blockSignals(False)
+        # 更新缩放级别
         self.zoom_level = zoom_level
         self.zoom_label.setText(f"{self.zoom_level:.1f}x")
-        
+        # 应用缩放配置（可能重置中心）
+        self._apply_zoom_profile_center()
+        # 若进入可滚动模式且之前被锁定，则自动解锁以避免用户误以为无效
+        prof_tmp = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+        if not prof_tmp.get('disable_v_scroll') and getattr(self, 'freeze_y_center', False):
+            print("[AUTO UNLOCK] 进入可滚动缩放模式，自动解除Y轴锁定")
+            self.freeze_y_center = False
+            self._locked_y_limits = None
+        try:
+            prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+            print(f"[ZOOM PRESET APPLY] preset={zoom_level} slider={slider_value} mode={prof.get('mode')} center={self.y_view_center:.2f}")
+        except Exception:
+            pass
         # 更新预设按钮高亮
         self.update_preset_button_highlight()
-        
+
         # 更新显示
         self.update_axis_ranges()
+        self.update_scrollbars()
         self.canvas.draw()
-        
+
         # 显示设置信息
         preset_info = {
-            0.5: "中央聚焦 - 仅显示中央C附近3个八度(C3-C5)，极端缩放时的核心区域",
-            0.8: "基础八度框架 - 仅显示C0-C8每个八度的主音，最简化的参考框架",
-            1.5: "稀疏音程 - 显示完全音程(C-F-G)避免重叠，清晰的音程关系",
-            2.5: "八度主音显示 - 显示C0-C8每个八度主音及少量关键半音，保持整体结构清晰",
-            5.0: "全音区显示 - 显示所有88键(C0-C8)及中间半音，适合需要查看全部细节的情况"
+            0.5: "固定 C3–C5 仅显示 C3/C4/C5 主音C (禁止纵向滚动)",
+            0.8: "固定 C0–C8 仅显示各八度主音C (禁止纵向滚动)",
+            1.5: "可滚动 C0–C8 初始窗口 C2–C6 显示 C/F/G",
+            2.5: "可滚动 C0–C8 初始窗口 C3–C5 窗口内白键 其余区域 C/F/G",
+            5.0: "可滚动 C0–C8 初始窗口 C3–C5 显示全部半音"
         }
-        
+
         if zoom_level in preset_info:
-            print(f"🔍 缩放预设: {zoom_level}x - {preset_info[zoom_level]}")
+            if getattr(self, '_last_zoom_preset_logged', None) != zoom_level:
+                print(f"[PRESET INFO] {zoom_level}x -> {preset_info[zoom_level]}")
+                self._last_zoom_preset_logged = zoom_level
+
+    def get_vertical_compression_factor(self, zoom_level: float) -> float:
+        """(已废弃) 兼容旧代码的占位。现改用 compute_half_range。"""
+        return 1.0
+
+    def compute_half_range(self) -> float:
+        """根据当前 zoom_level 返回可见半范围(八度)。
+        设计目标：
+        - zoom 越小 -> 只看核心/稀疏信息（半范围较小）
+        - zoom 越大 -> 展示更多音调，直到 5.0 全可视 (0-8 八度)
+        半范围 *2 即总高度。
+        """
+        z = self.zoom_level
+        # 保持与 zoom preset 语义一致：
+        if z <= 0.55:   # 0.5x C3-C5
+            return 1.0
+        if z <= 0.95:   # 0.8x 全区
+            return 4.0
+        if z <= 1.9:    # 1.5x C2-C6
+            return 2.0
+        if z <= 3.2:    # 2.5x C3-C5
+            return 1.0
+        return 1.0      # 5.0x C3-C5 细节（保持）
+
+    # === 新增：缩放配置与标签过滤 ===
+    def _get_zoom_profile(self):
+        """返回当前 zoom 的标签/网格策略配置。
+        返回 dict: {
+          'mode': str,
+          'note_filter': callable(octave:int,semitone:int)->bool,
+          'force_center': float|None (进入该缩放首次时重置中心)
+        }"""
+        z = self.zoom_level
+        if z <= 0.55:  # 0.5x 固定 C3-C5 只主音
+            return {
+                'mode': 'zoom_0_5',
+                'force_center': 4.0,
+                'disable_v_scroll': True,
+                'note_filter': lambda o, s: (s == 0 and 3 <= o <= 5)
+            }
+        if z <= 0.95:  # 0.8x 全区主音 C0-C8
+            return {
+                'mode': 'zoom_0_8',
+                'force_center': 4.0,
+                'disable_v_scroll': True,
+                'note_filter': lambda o, s: s == 0
+            }
+        if z <= 1.9:  # 1.5x C/F/G 可滚动
+            return {
+                'mode': 'zoom_1_5',
+                'force_center': 4.0,
+                'disable_v_scroll': False,
+                'note_filter': lambda o, s: s in {0,5,7}
+            }
+        if z <= 3.2:  # 2.5x 窗口内 C3-C5 自然音，其他区域 C/F/G
+            return {
+                'mode': 'zoom_2_5',
+                'force_center': 4.0,
+                'disable_v_scroll': False,
+                'note_filter': lambda o, s: ((3 <= o <= 5 and s in {0,2,4,5,7,9,11}) or (s in {0,5,7}))
+            }
+        # 5.0x 全部半音
+        return {
+            'mode': 'zoom_5_0',
+            'force_center': 4.0,
+            'disable_v_scroll': False,
+            'note_filter': lambda o, s: True
+        }
+
+    def _should_show_note_by_profile(self, octave:int, semitone:int) -> bool:
+        profile = getattr(self, '_current_zoom_profile', None)
+        if not profile:
+            profile = self._get_zoom_profile()
+            self._current_zoom_profile = profile
+        return profile['note_filter'](octave, semitone)
+
+    def _apply_zoom_profile_center(self):
+        profile = self._get_zoom_profile()
+        # 如果模式变化或首次进入该模式，重设中心
+        prev_mode = getattr(self, '_prev_zoom_mode', None)
+        if profile['mode'] != prev_mode:
+            fc = profile.get('force_center')
+            if fc is not None and not getattr(self, '_user_overrode_center', False):
+                self.y_view_center = fc
+            # 针对禁止滚动模式，强制窗口固定：
+            if profile.get('disable_v_scroll'):
+                # 0.5x: 固定显示 C3-C5 (中心=4 半高=1) compute_half_range() 已返回1
+                # 0.8x: 全区 C0-C8 (中心=4 半高=4)
+                # 这里仅确保 center 正确，范围计算在 update_axis_ranges 中完成
+                pass
+        self._prev_zoom_mode = profile['mode']
+        self._current_zoom_profile = profile
+
+    # 修改 set_zoom_preset 进入时应用 profile
+
+    def clamp_y_center(self, half_range: float):
+        """防止拖动后中心越界，确保显示窗口保持在 0-8 八度范围。"""
+        min_center = half_range
+        max_center = 8.0 - half_range
+        if self.y_view_center < min_center:
+            self.y_view_center = min_center
+        elif self.y_view_center > max_center:
+            self.y_view_center = max_center
     
     def update_preset_button_highlight(self):
         """更新预设按钮的高亮状态"""
@@ -8267,7 +8804,8 @@ class ECGStylePitchVisualizer(QWidget):
                 time_str = "实时"
             
             # 显示范围（考虑缩放）
-            actual_range = self.y_view_range / self.zoom_level
+            # 新缩放：compute_half_range() 返回当前半范围
+            actual_range = self.compute_half_range()
             
             # 数据统计和缓冲区状态
             data_count = len(self.pitch_data)
@@ -8294,28 +8832,21 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception as e:
             self.status_label.setText(f"状态更新错误: {e}")
     
-    def clear_data(self):
-        """清除数据"""
-        self.pitch_data.clear()
-        self.time_data.clear()
-        self.confidence_data.clear()
-        self.note_data.clear()
-        
-        # 重置时间相关变量
-        self.start_time = None
-        self.current_global_time = 0.0
-        self.last_pitch_time = 0
-        self.is_recording_active = False
-        
-        # 停止时间追踪定时器
-        if hasattr(self, 'time_update_timer'):
-            self.time_update_timer.stop()
-        
-        self.pitch_line.set_data([], [])
-        self.canvas.draw()
-        
-        # 更新状态
-        self.update_status_display()
+    def clear_data_simple_legacy(self):  # 不再绑定按钮，保留兼容（不要覆盖高级 clear_data）
+        """[LEGACY - DO NOT USE] 旧版简化清除：仅清空缓存与主曲线，不做深度 artist 清理/网格延迟重建。"""
+        try:
+            self.pitch_data.clear(); self.time_data.clear(); self.confidence_data.clear(); self.note_data.clear()
+            self.start_time = None; self.current_global_time = 0.0; self.last_pitch_time = 0; self.is_recording_active = False
+            if hasattr(self, 'time_update_timer'): self.time_update_timer.stop()
+            if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                try: self.pitch_line.set_data([], [])
+                except: pass
+            if hasattr(self, 'canvas'): self.canvas.draw_idle()
+            try: self.update_status_display()
+            except: pass
+            print("[clear_data_simple_legacy] 已执行 (仅基础清空) -> 建议使用高级 clear_data() 实现彻底深度清除")
+        except Exception as e:
+            print(f"[clear_data_simple_legacy] 执行出错: {e}")
     
     def start_time_tracking(self):
         """开始时间追踪（支持断续音调曲线）"""
