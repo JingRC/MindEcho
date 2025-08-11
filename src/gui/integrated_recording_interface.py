@@ -135,76 +135,46 @@ class LatencyMeasurer:
             'count': int(len(arr))
         }
 
-    def print_stats(self):
-        stats = self.get_stats()
-        if stats:
-            print(f"🎧 延迟统计: 平均{stats['avg']:.2f}ms, 最大{stats['max']:.2f}ms, 最小{stats['min']:.2f}ms, 标准差{stats['std']:.2f}ms (样本数:{stats['count']})")
-
-# 音频处理优化工具
 class AudioProcessor:
-    """高效音频处理器"""
-    def __init__(self, sample_rate=48000):
+    """精简音频处理器（与IntegratedAudioProcessor解耦）"""
+    def __init__(self, sample_rate=44100):
         self.sample_rate = sample_rate
+        self.alpha = 0.12  # 平滑系数
         self.smooth_state = 0.0
-        self.alpha = 0.1  # IIR滤波器平滑系数
-        
+
     def fast_smoothing(self, data):
-        """使用IIR滤波器实现低延迟平滑"""
         if len(data) == 0:
             return data
-            
         smoothed = np.zeros_like(data, dtype=np.float32)
         smoothed[0] = self.alpha * data[0] + (1 - self.alpha) * self.smooth_state
-        
         for i in range(1, len(data)):
             smoothed[i] = self.alpha * data[i] + (1 - self.alpha) * smoothed[i-1]
-        
-        self.smooth_state = smoothed[-1]  # 保存状态
+        self.smooth_state = smoothed[-1]
         return smoothed
-    
+
     def compute_gain(self, audio_chunk):
-        """快速RMS计算与增益调整"""
         rms = np.sqrt(np.mean(np.square(audio_chunk)))
         target_rms = 0.12
         return np.clip(target_rms / (rms + 1e-6), 1.0, 2.5)
-    
+
     def optimized_audio_process(self, input_data, enable_smooth=True):
-        """优化的音频处理流水线（极简化版本，减少电流音）"""
-        # 🔥 输入验证
         if len(input_data) == 0:
             return input_data.astype(np.float32)
-        
-        # 检查输入信号强度
         input_rms = np.sqrt(np.mean(np.square(input_data)))
         input_max = np.max(np.abs(input_data))
-        
-        # 🔥 极弱信号直接静音，避免噪声放大
         if input_rms < 0.001 and input_max < 0.002:
             return np.zeros_like(input_data, dtype=np.float32)
-        
-        # 🔥 极简处理：只做必要的增益和限制
         processed = input_data.copy().astype(np.float32)
-        
-        # 🔥 温和增益（仅对极弱信号）
         if input_rms < 0.02:
-            # 非常保守的增益
             safe_gain = min(2.0, 0.05 / (input_rms + 1e-6))
             processed = processed * safe_gain
-        
-        # 🔥 温和限幅，避免硬削波
         processed = np.tanh(processed * 0.95) * 0.9
-        
-        # 🔥 可选轻度平滑（降低强度）
         if enable_smooth and len(processed) > 2:
-            # 非常轻的平滑，减少数字噪声
             smoothed = processed.copy()
             for i in range(1, len(smoothed)-1):
                 smoothed[i] = processed[i] * 0.7 + processed[i-1] * 0.15 + processed[i+1] * 0.15
             processed = smoothed
-        
-        # 🔥 最终安全限制
         processed = np.clip(processed, -0.8, 0.8)
-        
         return processed
 
 # 系统优化工具
@@ -297,14 +267,16 @@ class IntegratedAudioProcessor(QThread):
     
     def __init__(self):
         super().__init__()
-        
-        # � 关键修复：首先初始化基础状态控制变量
+
+        # 基础状态控制变量
         self.is_recording = False
         self.should_save = False
         self.recording_filename = None
         self.is_audio_processing = False
         self.is_global_monitoring_active = False
         self.is_monitoring_only = False
+        # 可视化控制：录音分析时 True，纯监听 False
+        self.enable_pitch_visualization = False
         
         # 🔥 关键修复：初始化音频队列
         self.audio_buffer_queue = queue.Queue(maxsize=100)  # 音频数据队列
@@ -617,7 +589,7 @@ class IntegratedAudioProcessor(QThread):
                                     'samplerate': 44100,  # 标准采样率
                                     'blocksize': 1024,  # 大缓冲区
                                     'dtype': 'float32',
-                                    'name': '保守配置'
+                                    'name': '保守配置'  # 仅用于日志，不传给InputStream
                                 },
                                 # 配置2：动态通道配置
                                 {
@@ -626,14 +598,20 @@ class IntegratedAudioProcessor(QThread):
                                     'samplerate': min(int(default_rate), 48000),  # 限制采样率
                                     'blocksize': 512,
                                     'dtype': 'float32',
-                                    'name': '动态配置'
+                                    'name': '动态配置'  # 仅用于日志，不传给InputStream
                                 }
                             ]
                             
                             working_configs = []
                             for config in test_configs:
                                 try:
-                                    test_stream = sd.InputStream(**config)
+                                    # 移除仅日志用键，避免 0.5.x 版本 sounddevice 不支持 'name' 形参
+                                    stream_args = {k: v for k, v in config.items() if k != 'name'}
+                                    # 额外安全：校验通道数不超过设备最大输入通道
+                                    if stream_args['channels'] > max_input_channels:
+                                        print(f"   ❌ {config['name']}通道数超出设备支持: {stream_args['channels']} > {max_input_channels}")
+                                        raise ValueError("channels_not_supported")
+                                    test_stream = sd.InputStream(**stream_args)
                                     test_stream.close()
                                     working_configs.append(config)
                                     print(f"   ✅ {config['name']}测试通过")
@@ -1719,6 +1697,7 @@ class IntegratedAudioProcessor(QThread):
 
                 # 🔥 重要修复：确保录音时全局监控的音频处理线程会进行音高检测
                 print("🔥 全局监控模式录音：强制启用音高检测处理")
+                self.enable_pitch_visualization = True  # 录音分析允许绘制
                 
                 self.status_updated.emit("录音已在全局监听中启动")
                 return True
@@ -1731,6 +1710,7 @@ class IntegratedAudioProcessor(QThread):
             
             # 🎯 重要：录音模式下需要确保音高检测正常工作
             self.is_monitoring_only = False  # 录音时不是纯监听模式，需要完整音频处理
+            self.enable_pitch_visualization = True
             
             # 统一重置分析状态
             self._reset_pitch_analysis_state(reason="fresh record start")
@@ -2334,6 +2314,7 @@ class IntegratedAudioProcessor(QThread):
             self.monitoring_mode = 'basic'
             # 🔥 关键设置：纯监听模式，不生成音调线
             self.is_monitoring_only = True
+            self.enable_pitch_visualization = False
             
             # 设置分析器
             if not self.setup_analyzers():
@@ -2629,6 +2610,7 @@ class IntegratedAudioProcessor(QThread):
             self.is_monitoring_only = True
             self.audio_buffer = []
             self.channels = 1  # HECATE优化：单声道
+            self.enable_pitch_visualization = False
             
             # 🎯 设置全局监听状态
             self.is_global_monitoring_active = True
@@ -2785,15 +2767,37 @@ class IntegratedAudioProcessor(QThread):
                                 print(f"🔧 智能调整通道数: {self.channels} → {optimal_channels}")
                                 self.channels = optimal_channels
                             
-                            # 智能采样率选择：避免过高的采样率
-                            safe_samplerates = [44100, 48000, 96000, 192000]
-                            optimal_samplerate = 44100  # 默认最安全的采样率
-                            
-                            for rate in safe_samplerates:
-                                if rate <= default_samplerate and rate <= 96000:  # 限制最高96kHz
-                                    optimal_samplerate = rate
-                            
-                            print(f"🔧 智能采样率选择: {optimal_samplerate}Hz")
+                            # ==== 改进的智能采样率探测（优先真实可用 + 原生速率）====
+                            def _probe_first_supported(rates, block_sizes=(64,128,256,512)):
+                                for sr in rates:
+                                    for bs in block_sizes:
+                                        try:
+                                            tmp = sd.InputStream(device=optimal_config['device_id'], channels=1, samplerate=sr, blocksize=bs, dtype=np.float32)
+                                            tmp.close()
+                                            return sr, bs
+                                        except Exception:
+                                            continue
+                                return None, None
+
+                            # 优先顺序：设备默认 / 192k / 96k / 48k / 44.1k （去重）
+                            candidate_rates = []
+                            for r in [default_samplerate, 192000, 96000, 48000, 44100]:
+                                if isinstance(r, (int, float)) and r > 0 and r not in candidate_rates and r <= default_samplerate + 1:  # 允许默认略浮点
+                                    candidate_rates.append(int(r))
+                            probed_sr, probed_bs = _probe_first_supported(candidate_rates)
+                            if probed_sr is None:
+                                # 回退策略：再放宽一次，不限制 <= default_samplerate 逻辑
+                                for r in [192000, 96000, 48000, 44100]:
+                                    if r not in candidate_rates:
+                                        candidate_rates.append(r)
+                                probed_sr, probed_bs = _probe_first_supported(candidate_rates)
+                            if probed_sr is None:
+                                optimal_samplerate = 48000
+                                probed_bs = 256
+                                print("⚠️ 采样率快速探测全部失败，使用保守 48kHz/256")
+                            else:
+                                optimal_samplerate = probed_sr
+                                print(f"🔧 智能采样率选择: {optimal_samplerate}Hz (探测块大小建议: {probed_bs})")
                             
                             # 基于主机API优化WASAPI设置
                             wasapi_available = (host_api == 2)  # 只有WASAPI主机API才支持WASAPI设置
@@ -2826,13 +2830,64 @@ class IntegratedAudioProcessor(QThread):
                         optimal_channels = 1
                         wasapi_available = False
                     
-                    # 构建智能配置序列：从最兼容到最高性能
+                    # 构建智能配置序列：从最高性能到兼容（先尝试原生最佳）
                     hecate_configs = []
+
+                    # ==== 新增：输出设备自动匹配（用于全双工监听回传）====
+                    def _find_hecate_output_device():
+                        try:
+                            devices = sd.query_devices()
+                            candidates = []
+                            for idx, dev in enumerate(devices):
+                                name = dev.get('name','').lower()
+                                if dev.get('max_output_channels',0) > 0:
+                                    # 优先同品牌 + WASAPI
+                                    score = 0
+                                    if 'hecate' in name: score += 20
+                                    if 'g4 pro' in name: score += 10
+                                    if dev.get('hostapi') == 2: score += 15
+                                    candidates.append((score, idx, dev))
+                            if not candidates:
+                                return None
+                            candidates.sort(reverse=True)
+                            return candidates[0][1]
+                        except Exception:
+                            return None
+
+                    output_device_id = _find_hecate_output_device()
+                    if output_device_id is None:
+                        # 退回默认输出设备
+                        try:
+                            default_in, default_out = sd.default.device
+                            output_device_id = default_out
+                        except Exception:
+                            output_device_id = None
+                    if output_device_id is not None:
+                        print(f"🔎 绑定输出设备用于监听回传: {output_device_id}")
+                    else:
+                        print("⚠️ 未找到合适输出设备，回传监听将停用（仅采集输入）")
+
+                    # 原生性能模式（若探测得出192k或设备默认值且已通过初步探测）
+                    if 'optimal_samplerate' in locals() and optimal_samplerate >= 96000 and default_samplerate >= optimal_samplerate:
+                        hecate_configs.append({
+                            'input_device': optimal_config['device_id'],
+                            'output_device': output_device_id,
+                            'input_channels': optimal_channels,
+                            'output_channels': 2 if output_device_id is not None else 0,
+                            'samplerate': optimal_samplerate,
+                            'blocksize': 64 if optimal_samplerate >= 96000 else 128,
+                            'callback': hecate_optimized_callback,
+                            'dtype': np.float32,
+                            'latency': 'low',
+                            'name': '原生性能模式'
+                        })
                     
                     # 配置1：最高兼容性模式（DirectSound/MME）
                     hecate_configs.append({
-                        'device': optimal_config['device_id'],
-                        'channels': 1,  # 强制单声道提高兼容性
+                        'input_device': optimal_config['device_id'],
+                        'output_device': output_device_id,
+                        'input_channels': 1,  # 强制单声道提高兼容性
+                        'output_channels': 2 if output_device_id is not None else 0,
                         'samplerate': 44100,  # 最兼容的采样率
                         'blocksize': 1024,  # 大缓冲区提高稳定性
                         'callback': hecate_optimized_callback,
@@ -2840,12 +2895,14 @@ class IntegratedAudioProcessor(QThread):
                         'name': '最高兼容性模式'
                     })
                     
-                    # 配置2：平衡模式
+                    # 配置2：平衡模式（使用探测到的 optimal_samplerate 与探测建议块）
                     hecate_configs.append({
-                        'device': optimal_config['device_id'],
-                        'channels': optimal_channels,
+                        'input_device': optimal_config['device_id'],
+                        'output_device': output_device_id,
+                        'input_channels': optimal_channels,
+                        'output_channels': 2 if output_device_id is not None else 0,
                         'samplerate': optimal_samplerate,
-                        'blocksize': 512,
+                        'blocksize': min(512, probed_bs if 'probed_bs' in locals() and probed_bs else 512),
                         'callback': hecate_optimized_callback,
                         'dtype': np.float32,
                         'latency': 'low',
@@ -2855,8 +2912,10 @@ class IntegratedAudioProcessor(QThread):
                     # 配置3：WASAPI共享模式（仅在WASAPI可用时）
                     if wasapi_available:
                         hecate_configs.append({
-                            'device': optimal_config['device_id'],
-                            'channels': optimal_channels,
+                            'input_device': optimal_config['device_id'],
+                            'output_device': output_device_id,
+                            'input_channels': optimal_channels,
+                            'output_channels': 2 if output_device_id is not None else 0,
                             'samplerate': optimal_samplerate,
                             'blocksize': 256,
                             'callback': hecate_optimized_callback,
@@ -2866,13 +2925,15 @@ class IntegratedAudioProcessor(QThread):
                             'name': 'WASAPI共享模式'
                         })
                     
-                    # 配置4：WASAPI独占模式（仅在WASAPI可用且是纯输入设备时）
+            # 配置4：WASAPI独占模式（仅在WASAPI可用且是纯输入设备时）
                     if wasapi_available and max_input_channels > 0:
                         hecate_configs.append({
-                            'device': optimal_config['device_id'],
-                            'channels': optimal_channels,
-                            'samplerate': min(optimal_samplerate, 96000),  # 限制独占模式采样率
-                            'blocksize': 128,
+                            'input_device': optimal_config['device_id'],
+                            'output_device': output_device_id,
+                            'input_channels': optimal_channels,
+                            'output_channels': 2 if output_device_id is not None else 0,
+                'samplerate': min(max(optimal_samplerate, 44100), 192000),  # 放宽上限，若192k已探测通过则使用
+                'blocksize': 128 if optimal_samplerate < 96000 else 64,
                             'callback': hecate_optimized_callback,
                             'dtype': np.float32,
                             'latency': 'low',
@@ -2889,8 +2950,37 @@ class IntegratedAudioProcessor(QThread):
                             
                             # 移除name键用于创建stream
                             config_name = stream_params.pop('name')
-                            
-                            self.monitoring_stream = sd.Stream(**stream_params)
+                            build_copy = stream_params.copy()
+                            # 统一构造 sounddevice 参数
+                            def _construct_stream_args(cfg: dict):
+                                args = {}
+                                # samplerate / blocksize / dtype / latency / callback / extra_settings
+                                for k in ['samplerate','blocksize','dtype','latency','callback','extra_settings']:
+                                    if k in cfg and cfg[k] is not None:
+                                        # extra_settings 可能是 WasapiSettings/AsioSettings
+                                        if k == 'latency' and cfg[k] is None:
+                                            continue
+                                        if k == 'extra_settings':
+                                            args['extra_settings'] = cfg[k]
+                                        else:
+                                            args[k] = cfg[k]
+                                # 设备与通道
+                                in_dev = cfg.get('input_device')
+                                out_dev = cfg.get('output_device')
+                                in_ch = cfg.get('input_channels', 1)
+                                out_ch = cfg.get('output_channels', 0)
+                                if out_dev is not None and out_ch > 0:
+                                    args['device'] = (in_dev, out_dev)
+                                    args['channels'] = (in_ch, out_ch)
+                                else:
+                                    # 仅输入
+                                    args['device'] = in_dev
+                                    args['channels'] = in_ch
+                                return args, (out_dev is not None and out_ch > 0)
+
+                            sd_args, is_duplex = _construct_stream_args(build_copy)
+                            # 创建流
+                            self.monitoring_stream = sd.Stream(**sd_args)
                             
                             # 计算延迟
                             theoretical_latency = stream_params['blocksize'] / stream_params['samplerate'] * 1000
@@ -2900,7 +2990,7 @@ class IntegratedAudioProcessor(QThread):
                             print(f"   ├─ 配置: {stream_params['samplerate']}Hz/{stream_params['blocksize']}样本")
                             print(f"   ├─ 延迟: {theoretical_latency:.2f}ms")
                             print(f"   ├─ 驱动: {config_name}")
-                            print(f"   └─ 特性: HECATE专用优化")
+                            print(f"   └─ 特性: HECATE专用优化 / {'双工回传' if is_duplex else '仅输入'}")
                             
                             # 🎯 启动流并设为全局音频流
                             self.monitoring_stream.start()
@@ -2931,6 +3021,28 @@ class IntegratedAudioProcessor(QThread):
                             if 'AUDCLNT_E_WRONG_ENDPOINT_TYPE' in error_msg or 'PaErrorCode -9999' in error_msg:
                                 print("🔍 WASAPI端点类型错误 - 输入/输出设备类型混淆")
                                 print("   解决方案: 检查设备是否为输入设备，或尝试WasapiLoopback")
+                                # 自动补救：若使用双工，尝试改为仅输入模式
+                                if 'input_device' in stream_params and output_device_id is not None:
+                                    try:
+                                        print("🔄 自动补救: 改为仅输入模式重新尝试...")
+                                        retry_args = stream_params.copy()
+                                        # 去掉输出相关
+                                        for k in ['output_device','output_channels']:
+                                            retry_args.pop(k, None)
+                                        input_only_args, _ = (lambda cfg: ( { 'device': cfg['input_device'], 'channels': cfg.get('input_channels',1), 'samplerate': cfg['samplerate'], 'blocksize': cfg['blocksize'], 'dtype': cfg['dtype'], 'latency': cfg.get('latency','low'), 'callback': cfg['callback'], **({'extra_settings': cfg['extra_settings']} if cfg.get('extra_settings') else {}) }, False))(retry_args)
+                                        self.monitoring_stream = sd.Stream(**input_only_args)
+                                        self.monitoring_stream.start()
+                                        print("✅ 端点类型问题通过仅输入模式解决")
+                                        self.monitor_audio_passthrough = False
+                                        self.active_audio_stream = self.monitoring_stream
+                                        if hasattr(self, 'sample_rate') and self.sample_rate != retry_args['samplerate']:
+                                            print(f"🔧 同步采样率: {self.sample_rate}Hz → {retry_args['samplerate']}Hz")
+                                            self.sample_rate = retry_args['samplerate']
+                                        self.start_audio_processing_thread()
+                                        self.status_updated.emit("HECATE监听(仅输入)已启动")
+                                        return True
+                                    except Exception as retry_err:
+                                        print(f"⚠️ 仅输入模式补救失败: {retry_err}")
                                 # 尝试自动修复：强制使用输入设备配置
                                 if hasattr(stream_params, 'extra_settings') and stream_params.get('extra_settings'):
                                     print("🔄 尝试移除WASAPI专用设置...")
@@ -2964,8 +3076,25 @@ class IntegratedAudioProcessor(QThread):
                                     stream_params_fixed['samplerate'] = 48000
                                     stream_params_fixed['blocksize'] = 256
                                     try:
-                                        self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                        if output_device_id is not None and stream_params_fixed.get('output_channels',0) > 0:
+                                            self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                        else:
+                                            self.monitoring_stream = sd.InputStream(device=stream_params_fixed['input_device'], channels=stream_params_fixed.get('input_channels',1), samplerate=stream_params_fixed['samplerate'], blocksize=stream_params_fixed['blocksize'], dtype=stream_params_fixed['dtype'], latency=stream_params_fixed.get('latency','low'), callback=stream_params_fixed['callback'], extra_settings=stream_params_fixed.get('extra_settings'))
                                         print("✅ 采样率已自动降级到48kHz")
+                                        break
+                                    except:
+                                        pass
+                                elif stream_params['samplerate'] > 44100:
+                                    print("🔄 尝试降级到44.1kHz...")
+                                    stream_params_fixed = stream_params.copy()
+                                    stream_params_fixed['samplerate'] = 44100
+                                    stream_params_fixed['blocksize'] = 256
+                                    try:
+                                        if output_device_id is not None and stream_params_fixed.get('output_channels',0) > 0:
+                                            self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                        else:
+                                            self.monitoring_stream = sd.InputStream(device=stream_params_fixed['input_device'], channels=stream_params_fixed.get('input_channels',1), samplerate=stream_params_fixed['samplerate'], blocksize=stream_params_fixed['blocksize'], dtype=stream_params_fixed['dtype'], latency=stream_params_fixed.get('latency','low'), callback=stream_params_fixed['callback'], extra_settings=stream_params_fixed.get('extra_settings'))
+                                        print("✅ 采样率已自动降级到44.1kHz")
                                         break
                                     except:
                                         pass
@@ -2974,14 +3103,24 @@ class IntegratedAudioProcessor(QThread):
                                 print("🔍 通道数无效 - 单声道设备配置为立体声")
                                 print("   解决方案: 强制使用单声道配置")
                                 # 尝试强制单声道
-                                if stream_params['channels'] > 1:
+                                # 允许两种结构: 'channels' 或 'input_channels'
+                                ch_val = stream_params.get('channels', stream_params.get('input_channels', 1))
+                                if isinstance(ch_val, tuple):
+                                    in_ch = ch_val[0]
+                                else:
+                                    in_ch = ch_val
+                                if in_ch > 1:
                                     print("🔄 尝试强制单声道配置...")
                                     stream_params_fixed = stream_params.copy()
-                                    stream_params_fixed['channels'] = 1
+                                    stream_params_fixed['input_channels'] = 1
+                                    if 'channels' in stream_params_fixed:
+                                        stream_params_fixed.pop('channels', None)
                                     try:
-                                        self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                        fixed_args, is_duplex2 = (lambda cfg: _construct_stream_args(cfg))(stream_params_fixed)
+                                        # 如果双工且输出需要保持，仍提供原输出通道，但输入降为1
+                                        self.monitoring_stream = sd.Stream(**fixed_args)
                                         print("✅ 已强制使用单声道配置")
-                                        self.channels = 1  # 更新全局通道数
+                                        self.channels = 1  # 更新全局输入通道
                                         break
                                     except:
                                         pass
@@ -3803,6 +3942,10 @@ class IntegratedAudioProcessor(QThread):
         try:
             self.is_monitoring_only = False
             self.monitor_audio_passthrough = False  # 关闭回传
+            # 🔧 确保后续可以重新启动：立即标记全局监听未激活（避免标志残留导致二次启动被跳过）
+            if getattr(self, 'is_global_monitoring_active', False):
+                print("🔧 stop_audio_monitoring: 重置全局监听激活标志")
+            self.is_global_monitoring_active = False
             
             # 🔥 生成最终延迟统计报告（修复计算错误）
             if hasattr(self, 'latency_timestamps') and len(self.latency_timestamps) > 10:
@@ -3904,6 +4047,21 @@ class IntegratedAudioProcessor(QThread):
                 self.monitoring_stream.close()
                 self.monitoring_stream = None
                 print("🎧 纯音频监听流已停止")
+            # 同步清理统一引用，防止残留引用导致下一次启动误判
+            if hasattr(self, 'active_audio_stream') and self.active_audio_stream:
+                try:
+                    # 避免重复关闭已在上面关闭的同对象
+                    if self.active_audio_stream is not self.monitoring_stream:
+                        try:
+                            self.active_audio_stream.stop()
+                        except Exception:
+                            pass
+                        try:
+                            self.active_audio_stream.close()
+                        except Exception:
+                            pass
+                finally:
+                    self.active_audio_stream = None
             
             # 清理监听相关的临时数据
             if hasattr(self, 'latency_timestamps'):
@@ -4268,7 +4426,8 @@ class IntegratedAudioProcessor(QThread):
                     audio_rms=audio_rms,
                     vibrato_info={'has_vibrato': False}
                 )
-                self.pitch_detected.emit(frame.to_dict())
+                if self.enable_pitch_visualization:
+                    self.pitch_detected.emit(frame.to_dict())
                 return
 
             # 🎯 单一音高检测：只调用一次 detect_pitch_with_vibrato，得到 raw 频率
@@ -4300,7 +4459,8 @@ class IntegratedAudioProcessor(QThread):
                     audio_rms=audio_rms,
                     vibrato_info={'has_vibrato': False}
                 )
-                self.pitch_detected.emit(frame.to_dict())
+                if self.enable_pitch_visualization:
+                    self.pitch_detected.emit(frame.to_dict())
                 return
 
             # Phase1: 后处理（跳变抑制 + 平滑）仅在非假高频情况下执行
@@ -4337,7 +4497,8 @@ class IntegratedAudioProcessor(QThread):
                         'confidence': confidence,
                         'note_info': note_info
                     })
-                    self.pitch_detected.emit(pitch_data)
+                    if self.enable_pitch_visualization:
+                        self.pitch_detected.emit(pitch_data)
                     
                     # 成功检测调试输出
                     if self._pitch_analysis_counter % 10 == 0:
@@ -4359,7 +4520,8 @@ class IntegratedAudioProcessor(QThread):
                 )
                 timestamp_data = frame.to_dict()
                 try:
-                    self.pitch_detected.emit(timestamp_data)
+                    if self.enable_pitch_visualization:
+                        self.pitch_detected.emit(timestamp_data)
                 except Exception:
                     pass  # 忽略时间戳发送错误
         
@@ -4376,7 +4538,8 @@ class IntegratedAudioProcessor(QThread):
                     'audio_rms': 0,
                     'vibrato_info': {'has_vibrato': False}
                 }
-                self.pitch_detected.emit(timestamp_data)
+                if self.enable_pitch_visualization:
+                    self.pitch_detected.emit(timestamp_data)
             except Exception:
                 pass  # 忽略错误情况下的信号发送失败
     
@@ -4819,30 +4982,52 @@ class IntegratedAudioProcessor(QThread):
     def stop_unified_monitoring(self):
         """停止统一监听功能"""
         try:
-            print("🎧 正在停止监听...")
-            
-            # 停止监听状态标志
+            print("🛑 正在停止监听(统一)...")
+
+            # 立即关闭回传，避免用户继续听到自身声音
+            if hasattr(self, 'monitor_audio_passthrough'):
+                self.monitor_audio_passthrough = False
+
+            # 更新状态标志
             self.is_monitoring_only = False
-            
-            # 停止音频流
-            if hasattr(self, 'monitoring_stream') and self.monitoring_stream:
+
+            # 停止后台音频处理线程（先停处理再关流，避免回调访问已关闭流）
+            try:
+                self.stop_audio_processing_thread()
+            except Exception as e_proc:
+                print(f"⚠️ 停止音频处理线程时出错: {e_proc}")
+
+            # 关闭所有可能的音频流
+            for attr in ['active_audio_stream', 'monitoring_stream', 'audio_stream']:
+                stream = getattr(self, attr, None)
+                if stream is None:
+                    continue
                 try:
-                    self.monitoring_stream.stop()
-                    self.monitoring_stream.close()
-                    print("✅ 监听音频流已停止")
-                except Exception as e:
-                    print(f"⚠️ 停止音频流时发生错误: {e}")
+                    try:
+                        stream.stop()
+                    except Exception:
+                        pass
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    print(f"🔇 已关闭音频流: {attr}")
+                except Exception as e_close:
+                    print(f"⚠️ 关闭音频流 {attr} 出错: {e_close}")
                 finally:
-                    self.monitoring_stream = None
-            
-            # 停止音频处理线程
-            self.stop_audio_processing_thread()
-            
-            print("✅ 监听已完全停止")
+                    setattr(self, attr, None)
+
+            # 重置全局监听标志
+            self.is_global_monitoring_active = False
+            if hasattr(self, 'monitoring_mode'):
+                self.monitoring_mode = None
+
+            print("✅ 监听已完全停止 (所有流与回传已关闭)")
+            self.status_updated.emit("监听已停止")
             return True
-            
         except Exception as e:
             print(f"❌ 停止监听失败: {e}")
+            self.error_occurred.emit(f"停止监听失败: {e}")
             return False
 
 
@@ -5640,91 +5825,7 @@ class ECGStylePitchVisualizer(QWidget):
         zoom_group.setLayout(zoom_layout)
         controls_row1_layout.addWidget(zoom_group)
         
-        # 功能按钮组
-        controls_row1_layout.addWidget(QLabel("|"))  # 分隔符
-        
-        # 自动标注按钮
-        self.auto_scale_btn = QPushButton("智能标注")
-        self.auto_scale_btn.setCheckable(True)
-        self.auto_scale_btn.setChecked(True)
-        self.auto_scale_btn.clicked.connect(self.on_auto_scale_toggled)
-        self.auto_scale_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #006600;
-                border: 1px solid #008800;
-                border-radius: 3px;
-                padding: 5px 8px;
-                color: white;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #008800;
-            }
-            QPushButton:checked {
-                background-color: #00AA00;
-                border: 1px solid #00CC00;
-            }
-        """)
-        controls_row1_layout.addWidget(self.auto_scale_btn)
-        
-        # 清除按钮
-        clear_btn = QPushButton("清除")
-        clear_btn.clicked.connect(self.clear_data)
-        clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #444444;
-                border: 1px solid #666666;
-                border-radius: 3px;
-                padding: 5px 8px;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #555555;
-            }
-        """)
-        controls_row1_layout.addWidget(clear_btn)
-        
-        # 重置视图按钮
-        reset_view_btn = QPushButton("重置")
-        reset_view_btn.clicked.connect(self.reset_view)
-        reset_view_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #006600;
-                border: 1px solid #008800;
-                border-radius: 3px;
-                padding: 5px 8px;
-                color: white;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #008800;
-            }
-        """)
-        controls_row1_layout.addWidget(reset_view_btn)
-        
-        # 自动跟随按钮
-        self.auto_follow_btn = QPushButton("跟随")
-        self.auto_follow_btn.setCheckable(True)
-        self.auto_follow_btn.setChecked(True)  # 默认开启
-        self.auto_follow_btn.clicked.connect(self.on_auto_follow_toggled)
-        self.auto_follow_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #006600;
-                border: 1px solid #008800;
-                border-radius: 3px;
-                padding: 5px 8px;
-                color: white;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #008800;
-            }
-            QPushButton:checked {
-                background-color: #00AA00;
-                border: 1px solid #00CC00;
-            }
-        """)
-        controls_row1_layout.addWidget(self.auto_follow_btn)
+    # (原功能按钮组移动至第二行)
         
         # 第一行布局添加到主布局
         main_controls_layout.addLayout(controls_row1_layout)
@@ -5808,7 +5909,91 @@ class ECGStylePitchVisualizer(QWidget):
         # 注意：toggle_monitoring方法在主窗口中，稍后会重新连接
         controls_row2_layout.addWidget(self.monitor_button)
         
-        # 分隔符
+        # 添加原第一行的功能按钮（智能标注 / 清除 / 重置 / 跟随）
+        # 自动标注按钮
+        self.auto_scale_btn = QPushButton("智能标注")
+        self.auto_scale_btn.setCheckable(True)
+        self.auto_scale_btn.setChecked(True)
+        self.auto_scale_btn.clicked.connect(self.on_auto_scale_toggled)
+        self.auto_scale_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #006600;
+                border: 1px solid #008800;
+                border-radius: 3px;
+                padding: 5px 6px;
+                color: white;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #008800;
+            }
+            QPushButton:checked {
+                background-color: #00AA00;
+                border: 1px solid #00CC00;
+            }
+        """)
+        controls_row2_layout.addWidget(self.auto_scale_btn)
+        
+        # 清除按钮
+        clear_btn = QPushButton("清除")
+        clear_btn.clicked.connect(self.clear_data)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #444444;
+                border: 1px solid #666666;
+                border-radius: 3px;
+                padding: 5px 6px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #555555;
+            }
+        """)
+        controls_row2_layout.addWidget(clear_btn)
+        
+        # 重置视图按钮
+        reset_view_btn = QPushButton("重置")
+        reset_view_btn.clicked.connect(self.reset_view)
+        reset_view_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #006600;
+                border: 1px solid #008800;
+                border-radius: 3px;
+                padding: 5px 6px;
+                color: white;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #008800;
+            }
+        """)
+        controls_row2_layout.addWidget(reset_view_btn)
+        
+        # 自动跟随按钮
+        self.auto_follow_btn = QPushButton("跟随")
+        self.auto_follow_btn.setCheckable(True)
+        self.auto_follow_btn.setChecked(True)  # 默认开启
+        self.auto_follow_btn.clicked.connect(self.on_auto_follow_toggled)
+        self.auto_follow_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #006600;
+                border: 1px solid #008800;
+                border-radius: 3px;
+                padding: 5px 6px;
+                color: white;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #008800;
+            }
+            QPushButton:checked {
+                background-color: #00AA00;
+                border: 1px solid #00CC00;
+            }
+        """)
+        controls_row2_layout.addWidget(self.auto_follow_btn)
+        
+        # 分隔符（移到功能按钮之后）
         controls_row2_layout.addWidget(QLabel(" | "))
         
         # 状态信息显示（合并到一行）
