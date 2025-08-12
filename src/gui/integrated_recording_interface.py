@@ -159,7 +159,7 @@ class AudioProcessor:
 
     def optimized_audio_process(self, input_data, enable_smooth=True):
         if len(input_data) == 0:
-            return input_data.astype(np.float32)
+            return np.zeros_like(input_data, dtype=np.float32)  # 处理空输入
         input_rms = np.sqrt(np.mean(np.square(input_data)))
         input_max = np.max(np.abs(input_data))
         if input_rms < 0.001 and input_max < 0.002:
@@ -313,22 +313,47 @@ class IntegratedAudioProcessor(QThread):
         self.buffer_overflow_count = 0
         self.total_audio_frames = 0
 
-        # ===== 日志节流工具（与可视化器解耦的精简版本） =====
-        self._rate_limit_state = {}
-        def _log_rate_limit(key: str, msg: str, interval: float = 0.6):
-            now = time.time()
-            state = self._rate_limit_state.get(key, {'last': 0.0, 'suppressed': 0})
-            if now - state['last'] >= interval:
-                if state['suppressed'] > 0:
-                    print(f"{msg} (+{state['suppressed']} more)")
-                else:
+        # ===== 统一日志 RateLimiter =====
+        class _RateLimiter:
+            def __init__(self):
+                self.state = {}
+            def allow(self, key: str, interval: float, burst: int = 1):
+                now = time.time()
+                st = self.state.get(key, {'next': 0.0, 'remain': burst})
+                if now >= st['next']:
+                    st['next'] = now + interval
+                    st['remain'] = burst - 1
+                    self.state[key] = st
+                    return True
+                if st['remain'] > 0:
+                    st['remain'] -= 1
+                    self.state[key] = st
+                    return True
+                return False
+        self._rate_limiter = _RateLimiter()
+        def _log_rate_limit(key: str, msg: str, interval: float = 0.6, burst: int = 1):
+            if self._rate_limiter.allow(key, interval, burst):
+                try:
                     print(msg)
-                state['last'] = now
-                state['suppressed'] = 0
-            else:
-                state['suppressed'] += 1
-            self._rate_limit_state[key] = state
+                except Exception:
+                    pass
         self._log_rate_limit = _log_rate_limit
+        # Scroll日志去重签名
+        self._last_scroll_signature = None
+        self._last_scroll_log_time = 0.0
+        # 歌声保护防抖状态
+        self._over_suppress_counter = 0
+        self._suppress_cooldown_until = 0.0
+        # 监听自然模式：尽量保留呼吸质感
+        self.monitor_natural_mode = True
+        # 自然耳返强度（0.0~1.0）：0 最原味，1 最强自然化抑制（默认 0.6）
+        self.natural_earback_strength = 0.6
+        # RAW直通模式（最小处理，保持原味，仅做安全限幅）
+        self.monitor_raw_mode = False
+        # 耳返头房（dB），用于避免瞬态削波（与VRMS限幅配合）。谨慎设置，默认-6dB。
+        self.headroom_db = -6.0
+        # VRMS限幅器状态
+        self._vrms_state = {}
 
         # ===== 调试标志（处理线程本地）=====
         # 防止在回调中访问 self.debug_flags 抛出 AttributeError
@@ -349,9 +374,9 @@ class IntegratedAudioProcessor(QThread):
             'segment_cache_hits': 0
         }
         # 兼容性保障：若后续代码仍直接访问 self.debug_flags.get(...) 则不会再报错
-        
-    # （Visualizer 相关参数应在 ECGStylePitchVisualizer 内部，不应出现在此处）
-        
+
+        # （Visualizer 相关参数应在 ECGStylePitchVisualizer 内部，不应出现在此处）
+
         # 状态控制 - 🔥 已在上方初始化
         # self.is_recording = False
         # self.should_save = False
@@ -495,9 +520,6 @@ class IntegratedAudioProcessor(QThread):
             print(f"⚠️ 加载首选设备配置失败: {e}")
             self._selected_device_config = None
             
-        # 🎯 加载用户首选设备配置
-        self._selected_device_config = None
-        self._load_user_preferred_device()
         
     def diagnose_wasapi_issues(self):
         """🔧 WASAPI问题诊断和系统优化"""
@@ -1644,7 +1666,7 @@ class IntegratedAudioProcessor(QThread):
         # 当出现显著下降且之前频率较高，很可能是进入新音或前面是假高频/噪声，应直接重置平滑状态
         if (self._last_stable_frequency > 300 and
             raw_frequency < self._last_stable_frequency * 0.45 and  # 大幅下降
-            self._last_stable_frequency - raw_frequency > 180):     # 绝对差值
+            (self._last_stable_frequency - raw_frequency) > 180):     # 绝对差值
             # 直接复位，防止高位残留造成后续多帧粘滞
             self._freq_smooth = raw_frequency
             self._last_stable_frequency = raw_frequency
@@ -1677,6 +1699,125 @@ class IntegratedAudioProcessor(QThread):
         smooth = max(50, min(2500, smooth))
         self._last_stable_frequency = smooth
         return smooth
+
+    def _benchmark_stream_config(self, stream_params: dict, duration_s: float = 0.35) -> dict:
+        """对给定输入流参数进行短时基准测试，返回XRUN/稳定性与理论延迟等指标。
+        仅创建输入流（不回放），使用极轻回调统计状态，避免占用太多时间。
+        """
+        metrics = {
+            'ok': False,
+            'callbacks': 0,
+            'xrun': 0,
+            'overflow': 0,
+            'underflow': 0,
+            'latency_ms': None,
+            'error': None
+        }
+        try:
+            import sounddevice as sd
+            import time as _t
+            sr = int(stream_params.get('samplerate', getattr(self, 'sample_rate', 48000)))
+            bs = int(stream_params.get('blocksize', getattr(self, 'chunk_size', 256)))
+            theoretical = (bs / max(1, sr)) * 1000.0
+            metrics['latency_ms'] = theoretical
+
+            counters = {'cb': 0, 'xrun': 0, 'overflow': 0, 'underflow': 0}
+
+            def _probe_cb(indata, frames, time_info, status):
+                counters['cb'] += 1
+                if status:
+                    s = str(status).lower()
+                    # 统计XRUN/溢出/欠载
+                    if 'overflow' in s:
+                        counters['overflow'] += 1
+                        counters['xrun'] += 1
+                    if 'underflow' in s:
+                        counters['underflow'] += 1
+                        counters['xrun'] += 1
+                # 不做任何处理，最大程度模拟监听读取成本
+                return
+
+            probe_args = {
+                'channels': max(1, int(stream_params.get('channels', getattr(self, 'channels', 1)))) ,
+                'samplerate': sr,
+                'blocksize': bs,
+                'dtype': np.float32,
+                'callback': _probe_cb
+            }
+            # 设备/设置
+            if 'device' in stream_params:
+                probe_args['device'] = stream_params['device']
+            if 'extra_settings' in stream_params and stream_params['extra_settings'] is not None:
+                probe_args['extra_settings'] = stream_params['extra_settings']
+
+            with sd.InputStream(**probe_args) as s:
+                # 运行短时，收集N个回调
+                deadline = _t.time() + max(0.2, min(0.6, duration_s))
+                while _t.time() < deadline:
+                    _t.sleep(0.02)
+                metrics['callbacks'] = counters['cb']
+                metrics['xrun'] = counters['xrun']
+                metrics['overflow'] = counters['overflow']
+                metrics['underflow'] = counters['underflow']
+                metrics['ok'] = True
+        except Exception as e:
+            metrics['error'] = str(e)
+        return metrics
+
+    def _rank_monitoring_configs(self, monitoring_configs: list) -> list:
+        """对候选监听配置进行基准测试并按得分排序，优先无XRUN且延迟低的配置。
+        返回新的排序列表（包含原字段）。失败的配置会被排至末尾。
+        """
+        ranked = []
+        try:
+            # 构造可基准的输入流参数集合
+            candidates = []
+            for cfg in monitoring_configs:
+                try:
+                    # 基于现有逻辑构造 InputStream 所需的参数
+                    params = {
+                        'channels': getattr(self, 'channels', 1),
+                        'samplerate': cfg.get('samplerate', getattr(self, 'sample_rate', 48000)),
+                        'blocksize': cfg.get('blocksize', getattr(self, 'chunk_size', 256)),
+                    }
+                    if 'device' in cfg:
+                        params['device'] = cfg['device']
+                    if cfg.get('settings') is not None:
+                        params['extra_settings'] = cfg['settings']
+                    candidates.append((cfg, params))
+                except Exception:
+                    # 跳过无法构造的配置
+                    candidates.append((cfg, None))
+
+            scored = []
+            for cfg, params in candidates:
+                if params is None:
+                    # 无法基准，置于末尾
+                    scored.append((cfg, 1e9, {'ok': False, 'error': 'params_none'}))
+                    continue
+                m = self._benchmark_stream_config(params, duration_s=0.35)
+                # 评分：延迟 + XRUN重罚
+                score = (m.get('latency_ms') or 999.0) + (m.get('xrun', 0) * 500.0)
+                # 优先考虑基准成功
+                if not m.get('ok'):
+                    score += 2000.0
+                scored.append((cfg, score, m))
+
+            scored.sort(key=lambda x: x[1])
+            # 打印简单榜单
+            for i, (cfg, sc, m) in enumerate(scored[:5]):
+                try:
+                    name = cfg.get('name', '未知配置')
+                    sr = cfg.get('samplerate', getattr(self, 'sample_rate', 48000))
+                    bs = cfg.get('blocksize', getattr(self, 'chunk_size', 256))
+                    print(f"🏁 基准{ i+1 }: {name} — {sr}Hz/{bs}样本 | 延迟≈{(m.get('latency_ms') or 0):.2f}ms XRUN:{m.get('xrun',0)}")
+                except Exception:
+                    pass
+            ranked = [cfg for (cfg, _, __) in scored]
+        except Exception as e:
+            print(f"⚠️ 配置基准排序失败: {e}")
+            return monitoring_configs
+        return ranked if ranked else monitoring_configs
     
     def start_recording(self, filename=None, should_save=True):
         """开始录音"""
@@ -2419,27 +2560,20 @@ class IntegratedAudioProcessor(QThread):
                     if len(self._monitoring_processing_times) > 100:
                         self._monitoring_processing_times = self._monitoring_processing_times[-50:]
                     
-                    # 每500次监听回调报告一次延迟统计
-                    if self._monitoring_callback_counter % 500 == 0:
-                        avg_monitoring_time = np.mean(self._monitoring_processing_times)
-                        max_monitoring_time = np.max(self._monitoring_processing_times)
-                        theoretical_latency = (self.chunk_size / self.sample_rate) * 1000
-                        total_monitoring_latency = theoretical_latency + avg_monitoring_time
-                        
-                        print(f"🎧 监听延迟报告#{self._monitoring_callback_counter}: ")
-                        print(f"     理论延迟: {theoretical_latency:.2f}ms")
-                        print(f"     处理延迟: {avg_monitoring_time:.2f}ms (最大: {max_monitoring_time:.2f}ms)")
-                        print(f"     总延迟: {total_monitoring_latency:.2f}ms")
-                        
-                        # 监听延迟警告
+                    # 延迟报告节流：每800次或显著超出理论延迟(>理论+0.5ms)
+                    theoretical_latency = (self.chunk_size / self.sample_rate) * 1000
+                    avg_monitoring_time = np.mean(self._monitoring_processing_times)
+                    max_monitoring_time = np.max(self._monitoring_processing_times)
+                    total_monitoring_latency = theoretical_latency + avg_monitoring_time
+                    need_report = (self._monitoring_callback_counter % 800 == 0) or (total_monitoring_latency > theoretical_latency + 0.5)
+                    if need_report:
+                        self._log_rate_limit('latency_report', f"🎧 延迟#{self._monitoring_callback_counter} 理论:{theoretical_latency:.2f}ms 处理:{avg_monitoring_time:.2f}/{max_monitoring_time:.2f}ms 总:{total_monitoring_latency:.2f}ms", interval=1.0, burst=1)
                         if total_monitoring_latency > 1.0:
                             if self.debug_flags.get('latency_warn_verbose'):
-                                self._log_rate_limit('high_latency_monitor', f"⚠️ 监听延迟偏高: {total_monitoring_latency:.2f}ms > 1.0ms", interval=0.5)
+                                self._log_rate_limit('high_latency_monitor', f"⚠️ 监听延迟偏高 {total_monitoring_latency:.2f}ms", interval=1.0)
                             self._stat_counters['high_latency'] += 1
                         else:
-                            self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好: {total_monitoring_latency:.2f}ms", interval=0.8)
-                        
-                        # 清理旧数据
+                            self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好 {total_monitoring_latency:.2f}ms", interval=2.0)
                         self._monitoring_processing_times = []
                 
                 # 创建专业级低延迟音频流（监听模式智能配置）
@@ -2475,6 +2609,12 @@ class IntegratedAudioProcessor(QThread):
                     'latency_class': 'medium'
                 })
                 
+                # 基于真实设备跑分对配置进行智能排序（先快又稳）
+                try:
+                    monitoring_configs = self._rank_monitoring_configs(monitoring_configs)
+                except Exception as _rank_e:
+                    print(f"⚠️ 监听配置排序跳过: {_rank_e}")
+
                 for config in monitoring_configs:
                     try:
                         # 构建监听流参数
@@ -2709,11 +2849,19 @@ class IntegratedAudioProcessor(QThread):
                     
                     # 音频输出（仅在启用监听回传时）
                     if self.monitor_audio_passthrough:
-                        if outdata.shape[1] == 1:
-                            outdata[:, 0] = audio_data  # 输出仍可用增强/平滑后的版本
+                        # RAW直通：最小处理，仅保留安全头房+VRMS限幅
+                        if getattr(self, 'monitor_raw_mode', False):
+                            audio_out = raw_audio.copy()
                         else:
-                            outdata[:, 0] = audio_data
-                            outdata[:, 1] = audio_data
+                            # 仅对耳返音频在低RMS呼吸段进行轻量抑制，不影响 raw_audio 入队
+                            audio_out = self._apply_breath_noise_suppress(audio_data, key='hecate')
+                        # 安全头房 + VRMS限幅（无感）
+                        audio_out = self._apply_headroom_and_vrms(audio_out, key='hecate')
+                        if outdata.shape[1] == 1:
+                            outdata[:, 0] = audio_out  # 输出仍可用增强/平滑后的版本
+                        else:
+                            outdata[:, 0] = audio_out
+                            outdata[:, 1] = audio_out
                     else:
                         outdata.fill(0)
                         
@@ -3471,6 +3619,25 @@ class IntegratedAudioProcessor(QThread):
                         if self.intelligent_volume_booster['enabled']:
                             rms = np.sqrt(np.mean(audio_data ** 2))
                             peak = np.max(np.abs(audio_data))
+
+                            # 🌿 自然耳返：低音量时避免AGC抬升噪声/呼吸
+                            agc_freeze = False
+                            if self.monitor_audio_passthrough and getattr(self, 'monitor_natural_mode', True):
+                                # 轻量指标：ZCR + 高频差分比
+                                try:
+                                    zc = float(np.mean((audio_data[:-1] * audio_data[1:]) < 0)) if len(audio_data) > 1 else 0.0
+                                    if len(audio_data) > 4:
+                                        hfdiff = float(np.sum(np.abs(np.diff(audio_data, 2))))
+                                        energy = float(np.sum(np.abs(audio_data))) + 1e-9
+                                        hf_ratio = hfdiff / energy
+                                    else:
+                                        hf_ratio = 0.0
+                                except Exception:
+                                    zc, hf_ratio = 0.0, 0.0
+                                thr_low = 0.010
+                                thr_mid = thr_low * 2.0
+                                if rms < thr_mid and (zc > 0.10 or hf_ratio > 6.0):
+                                    agc_freeze = True
                             
                             # 🎵 大音量快速处理路径
                             if peak > 0.6 or rms > 0.15:  # 大音量/高音检测
@@ -3486,12 +3653,16 @@ class IntegratedAudioProcessor(QThread):
                                     else:
                                         # 适度增强
                                         target_gain = min(1.15, target_level * 0.9 / max(rms, noise_gate))
+                                    if agc_freeze:
+                                        target_gain = min(target_gain, 1.0)
                                     
                                     # 快速增益调整（减少平滑延迟）
                                     current_gain = self.intelligent_volume_booster['current_gain']
                                     smoothing = 0.85  # 大音量时使用更快的响应
                                     
                                     new_gain = current_gain * smoothing + target_gain * (1 - smoothing)
+                                    if agc_freeze:
+                                        new_gain = min(new_gain, 1.0)
                                     self.intelligent_volume_booster['current_gain'] = new_gain
                                     
                                     # 应用增益
@@ -3521,11 +3692,15 @@ class IntegratedAudioProcessor(QThread):
                                         target_gain = min(1.2, target_level * 0.7 / max(avg_rms, noise_gate))
                                     else:
                                         target_gain = max(0.98, min(1.02, target_level / avg_rms))
+                                    if agc_freeze:
+                                        target_gain = min(target_gain, 1.0)
                                     
                                     # 标准平滑增益变化
                                     current_gain = self.intelligent_volume_booster['current_gain']
                                     smoothing = self.intelligent_volume_booster['gain_smoothing']
                                     new_gain = current_gain * smoothing + target_gain * (1 - smoothing)
+                                    if agc_freeze:
+                                        new_gain = min(new_gain, 1.0)
                                     
                                     # 增益变化限制
                                     max_gain_change = self.intelligent_volume_booster['gain_change_limit']
@@ -3543,7 +3718,8 @@ class IntegratedAudioProcessor(QThread):
                                             audio_data = audio_data * (0.91 / peak)
                                 else:
                                     # 微弱信号轻微衰减
-                                    audio_data = audio_data * 0.88
+                                    # 自然耳返时保持更原味：不要过度衰减，避免“呼吸被抽空”感
+                                    audio_data = audio_data * (0.90 if getattr(self, 'monitor_natural_mode', True) else 0.88)
                         
                         # �️ 手动音量控制（新增：与线程优化集成）
                         if hasattr(self, 'intelligent_volume_booster') and self.intelligent_volume_booster.get('manual_control_enabled', False):
@@ -3552,11 +3728,17 @@ class IntegratedAudioProcessor(QThread):
                         
                         # �🎵 高品质音频输出（受监听回传开关控制）
                         if self.monitor_audio_passthrough:
-                            if outdata.shape[1] == 1:
-                                outdata[:, 0] = audio_data
+                            if getattr(self, 'monitor_raw_mode', False):
+                                audio_out = raw_audio.copy()
                             else:
-                                outdata[:, 0] = audio_data
-                                outdata[:, 1] = audio_data
+                                audio_out = self._apply_breath_noise_suppress(audio_data, key='pro')
+                            # 始终应用头房+VRMS限幅，避免削波且不失真
+                            audio_out = self._apply_headroom_and_vrms(audio_out, key='pro')
+                            if outdata.shape[1] == 1:
+                                outdata[:, 0] = audio_out
+                            else:
+                                outdata[:, 0] = audio_out
+                                outdata[:, 1] = audio_out
                         else:
                             outdata.fill(0)
                         
@@ -4222,22 +4404,34 @@ class IntegratedAudioProcessor(QThread):
     
     def _audio_processing_loop(self):
         """音频处理循环 - 在独立线程中运行"""
-        # 改为自适应：按帧可用性运行；增加最大迭代防止CPU占满
-        target_hz = 150.0  # 目标最大分析频率
+        # ================== 优化版本：提高分析帧率 ==================
+        # 目标：减少窗口等待时间 + 加快队列清空速度 + 动态节流
+        target_hz = 500.0                    # 上限循环频率（仅在无 backlog 时）
         processing_interval = 1.0 / target_hz
 
-        # 引入固定窗与hop，减少“攒一堆再分析”造成的卡顿
         if not hasattr(self, '_frame_config_initialized'):
-            self._frame_window_sec = 0.04   # 40ms窗口
-            self._frame_hop_sec = 0.01      # 10ms步长
-            self._frame_window = int(self.sample_rate * self._frame_window_sec)
-            self._frame_hop = int(self.sample_rate * self._frame_hop_sec)
-            if self._frame_window < 256:
-                self._frame_window = 512
-            if self._frame_hop < 64:
-                self._frame_hop = 128
+            # 根据最小频率动态设置窗口（覆盖旧的固定40ms设计）
+            min_f = getattr(self, 'min_frequency', 80) or 80
+            # 至少包含 ~2.5 个周期，保证低频分辨率，同时不过大
+            desired_window = int(self.sample_rate / min_f * 2.5)  # ~3000(96k/80*2.5)
+            # 规范到常见处理长度，利于 FFT / 自相关效率
+            allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096]
+            self._frame_window = min(4096, next((w for w in allowed_windows if w >= desired_window), 4096))
+            # hop 设为窗口的 1/4（增强时间分辨率）
+            self._frame_hop = max(256, self._frame_window // 4)
+            self._frame_window_sec = self._frame_window / self.sample_rate
+            self._frame_hop_sec = self._frame_hop / self.sample_rate
             self._frame_buffer = []
             self._frame_config_initialized = True
+            print(f"⚙️ 新帧配置: window={self._frame_window}({self._frame_window_sec*1000:.1f}ms) hop={self._frame_hop}({self._frame_hop_sec*1000:.1f}ms)")
+        else:
+            # 若已有旧配置且窗口过大（>4096或>45ms）则在空闲时渐进收缩
+            if self._frame_window > 4096 or self._frame_window_sec > 0.045:
+                self._frame_window = 4096
+                self._frame_hop = max(256, self._frame_window // 4)
+                self._frame_window_sec = self._frame_window / self.sample_rate
+                self._frame_hop_sec = self._frame_hop / self.sample_rate
+                print(f"⚙️ 帧配置回落: window={self._frame_window} hop={self._frame_hop}")
         
         # 🔥 记录处理开始时间用于检测频率计算
         self.processing_start_time = time.time()
@@ -4255,7 +4449,7 @@ class IntegratedAudioProcessor(QThread):
             # 🎯 增强调试：更频繁地输出状态信息
             if loop_counter <= 5 or loop_counter % 100 == 0:
                 queue_size = self.audio_buffer_queue.qsize()
-                print(f"🔄 处理循环#{loop_counter}: 队列大小={queue_size}, is_audio_processing={self.is_audio_processing}")
+                self._log_rate_limit('loop_brief', f"🔄 处理循环#{loop_counter}: 队列={queue_size}", interval=0.5, burst=3)
                 
                 # 检查关键状态
                 if loop_counter <= 5:
@@ -4263,26 +4457,31 @@ class IntegratedAudioProcessor(QThread):
                     print(f"   🎯 is_monitoring_only={getattr(self, 'is_monitoring_only', 'Not set')}")
                     print(f"   🎯 should_save={getattr(self, 'should_save', 'Not set')}")
             
-            # 从队列取尽可能多的数据（限制单次批量，平滑分配）
+            # ================== 队列摄取优化 ==================
             audio_packets = []
             try:
-                max_batch = 6
+                queue_backlog = self.audio_buffer_queue.qsize()
+                # 自适应批量：不足一帧时一次性尽可能填满，避免高等待
+                need_samples = max(0, getattr(self, '_frame_window', 2048) - len(getattr(self, '_frame_buffer', [])))
+                # 预计需要的包数（考虑 chunk_size）
+                est_needed_packets = (need_samples // self.chunk_size) + 1 if need_samples > 0 else 1
+                # 基础批量 + backlog 放大， capped
+                max_batch = min(60, max(6, est_needed_packets, queue_backlog // 2))
                 while not self.audio_buffer_queue.empty() and len(audio_packets) < max_batch:
-                    packet = self.audio_buffer_queue.get_nowait()
-                    audio_packets.append(packet)
+                    audio_packets.append(self.audio_buffer_queue.get_nowait())
             except queue.Empty:
-                audio_packets = audio_packets
+                pass
             
             # 🔥 强制调试：每100次循环检查队列状态
             if loop_counter % 100 == 0:
                 queue_size = self.audio_buffer_queue.qsize()
                 got_packets = len(audio_packets)
-                print(f"🔥 强制队列调试#{loop_counter}: 队列大小={queue_size}, 获取包数={got_packets}")
+                self._log_rate_limit('queue_force', f"🔥 队列调试#{loop_counter}: size={queue_size} got={got_packets}", interval=1.2)
                 if got_packets == 0 and queue_size > 0:
-                    print(f"⚠️ 队列有数据但获取失败! 队列大小={queue_size}")
+                    self._log_rate_limit('queue_anomaly', f"⚠️ 队列有数据但获取失败 size={queue_size}", interval=2.0)
                 elif got_packets > 0:
                     total_samples = sum(len(p['data']) for p in audio_packets)
-                    print(f"✅ 成功获取{got_packets}个包，总样本数={total_samples}")
+                    self._log_rate_limit('queue_ok', f"✅ 获取{got_packets}包 共{total_samples}样本", interval=1.0, burst=2)
             
             # 首次获取到数据时的调试信息
             if audio_packets and loop_counter <= 10:
@@ -4320,8 +4519,8 @@ class IntegratedAudioProcessor(QThread):
                         self._frame_buffer = self._frame_buffer[-max_len:]
 
                     produced = 0
-                    # 按固定 hop 产出多个帧，保持节奏稳定
-                    while len(self._frame_buffer) >= self._frame_window and produced < 4:  # 限制单循环帧数
+                    # 单循环尽量多产出，提升时间分辨率（上限 12 防止阻塞 GUI）
+                    while len(self._frame_buffer) >= self._frame_window and produced < 12:
                         frame = np.array(self._frame_buffer[:self._frame_window])
                         self._frame_buffer = self._frame_buffer[self._frame_hop:]
                         produced += 1
@@ -4332,16 +4531,17 @@ class IntegratedAudioProcessor(QThread):
                         )
                         if should_analyze_pitch:
                             self.process_audio_for_pitch_async(frame)
-                    if produced and loop_counter % 150 == 0:
-                        print(f"🎵 固定帧分析: 本轮输出 {produced} 帧, 缓冲剩余 {len(self._frame_buffer)} 样本")
+                    if produced and loop_counter % 300 == 0:
+                        self._log_rate_limit('frame_prod', f"🎵 帧产出={produced} 剩余={len(self._frame_buffer)}", interval=2.0)
                 except Exception as audio_error:
                     print(f"❌ 帧化处理错误: {audio_error}")
                     continue
             
-            # 控制处理频率
+            # ================== 动态节流 ==================
             elapsed = time.time() - start_time
-            if elapsed < processing_interval:
-                # 轻微 sleep 释放GIL, 维持目标频率
+            backlog = self.audio_buffer_queue.qsize()
+            if backlog == 0 and elapsed < processing_interval:
+                # 只有在无 backlog 时才 sleep，确保积压快速清空
                 time.sleep(processing_interval - elapsed)
     
     def process_audio_for_pitch_async(self, audio_data):
@@ -4392,19 +4592,23 @@ class IntegratedAudioProcessor(QThread):
                 try:
                     processed_audio = self.noise_processor.process_audio(audio_data)
                     processed_rms = np.sqrt(np.mean(processed_audio ** 2))
-                    
-                    # 🔥 重要修复：如果降噪过度抑制了歌声信号，使用原始信号
-                    if processed_rms < original_rms * 0.3:  # 如果降噪后信号减弱超过70%
-                        if self.debug_flags.get('vocal_protect_verbose'):
-                            self._log_rate_limit('vocal_protect', f"🔧 歌声保护: 降噪过强({processed_rms:.4f} < {original_rms * 0.3:.4f})，使用原始信号", interval=0.3)
+                    # 歌声保护防抖：连续3帧过抑制触发，1秒冷却
+                    if processed_rms < original_rms * 0.3:
+                        self._over_suppress_counter += 1
+                    else:
+                        self._over_suppress_counter = 0
+                    now_t = time.time()
+                    if self._over_suppress_counter >= 3 and now_t >= self._suppress_cooldown_until:
+                        processed_audio = audio_data
                         self._stat_counters['vocal_protect'] += 1
-                        processed_audio = audio_data  # 使用原始信号保护歌声
-                    
-                    if self._pitch_analysis_counter % 100 == 0:
+                        self._suppress_cooldown_until = now_t + 1.0
+                        if self.debug_flags.get('vocal_protect_verbose'):
+                            self._log_rate_limit('vocal_protect', f"🔧 歌声保护触发 rms {processed_rms:.4f}/{original_rms:.4f}", interval=1.0)
+                    if self._pitch_analysis_counter % 200 == 0:
                         rms_change_percent = ((processed_rms - original_rms) / original_rms * 100) if original_rms > 0 else 0
-                        self._log_rate_limit('noise_status', f"📉 降噪状态: RMS {original_rms:.4f} → {processed_rms:.4f} ({rms_change_percent:+.1f}%)", interval=1.0)
+                        self._log_rate_limit('noise_status', f"📉 降噪RMS {original_rms:.4f}->{processed_rms:.4f} ({rms_change_percent:+.1f}%)", interval=2.0)
                 except Exception as e:
-                    print(f"❌ 降噪处理错误: {e}")
+                    self._log_rate_limit('noise_err', f"❌ 降噪错误: {e}", interval=5.0)
                     processed_audio = audio_data
             
             # ========= 呼吸/静音判定 (避免假高频 2500Hz) ========= #
@@ -4563,17 +4767,17 @@ class IntegratedAudioProcessor(QThread):
             
             # 🔥 超低阈值：检测极微弱信号
             if original_rms < 0.0001:
-                if self._detection_counter % 500 == 0:
-                    print(f"🔇 信号过于微弱: RMS={original_rms:.6f}")
+                if self._detection_counter % 1200 == 0:
+                    self._log_rate_limit('weak_sig', f"🔇 微弱信号 RMS={original_rms:.6f}", interval=5.0)
                 return 0
             
             # 🔥 激进的信号增强
             if original_rms < 0.1:
-                enhancement_factor = min(0.2 / original_rms, 100.0)  # 最大100倍增强
+                enhancement_factor = min(0.2 / original_rms, 100.0)
                 audio_data = audio_data * enhancement_factor
-                if self._detection_counter % 100 == 0:
+                if self._detection_counter % 400 == 0:
                     new_rms = np.sqrt(np.mean(audio_data ** 2))
-                    print(f"🔊 信号增强: {original_rms:.4f} → {new_rms:.4f} (x{enhancement_factor:.1f})")
+                    self._log_rate_limit('gain', f"🔊 增强 {original_rms:.4f}->{new_rms:.4f} x{enhancement_factor:.1f}", interval=4.0)
             
             # 🔥 基本预处理
             audio_data = audio_data - np.mean(audio_data)  # 去DC
@@ -4621,13 +4825,16 @@ class IntegratedAudioProcessor(QThread):
                         
                         # 🔥 极低验证阈值
                         if peak_value > 0.005 and min_freq <= frequency <= max_freq:
-                            if self._detection_counter % 50 == 0:
-                                print(f"🎵 精确自相关检测: {frequency:.3f}Hz (插值), 峰值={peak_value:.4f}")
+                            if frequency > 3000:
+                                self._log_rate_limit('hf_suppress', f"⚠️ 抑制异常高频 {frequency:.1f}Hz", interval=3.0)
+                                return 0
+                            if self._detection_counter % 150 == 0:
+                                self._log_rate_limit('acf_freq', f"🎵 ACF {frequency:.2f}Hz pk={peak_value:.3f}", interval=1.5)
                             return frequency
                             
             except Exception as e:
-                if self._detection_counter % 100 == 0:
-                    print(f"⚠️ 自相关检测失败: {e}")
+                if self._detection_counter % 600 == 0:
+                    self._log_rate_limit('acf_fail', f"⚠️ ACF失败: {e}", interval=10.0)
             
             # 🔥 方法2：改进的FFT峰值检测（保持频率精度）
             try:
@@ -4665,13 +4872,16 @@ class IntegratedAudioProcessor(QThread):
                         
                         # 🔥 非常宽松的验证条件
                         if snr > 1.2 and peak_mag > 0.001:
-                            if self._detection_counter % 50 == 0:
-                                print(f"🎵 精确FFT检测: {interpolated_freq:.3f}Hz (插值), SNR={snr:.2f}")
+                            if interpolated_freq > 3000:
+                                self._log_rate_limit('hf_suppress', f"⚠️ 抑制异常高频 {interpolated_freq:.1f}Hz(FFT)", interval=3.0)
+                                return 0
+                            if self._detection_counter % 300 == 0:
+                                self._log_rate_limit('fft_freq', f"🎵 FFT {interpolated_freq:.2f}Hz SNR={snr:.2f}", interval=2.0)
                             return interpolated_freq
                             
             except Exception as e:
-                if self._detection_counter % 100 == 0:
-                    print(f"⚠️ FFT检测失败: {e}")
+                if self._detection_counter % 600 == 0:
+                    self._log_rate_limit('fft_fail', f"⚠️ FFT失败: {e}", interval=10.0)
             
             # 🔥 方法3：改进的零交叉检测（保持频率精度）
             try:
@@ -4716,6 +4926,1121 @@ class IntegratedAudioProcessor(QThread):
             if self._detection_counter % 100 == 0:
                 print(f"❌ 音高检测总体错误: {e}")
             return 0
+
+    # ========= 监听耳返专用：呼吸期轻微电流/滋啦抑制（零感知延迟） ========= #
+    def _apply_breath_noise_suppress(self, audio_data: np.ndarray, key: str = 'default') -> np.ndarray:
+        """在低音量呼吸段，温和抑制高频滋啦与电流音。
+        - 仅作用于监听耳返，不影响分析队列（保持 raw_audio 原样入队）
+        - 条件触发：RMS 很低且高频差分比偏高
+        - 算法：一阶低通(IIR) + 高频残差动态抑制 + 轻混合平滑 +（可选）软门控 + 边界短交叉淡入
+        """
+        try:
+            if audio_data is None or len(audio_data) == 0:
+                return audio_data
+            x = audio_data.astype(np.float32, copy=False)
+            rms = float(np.sqrt(np.mean(x * x)))
+            # 自然模式参数（更轻的处理，尽量保留呼吸质感）
+            natural = bool(getattr(self, 'monitor_natural_mode', True))
+            thr_low = 0.012 if not natural else 0.010
+            # 设备环境自校准：在非常安静且非有声的段落，估计底噪RMS，微调阈值
+            try:
+                if not hasattr(self, '_env_noise_floor'):
+                    self._env_noise_floor = {}
+                env = float(self._env_noise_floor.get(key, 0.0))
+                # 极低电平才更新，避免在有声时受到影响
+                if rms < thr_low * 0.6:
+                    # 慢速一阶平均做地板估计
+                    env = 0.995 * env + 0.005 * rms
+                    self._env_noise_floor[key] = env
+                # 根据地板调节阈值：噪声地板越高，阈值略升，减少误触；反之略降，增强敏感度
+                if env > 0.0:
+                    # 自然模式调幅更小，保持气声
+                    adj = 0.25 if not natural else 0.15
+                    thr_low *= (1.0 + adj * min(1.0, env / max(1e-6, thr_low)))
+            except Exception:
+                pass
+            if rms >= thr_low:
+                return audio_data
+
+            # 高频差分比例（检测滋啦）
+            if len(x) > 4:
+                hfdiff = float(np.sum(np.abs(np.diff(x, 2))))
+                energy = float(np.sum(np.abs(x))) + 1e-9
+                hf_ratio = hfdiff / energy
+            else:
+                hf_ratio = 0.0
+
+            # 零交叉率（ZCR），帮助识别呼吸/噪声类无周期成分
+            if len(x) > 1:
+                zc = float(np.mean((x[:-1] * x[1:]) < 0))
+            else:
+                zc = 0.0
+
+            # 触发条件：低RMS 且 (hf_ratio 或 ZCR 达到一定水平)，否则直接原样返回
+            if not getattr(self, '_breath_gate_state', None):
+                self._breath_gate_state = {}
+            gate = self._breath_gate_state.get(key, False)
+            # 更保守的高频触发阈值，减少对真实呼吸与轻声的误触
+            hf_trigger = hf_ratio > (6.5 if natural else 5.8)
+            zc_trigger = zc > (0.10 if natural else 0.08)
+            if not (hf_trigger or zc_trigger):
+                self._breath_gate_state[key] = False
+                return audio_data
+            else:
+                self._breath_gate_state[key] = True
+
+            # 将 hf_ratio 映射为 [0,1] 抑制强度 s
+            if natural:
+                hf_start, hf_end = 7.0, 13.5
+            else:
+                hf_start, hf_end = 5.5, 11.5
+            s = 0.0
+            if hf_end > hf_start:
+                s = (hf_ratio - hf_start) / (hf_end - hf_start)
+                s = 0.0 if s < 0.0 else (1.0 if s > 1.0 else s)
+
+            # 用户强度映射（0.0~1.0），影响 s 与压缩强度
+            user_strength = float(getattr(self, 'natural_earback_strength', 0.6))
+            user_strength = 0.0 if user_strength < 0.0 else (1.0 if user_strength > 1.0 else user_strength)
+            s *= (0.45 + 0.45 * user_strength)  # 更轻的强度映射，保留更多原味
+            # 简单迟滞：跨回调平滑 s，避免忽隐忽现
+            if not hasattr(self, '_breath_prev_s'):
+                self._breath_prev_s = {}
+            s_prev = self._breath_prev_s.get(key, s)
+            s = 0.7 * s_prev + 0.3 * s
+            self._breath_prev_s[key] = float(s)
+
+            # 低音量时稍增强抑制强度（只在呼吸/极弱段生效）
+            thr_mid = thr_low * (1.8 if natural else 2.0)
+            if rms < thr_mid:
+                w = (thr_mid - rms) / max(1e-9, (thr_mid - thr_low))
+                w = 0.0 if w < 0.0 else (1.0 if w > 1.0 else w)
+                s = min(1.0, s + 0.35 * w)
+
+            # 根据 ZCR 提升无周期“沙沙”的抑制
+            zcr_start, zcr_end = (0.08, 0.22) if natural else (0.06, 0.20)
+            if zcr_end > zcr_start:
+                s_z = (zc - zcr_start) / (zcr_end - zcr_start)
+                s_z = 0.0 if s_z < 0.0 else (1.0 if s_z > 1.0 else s_z)
+                s = min(1.0, s + 0.25 * s_z)
+
+            # IIR 低通，跨回调保持状态，减少边界伪影
+            if not hasattr(self, '_breath_lp_state'):
+                self._breath_lp_state = {}
+            prev = self._breath_lp_state.get(key, 0.0)
+            # alpha 随 s 动态变化：高频越多，低通稍强
+            if natural:
+                alpha_base, alpha_max = 0.08, 0.18
+            else:
+                alpha_base, alpha_max = 0.13, 0.26
+            alpha = alpha_base + (alpha_max - alpha_base) * s
+            y_lp = np.empty_like(x)
+            for i in range(len(x)):
+                prev = prev + alpha * (x[i] - prev)
+                y_lp[i] = prev
+            self._breath_lp_state[key] = float(prev)
+
+            # === 额外中频低通（~2kHz），用于分离中频与更高频的残差 ===
+            try:
+                if not hasattr(self, '_breath_lp2_state'):
+                    self._breath_lp2_state = {}
+                prev2 = float(self._breath_lp2_state.get(key, 0.0))
+                sr = float(getattr(self, 'sample_rate', 48000.0))
+                fc = 2000.0  # 约2kHz分界
+                # 指数平滑等效一阶RC：alpha = 1 - exp(-2πfc/fs)
+                alpha_mid = 1.0 - np.exp(-2.0 * np.pi * fc / max(1000.0, sr))
+                alpha_mid = 0.0 if alpha_mid < 0.0 else (0.99 if alpha_mid > 0.99 else float(alpha_mid))
+                y_lp2 = np.empty_like(x)
+                for i in range(len(x)):
+                    prev2 = prev2 + alpha_mid * (x[i] - prev2)
+                    y_lp2[i] = prev2
+                self._breath_lp2_state[key] = float(prev2)
+            except Exception:
+                # 失败则回退：使用现有低通作为近似
+                y_lp2 = y_lp
+
+            # === 新增：更高分界低通（~6kHz），用于进一步分离超高频（>6k）以更精确地门限抑制底噪 ===
+            try:
+                if not hasattr(self, '_breath_lp3_state'):
+                    self._breath_lp3_state = {}
+                prev3 = float(self._breath_lp3_state.get(key, 0.0))
+                sr = float(getattr(self, 'sample_rate', 48000.0))
+                fc3 = 6000.0
+                alpha_high = 1.0 - np.exp(-2.0 * np.pi * fc3 / max(1000.0, sr))
+                alpha_high = 0.0 if alpha_high < 0.0 else (0.995 if alpha_high > 0.995 else float(alpha_high))
+                y_lp3 = np.empty_like(x)
+                for i in range(len(x)):
+                    prev3 = prev3 + alpha_high * (x[i] - prev3)
+                    y_lp3[i] = prev3
+                self._breath_lp3_state[key] = float(prev3)
+            except Exception:
+                y_lp3 = y_lp2
+
+            # === 新增：8kHz低通（~8kHz），便于分离6–8k子带用于“远距小声”专治“滋啦” ===
+            try:
+                if not hasattr(self, '_breath_lp4_state'):
+                    self._breath_lp4_state = {}
+                prev4 = float(self._breath_lp4_state.get(key, 0.0))
+                sr = float(getattr(self, 'sample_rate', 48000.0))
+                fc4 = 8000.0
+                alpha_8k = 1.0 - np.exp(-2.0 * np.pi * fc4 / max(1000.0, sr))
+                alpha_8k = float(np.clip(alpha_8k, 0.0, 0.996))
+                y_lp4 = np.empty_like(x)
+                for i in range(len(x)):
+                    prev4 = prev4 + alpha_8k * (x[i] - prev4)
+                    y_lp4[i] = prev4
+                self._breath_lp4_state[key] = float(prev4)
+            except Exception:
+                y_lp4 = y_lp3
+
+            # 🎯 识别“很小声的嗡嗡声”（低频调制为主，谱心低且谱平坦度低）
+            tonal_hum = False
+            try:
+                sr = float(getattr(self, 'sample_rate', 48000))
+                if len(x) >= 64:
+                    spec = np.fft.rfft(x)
+                    mag = np.abs(spec) + 1e-12
+                    freqs = np.fft.rfftfreq(len(x), 1.0/sr)
+                    centroid = float(np.sum(freqs * mag) / np.sum(mag)) if np.sum(mag) > 0 else 0.0
+                    # 谱平坦度（tonal 越低越“尖锐”）
+                    flatness = float(np.exp(np.mean(np.log(mag))) / (np.mean(mag) + 1e-12))
+                    # 条件：很低电平 + 低ZCR（更接近正弦）+ 谱心较低 + 平坦度较低（有明显峰）
+                    tonal_hum = (rms < thr_mid) and (zc <= (0.08 if natural else 0.07)) 
+                    tonal_hum = tonal_hum and (centroid < (800.0 if natural else 700.0)) and (flatness < 0.60)
+                    # 中高频能量比，用于识别“轻声有声”（中频相对高于高频，保留清晰度）
+                    try:
+                        mid_mask = (freqs >= 300.0) & (freqs <= 3000.0)
+                        high_mask = (freqs > 3000.0)
+                        mid_energy = float(np.mean(mag[mid_mask])) if np.any(mid_mask) else 0.0
+                        high_energy = float(np.mean(mag[high_mask])) if np.any(high_mask) else 1e-12
+                        mid_high_ratio = (mid_energy + 1e-9) / (high_energy + 1e-9)
+                        # 供“头声/高音亮度”判断使用的低/中/高能量比
+                        midp_mask = (freqs >= 300.0) & (freqs <= 1200.0)
+                        high6_mask_l = (freqs >= 6000.0)
+                        midp_e2 = float(np.mean(mag[midp_mask])) if np.any(midp_mask) else 1e-12
+                        high6_e2 = float(np.mean(mag[high6_mask_l])) if np.any(high6_mask_l) else 1e-12
+                        hf_to_mid_est = (high6_e2 + 1e-9) / (midp_e2 + 1e-9)
+                    except Exception:
+                        mid_high_ratio = 1.0
+                        hf_to_mid_est = 0.0
+                else:
+                    mid_high_ratio = 1.0
+                    hf_to_mid_est = 0.0
+            except Exception:
+                tonal_hum = False
+                mid_high_ratio = 1.0
+                hf_to_mid_est = 0.0
+
+            # 轻声有声：低电平 + 中频相对占优 + ZCR较低（更接近有声音色），且不属于嗡嗡
+            voiced_soft = (rms < thr_mid) and (mid_high_ratio > 2.0) and (zc <= 0.12) and (not tonal_hum)
+
+            # 🎤 头声/高音亮度保护：高音（谱心较高）+ 高频相对中频不低 + 不像噪声
+            voiced_bright = False
+            try:
+                voiced_bright = (rms > thr_low * 0.9) and (zc <= 0.14) and (flatness < 0.75) and (centroid > 2000.0) and (hf_to_mid_est > 0.60)
+            except Exception:
+                voiced_bright = False
+
+            # 📏 动态“距离因子”估计（0=近，1=远）：基于低/中/高频能量比 + ZCR + 音量
+            distance_factor = 0.0
+            try:
+                # 若已有频谱 mag/freqs，则复用；否则回退为0
+                if 'mag' in locals() and 'freqs' in locals() and len(mag) == len(freqs):
+                    low_mask = (freqs >= 80.0) & (freqs <= 250.0)
+                    midp_mask = (freqs >= 300.0) & (freqs <= 1200.0)
+                    high6_mask = (freqs >= 6000.0)
+                    low_e = float(np.mean(mag[low_mask])) if np.any(low_mask) else 0.0
+                    midp_e = float(np.mean(mag[midp_mask])) if np.any(midp_mask) else 1e-12
+                    high6_e = float(np.mean(mag[high6_mask])) if np.any(high6_mask) else 1e-12
+                    low_to_mid = (low_e + 1e-9) / (midp_e + 1e-9)
+                    hf_to_mid = (high6_e + 1e-9) / (midp_e + 1e-9)
+                    # 特征映射：近讲低频相对高、远距高频相对高
+                    t1 = np.clip((0.7 - low_to_mid) / 0.5, 0.0, 1.0)    # 低于0.7越多越远
+                    t2 = np.clip((hf_to_mid - 0.8) / 0.8, 0.0, 1.0)     # 高于0.8越多越远
+                    t3 = np.clip((zc - 0.10) / 0.15, 0.0, 1.0)          # ZCR升高→更像远距/噪声
+                    t4 = np.clip((thr_mid - rms) / max(1e-9, (thr_mid - thr_low)), 0.0, 1.0)  # 越小声越远
+                    df_raw = 0.38 * t1 + 0.34 * t2 + 0.18 * t3 + 0.10 * t4
+                    # 平滑到状态
+                    if not hasattr(self, '_distance_factor_state'):
+                        self._distance_factor_state = {}
+                    prev_df = float(self._distance_factor_state.get(key, 0.0))
+                    distance_factor = float(0.80 * prev_df + 0.20 * df_raw)
+                    self._distance_factor_state[key] = distance_factor
+                else:
+                    distance_factor = float(self._distance_factor_state.get(key, 0.0)) if hasattr(self, '_distance_factor_state') else 0.0
+            except Exception:
+                distance_factor = 0.0
+
+            # 远距小声：低电平 + ZCR中等 + 中频优势不明显（近场弱），容易出现“微弱滋啦”
+            try:
+                far_quiet = (rms < thr_mid) and (0.10 <= zc <= 0.22) and (mid_high_ratio < 1.6) and (not tonal_hum)
+            except Exception:
+                far_quiet = (rms < thr_mid) and (0.10 <= zc <= 0.22) and (not tonal_hum)
+            # 远距“像有人声”的提示：很小声但zcr不高且中频不弱，避免误判为噪声
+            try:
+                far_voiced_hint = (rms < thr_mid) and (zc <= 0.14) and (mid_high_ratio > 1.3) and (not tonal_hum)
+            except Exception:
+                far_voiced_hint = False
+
+            # 频带分离：
+            # - mid_band: ~2kHz附近的带（帮助保持清晰度）
+            # - hf_mid: ~2k-6k 之间的能量（影响“清晰/齿音”）
+            # - hf_high: >6k 的超高频（更可能是底噪“电流音”）
+            mid_band = y_lp2 - y_lp
+            hf_mid = y_lp3 - y_lp2
+            hf_high = x - y_lp3
+            # 向后兼容：保留原 hf_res（>~2kHz 的整体）以复用既有包络/门限逻辑
+            hf_res = x - y_lp2
+            # 呼吸检测：低电平 + 高ZCR（更像气声）+ 2-6k 相对占优，且非嗡嗡/非轻声有声
+            try:
+                e_hm = float(np.mean(np.abs(hf_mid))) + 1e-9
+                e_hh = float(np.mean(np.abs(hf_high))) + 1e-9
+                hm_over_hh = e_hm / e_hh
+            except Exception:
+                hm_over_hh = 1.0
+            breath_detect = (rms < thr_mid) and (zc >= (0.14 if natural else 0.12))
+            breath_detect = breath_detect and (hm_over_hh > 1.20) and (not tonal_hum) and (not voiced_soft)
+            # 基于 s 设定静态高频保留系数 g_base（越大越保留）
+            if tonal_hum:
+                # 嗡嗡声场景：更强的高频抑制，减少砂感
+                if natural:
+                    k_min, k_max = 0.22, 0.52
+                else:
+                    k_min, k_max = 0.20, 0.50
+            else:
+                if natural:
+                    k_min, k_max = 0.08, 0.32
+                else:
+                    k_min, k_max = 0.16, 0.48
+            k = k_min + (k_max - k_min) * s
+            g_base = 1.0 - k
+            # 轻声有声时，进一步降低抑制力度、避免“模糊”
+            if voiced_soft:
+                g_base = min(1.0, g_base * 1.06)
+                s *= 0.88
+
+            # 轻声有声保护：若低频包络高于高频包络，提升 g_base（少削高频）并给低频极轻增益
+            env_l = float(np.mean(np.abs(y_lp))) + 1e-9
+            env_h = float(np.mean(np.abs(hf_res))) + 1e-9
+            low_boost = 0.0
+            if env_l > env_h * 1.25:
+                g_base = min(1.0, g_base + 0.10)
+                s *= 0.9
+                low_boost = (0.04 if natural else 0.05) if tonal_hum else (0.02 if natural else 0.03)
+            # 轻声有声：略增低频温暖，帮助清晰度
+            if voiced_soft:
+                low_boost += 0.01
+
+            # 软膝压缩：当高频包络占比过高时进一步降低高频（防“砂感”）
+            base_amp = float(np.mean(np.abs(x))) + 1e-9
+            env_h_ratio = env_h / base_amp
+            t_ratio = 0.88 if natural else 0.78
+            if env_h_ratio <= t_ratio:
+                g_comp = 1.0
+            else:
+                over = (env_h_ratio - t_ratio) / max(1e-6, (1.0 - t_ratio))
+                # 嗡嗡声时对>2kHz更强的抑制，整体降砂但不压中频
+                c_base = (0.36 if natural else 0.46)
+                c = c_base + (0.55 * s) * (0.6 + 0.4 * user_strength)
+                g_comp = 1.0 - c * over
+                g_comp = 0.30 if g_comp < 0.30 else (1.0 if g_comp > 1.0 else g_comp)
+
+            g = g_base * g_comp
+            # 呼吸保护：对2-6k带宽（hf_mid）保留更多细节，避免“抽空空气感”
+            g_mid = g
+            if breath_detect:
+                g_mid = min(1.0, g * (1.06 if natural else 1.08))
+
+            # 高频残差包络（跨回调保持），抑制极低电平的高频底噪（软膝，避免“砂”）
+            if not hasattr(self, '_breath_hf_env'):
+                self._breath_hf_env = {}
+            hf_env_prev = self._breath_hf_env.get(key, 0.0)
+            hf_env = float(0.6 * hf_env_prev + 0.4 * np.mean(np.abs(hf_res)))
+            self._breath_hf_env[key] = hf_env
+            # 阈值随 RMS 自适应：音量越小，阈值越低，但不为0
+            env_thr = max(1e-6, 0.6 * thr_low + 0.4 * rms)
+            if hf_env < env_thr * 0.9:
+                ratio = hf_env / (env_thr * 0.9 + 1e-9)
+                # 二次软膝，轻柔抑制底噪；嗡嗡声场景更加强一些
+                knee_pow = (1.8 if tonal_hum else (1.5 if natural else 1.2))
+                knee = 1.0 - (1.0 - ratio) ** knee_pow
+                g *= knee
+
+            # ➕ 持续“电流音”治理：高频噪声地板自适应（仅作用于高频残差增益 g）
+            try:
+                if not hasattr(self, '_breath_hf_floor'):
+                    self._breath_hf_floor = {}
+                floor = float(self._breath_hf_floor.get(key, hf_env))
+                # 在“更像噪声”的场景更新地板更快：低电平 + ZCR较高 或 频谱平坦度高
+                flatness_val = 0.0
+                try:
+                    flatness_val = float(flatness)  # 若上方已计算
+                except Exception:
+                    flatness_val = 0.0
+                if rms < (thr_low * 1.2) and (zc > 0.12 or flatness_val > 0.75):
+                    floor = 0.98 * floor + 0.02 * hf_env  # 稍快更新
+                else:
+                    floor = 0.995 * floor + 0.005 * hf_env  # 极慢漂移
+                self._breath_hf_floor[key] = floor
+
+                # 根据地板与当前HF包络的比值决定附加抑制；确保留一点“空气”
+                if floor > 1e-9:
+                    ratio_h = hf_env / (1.25 * floor)
+                    ratio_h = 0.0 if ratio_h < 0.0 else (2.0 if ratio_h > 2.0 else ratio_h)
+                    # ratio_h < 1 表示接近地板（更像“电流音”），附加降低高频增益
+                    # 映射：ratio_h∈[0,1] → hiss_gate∈[gate_min,1]
+                    gate_min = 0.57 if natural else 0.50
+                    # 若是嗡嗡声，为避免“闷”，提高最小门限
+                    if tonal_hum:
+                        gate_min = max(gate_min, 0.66)
+                    hiss_gate = gate_min + (1.0 - gate_min) * min(1.0, ratio_h)
+                    g *= hiss_gate
+            except Exception:
+                pass
+
+            # ➕ 新增：超高频(>6k)专属自适应门控，进一步减少“细微电流底噪”但保留2-6k清晰度
+            try:
+                if not hasattr(self, '_breath_vh_env'):
+                    self._breath_vh_env = {}
+                if not hasattr(self, '_breath_vh_floor'):
+                    self._breath_vh_floor = {}
+                vh_env_prev = float(self._breath_vh_env.get(key, 0.0))
+                vh_env = float(0.5 * vh_env_prev + 0.5 * np.mean(np.abs(hf_high)))
+                self._breath_vh_env[key] = vh_env
+                vh_floor = float(self._breath_vh_floor.get(key, vh_env))
+                # 更快速的上升跟踪、更慢的下降，噪声地板平稳
+                if vh_env > vh_floor:
+                    vh_floor = 0.98 * vh_floor + 0.02 * vh_env
+                else:
+                    vh_floor = 0.997 * vh_floor + 0.003 * vh_env
+                self._breath_vh_floor[key] = vh_floor
+
+                # 计算>6k门控因子 g_vh（与 g 相乘用于超高频）
+                if vh_floor > 1e-9:
+                    r = vh_env / (1.20 * vh_floor)
+                    r = 0.0 if r < 0.0 else (2.0 if r > 2.0 else r)
+                    # 基础最小保留量，避免“抽空空气感”
+                    base_keep = 0.40 if natural else 0.35
+                    # 嗡嗡声：可更强抑制；轻声有声：更保留清晰度
+                    if tonal_hum:
+                        base_keep = max(base_keep, 0.48)
+                    if voiced_soft:
+                        base_keep = min(0.55, base_keep + 0.08)
+                    # 头声/高音：进一步提高保留，增强通透感
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        base_keep = max(base_keep, 0.58 if natural else 0.55)
+                    g_vh = base_keep + (1.0 - base_keep) * min(1.0, r)
+                else:
+                    g_vh = 0.6 if natural else 0.5
+            except Exception:
+                g_vh = 0.6 if natural else 0.5
+
+            # ➕ 新增：>6kHz 频谱地板掩蔽（极轻）——在低电平且更像噪声时，按频带自适应降低“滋啦”
+            try:
+                hiss_like = (rms < thr_mid) and (zc > 0.12 or ("flatness" in locals() and flatness > 0.75))
+                if hiss_like and len(hf_high) >= 64:
+                    sr = float(getattr(self, 'sample_rate', 48000))
+                    spec = np.fft.rfft(hf_high)
+                    mag = np.abs(spec) + 1e-12
+                    freqs = np.fft.rfftfreq(len(hf_high), 1.0/sr)
+                    # 仅对>6k频段做地板掩蔽
+                    band = (freqs >= 6000.0)
+                    if not hasattr(self, '_breath_vh_floor_spec'):
+                        self._breath_vh_floor_spec = {}
+                    st = self._breath_vh_floor_spec.get(key)
+                    if st is None or (hasattr(st, 'shape') and getattr(st, 'shape', (0,))[0] != mag.shape[0]):
+                        st = mag.copy()
+                    # 更新（上升稍快、下降慢），仅限>6k
+                    floor = st
+                    alpha_up, alpha_down = 0.06, 0.006
+                    higher = mag > floor
+                    floor[higher] = (1.0 - alpha_up) * floor[higher] + alpha_up * mag[higher]
+                    floor[~higher] = (1.0 - alpha_down) * floor[~higher] + alpha_down * mag[~higher]
+                    # 计算掩蔽增益
+                    base_keep_hi = 0.40 if natural else 0.35
+                    if tonal_hum:
+                        base_keep_hi = max(base_keep_hi, 0.50)
+                    if voiced_soft:
+                        base_keep_hi = min(0.58, base_keep_hi + 0.08)
+                    if 'breath_detect' in locals() and breath_detect:
+                        base_keep_hi = min(0.62, base_keep_hi + 0.10)
+                    if 'far_quiet' in locals() and far_quiet:
+                        base_keep_hi = max(0.28 if natural else 0.25, base_keep_hi - 0.08)
+                    # 距离因子：越远越降低>6k保留（更干净）
+                    base_keep_hi = max(0.22 if natural else 0.20, base_keep_hi - 0.10 * distance_factor)
+                    # 远距像有人声：适度抬高保留，避免“被当噪声”导致丝丝感
+                    try:
+                        if far_voiced_hint:
+                            base_keep_hi = min(0.70, base_keep_hi + 0.04)
+                    except Exception:
+                        pass
+                    # 头声/高音：提高>6k保留下限，避免“通透感”丢失
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        base_keep_hi = max(base_keep_hi, 0.60 if natural else 0.56)
+                    # 掩蔽比例阈值：远距非高音→更严；高音→更宽松
+                    ratio_div = 1.30
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        ratio_div = 1.45
+                    else:
+                        try:
+                            if far_voiced_hint:
+                                ratio_div = 1.32  # 放宽阈值，避免过压
+                            else:
+                                if distance_factor > 0.8:
+                                    ratio_div = 1.18
+                                elif distance_factor > 0.5:
+                                    ratio_div = 1.22
+                        except Exception:
+                            pass
+                    ratio = np.ones_like(mag)
+                    ratio[band] = mag[band] / (ratio_div * floor[band])
+                    ratio = np.clip(ratio, 0.0, 2.0)
+                    mask = np.ones_like(mag)
+                    mask[band] = base_keep_hi + (1.0 - base_keep_hi) * np.minimum(1.0, ratio[band])
+                    # 远距超静音且非高音：对>10k再轻收一点，专治极细“丝丝”
+                    if ('far_quiet' in locals() and far_quiet) and (distance_factor > 0.7) and (not ('voiced_bright' in locals() and voiced_bright)):
+                        band10 = (freqs >= 10000.0)
+                        if np.any(band10):
+                            extra = np.clip(0.92 - 0.12 * float(distance_factor), 0.78, 0.92)
+                            try:
+                                if far_voiced_hint:
+                                    extra = max(0.90, extra)
+                            except Exception:
+                                pass
+                            mask[band10] *= extra
+                    # 平滑，避免频带抖动
+                    if not hasattr(self, '_breath_vh_mask_prev'):
+                        self._breath_vh_mask_prev = {}
+                    prev_m = self._breath_vh_mask_prev.get(key)
+                    if prev_m is None or prev_m.shape[0] != mask.shape[0]:
+                        prev_m = mask
+                    smooth_k = 0.7
+                    try:
+                        if far_quiet and far_voiced_hint:
+                            smooth_k = 0.85  # 更慢释放，减少抖动“丝丝”
+                    except Exception:
+                        pass
+                    mask_s = smooth_k * prev_m + (1.0 - smooth_k) * mask
+                    self._breath_vh_mask_prev[key] = mask_s
+                    # 应用掩蔽
+                    spec_f = spec * mask_s
+                    hf_high = np.fft.irfft(spec_f, n=len(hf_high)).astype(hf_high.dtype, copy=False)
+                    self._breath_vh_floor_spec[key] = floor
+            except Exception:
+                pass
+
+            # ➕ 新增：自适应窄带陷波（notch）- 仅在低电平噪声场景，对>6kHz稳定尖峰做极窄抑制
+            try:
+                use_notch = False
+                f0_est = None
+                # 仅在低电平且更像噪声的场景考虑陷波，避免对有声音色的破坏
+                hiss_like = (rms < thr_mid) and (zc > 0.12 or ("flatness" in locals() and flatness > 0.75))
+                if hiss_like and len(hf_high) >= 128:
+                    # 对hf_high做FFT，寻找>6k的稳定尖峰
+                    sr = float(getattr(self, 'sample_rate', 48000))
+                    spec_h = np.fft.rfft(hf_high)
+                    mag_h = np.abs(spec_h) + 1e-12
+                    freqs_h = np.fft.rfftfreq(len(hf_high), 1.0/sr)
+                    # 6k-12k搜索窗（上限不超过Nyquist-1k）
+                    fmax = min(12000.0, 0.5*sr - 1000.0)
+                    band = (freqs_h >= 6000.0) & (freqs_h <= fmax)
+                    if np.any(band):
+                        band_mag = mag_h[band]
+                        if band_mag.size > 8:
+                            peak_idx_local = int(np.argmax(band_mag))
+                            peak_mag = float(band_mag[peak_idx_local])
+                            median_mag = float(np.median(band_mag)) + 1e-12
+                            mean_mag = float(np.mean(band_mag)) + 1e-12
+                            # 极窄“哨声”判定：峰值明显高于整体与中位
+                            whistle_like = (peak_mag / median_mag > 5.0) and (peak_mag / mean_mag > 4.0)
+                            # 尖峰判定：明显高于中值且高于均值，避免误杀随机起伏
+                            if peak_mag > 2.8 * median_mag and peak_mag > 1.6 * mean_mag:
+                                freqs_band = freqs_h[band]
+                                f0_candidate = float(freqs_band[peak_idx_local])
+                                # 稳定度跟踪：需要连续数帧附近一致
+                                if not hasattr(self, '_breath_notch'):
+                                    self._breath_notch = {}
+                                st_notch = self._breath_notch.get(key, {
+                                    'f': f0_candidate,
+                                    'q': 18.0,
+                                    'z1': 0.0,
+                                    'z2': 0.0,
+                                    'stability': 0
+                                })
+                                # 频率接近则累计稳定度，否则缓慢回落
+                                if abs(f0_candidate - st_notch['f']) <= max(60.0, 0.02*st_notch['f']):
+                                    st_notch['f'] = 0.9 * st_notch['f'] + 0.1 * f0_candidate
+                                    st_notch['stability'] = min(10, st_notch['stability'] + 1)
+                                else:
+                                    st_notch['f'] = 0.8 * st_notch['f'] + 0.2 * f0_candidate
+                                    st_notch['stability'] = max(0, st_notch['stability'] - 2)
+                                # 当稳定度足够时启用陷波
+                                if st_notch['stability'] >= 3:
+                                    use_notch = True
+                                    f0_est = float(st_notch['f'])
+                                self._breath_notch[key] = st_notch
+
+                hf_high_f = hf_high
+                if use_notch and f0_est is not None and 2000.0 < f0_est < 0.5*sr - 500.0:
+                    # 计算二阶陷波系数（双二阶会更陡，这里先用单节，Q适中以避免振铃）
+                    Q = float(self._breath_notch[key]['q']) if hasattr(self, '_breath_notch') and key in self._breath_notch else 18.0
+                    w0 = 2.0 * np.pi * (f0_est / sr)
+                    alpha = np.sin(w0) / max(1e-6, (2.0 * Q))
+                    cosw = np.cos(w0)
+                    b0 = 1.0
+                    b1 = -2.0 * cosw
+                    b2 = 1.0
+                    a0 = 1.0 + alpha
+                    a1 = -2.0 * cosw
+                    a2 = 1.0 - alpha
+                    # 归一化
+                    b0n = b0 / a0
+                    b1n = b1 / a0
+                    b2n = b2 / a0
+                    a1n = a1 / a0
+                    a2n = a2 / a0
+                    # 读取/初始化状态
+                    stn = self._breath_notch.get(key, None)
+                    if stn is None:
+                        stn = {'f': f0_est, 'q': Q, 'z1': 0.0, 'z2': 0.0, 'stability': 3}
+                    z1 = float(stn.get('z1', 0.0))
+                    z2 = float(stn.get('z2', 0.0))
+                    out_h = np.empty_like(hf_high_f)
+                    # IIR 直达形式II
+                    for i in range(len(hf_high_f)):
+                        x0 = float(hf_high_f[i])
+                        y0 = b0n * x0 + z1
+                        z1_new = b1n * x0 - a1n * y0 + z2
+                        z2 = b2n * x0 - a2n * y0
+                        z1 = z1_new
+                        out_h[i] = y0
+                    # 存回状态
+                    stn['z1'] = float(z1)
+                    stn['z2'] = float(z2)
+                    self._breath_notch[key] = stn
+                    # 与原信号做温和混合，避免过度抽空
+                    notch_strength = min(0.75, 0.50 + 0.10 * (self._breath_notch[key].get('stability', 3)))  # 0.5~0.75
+                    if voiced_soft:
+                        notch_strength *= 0.75  # 轻声有声更保守
+                    if breath_detect:
+                        notch_strength *= 0.60  # 呼吸段进一步减弱陷波强度，保留空气感
+                    if 'far_quiet' in locals() and far_quiet:
+                        notch_strength = min(0.92, notch_strength * 1.18)  # 远距小声更积极去除稳定窄峰
+                    # 距离因子：越远，陷波可再加强（上限控制）
+                    if distance_factor > 0.0:
+                        notch_strength = min(0.92, notch_strength * (1.0 + 0.25 * distance_factor))
+                    # 头声/高音：降低陷波强度，避免“炸麦/刺耳”与通透受损
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        try:
+                            if 'whistle_like' in locals() and whistle_like:
+                                notch_strength *= 0.90
+                            else:
+                                notch_strength *= 0.70
+                        except Exception:
+                            notch_strength *= 0.75
+                    # 远距像有人声：进一步降低陷波，避免细丝伪像
+                    try:
+                        if far_voiced_hint:
+                            notch_strength *= 0.85
+                    except Exception:
+                        pass
+                    hf_high = out_h * notch_strength + hf_high_f * (1.0 - notch_strength)
+
+                    # 头声抗“炸”：>6k对峰值做极轻软膝压制，仅在高音亮度明显时启用
+                    try:
+                        if 'voiced_bright' in locals() and voiced_bright and len(hf_high) >= 16:
+                            ah = np.abs(hf_high)
+                            # 95分位作“峰值感”参考，更鲁棒
+                            pk = float(np.percentile(ah, 95)) + 1e-12
+                            if pk > 1e-6:
+                                knee = 0.60 * pk
+                                # 2:1软膝，光滑压制
+                                over = ah - knee
+                                over[over < 0] = 0.0
+                                comp = knee + 0.5 * over
+                                g = np.where(ah > 0, comp / (ah + 1e-12), 1.0)
+                                # 仅少量混合，避免暗
+                                mix = 0.25
+                                hf_high = (1.0 - mix) * hf_high + mix * (np.sign(hf_high) * comp)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 组合：低频（略增益）+ 中频（基本保留）+ 抑制后的高频
+            if tonal_hum:
+                mid_gain = 1.02 if natural else 1.01
+            elif voiced_soft:
+                mid_gain = 1.04 if natural else 1.03
+            else:
+                mid_gain = 1.00
+            # 远距小声专治：对6–8k子带做更强抑制，同时提升2–4.5k存在感
+            try:
+                # 使用x构造6–8k与>8k比例，然后在陷波/门控后的hf_high上按比例切分
+                high_6_8_x = (y_lp4 - y_lp3)
+                hf_high_x = (x - y_lp3)
+                e_h68 = float(np.mean(np.abs(high_6_8_x))) + 1e-12
+                e_hh = float(np.mean(np.abs(hf_high_x))) + 1e-12
+                ratio_h68 = max(0.0, min(1.0, e_h68 / e_hh))
+                high_6_8_post = hf_high * ratio_h68
+                high_8p_post = hf_high - high_6_8_post
+
+                # 6–8k地板门控（仅在远距小声时更严格）
+                if not hasattr(self, '_breath_68_env'): self._breath_68_env = {}
+                if not hasattr(self, '_breath_68_floor'): self._breath_68_floor = {}
+                env68_prev = float(self._breath_68_env.get(key, 0.0))
+                env68 = float(0.6 * env68_prev + 0.4 * e_h68)
+                self._breath_68_env[key] = env68
+                floor68 = float(self._breath_68_floor.get(key, env68))
+                if env68 > floor68:
+                    floor68 = 0.985 * floor68 + 0.015 * env68
+                else:
+                    floor68 = 0.997 * floor68 + 0.003 * env68
+                self._breath_68_floor[key] = floor68
+
+                g_68 = 1.0
+                if floor68 > 0.0:
+                    r68 = env68 / (1.18 * floor68)
+                    r68 = 0.0 if r68 < 0.0 else (2.0 if r68 > 2.0 else r68)
+                    base_keep_68 = 0.50 if natural else 0.45
+                    if voiced_soft:
+                        base_keep_68 = min(0.60, base_keep_68 + 0.08)
+                    if far_quiet:
+                        base_keep_68 = max(0.30, base_keep_68 - 0.12)  # 远距小声更强去“滋啦”
+                    # 头声/高音：保留更多6–8k，以提升清亮度；同时减弱远距影响系数
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        base_keep_68 = max(base_keep_68, 0.50)
+                        base_keep_68 = max(0.24, base_keep_68 - 0.15 * distance_factor * 0.5)
+                    else:
+                        # 距离因子：越远越再降一点6–8k保留
+                        df_scale = 0.15 * (0.5 if ('far_voiced_hint' in locals() and far_voiced_hint) else 1.0)
+                        base_keep_68 = max(0.24, base_keep_68 - df_scale * distance_factor)
+                    # 跨帧平滑，降低门控抖动
+                    if not hasattr(self, '_g68_smooth_state'):
+                        self._g68_smooth_state = {}
+                    g68_prev = float(self._g68_smooth_state.get(key, base_keep_68))
+                    g_68_inst = base_keep_68 + (1.0 - base_keep_68) * min(1.0, r68)
+                    g_68 = 0.75 * g68_prev + 0.25 * g_68_inst
+                    self._g68_smooth_state[key] = g_68
+
+                # >8k地板门控（独立因子）
+                try:
+                    e_8p = float(np.mean(np.abs(hf_high_x - high_6_8_x))) + 1e-12
+                except Exception:
+                    e_8p = max(1e-12, e_hh - e_h68)
+                if not hasattr(self, '_breath_8p_env'): self._breath_8p_env = {}
+                if not hasattr(self, '_breath_8p_floor'): self._breath_8p_floor = {}
+                env8_prev = float(self._breath_8p_env.get(key, 0.0))
+                env8 = float(0.6 * env8_prev + 0.4 * e_8p)
+                self._breath_8p_env[key] = env8
+                floor8 = float(self._breath_8p_floor.get(key, env8))
+                if env8 > floor8:
+                    floor8 = 0.985 * floor8 + 0.015 * env8
+                else:
+                    floor8 = 0.997 * floor8 + 0.003 * env8
+                self._breath_8p_floor[key] = floor8
+                g_8p = 1.0
+                if floor8 > 0.0:
+                    r8 = env8 / (1.20 * floor8)
+                    r8 = 0.0 if r8 < 0.0 else (2.0 if r8 > 2.0 else r8)
+                    base_keep_8 = 0.42 if natural else 0.38
+                    if voiced_soft:
+                        base_keep_8 = min(0.55, base_keep_8 + 0.08)
+                    if far_quiet:
+                        base_keep_8 = max(0.22, base_keep_8 - 0.12)
+                    # 头声/高音：保留更多>8k 的空气与倍频；同时减弱远距影响系数
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        base_keep_8 = max(base_keep_8, 0.45)
+                        base_keep_8 = max(0.18, base_keep_8 - 0.15 * distance_factor * 0.5)
+                    else:
+                        # 距离因子：越远越再降一点>8k保留
+                        # 远距+很远：允许更低下限到0.16以压极细“丝丝”
+                        min8 = 0.16 if (('far_quiet' in locals() and far_quiet) and distance_factor > 0.7 and not ('far_voiced_hint' in locals() and far_voiced_hint)) else 0.18
+                        df_scale8 = 0.15 * (0.5 if ('far_voiced_hint' in locals() and far_voiced_hint) else 1.0)
+                        base_keep_8 = max(min8, base_keep_8 - df_scale8 * distance_factor)
+                    # 跨帧平滑
+                    if not hasattr(self, '_g8p_smooth_state'):
+                        self._g8p_smooth_state = {}
+                    g8_prev = float(self._g8p_smooth_state.get(key, base_keep_8))
+                    g_8p_inst = base_keep_8 + (1.0 - base_keep_8) * min(1.0, r8)
+                    g_8p = 0.75 * g8_prev + 0.25 * g_8p_inst
+                    self._g8p_smooth_state[key] = g_8p
+
+                # 2–4.5k存在感提升（避免远距小声变“薄/糊”）
+                try:
+                    if not hasattr(self, '_breath_lp25_state'):
+                        self._breath_lp25_state = {}
+                    prev25 = float(self._breath_lp25_state.get(key, 0.0))
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    fc25 = 4500.0
+                    a25 = 1.0 - np.exp(-2.0 * np.pi * fc25 / max(1000.0, sr))
+                    a25 = float(np.clip(a25, 0.0, 0.995))
+                    y_lp25 = np.empty_like(x)
+                    for i in range(len(x)):
+                        prev25 = prev25 + a25 * (x[i] - prev25)
+                        y_lp25[i] = prev25
+                    self._breath_lp25_state[key] = float(prev25)
+                    band_2_45 = (y_lp25 - y_lp2)
+                except Exception:
+                    band_2_45 = mid_band
+
+                pres_far = 0.0
+                if far_quiet:
+                    pres_far = (0.020 if natural else 0.015) + 0.015 * distance_factor
+
+                # 合成（带6–8k专治）
+                y = y_lp * (1.0 + low_boost) + (mid_gain * mid_band) + pres_far * band_2_45 + g_mid * hf_mid + (g * g_vh) * (g_68 * high_6_8_post + g_8p * high_8p_post)
+            except Exception:
+                # 回退到旧合成
+                y = y_lp * (1.0 + low_boost) + mid_gain * mid_band + g_mid * hf_mid + (g * g_vh) * hf_high
+
+            # 🎛️ 假声高音柔化（亮而不刺）：>6k轻度动态高架压制 + 中频存在感回填
+            try:
+                if 'voiced_bright' in locals() and voiced_bright and len(x) >= 32:
+                    # 以 4.5–8k 带的相对能量估计“刺度”
+                    if not hasattr(self, '_breath_lp25_state'):
+                        self._breath_lp25_state = {}
+                    prev25 = float(self._breath_lp25_state.get(key, 0.0))
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    fc25 = 4500.0
+                    a25 = 1.0 - np.exp(-2.0 * np.pi * fc25 / max(1000.0, sr))
+                    a25 = float(np.clip(a25, 0.0, 0.995))
+                    y_lp25 = np.empty_like(x)
+                    for i in range(len(x)):
+                        prev25 = prev25 + a25 * (x[i] - prev25)
+                        y_lp25[i] = prev25
+                    self._breath_lp25_state[key] = float(prev25)
+                    band_48 = (y_lp4 - y_lp25)  # ≈4.5–8k
+                    e_48 = float(np.mean(np.abs(band_48))) + 1e-9
+                    e_mid = float(np.mean(np.abs(mid_band))) + 1e-9
+                    t_soft = float(np.clip((e_48 / e_mid - 0.8) / 0.9, 0.0, 1.0))
+                    # 轻度高架压制量（对>6k部分 y - y_lp3），与distance_factor收敛
+                    user_strength = float(getattr(self, 'natural_earback_strength', 0.6))
+                    shelf_amt = (0.05 + 0.06 * user_strength) * t_soft * (0.9 - 0.4 * float(distance_factor))
+                    shelf_amt = float(np.clip(shelf_amt, 0.0, 0.12))
+                    if shelf_amt > 0.0:
+                        y = y - shelf_amt * (y - y_lp3)
+                        # 轻度存在感回填，保持柔和但不“闷”
+                        y = y + (0.010 + 0.010 * t_soft) * mid_band
+            except Exception:
+                pass
+
+            # 呼吸期：轻微提升“空气带”（约4.5–6kHz），让气声更通透（极轻）
+            try:
+                if 'breath_detect' in locals() and breath_detect and len(x) >= 32:
+                    if not hasattr(self, '_breath_lp25_state'):
+                        self._breath_lp25_state = {}
+                    prev25 = float(self._breath_lp25_state.get(key, 0.0))
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    fc25 = 4500.0
+                    a25 = 1.0 - np.exp(-2.0 * np.pi * fc25 / max(1000.0, sr))
+                    a25 = float(np.clip(a25, 0.0, 0.995))
+                    y_lp25 = np.empty_like(x)
+                    for i in range(len(x)):
+                        prev25 = prev25 + a25 * (x[i] - prev25)
+                        y_lp25[i] = prev25
+                    self._breath_lp25_state[key] = float(prev25)
+                    air_band = (y_lp3 - y_lp25)  # ≈4.5–6k
+                    air_gain = 0.02 if natural else 0.015
+                    y = y + air_gain * air_band
+            except Exception:
+                pass
+
+            # 三点均值极轻混合，进一步柔化边缘
+            if len(y) > 2:
+                avg3 = y.copy()
+                avg3[1:-1] = (y[:-2] + y[1:-1] + y[2:]) / 3.0
+                if natural:
+                    blend = 0.02 + 0.05 * s  # 更轻的邻域均值混合，减少“抽空”感/模糊
+                else:
+                    blend = 0.08 + 0.16 * s
+
+                # 跨回调平滑参数，避免“拉链噪声”
+                if not hasattr(self, '_breath_prev_params'):
+                    self._breath_prev_params = {}
+                prevp = self._breath_prev_params.get(key, {'alpha': alpha, 'g': g, 'blend': blend})
+                smooth = 0.85
+                alpha = prevp['alpha'] * smooth + alpha * (1.0 - smooth)
+                g = prevp['g'] * smooth + g * (1.0 - smooth)
+                blend = prevp['blend'] * smooth + blend * (1.0 - smooth)
+                # 呼吸段：进一步降低平滑比例，避免“糊”
+                if breath_detect:
+                    blend *= 0.70
+                # 头声/高音：减少邻域混合，保持瞬态与通透
+                if 'voiced_bright' in locals() and voiced_bright:
+                    blend *= 0.70
+                self._breath_prev_params[key] = {'alpha': float(alpha), 'g': float(g), 'blend': float(blend)}
+                y = y * (1.0 - blend) + avg3 * blend
+
+            # 嗡嗡声场景：后置轻微“倾斜”到低通版本，进一步减小高频底噪
+            if tonal_hum:
+                tilt = 0.06 if natural else 0.08   # 减小整体“闷感”
+                y = y * (1.0 - tilt) + y_lp * tilt
+
+            # 软门控（随 RMS 渐变），避免完全静音导致不自然
+            if not natural:
+                # 非自然模式保留轻门控，强度也随 s 调整
+                gate_min = 0.55
+                gate = gate_min + (1.0 - gate_min) * min(1.0, rms / (thr_low * 1.5))
+                y = y * (0.9 + 0.1 * s)  # 极轻动态，避免泵动
+                y = y * gate
+
+            # 轻度干声回灌：保留呼吸与轻声的气感（不参与高频抑制判断）
+            dry_mix = 0.0
+            if rms < thr_mid:
+                if tonal_hum:
+                    # 嗡嗡声尽量避免把高频底噪带回
+                    dry_mix = 0.0 + 0.02 * min(1.0, (thr_mid - rms) / max(1e-9, thr_mid))
+                else:
+                    if zc >= 0.15:  # 呼吸偏多
+                        dry_mix = 0.06 + 0.06 * min(1.0, (thr_mid - rms) / max(1e-9, thr_mid))
+                    elif zc <= 0.08:  # 轻声有声（更少ZCR）
+                        dry_mix = 0.04 + 0.05 * min(1.0, (thr_mid - rms) / max(1e-9, thr_mid))
+            # 远距小声：降低干声回灌，避免把“滋啦”带回
+            try:
+                if far_quiet and dry_mix > 0.0:
+                    dry_mix *= (0.6 * (1.0 - 0.5 * distance_factor))
+            except Exception:
+                pass
+            # 呼吸段：小幅增加干声混合以保留空气感
+            if breath_detect:
+                dry_mix = min(0.20, dry_mix + (0.03 if natural else 0.04))
+            if 0.0 < dry_mix < 0.20:
+                y = y * (1.0 - dry_mix) + x * dry_mix
+
+            # 仅对高频残差做极轻的抗振铃滤波（- - + 型三抽头），让砂感更顺滑
+            try:
+                if len(y) > 4:
+                    hf_only = y - (y_lp * (1.0 + low_boost) + mid_gain * mid_band)
+                    sm = hf_only.copy()
+                    sm[2:-2] = (-0.15*hf_only[0:-4] - 0.15*hf_only[1:-3] + 0.60*hf_only[2:-2] - 0.15*hf_only[3:-1] - 0.15*hf_only[4:])
+                    hf_blend = 0.12 if tonal_hum else 0.08
+                    if voiced_soft:
+                        hf_blend *= 0.5  # 进一步减少高频平滑导致的“糊感”
+                    if breath_detect:
+                        hf_blend *= 0.7  # 呼吸段进一步降低高频平滑，保留气声细节
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        hf_blend *= 0.6  # 高音时减少抗振铃平滑以保留通透
+                    y = y + (sm - hf_only) * hf_blend
+            except Exception:
+                pass
+
+            # （可选）微型KTV氛围：三抽头短延迟（7/11/17ms），极轻混合，带来更“房间感”
+            try:
+                ktv_enabled = bool(getattr(self, 'monitor_ktv_ambience', True))
+                if ktv_enabled and len(y) >= 8:
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    ds = [int(0.007*sr), int(0.011*sr), int(0.017*sr)]
+                    gs = [0.20, 0.13, 0.08] if natural else [0.16, 0.11, 0.07]
+                    maxd = max(ds)
+                    if not hasattr(self, '_ktv_delay_state'):
+                        self._ktv_delay_state = {}
+                    st = self._ktv_delay_state.get(key, np.zeros((maxd,), dtype=np.float32))
+                    if st.shape[0] < maxd:
+                        # 扩容
+                        tmp = np.zeros((maxd,), dtype=np.float32)
+                        tmp[-st.shape[0]:] = st
+                        st = tmp
+                    # 叠加三抽头
+                    out = y.copy()
+                    for d, gtap in zip(ds, gs):
+                        if d <= 0 or gtap <= 0:
+                            continue
+                        if len(y) > d:
+                            tap = np.concatenate([st[-d:], y[:-d]])
+                        else:
+                            pad = d - len(y)
+                            tap = np.concatenate([st[-d:-d+len(y)], np.zeros((pad,), dtype=y.dtype)])
+                        out += gtap * tap[:len(y)]
+                    # 轻度色彩保护：对out做极小高频软膝，避免叠加后尖峰
+                    pk = float(np.max(np.abs(out))+1e-12)
+                    if pk > 0.98:
+                        out *= (0.97/pk)
+                    # 更新状态（保留最近 maxd 个样本）
+                    new_tail = np.concatenate([st, y])
+                    self._ktv_delay_state[key] = new_tail[-maxd:].astype(np.float32, copy=False)
+                    # 融合比例极轻，避免明显回声
+                    mix_k = 0.08
+                    if 'voiced_bright' in locals() and voiced_bright:
+                        mix_k *= 0.75
+                    y = (1.0 - mix_k)*y + mix_k*out
+            except Exception:
+                pass
+
+            # 头声/高音：极轻“空气带”（6–8k）提升，避免通透感流失（远距时自动收敛）
+            try:
+                if 'voiced_bright' in locals() and voiced_bright and len(x) >= 32:
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    # 使用已算的低通：y_lp4(≈8k) - y_lp3(≈6k) 近似6–8k带
+                    air_head_gain = (0.018 + 0.012 * float(getattr(self, 'natural_earback_strength', 0.6))) * (1.0 - 0.6 * float(distance_factor))
+                    # 更保守的上限，避免极高音时“沙化/炸感”
+                    air_head_gain = float(np.clip(air_head_gain, 0.0, 0.038))
+                    y = y + air_head_gain * (y_lp4 - y_lp3)
+            except Exception:
+                pass
+
+            # 轻声有声：极轻的“presence”提升（以中频带为依据），增强齿音/清晰度
+            if voiced_soft and len(y) == len(mid_band):
+                pres = 0.045 if natural else 0.035
+                y = y + pres * mid_band
+
+            # ➕ 微弱语音智能增强：只在“低音量且像有声音色”的片段做小幅度增强，避免放大呼吸/电流噪
+            try:
+                # 声像判断：低RMS + 低ZCR(更接近有声) + 中频优于高频 + 高频底噪不高
+                voiced_quiet = (rms > thr_low * 0.85) and (rms < thr_mid)
+                voiced_quiet = voiced_quiet and (zc <= 0.12)
+                voiced_quiet = voiced_quiet and (mid_high_ratio > 1.6)
+                # 高频底噪门控（避免把“滋啦”放大）
+                hf_ok = True
+                try:
+                    hf_ok = (hf_env < (0.95 * max(1e-6, env_thr)))
+                except Exception:
+                    hf_ok = True
+
+                if voiced_quiet and hf_ok:
+                    # 目标增益：随RMS与用户强度温和变化，最大约+3.5dB（≈1.5x以内）
+                    user_strength = float(getattr(self, 'natural_earback_strength', 0.6))
+                    # 基础目标随音量线性插值：越靠近thr_low增益越高
+                    t_q = 1.0 - min(1.0, max(0.0, (rms - thr_low) / max(1e-9, (thr_mid - thr_low))))
+                    g_target = 1.0 + (0.18 + 0.12 * user_strength) * t_q  # 约 +1.8~+3.0 dB
+                    # 远距轻增益：distance_factor越高，额外给到最多约+2 dB（与音量因子相乘，近似0.5~2 dB）
+                    g_target += (0.06 + 0.10 * user_strength) * float(distance_factor) * (0.5 + 0.5 * t_q)
+                    g_target = min(g_target, 1.55)  # 总体上限约 +3.8 dB，仍受VRMS保护
+                    # 轻存在感倾斜：以 mid_band + 少量 hf_mid 提升发音清晰
+                    pres2 = (0.025 + 0.02 * user_strength) * t_q  # 额外 presence
+                    # 远距时再加一丝存在感，避免“远处放大但仍偏薄”
+                    pres2 += 0.008 * float(distance_factor) * (0.5 + 0.5 * t_q)
+                    y = y + pres2 * (mid_band + 0.25 * hf_mid)
+
+                    # 平滑增强增益，避免跳动
+                    if not hasattr(self, '_breath_voice_gain_state'):
+                        self._breath_voice_gain_state = {}
+                    g_prev = float(self._breath_voice_gain_state.get(key, 1.0))
+                    g_s = 0.85 * g_prev + 0.15 * g_target
+                    self._breath_voice_gain_state[key] = g_s
+                    # 应用整体微增强（在 presence 倾斜后）
+                    y = y * g_s
+                else:
+                    # 非“像有声”的低音量片段：可适当加强>6k抑制的保守性（通过g_vh已实现），此处不做增强
+                    if hasattr(self, '_breath_voice_gain_state'):
+                        # 轻松回落到1.0，避免长时间残留
+                        g_prev = float(self._breath_voice_gain_state.get(key, 1.0))
+                        self._breath_voice_gain_state[key] = 0.9 * g_prev + 0.1 * 1.0
+            except Exception:
+                pass
+
+            # 极低电平时对整体做一个极轻的扩展器（下倾），帮助“电流尾巴”更自然淡出
+            try:
+                if rms < (thr_low * 0.85):
+                    # 避免对纯正弦/很纯嗡嗡过度扩展
+                    if not tonal_hum or zc > 0.10:
+                        # downward expander: y *= expander_gain(rms)
+                        # 将极低电平范围映射到 [exp_min,1.0]
+                        exp_min = 0.85 if natural else 0.80
+                        t = min(1.0, max(0.0, rms / max(1e-9, thr_low * 0.85)))
+                        exp_g = exp_min + (1.0 - exp_min) * t
+                        y *= exp_g
+            except Exception:
+                pass
+
+            # 温和限幅，避免偶发尖峰
+            peak = float(np.max(np.abs(y)))
+            if peak > 0.98:
+                y = y * (0.97 / peak)
+
+            # 边界短交叉淡入，抑制分块边界“沙沙”
+            if natural:
+                if not hasattr(self, '_breath_tail'):
+                    self._breath_tail = {}
+                tail = self._breath_tail.get(key)
+                if tail is not None and len(y) > 8 and len(tail) >= 8:
+                    # 自适应交叉长度：不超过当前块/尾部长度的一半，上限64
+                    cap = max(8, min(len(y)//2, len(tail)))
+                    N = min(64, cap)
+                    if N > 0:
+                        # 线性淡入，前 N 样本与上块尾部融合
+                        t = np.linspace(0.0, 1.0, N, dtype=np.float32)
+                        y[:N] = tail[-N:] * (1.0 - t) + y[:N] * t
+                # 记录当前尾部
+                M = min(64, len(y))
+                if M > 0:
+                    self._breath_tail[key] = y[-M:].copy()
+            return y.astype(audio_data.dtype, copy=False)
+        except Exception:
+            return audio_data
+    
+    # ========= 监听耳返安全输出：头房 + VRMS软限幅（无染色） ========= #
+    def _apply_headroom_and_vrms(self, audio_data: np.ndarray, key: str = 'default') -> np.ndarray:
+        """对耳返输出添加固定头房和慢速VRMS软限幅，避免削波又尽量不改变音色。
+        - 头房：将整体电平降低 headroom_db（默认 -6 dB）
+        - VRMS软限幅：RMS 阈值约 0.7FS，Attack 100ms，Release 4s，软膝
+        """
+        try:
+            if audio_data is None or len(audio_data) == 0:
+                return audio_data
+            x = audio_data.astype(np.float32, copy=False)
+            # 头房预增益（线性）
+            headroom_db = float(getattr(self, 'headroom_db', -6.0))
+            headroom_lin = 10.0 ** (headroom_db / 20.0)
+            y = x * headroom_lin
+
+            # VRMS软限幅
+            if not hasattr(self, '_vrms_state') or self._vrms_state is None:
+                self._vrms_state = {}
+            st = self._vrms_state.get(key, {
+                'env': 0.0,
+                'gain': 1.0
+            })
+            # 估计块RMS
+            rms = float(np.sqrt(np.mean(y * y)) + 1e-12)
+            # 平滑RMS包络（Attack快，Release慢）
+            sr = float(getattr(self, 'sample_rate', 48000))
+            atk_t = 0.10  # 100ms
+            rel_t = 4.0   # 4s
+            atk_a = np.exp(-1.0 / max(1.0, atk_t * sr))
+            rel_a = np.exp(-1.0 / max(1.0, rel_t * sr))
+            env = st['env']
+            if rms > env:
+                env = atk_a * env + (1 - atk_a) * rms
+            else:
+                env = rel_a * env + (1 - rel_a) * rms
+
+            # 软膝压缩曲线（针对RMS），阈值约 0.70FS
+            thr = 0.70
+            knee = 0.10
+            if env <= thr - knee:
+                tgt_gain = 1.0
+            elif env >= thr + knee:
+                # 比率约 4:1 的温和压缩，避免泵动
+                ratio = 4.0
+                over = env / thr
+                comp = over ** ((ratio - 1.0) / ratio)
+                tgt_gain = 1.0 / max(1e-6, comp)
+            else:
+                # 软膝插值
+                t = (env - (thr - knee)) / (2 * knee)
+                t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
+                ratio = 4.0
+                over = env / thr
+                comp = over ** ((ratio - 1.0) / ratio)
+                comp_gain = 1.0 / max(1e-6, comp)
+                tgt_gain = (1 - t) * 1.0 + t * comp_gain
+
+            # 平滑限幅增益（超慢，避免闪动）
+            g = st['gain']
+            g_smooth = 0.995 * g + 0.005 * tgt_gain
+            st['env'] = float(env)
+            st['gain'] = float(g_smooth)
+            self._vrms_state[key] = st
+
+            out = y * g_smooth
+            # 最后安全峰值限制（极少触发）
+            peak = float(np.max(np.abs(out)) + 1e-12)
+            if peak > 0.995:
+                out = out * (0.990 / peak)
+            return out.astype(np.float32, copy=False)
+        except Exception:
+            return audio_data
     
     def _apply_intelligent_smoothing(self, frequency, confidence):
         """
@@ -6930,7 +8255,12 @@ class ECGStylePitchVisualizer(QWidget):
                     ratio = 0.5
                 scroll_value = int((1.0 - ratio) * 100)
                 try:
-                    print(f"[SCROLLBAR SYNC] mode={prof.get('mode')} center={self.y_view_center:.2f} half={half_range} val={scroll_value} changed={changed}")
+                    sig = (prof.get('mode'), round(self.y_view_center,2), half_range, scroll_value, changed)
+                    now_ts = time.time()
+                    if sig != self._last_scroll_signature or (now_ts - self._last_scroll_log_time) > 1.5:
+                        self._log_rate_limit('scroll_sync', f"[SCROLLBAR SYNC] mode={prof.get('mode')} center={self.y_view_center:.2f} half={half_range} val={scroll_value} changed={changed}", interval=0.5, burst=2)
+                        self._last_scroll_signature = sig
+                        self._last_scroll_log_time = now_ts
                 except Exception:
                     pass
                 self.v_scrollbar.blockSignals(True)
@@ -9181,6 +10511,42 @@ class ECGStylePitchVisualizer(QWidget):
             # 🎚️ 音量控制选项
             volume_action = context_menu.addAction("🎚️ 调节音量")
             volume_action.triggered.connect(self.show_volume_control)
+
+            # 🌿 自然耳返强度
+            natural_action = context_menu.addAction("🌿 自然耳返强度…")
+            natural_action.triggered.connect(self.show_natural_earback_dialog)
+
+            # RAW直通（最小处理）开关（可勾选）
+            raw_label = "🧪 RAW直通（最小处理）"
+            raw_action = context_menu.addAction(raw_label)
+            raw_action.setCheckable(True)
+            raw_action.setChecked(bool(getattr(self, 'monitor_raw_mode', False)))
+            def on_raw_toggled(checked: bool):
+                self.monitor_raw_mode = bool(checked)
+                state = "开" if checked else "关"
+                self._log_rate_limit("raw_mode_toggle", f"🧪 RAW直通: {state}", 0.6, 1)
+            raw_action.toggled.connect(on_raw_toggled)
+
+            # 头房预设子菜单
+            headroom_menu = QMenu("📉 头房(dB)", self)
+            headroom_menu.setStyleSheet(context_menu.styleSheet())
+            def set_headroom(db):
+                try:
+                    self.headroom_db = float(db)
+                    self._log_rate_limit("headroom_set", f"📉 头房: {self.headroom_db:.1f} dB", 0.8, 1)
+                except Exception:
+                    pass
+            # 预设项
+            for db in (-4.0, -6.0, -8.0):
+                label = f"{int(db)} dB"
+                act = headroom_menu.addAction(label)
+                act.triggered.connect(lambda checked=False, v=db: set_headroom(v))
+            # 当前值提示
+            cur_db = float(getattr(self, 'headroom_db', -6.0))
+            headroom_menu.addSeparator()
+            headroom_menu.addAction(f"当前: {cur_db:.1f} dB").setEnabled(False)
+
+            context_menu.addMenu(headroom_menu)
             
             # 📊 实时状态选项
             status_action = context_menu.addAction("📊 查看实时状态")
@@ -9246,6 +10612,54 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception as e:
             print(f"❌ 重置音量失败: {e}")
     
+    def show_natural_earback_dialog(self):
+        """显示自然耳返强度调节对话框"""
+        try:
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QSlider, QDialogButtonBox
+            from PyQt6.QtCore import Qt
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("自然耳返强度")
+            dlg.setModal(True)
+            dlg.setStyleSheet("""
+                QDialog { background-color: #2b2b2b; }
+                QLabel { color: white; }
+            """)
+
+            layout = QVBoxLayout(dlg)
+            label = QLabel("越大越干净（但更加工）；越小越原味（但可能略沙）")
+            layout.addWidget(label)
+
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 100)
+            current = int(max(0.0, min(1.0, getattr(self, 'natural_earback_strength', 0.6))) * 100)
+            slider.setValue(current)
+            layout.addWidget(slider)
+
+            value_label = QLabel(f"当前: {current}")
+            layout.addWidget(value_label)
+
+            def on_change(v):
+                value_label.setText(f"当前: {v}")
+            slider.valueChanged.connect(on_change)
+
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            layout.addWidget(btns)
+
+            def accept():
+                self.natural_earback_strength = slider.value() / 100.0
+                self._log_rate_limit("natural_strength_set", f"🌿 自然耳返强度: {self.natural_earback_strength:.2f}", 0.8, 1)
+                dlg.accept()
+            def reject():
+                dlg.reject()
+            btns.accepted.connect(accept)
+            btns.rejected.connect(reject)
+
+            dlg.resize(380, 140)
+            dlg.exec()
+        except Exception as e:
+            print(f"❌ 显示自然耳返强度对话框失败: {e}")
+
     def get_main_window(self):
         """获取主窗口的引用"""
         try:
