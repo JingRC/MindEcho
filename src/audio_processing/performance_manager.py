@@ -53,17 +53,19 @@ class PerformanceManager:
         self.gpu_available = self._check_gpu_availability()
         self.cpu_cores = self._get_cpu_cores()
         self.memory_gb = self._get_memory_info()
-        
+        # 监听器：用于全局广播模式变更
+        self._listeners = []  # callbacks: (mode: PerformanceMode, config: PerformanceConfig) -> None
+
         # 预定义配置
         self.configs = {
             PerformanceMode.QUIET: self._create_quiet_config(),
-            PerformanceMode.BALANCED: self._create_balanced_config(), 
+            PerformanceMode.BALANCED: self._create_balanced_config(),
             PerformanceMode.HIGH_PERFORMANCE: self._create_high_performance_config()
         }
-        
+
         self.current_config = self.configs[self.current_mode]
-        
-        print(f"🖥️ 性能管理器初始化完成")
+
+        print("🖥️ 性能管理器初始化完成")
         print(f"   GPU可用: {'✅' if self.gpu_available else '❌'}")
         print(f"   CPU核心: {self.cpu_cores}")
         print(f"   内存: {self.memory_gb:.1f}GB")
@@ -197,6 +199,11 @@ class PerformanceManager:
         
         print(f"🔄 性能模式切换: {old_mode.value} → {mode.value}")
         self._print_config_details()
+        # 广播变更
+        try:
+            self._notify_listeners(old_mode, mode, self.current_config)
+        except Exception as _e:
+            print(f"⚠️ 广播性能模式变更失败: {_e}")
         
         return True
     
@@ -284,6 +291,35 @@ class PerformanceManager:
             recommendations.append("💾 内存缓冲区较小，可适当增加")
         
         return recommendations
+
+    # ============ 监听器机制（全局广播） ============
+    def register_listener(self, callback):
+        """注册模式变更监听器。callback(mode, config)"""
+        if not callable(callback):
+            return False
+        if callback in self._listeners:
+            return True
+        self._listeners.append(callback)
+        return True
+
+    def unregister_listener(self, callback):
+        """取消注册监听器。"""
+        try:
+            if callback in self._listeners:
+                self._listeners.remove(callback)
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _notify_listeners(self, old_mode: PerformanceMode, new_mode: PerformanceMode, config: PerformanceConfig):
+        """通知所有监听器。容错执行，避免单个失败影响整体。"""
+        for cb in list(self._listeners):
+            try:
+                cb(new_mode, config)
+            except Exception:
+                # 自动移除持续报错的监听器可选：暂不移除，仅跳过
+                continue
 
 # 全局性能管理器实例
 _global_performance_manager = None

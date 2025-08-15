@@ -45,6 +45,11 @@ class IntegratedRecorderAnalyzer:
         # 配置
         self.volume_threshold = 0.01
         self.save_analysis_data = True
+        
+        # 调试开关
+        self.debug_flags = {
+            'audio_status_log': False,
+        }
     
     def set_pitch_callback(self, callback):
         """设置音高检测回调函数"""
@@ -52,7 +57,7 @@ class IntegratedRecorderAnalyzer:
     
     def _audio_callback(self, indata, frames, time_info, status):
         """音频流回调函数"""
-        if status:
+        if status and self.debug_flags.get('audio_status_log', False):
             # 只在非溢出错误时打印警告
             if 'input overflow' not in str(status).lower():
                 print(f"音频流状态: {status}")

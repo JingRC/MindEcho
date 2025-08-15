@@ -253,6 +253,10 @@ class EnhancedMindEchoMainWindow(QMainWindow):
         super().__init__()
         self.init_ui()
         self.init_audio_system()
+        # 调试开关：默认全部关闭，可按需打开
+        self.debug_flags = {
+            'audio_status_log': False,
+        }
         
         # 状态变量
         self.is_recording = False
@@ -636,7 +640,7 @@ class EnhancedMindEchoMainWindow(QMainWindow):
                 import sounddevice as sd
                 
                 def audio_callback(indata, frames, time, status):
-                    if status:
+                    if status and getattr(self, 'debug_flags', {}).get('audio_status_log', False):
                         print(f"音频流状态: {status}")
                     # 将音频数据添加到分析器
                     self.enhanced_analyzer.add_audio_data(indata[:, 0])

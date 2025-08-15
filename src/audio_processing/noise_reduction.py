@@ -11,6 +11,8 @@ from collections import deque
 import warnings
 warnings.filterwarnings("ignore")
 
+VERBOSE = False  # 全局降噪模块日志开关（默认关闭）
+
 class NoiseReductionProcessor:
     """降噪处理器主类"""
     
@@ -40,18 +42,20 @@ class NoiseReductionProcessor:
         self.music_freq_low = 80
         self.music_freq_high = 4000
         
-        print(f"🎵 降噪处理器初始化完成")
-        print(f"  采样率: {sample_rate} Hz")
-        print(f"  帧大小: {frame_size} 样本")
-        print(f"  跳跃长度: {self.hop_length} 样本")
-        print(f"  音乐保护频段: {self.music_freq_low}-{self.music_freq_high} Hz")
-        print(f"  🎯 默认降噪模式: {self.noise_reduction_mode}")  # 新增调试信息
+        if VERBOSE:
+            print(f"🎵 降噪处理器初始化完成")
+            print(f"  采样率: {sample_rate} Hz")
+            print(f"  帧大小: {frame_size} 样本")
+            print(f"  跳跃长度: {self.hop_length} 样本")
+            print(f"  音乐保护频段: {self.music_freq_low}-{self.music_freq_high} Hz")
+            print(f"  🎯 默认降噪模式: {self.noise_reduction_mode}")  # 新增调试信息
     
     def set_noise_reduction_mode(self, mode):
         """设置降噪模式"""
         if mode in ["关闭", "基础频域降噪", "AI降噪", "高级音乐保护"]:
             self.noise_reduction_mode = mode
-            print(f"🔧 降噪模式已设置为: {mode}")
+            if VERBOSE:
+                print(f"🔧 降噪模式已设置为: {mode}")
             
             # 重置噪声档案
             if mode != "关闭":
@@ -59,31 +63,33 @@ class NoiseReductionProcessor:
                 self.noise_profile = None
                 self.frame_count = 0
         else:
-            print(f"❌ 无效的降噪模式: {mode}")
+            if VERBOSE:
+                print(f"❌ 无效的降噪模式: {mode}")
     
     def process_audio(self, audio_data):
         """处理音频数据 - 主入口"""
         # 🔥 添加详细的模式检查调试信息
         if not hasattr(self, '_process_counter'):
             self._process_counter = 0
-            print(f"🎛️ 降噪处理器首次调用，当前模式: {self.noise_reduction_mode}")
+            if VERBOSE:
+                print(f"🎛️ 降噪处理器首次调用，当前模式: {self.noise_reduction_mode}")
         
         self._process_counter += 1
         
         if self.noise_reduction_mode == "关闭":
-            if self._process_counter % 500 == 1:  # 每500次输出一次状态
+            if VERBOSE and self._process_counter % 500 == 1:  # 每500次输出一次状态
                 print(f"🔇 降噪处理器: 模式={self.noise_reduction_mode}，完全跳过所有降噪处理")
                 print(f"   ⚙️ 音频数据直接通过，无任何修改")
             return audio_data.copy()  # 🎯 确保返回原始数据的副本，避免任何引用问题
         elif self.noise_reduction_mode == "基础频域降噪":
-            if self._process_counter % 100 == 1:  # 每100次输出一次状态
+            if VERBOSE and self._process_counter % 100 == 1:  # 每100次输出一次状态
                 original_rms = np.sqrt(np.mean(audio_data ** 2))
                 print(f"🎵 降噪处理器: 模式={self.noise_reduction_mode}，开始频域降噪处理")
                 print(f"   📊 输入RMS: {original_rms:.4f}")
             
             result = self._basic_spectral_noise_reduction(audio_data)
             
-            if self._process_counter % 100 == 1:  # 对应输出处理结果
+            if VERBOSE and self._process_counter % 100 == 1:  # 对应输出处理结果
                 result_rms = np.sqrt(np.mean(result ** 2))
                 print(f"   📊 输出RMS: {result_rms:.4f}")
                 print(f"   🔄 降噪强度: {((result_rms/np.sqrt(np.mean(audio_data ** 2)) - 1) * 100):+.1f}%")
@@ -91,16 +97,16 @@ class NoiseReductionProcessor:
             return result
         elif self.noise_reduction_mode == "AI降噪":
             # TODO: 未来实现AI降噪
-            if self._process_counter % 200 == 1:
+            if VERBOSE and self._process_counter % 200 == 1:
                 print("🚧 AI降噪功能开发中，返回原始音频...")
             return audio_data
         elif self.noise_reduction_mode == "高级音乐保护":
             # TODO: 未来实现高级音乐保护
-            if self._process_counter % 200 == 1:
+            if VERBOSE and self._process_counter % 200 == 1:
                 print("🚧 高级音乐保护功能开发中，返回原始音频...")
             return audio_data
         else:
-            if self._process_counter % 200 == 1:
+            if VERBOSE and self._process_counter % 200 == 1:
                 print(f"⚠️ 未知降噪模式: {self.noise_reduction_mode}，返回原始音频")
             return audio_data
     
@@ -166,7 +172,8 @@ class NoiseReductionProcessor:
             if self.frame_count == 10:
                 # 计算平均噪声档案
                 self.noise_profile = np.mean(np.array(self.noise_profile_buffer), axis=0)
-                print(f"✅ 噪声档案建立完成 (基于前10帧数据)")
+                if VERBOSE:
+                    print(f"✅ 噪声档案建立完成 (基于前10帧数据)")
         else:
             # 动态更新噪声档案 (慢速适应)
             if self.noise_profile is not None:

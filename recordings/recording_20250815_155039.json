@@ -1,0 +1,37 @@
+{
+  "recording_info": {
+    "filename": "recording_20250815_155039.wav",
+    "sample_rate": 48000,
+    "channels": 1,
+    "duration": 5.5617005825042725,
+    "total_samples": 985088
+  },
+  "pitch_analysis": {
+    "total_detections": 2,
+    "detection_rate": 0.359602242215538,
+    "pitch_data": [
+      {
+        "frequency": 355.3350620131991,
+        "timestamp": 1755244243.877199,
+        "confidence": 0.9,
+        "note_info": {
+          "note_name": "F",
+          "octave": 4,
+          "cents": 30.011832567337354,
+          "midi_number": 65
+        }
+      },
+      {
+        "frequency": 100.17994741157598,
+        "timestamp": 1755244244.1645172,
+        "confidence": 0.9,
+        "note_info": {
+          "note_name": "G",
+          "octave": 2,
+          "cents": 38.10828275710679,
+          "midi_number": 43
+        }
+      }
+    ]
+  }
+}
