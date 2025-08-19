@@ -1832,6 +1832,8 @@ class IntegratedAudioProcessor(QThread):
                 self.is_monitoring_only = False  # 🎯 重要：录音时需要完整音频处理，不是纯监听
                 if self.should_save:
                     self.audio_buffer = []  # 只有需要保存时才清空缓冲区
+                    # 进入录音时重置录音计时，确保时长准确
+                    self.recording_start_time = time.time()
                 
                 # 🔁 统一：在监听基础上转入录音必须重置音高相关状态，保证与“直接录音”一致
                 self._reset_pitch_analysis_state(reason="monitor->record switch")
@@ -2140,6 +2142,15 @@ class IntegratedAudioProcessor(QThread):
                     # 计算实际延迟（使用实际参数）
                     actual_sample_rate = stream_params['samplerate']
                     actual_blocksize = stream_params['blocksize']
+                    # 记录实际输入参数供保存与统计使用
+                    try:
+                        self.active_input_samplerate = int(actual_sample_rate)
+                        self.active_input_channels = int(stream_params.get('channels', self.channels))
+                        self.active_blocksize = int(actual_blocksize)
+                    except Exception:
+                        self.active_input_samplerate = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                        self.active_input_channels = int(getattr(self, 'active_input_channels', self.channels))
+                        self.active_blocksize = int(getattr(self, 'active_blocksize', self.chunk_size))
                     theoretical_latency = (actual_blocksize / actual_sample_rate) * 1000
                     verified_latency = config.get('verified_latency', theoretical_latency)
                     
@@ -2327,8 +2338,8 @@ class IntegratedAudioProcessor(QThread):
                         _buf = np.array(self.audio_buffer, dtype=np.float32)
                         _pitches = list(self.pitch_history)
                         _fname = self.recording_filename
-                        _sr = int(self.sample_rate)
-                        _ch = int(self.channels)
+                        _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                        _ch = int(getattr(self, 'active_input_channels', self.channels))
                         _dur = float(self.current_duration)
                         def _bg_save():
                             try:
@@ -2379,8 +2390,8 @@ class IntegratedAudioProcessor(QThread):
                     _buf = np.array(self.audio_buffer, dtype=np.float32)
                     _pitches = list(self.pitch_history)
                     _fname = self.recording_filename
-                    _sr = int(self.sample_rate)
-                    _ch = int(self.channels)
+                    _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                    _ch = int(getattr(self, 'active_input_channels', self.channels))
                     _dur = float(self.current_duration)
                     def _bg_save2():
                         try:
@@ -2414,32 +2425,35 @@ class IntegratedAudioProcessor(QThread):
             # 确保录音目录存在
             recordings_dir = project_root / "recordings"
             recordings_dir.mkdir(exist_ok=True)
-            
+
             # 生成文件路径
             if not self.recording_filename.endswith('.wav'):
                 self.recording_filename += '.wav'
-            
+
             output_path = recordings_dir / self.recording_filename
-            
+
             # 保存WAV文件
             audio_array = np.array(self.audio_buffer, dtype=np.float32)
-            
+
+            # 使用实际输入采样率与声道数
+            _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+            _ch = int(getattr(self, 'active_input_channels', self.channels))
             with wave.open(str(output_path), 'wb') as wav_file:
-                wav_file.setnchannels(self.channels)
+                wav_file.setnchannels(_ch)
                 wav_file.setsampwidth(2)  # 16位
-                wav_file.setframerate(self.sample_rate)
-                
+                wav_file.setframerate(_sr)
+
                 # 转换为16位整数
                 audio_int16 = (audio_array * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
-            
+
             # 保存分析结果
             analysis_path = output_path.with_suffix('.json')
             analysis_data = {
                 'recording_info': {
                     'filename': self.recording_filename,
-                    'sample_rate': self.sample_rate,
-                    'channels': self.channels,
+                    'sample_rate': _sr,
+                    'channels': _ch,
                     'duration': self.current_duration,
                     'total_samples': len(self.audio_buffer)
                 },
@@ -2449,12 +2463,12 @@ class IntegratedAudioProcessor(QThread):
                     'pitch_data': list(self.pitch_history)
                 }
             }
-            
+
             with open(analysis_path, 'w', encoding='utf-8') as f:
                 json.dump(analysis_data, f, indent=2, ensure_ascii=False)
-            
+
             return str(output_path)
-            
+
         except Exception as e:
             self.error_occurred.emit(f"保存录音失败: {e}")
             return None
@@ -2637,9 +2651,7 @@ class IntegratedAudioProcessor(QThread):
                             except queue.Empty:
                                 pass
                         
-                        # 🎯 如果是录音模式，也添加到录音缓冲区
-                        if should_save_audio:
-                            self.audio_buffer.extend(audio_data)
+                        # 注意：录音缓冲区由处理线程统一写入，避免回调与线程重复写入导致时长/音质问题
                             
                     except Exception as e:
                         print(f"监听队列错误: {e}")
@@ -2754,6 +2766,15 @@ class IntegratedAudioProcessor(QThread):
                         # 计算实际延迟（使用实际参数）
                         actual_sample_rate = stream_params['samplerate']
                         actual_blocksize = stream_params['blocksize']
+                        # 记录实际输入参数供保存与统计使用
+                        try:
+                            self.active_input_samplerate = int(actual_sample_rate)
+                            self.active_input_channels = int(stream_params.get('channels', self.channels))
+                            self.active_blocksize = int(actual_blocksize)
+                        except Exception:
+                            self.active_input_samplerate = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                            self.active_input_channels = int(getattr(self, 'active_input_channels', self.channels))
+                            self.active_blocksize = int(getattr(self, 'active_blocksize', self.chunk_size))
                         theoretical_latency = (actual_blocksize / actual_sample_rate) * 1000
                         verified_latency = config.get('verified_latency', theoretical_latency)
                         
@@ -2777,7 +2798,20 @@ class IntegratedAudioProcessor(QThread):
                 # 🎯 使用统一的音频流管理
                 self.active_audio_stream = self.audio_stream
                 self.active_audio_stream.start()
-                print(f"🎧 全局监听音频流已启动: {self.sample_rate}Hz, {self.channels}声道, 块大小{self.chunk_size}")
+                # 记录监控流的实际参数
+                try:
+                    self.active_input_samplerate = int(getattr(self, 'active_input_samplerate', 0) or getattr(self.audio_stream, 'samplerate', None) or stream_params.get('samplerate', self.sample_rate))
+                except Exception:
+                    self.active_input_samplerate = int(self.sample_rate)
+                try:
+                    self.active_input_channels = int(getattr(self, 'active_input_channels', 0) or getattr(self.audio_stream, 'channels', None) or stream_params.get('channels', self.channels))
+                except Exception:
+                    self.active_input_channels = int(self.channels)
+                try:
+                    self.active_blocksize = int(getattr(self, 'active_blocksize', 0) or stream_params.get('blocksize', self.chunk_size))
+                except Exception:
+                    self.active_blocksize = int(self.chunk_size)
+                print(f"🎧 全局监听音频流已启动: {self.active_input_samplerate}Hz, {self.active_input_channels}声道, 块大小{self.active_blocksize}")
                 
                 # 启动音频处理线程
                 self.start_audio_processing_thread()
@@ -6718,6 +6752,23 @@ class ECGStylePitchVisualizer(QWidget):
         self._grid_rebuild_interval = 1.2  # 网格/标签重建最小间隔（秒）
         self._grid_dirty = True            # 有变化时由其他路径置为 True
 
+        # ================== 辅助线（纵向/横向）配置 ==================
+        self.guides_enabled = True  # 默认显示辅助线
+        # 辅助线（主线 + 柔光底线）引用
+        self.v_guide_line = None            # 纵向时间辅助线（主线 Line2D）
+        self.h_guide_line = None            # 横向音高辅助线（主线 Line2D）
+        self.v_guide_glow_line = None       # 纵向时间辅助线（柔光底线 Line2D）
+        self.h_guide_glow_line = None       # 横向音高辅助线（柔光底线 Line2D）
+        # 辅助线样式（更美观：主虚线 + 柔光底线）
+        self.guide_v_color = '#C0C0C0'   # 银灰色（Silver），主色
+        self.guide_h_color = '#C0C0C0'   # 与纵线同色
+        self.guide_alpha_main = 0.90     # 主线不透明度（薄线略提亮）
+        self.guide_alpha_glow = 0.12     # 柔光底线不透明度（更轻）
+        self.guide_linewidth_main = 0.8  # 主线粗细（更细）
+        self.guide_linewidth_glow = 2.2  # 柔光底线粗细（更克制）
+        self.guide_dash_pattern = (6, 4) # 主虚线的破折间距（更轻快）
+        self.last_active_pitch_y = None  # 记录最后一次有效音高（八度坐标）
+
     def _reset_display_diagnostics(self):
         """重置显示相关诊断统计，避免历史数据污染新阶段均值。"""
         self._diag_last_display_time = None
@@ -7051,7 +7102,8 @@ class ECGStylePitchVisualizer(QWidget):
         # 心电图式颜色配置
         self.bg_color = '#000000'  # 黑色背景
         self.grid_color = '#003300'  # 深绿色网格
-        self.line_color = '#00FF00'  # 亮绿色波形
+        # 音调主线颜色：琉璃蓝（DeepSkyBlue）
+        self.line_color = '#00BFFF'
         self.text_color = '#FFFFFF'  # 白色文字
         
         # 音高区域颜色（渐变色）
@@ -7617,16 +7669,55 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 分隔符（移到功能按钮之后）
         controls_row2_layout.addWidget(QLabel(" | "))
-        
+
+        # 显示辅助线开关
+        self.guides_checkbox = QCheckBox("显示辅助线")
+        self.guides_checkbox.setChecked(True)
+        self.guides_checkbox.stateChanged.connect(self.on_guides_toggled)
+        # 蓝色主题，提升可见性
+        self.guides_checkbox.setStyleSheet(
+            "QCheckBox { color: #A5D6FF; font-weight: 600; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+            "QCheckBox::indicator:unchecked { border: 1px solid #1E88E5; background: #0D47A1; }"
+            "QCheckBox::indicator:checked { border: 1px solid #64B5F6; background: #2196F3; }"
+        )
+        controls_row2_layout.addWidget(self.guides_checkbox)
+
         # 状态信息显示（合并到一行）
         self.status_label = QLabel("中心: C4 | 时间: 实时 | 缩放: 1.0x | 标注: 智能 | 跟随: 开启 | 数据: 0点(0.0%)")
         self.status_label.setStyleSheet("color: #AAAAAA; font-family: monospace; font-size: 11px;")
         controls_row2_layout.addWidget(self.status_label)
-        
+
         # 第二行布局添加到主布局
         main_controls_layout.addLayout(controls_row2_layout)
-        
+
         return controls_group
+
+    def on_guides_toggled(self, state):
+        """控制辅助线开关"""
+        try:
+            checked_state = getattr(Qt, 'Checked', None)
+            if checked_state is None:
+                # 兼容性：PyQt6
+                checked_state = Qt.CheckState.Checked
+            self.guides_enabled = (state == checked_state)
+        except Exception:
+            # 回退：直接判断非零
+            self.guides_enabled = bool(state)
+        # 立即应用：创建/更新/显示或隐藏
+        try:
+            # 启用时确保创建并定位
+            if self.guides_enabled:
+                self.update_guides()
+            # 同步可见性
+            if self.v_guide_line is not None:
+                self.v_guide_line.set_visible(self.guides_enabled)
+            if self.h_guide_line is not None:
+                self.h_guide_line.set_visible(self.guides_enabled)
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception:
+            pass
     
     def create_plot_with_scrollbars(self):
         """创建带滚动条的绘图区域"""
@@ -7878,6 +7969,11 @@ class ECGStylePitchVisualizer(QWidget):
             self.ax.text(0.02, 0.98, 'Interactive: Drag to view history, scroll to zoom', 
                         transform=self.ax.transAxes, fontsize=10,
                         verticalalignment='top', color=self.text_color, alpha=0.7)
+        # 初始化一次辅助线
+        try:
+            self.update_guides()
+        except Exception:
+            pass
     
     def safe_clear_axis(self):
         """安全地清除轴内容，但保留彩色渐变collections和坐标轴范围"""
@@ -7916,6 +8012,14 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 清除轴
         self.ax.clear()
+        # 重要：清空后旧的辅助线对象会失去可见挂载关系，直接置空以便后续重建
+        try:
+            self.v_guide_line = None
+            self.h_guide_line = None
+            self.v_guide_glow_line = None
+            self.h_guide_glow_line = None
+        except Exception:
+            pass
         
         # 恢复坐标轴范围
         self.ax.set_xlim(saved_xlim)
@@ -8027,6 +8131,12 @@ class ECGStylePitchVisualizer(QWidget):
             if drift > 0.05 and abs(drift - getattr(self, '_last_warn_y_shift', 0.0)) > 0.02:
                 print(f"⚠️ [YDRIFT-DETECT] setup_ecg_grid drift={drift:.3f} center={self.y_view_center:.3f}")
                 self._last_warn_y_shift = drift
+
+        # 重建网格后，确保辅助线存在并位置正确
+        try:
+            self.update_guides()
+        except Exception:
+            pass
     
     # should_show_note_label 逻辑已被各 zoom 模式的严格规则替换
     
@@ -8331,7 +8441,24 @@ class ECGStylePitchVisualizer(QWidget):
         else:
             x_min = self.time_offset
             x_max = self.time_offset + self.time_window
-        self.ax.set_xlim(x_min, x_max)
+        # 平滑滚动：超过中心时间后且自动跟随时使用平滑过渡
+        try:
+            smooth_active = (
+                getattr(self, 'auto_follow', True)
+                and getattr(self, 'auto_scroll_enabled', True)
+                and not getattr(self, 'freeze_y_center', False)
+                and getattr(self, 'current_global_time', 0.0) > self.center_display_time
+            )
+        except Exception:
+            smooth_active = False
+        if smooth_active and hasattr(self, '_smooth_set_xlim'):
+            # 使用更灵敏的跟随参数，限制单步位移，避免“分段感”
+            try:
+                self._smooth_set_xlim(x_min, x_max, strength=0.9, max_step=0.05)
+            except Exception:
+                self.ax.set_xlim(x_min, x_max)
+        else:
+            self.ax.set_xlim(x_min, x_max)
 
         # 重新设置网格（无论是否有数据都要设置）
         self.setup_ecg_grid()
@@ -8492,6 +8619,11 @@ class ECGStylePitchVisualizer(QWidget):
             self.update_display()
         else:
             self.canvas.draw_idle()
+        # 更新辅助线位置
+        try:
+            self.update_guides()
+        except Exception:
+            pass
     
     def on_horizontal_scroll(self, value):
         """水平滚动条事件（控制时间偏移）"""
@@ -8525,6 +8657,11 @@ class ECGStylePitchVisualizer(QWidget):
             self.update_display()
         else:
             self.canvas.draw_idle()
+        # 更新辅助线位置
+        try:
+            self.update_guides()
+        except Exception:
+            pass
     
     def re_enable_auto_scroll(self):
         """重新启用自动滚动"""
@@ -8547,6 +8684,10 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 self.v_scrollbar.setEnabled(True)
                 min_center = half_range
+            if getattr(self, 'v_guide_glow_line', None) is not None:
+                self.v_guide_glow_line.set_visible(self.guides_enabled)
+            if getattr(self, 'h_guide_glow_line', None) is not None:
+                self.h_guide_glow_line.set_visible(self.guides_enabled)
                 max_center = 8.0 - half_range
                 # 不主动改写 center，只在极端越界时校正
                 changed = False
@@ -8644,6 +8785,8 @@ class ECGStylePitchVisualizer(QWidget):
                 self.current_pitch_y = y_pos
                 self.current_pitch_active = True
                 self.last_pitch_time = time.time()  # 记录最后活跃时间
+                # 记录最后一次有效音高用于横向辅助线
+                self.last_active_pitch_y = y_pos
                 
                 # 调试信息（每10个数据点打印一次）
                 if len(self.pitch_data) % 10 == 0:
@@ -8734,6 +8877,12 @@ class ECGStylePitchVisualizer(QWidget):
                 if not hasattr(self, '_pending_instant_update') or not self._pending_instant_update:
                     self._pending_instant_update = True
                     QTimer.singleShot(0, self._instant_refresh)
+
+            # 轻量更新辅助线（不强制重绘主曲线）
+            try:
+                self.update_guides()
+            except Exception:
+                pass
 
             # 诊断: 记录进入但尚未显示的点数
             self._diag_pending_points += 1
@@ -8828,6 +8977,142 @@ class ECGStylePitchVisualizer(QWidget):
             return base * 0.80
         except Exception:
             return float(getattr(self, '_min_heavy_interval', 0.028)) * 0.80
+
+    def update_guides(self):
+        """更新或创建纵向/横向辅助线（主线+柔光）位置与可见性。"""
+        try:
+            if not hasattr(self, 'ax'):
+                return
+            # 纵向位置：≤8s 跟随当前时间，>8s 时严格居中（基于当前 xlim 中点，避免与 time_offset 误差）
+            time_start, time_end = self.ax.get_xlim() if hasattr(self, 'ax') else (self.time_offset, self.time_offset + self.time_window)
+            cur_t = getattr(self, 'current_global_time', 0.0)
+            if cur_t > self.center_display_time:
+                v_x = (time_start + time_end) * 0.5
+            else:
+                v_x = min(max(time_start, cur_t), time_end)
+
+            # 横向位置：最后一次有效音高（静音保持不变），默认以当前中心代替
+            if self.last_active_pitch_y is None:
+                self.last_active_pitch_y = getattr(self, 'current_pitch_y', self.y_view_center)
+
+            # 纵向：柔光底线
+            need_new_v_glow = (
+                getattr(self, 'v_guide_glow_line', None) is None or
+                getattr(getattr(self, 'v_guide_glow_line', None), 'axes', None) is None or
+                self.v_guide_glow_line not in getattr(self.ax, 'lines', [])
+            )
+            if need_new_v_glow:
+                self.v_guide_glow_line = self.ax.axvline(
+                    x=v_x, color=self.guide_v_color, linestyle='-',
+                    linewidth=self.guide_linewidth_glow, alpha=self.guide_alpha_glow,
+                    zorder=80, visible=self.guides_enabled
+                )
+                try:
+                    self.v_guide_glow_line.set_solid_capstyle('round')
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.v_guide_glow_line.set_xdata([v_x, v_x])
+                    self.v_guide_glow_line.set_visible(self.guides_enabled)
+                    self.v_guide_glow_line.set_zorder(80)
+                except Exception:
+                    pass
+
+            # 纵向：主虚线
+            need_new_v = (
+                self.v_guide_line is None or
+                getattr(self.v_guide_line, 'axes', None) is None or
+                self.v_guide_line not in getattr(self.ax, 'lines', [])
+            )
+            if need_new_v:
+                self.v_guide_line = self.ax.axvline(
+                    x=v_x, color=self.guide_v_color, linestyle='--',
+                    linewidth=self.guide_linewidth_main, alpha=self.guide_alpha_main,
+                    zorder=90, visible=self.guides_enabled
+                )
+                try:
+                    self.v_guide_line.set_linestyle((0, self.guide_dash_pattern))
+                except Exception:
+                    try:
+                        self.v_guide_line.set_dashes(self.guide_dash_pattern)
+                    except Exception:
+                        pass
+                try:
+                    self.v_guide_line.set_solid_capstyle('round')
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.v_guide_line.set_xdata([v_x, v_x])
+                    self.v_guide_line.set_visible(self.guides_enabled)
+                    self.v_guide_line.set_zorder(90)
+                except Exception:
+                    pass
+
+            # 横向：柔光底线
+            need_new_h_glow = (
+                getattr(self, 'h_guide_glow_line', None) is None or
+                getattr(getattr(self, 'h_guide_glow_line', None), 'axes', None) is None or
+                self.h_guide_glow_line not in getattr(self.ax, 'lines', [])
+            )
+            if need_new_h_glow:
+                self.h_guide_glow_line = self.ax.axhline(
+                    y=self.last_active_pitch_y, color=self.guide_h_color, linestyle='-',
+                    linewidth=self.guide_linewidth_glow, alpha=self.guide_alpha_glow,
+                    zorder=80, visible=self.guides_enabled
+                )
+                try:
+                    self.h_guide_glow_line.set_solid_capstyle('round')
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.h_guide_glow_line.set_ydata([self.last_active_pitch_y, self.last_active_pitch_y])
+                    self.h_guide_glow_line.set_visible(self.guides_enabled)
+                    self.h_guide_glow_line.set_zorder(80)
+                except Exception:
+                    pass
+
+            # 横向：主虚线
+            need_new_h = (
+                self.h_guide_line is None or
+                getattr(self.h_guide_line, 'axes', None) is None or
+                self.h_guide_line not in getattr(self.ax, 'lines', [])
+            )
+            if need_new_h:
+                self.h_guide_line = self.ax.axhline(
+                    y=self.last_active_pitch_y, color=self.guide_h_color, linestyle='--',
+                    linewidth=self.guide_linewidth_main, alpha=self.guide_alpha_main,
+                    zorder=90, visible=self.guides_enabled
+                )
+                try:
+                    self.h_guide_line.set_linestyle((0, self.guide_dash_pattern))
+                except Exception:
+                    try:
+                        self.h_guide_line.set_dashes(self.guide_dash_pattern)
+                    except Exception:
+                        pass
+                try:
+                    self.h_guide_line.set_solid_capstyle('round')
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.h_guide_line.set_ydata([self.last_active_pitch_y, self.last_active_pitch_y])
+                    self.h_guide_line.set_visible(self.guides_enabled)
+                    self.h_guide_line.set_zorder(90)
+                except Exception:
+                    pass
+
+            # 轻触发重绘，确保立即可见
+            if hasattr(self, 'canvas'):
+                try:
+                    self.canvas.draw_idle()
+                except Exception:
+                    pass
+        except Exception:
+            pass
     
     def update_time_axis(self):
         """更新时间轴（支持断续音调曲线模式）"""
@@ -8870,6 +9155,11 @@ class ECGStylePitchVisualizer(QWidget):
                 
                 # 更新滚动条位置
                 self.update_scrollbars()
+                # 同步辅助线位置
+                try:
+                    self.update_guides()
+                except Exception:
+                    pass
             
             # 即使没有新音高数据，也要刷新显示（显示时间轴推进）
             if time_since_last_pitch > 0.1:  # 超过100ms没有音高数据
@@ -8881,9 +9171,17 @@ class ECGStylePitchVisualizer(QWidget):
                         time_end = self.time_offset + self.time_window
                         
                         current_xlim = self.ax.get_xlim()
-                        if abs(current_xlim[0] - time_start) > 0.1 or abs(current_xlim[1] - time_end) > 0.1:
-                            self.ax.set_xlim(time_start, time_end)
-                            self.canvas.draw_idle()
+                        # 使用平滑过渡，避免“分段移动”的观感
+                        try:
+                            self._smooth_set_xlim(time_start, time_end, strength=0.9, max_step=0.05)
+                        except Exception:
+                            if abs(current_xlim[0] - time_start) > 0.02 or abs(current_xlim[1] - time_end) > 0.02:
+                                self.ax.set_xlim(time_start, time_end)
+                                self.canvas.draw_idle()
+                        try:
+                            self.update_guides()
+                        except Exception:
+                            pass
                 except Exception as e:
                     # 静默处理绘制错误
                     pass
@@ -8994,33 +9292,39 @@ class ECGStylePitchVisualizer(QWidget):
             # 轻量帧条件：无新点 + 自动跟随阶段 + 未到重帧间隔 + 无强制延迟重绘
             if (getattr(self, '_new_points_since_last_draw', 0) == 0 and
                 getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
-                self.time_data and self.time_data[-1] > self.center_display_time and
+                # 使用全局时间判断进入平滑滚动阶段，避免以“最新数据时间”造成卡段
+                getattr(self, 'current_global_time', 0.0) > self.center_display_time and
                 (now - self._last_heavy_redraw_time) < heavy_interval_threshold and
                 not force_latency_redraw):
                 try:
-                    # 轻量帧：直接将显示窗口锁定到“最新数据时间”为中心，消除追随速度不一致导致的超前/滞后
+                    # 轻量帧：以“全局时间”为滚动基准，消除按数据到达批次带来的分段感
                     latest_time = self.time_data[-1] if self.time_data else 0.0
+                    cur_t = getattr(self, 'current_global_time', latest_time)
                     manual_freeze = (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
-                    if (not manual_freeze) and latest_time > self.center_display_time:
-                        time_start = latest_time - self.center_display_time
+                    if (not manual_freeze) and cur_t > self.center_display_time:
+                        time_start = cur_t - self.center_display_time
                         time_end = time_start + self.time_window
                     else:
                         # 初期(<8s)或手动冻结：保持固定窗口
-                        time_start = 0.0 if latest_time <= self.center_display_time else self.time_offset
+                        time_start = 0.0 if cur_t <= self.center_display_time else self.time_offset
                         time_end = time_start + self.time_window
                     if hasattr(self, 'ax'):
-                        # 关键：取消平滑跳步，改为每帧对齐目标窗口，避免“瞬移/齿感”
-                        cur_xlim = self.ax.get_xlim()
-                        if abs(cur_xlim[0]-time_start) > 1e-3 or abs(cur_xlim[1]-time_end) > 1e-3:
+                        # 使用平滑过渡，避免“瞬移/齿感”
+                        try:
+                            self._smooth_set_xlim(time_start, time_end, strength=0.9, max_step=0.05)
+                        except Exception:
                             self.ax.set_xlim(time_start, time_end)
-                        # 记录最近渲染窗口，供滚动条/轴范围同步
-                        self._last_render_window = (time_start, time_end)
+                        # 记录最近渲染窗口为实际 xlim，确保后续使用一致窗口
+                        try:
+                            self._last_render_window = self.ax.get_xlim()
+                        except Exception:
+                            self._last_render_window = (time_start, time_end)
                         # 轻量帧也维护批量细节点集合（否则看起来像“点消失”）
                         if getattr(self, '_use_batched_points', False):
                             # 若集合不存在或被 clear 掉，重建并挂回轴
                             if (not hasattr(self, '_batched_points')) or (self._batched_points is None):
                                 try:
-                                    detail_rgb = tuple(c/255.0 for c in (100, 149, 237))
+                                    detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
                                     self._batched_points = self.ax.scatter([], [], s=16, c=[detail_rgb], alpha=0.0, linewidths=0, zorder=13)
                                 except Exception:
                                     self._batched_points = None
@@ -9167,20 +9471,22 @@ class ECGStylePitchVisualizer(QWidget):
             # === 轴窗口 & 数据窗口分离 ===
             # 轴显示窗口(视觉范围)：统一以“最新数据时间”为中心（>=8s）作为目标，确保细节点始终居中且无抖动
             latest_time = self.time_data[-1] if self.time_data else 0.0
+            cur_t = getattr(self, 'current_global_time', latest_time)
             manual_freeze = (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
             if (getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True)
-                and (not manual_freeze) and latest_time > self.center_display_time):
-                axis_start = latest_time - self.center_display_time
+                and (not manual_freeze) and cur_t > self.center_display_time):
+                axis_start = cur_t - self.center_display_time
                 axis_end = axis_start + self.time_window
             else:
                 # 初期(<8s)或冻结/关闭自动跟随：依据 time_offset
-                axis_start = self.time_offset if latest_time > self.center_display_time else 0.0
+                axis_start = self.time_offset if cur_t > self.center_display_time else 0.0
                 axis_end = axis_start + self.time_window
-            # 将坐标轴直接设置为目标窗口（避免与后续过滤窗口不一致）
+            # 平滑设置坐标轴范围，避免闪烁与错位
             try:
                 if hasattr(self, 'ax') and self.ax is not None:
-                    cur_xlim = self.ax.get_xlim()
-                    if abs(cur_xlim[0]-axis_start) > 1e-3 or abs(cur_xlim[1]-axis_end) > 1e-3:
+                    try:
+                        self._smooth_set_xlim(axis_start, axis_end, strength=0.9, max_step=0.05)
+                    except Exception:
                         self.ax.set_xlim(axis_start, axis_end)
             except Exception:
                 pass
@@ -9189,8 +9495,11 @@ class ECGStylePitchVisualizer(QWidget):
                 self._tail_buffer_sec = 0.25  # 下调尾迹缓冲，减少“批量刷新”边界效应
             data_start = max(0.0, axis_start - self._tail_buffer_sec)
             data_end = axis_end
-            # 记录最近渲染窗口（轴窗口）
-            self._last_render_window = (axis_start, axis_end)
+            # 记录最近渲染窗口（以当前 xlim 为准）
+            try:
+                self._last_render_window = self.ax.get_xlim() if hasattr(self, 'ax') else (axis_start, axis_end)
+            except Exception:
+                self._last_render_window = (axis_start, axis_end)
             
             # 过滤时间窗口内的数据（保持顺序）
             # 修复：原实现只前向递增start_idx，向左/回到早期时间会丢失旧点
@@ -9551,8 +9860,9 @@ class ECGStylePitchVisualizer(QWidget):
             # 隐藏原整体线（使用分段显示）
             self.pitch_line.set_data([], [])
 
-            curve_rgb = tuple(c/255.0 for c in (141, 182, 0))
-            detail_rgb = tuple(c/255.0 for c in (100, 149, 237))
+            # 曲线改为琉璃蓝（DeepSkyBlue），细节点为白色
+            curve_rgb = tuple(c/255.0 for c in (0, 191, 255))
+            detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
 
             # 如果启用批量细节点，确保集合存在
             if getattr(self, '_use_batched_points', False):
@@ -11069,10 +11379,14 @@ class ECGStylePitchVisualizer(QWidget):
             if self.auto_follow and self.auto_scroll_enabled and not manual_freeze:
                 if self.current_global_time > self.center_display_time:
                     new_offset = self.current_global_time - self.center_display_time
-                    if abs(new_offset - self.time_offset) > 0.05:  # 更灵敏，减少滞后
-                        self.time_offset = new_offset
-                        max_offset = max(0, self.max_history_time - self.time_window)
-                        self.time_offset = min(self.time_offset, max_offset)
+                    # 直接更新 offset，但使用平滑 xlim 过渡
+                    self.time_offset = min(new_offset, max(0, self.max_history_time - self.time_window))
+                    try:
+                        if hasattr(self, 'ax'):
+                            x_min = self.time_offset
+                            x_max = self.time_offset + self.time_window
+                            self._smooth_set_xlim(x_min, x_max, strength=0.9, max_step=0.05)
+                    except Exception:
                         self.update_axis_ranges()
                 else:
                     # 初期阶段保持 offset=0，窗口缩放在 update_display 中处理
