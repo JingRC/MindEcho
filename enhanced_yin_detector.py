@@ -112,21 +112,21 @@ class EnhancedYIN:
         
         # 近场人声特征检测
         voice_frequency_energy = self._detect_voice_frequencies(fft_data)
-        
+
         # 综合判断 - 大幅放宽条件（轻微人声优化）
-        energy_ok = adjusted_energy > self.signal_threshold  # 使用调整后的能量
-        zcr_ok = 0.001 < zcr < 0.9  # 进一步放宽零交叉率范围 (0.003→0.001)
-        spectral_ok = spectral_centroid < len(fft_data) * 0.95  # 进一步放宽频谱条件 (0.9→0.95)
-        voice_ok = voice_frequency_energy > 0.01  # 大幅降低人声检测阈值 (0.03→0.01)
-        
+        energy_ok = adjusted_energy > (self.signal_threshold * 0.9)  # 再放宽10%
+        zcr_ok = 0.001 < zcr < 0.95  # 上限略放宽
+        spectral_ok = spectral_centroid < len(fft_data) * 0.97  # 略放宽
+        voice_ok = voice_frequency_energy > 0.008  # 再降阈值
+
         # 响度差异判断 - 新增
         snr_db = self._calculate_snr_db(signal_energy)
         snr_ok = snr_db > self.min_snr_db or adjusted_energy > self.signal_threshold * 2
-        
+
         # 通过任意两个条件即可
         conditions = [energy_ok, zcr_ok, spectral_ok, voice_ok, snr_ok]
         passed_conditions = sum(conditions)
-        
+
         # 添加详细调试输出
         if not (passed_conditions >= 2):
             if hasattr(self, '_signal_debug_counter'):
@@ -139,8 +139,8 @@ class EnhancedYIN:
             else:
                 self._signal_debug_counter = 1
                 print(f"🔍 开始响度感知信号检测: 阈值={self.signal_threshold}")
-                
-        return passed_conditions >= 2  # 5个条件中通过2个即可
+
+        return passed_conditions >= 2  # 5个条件中通过2个即可（保持）
     
     def _calculate_loudness_factor(self, audio):
         """计算响度增强因子（优化轻微人声检测）"""
@@ -238,16 +238,69 @@ class EnhancedYIN:
         return [tau for tau, _ in valleys[:5]]  # 返回前5个候选
     
     def _harmonic_validation(self, windowed, candidates):
-        """谐波验证（防止八度错误）"""
+        """谐波验证（防止八度错误，增强弱基频场景如头声）
+
+        策略：
+        - 使用谐波支持评分 S(f)=∑ w_k * |X(k·f)|，w_k=1/k，弱化对基频幅度的依赖；
+        - 对每个候选频率 f 同时评估 2f（纠正 “被降一倍” 的八度错误），择优；
+        - 引入简化倒谱峰辅助，仅用于确认是否更倾向 2f；
+        - 置信度基于谐波支持相对频谱总能量归一化。
+        """
         if len(candidates) == 0:
             return 0, 0
         
         # FFT频谱分析
         spectrum = np.abs(np.fft.rfft(windowed))
         freqs = np.fft.rfftfreq(len(windowed), 1/self.sr)
+        nyquist = self.sr / 2.0
+
+        # 局部能量获取（±bins 范围求和）
+        def local_energy_at(f, bins=2):
+            if f <= 0 or f >= nyquist:
+                return 0.0
+            idx = int(np.round(f * len(freqs) / nyquist))
+            idx = max(0, min(idx, len(spectrum)-1))
+            lo = max(0, idx - bins)
+            hi = min(len(spectrum)-1, idx + bins)
+            return float(np.sum(spectrum[lo:hi+1]))
+
+        # 谐波支持评分（弱化基频幅度依赖）
+        def harmonic_support(f, max_harm=8, bins=2):
+            if f <= 0:
+                return 0.0, 0.0, 0.0  # score, E1, E2
+            kmax = int(min(max_harm, np.floor(nyquist / max(f, 1e-6))))
+            if kmax < 1:
+                return 0.0, 0.0, 0.0
+            score = 0.0
+            e1 = local_energy_at(f, bins)
+            e2 = local_energy_at(2*f, bins) if 2*f < nyquist else 0.0
+            for k in range(1, kmax+1):
+                ek = local_energy_at(k*f, bins)
+                score += ek / k
+            return score, e1, e2
+
+        # 简化倒谱峰（用于判断是否倾向 2f）
+        def cepstrum_f0_hint():
+            try:
+                spec = np.abs(np.fft.rfft(windowed)) + 1e-12
+                log_spec = np.log(spec)
+                ceps = np.fft.irfft(log_spec)
+                # 将倒谱搜索范围限制到可行基音周期
+                min_T = int(self.sr / 2000)  # 对应最高 2kHz
+                max_T = int(self.sr / 60)    # 对应最低 60Hz
+                max_T = min(max_T, len(ceps)-1)
+                if max_T <= min_T+2:
+                    return 0.0
+                q = np.argmax(ceps[min_T:max_T]) + min_T
+                f0 = self.sr / max(q, 1)
+                return f0 if 60 <= f0 <= 2000 else 0.0
+            except Exception:
+                return 0.0
         
         best_pitch = 0
-        best_confidence = 0
+        best_confidence = 0.0
+
+        f0_hint = cepstrum_f0_hint()
         
         for tau in candidates:
             frequency = self.sr / tau
@@ -256,48 +309,41 @@ class EnhancedYIN:
             if not (60 <= frequency <= 2000):  # 支持更宽的音域范围
                 continue
             
-            # 通过谐波结构验证真实性（而非简单频率限制）
-            harmonics = [frequency * i for i in range(1, 5)]
-            harmonic_energy = 0
-            fundamental_energy = 0
-            
-            for i, harmonic_freq in enumerate(harmonics):
-                if harmonic_freq < self.sr / 2:
-                    # 找到最接近的频率索引
-                    freq_idx = np.argmin(np.abs(freqs - harmonic_freq))
-                    
-                    if i == 0:  # 基频
-                        fundamental_energy = spectrum[freq_idx]
-                    else:  # 谐波
-                        harmonic_energy += spectrum[freq_idx]
-            
-            # 计算谐波比和综合置信度
-            if fundamental_energy > 0:
-                harmonic_ratio = harmonic_energy / fundamental_energy
-                
-                # 综合置信度：基频强度 + 谐波结构奖励
-                # 真实音高通常有清晰的谐波结构
-                harmonic_bonus = min(harmonic_ratio * 0.5, 0.3)
-                confidence = fundamental_energy * (1 + harmonic_bonus)
-                
-                # 额外验证：频率稳定性（区分持续音高和瞬间噪音）
-                # 环境噪音通常缺乏谐波结构和稳定性
-                if harmonic_ratio > 0.2:  # 有明显谐波结构
-                    confidence *= 1.2  # 提升置信度
-                elif harmonic_ratio < 0.05:  # 缺乏谐波结构（可能是噪音）
-                    confidence *= 0.5  # 降低置信度
-                
-                if confidence > best_confidence:
-                    best_confidence = confidence
-                    best_pitch = frequency
+            # 计算候选 f 与 2f 的谐波支持
+            score_f, e1_f, e2_f = harmonic_support(frequency, max_harm=8, bins=2)
+            score_2f, e1_2f, e2_2f = (0.0, 0.0, 0.0)
+            if 2*frequency <= 2000 and 2*frequency < nyquist:
+                score_2f, e1_2f, e2_2f = harmonic_support(2*frequency, max_harm=6, bins=2)
+
+            # 偶次谐波主导且 2f 支持明显更强 → 倾向纠正为 2f
+            prefer_2f = False
+            if score_2f > 0 and (score_2f >= score_f * 1.10):
+                # 二倍频支持提升达到10%，或二次谐波远强于基频
+                if e2_f > 0 and (e2_f >= e1_f * 1.4):
+                    prefer_2f = True
+            # 倒谱提示靠近 2f（在容差内）
+            if f0_hint > 0 and abs(f0_hint - 2*frequency) < max(8.0, 0.03 * f0_hint):
+                prefer_2f = True
+
+            chosen_f = 2*frequency if prefer_2f else frequency
+            chosen_score = score_2f if prefer_2f else score_f
+
+            # 置信度：谐波支持相对频谱能量的归一化（裁剪到[0,1]）
+            total_spec = float(np.sum(spectrum) + 1e-12)
+            norm_conf = min(chosen_score / (total_spec * 0.25), 1.0)  # 分母放大以避免过饱和
+
+            # 高频弱基频场景（>500Hz）给予小幅提升
+            if chosen_f > 500:
+                norm_conf = min(norm_conf * 1.15, 1.0)
+
+            if norm_conf > best_confidence:
+                best_confidence = norm_conf
+                best_pitch = chosen_f
         
         # 标准化置信度
         if best_confidence > 0:
-            max_spectrum = np.max(spectrum)
-            normalized_confidence = min(best_confidence / max_spectrum, 1.0)
-            return best_pitch, normalized_confidence
-        
-        return 0, 0
+            return best_pitch, float(best_confidence)
+        return 0, 0.0
     
     def _stability_check(self, pitch, confidence):
         """音高稳定性检查，智能区分环境噪音和真实高音"""

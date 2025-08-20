@@ -227,6 +227,14 @@ try:
 except ImportError as e:
     print(f"导入分析模块失败: {e}")
 
+# 统一音高检测服务（Phase1）
+try:
+    from src.audio_processing.pitch_service import PitchDetectionService
+    _PITCH_SERVICE_AVAILABLE = True
+except Exception as _e:
+    print(f"⚠️ PitchDetectionService 不可用: {_e}")
+    _PITCH_SERVICE_AVAILABLE = False
+
 # 导入PyQtGraph彩色渐变组件
 PYQTGRAPH_GRADIENT_AVAILABLE = False
 try:
@@ -411,15 +419,17 @@ class IntegratedAudioProcessor(QThread):
         # self.pitch_history = deque(maxlen=300)  # 增加历史长度，支持颤音检测
         self.vibrato_detection_window = 60      # 颤音检测窗口
         self.vibrato_threshold = 2.0            # 颤音深度阈值(Hz)
-        
+
         # 🎯 可配置的频率范围设置
         self.min_frequency = 80     # 最低检测频率（可通过界面调整）
         self.max_frequency = 1047   # 最高检测频率（C6，可通过界面调整）
-        
+
         # 音高分析器
         self.pitch_analyzer = None
         self.overlapping_analyzer = None
-        
+        # 统一音高检测服务实例
+        self.pitch_service = None
+
         # 🔥 关键修复：降噪处理器初始化 - 设置为温和模式
         try:
             from src.audio_processing.noise_reduction import NoiseReductionProcessor
@@ -432,7 +442,7 @@ class IntegratedAudioProcessor(QThread):
         except ImportError as e:
             print(f"❌ IntegratedAudioProcessor: 降噪处理器初始化失败: {e}")
             self.noise_processor = None
-        
+
         # 🔥 初始化电流音检测器
         self.electric_noise_detector = {
             'enabled': True,
@@ -443,7 +453,7 @@ class IntegratedAudioProcessor(QThread):
             'high_freq_ratio_threshold': 0.95
         }
         print("✅ IntegratedAudioProcessor: 电流音检测器初始化完成")
-        
+
         # 🎤 优化的智能音量增强配置（大音量/高音优化）
         self.intelligent_volume_booster = {
             'enabled': True,
@@ -466,17 +476,17 @@ class IntegratedAudioProcessor(QThread):
             'bypass_on_transients': False,     # 🎯 关闭瞬态绕过（避免音质问题）
             'optimize_for_vocals': True        # 🎵 针对人声优化
         }
-        
+
         # 实时统计 - 🔥 pitch_history已在上方初始化
         # self.pitch_history = deque(maxlen=1000)  # 保存最近1000个音高点
         self.recording_start_time = None
         self.current_duration = 0
-        
+
         # 性能相关属性
         self.use_gpu_acceleration = False
         self.performance_config = None
         self.gpu_processor = None
-        
+
         # 尝试初始化GPU处理器
         try:
             from src.audio_processing.gpu_accelerator import GPUAcceleratedProcessor
@@ -488,9 +498,24 @@ class IntegratedAudioProcessor(QThread):
         except ImportError:
             print("ℹ️ IntegratedAudioProcessor: GPU加速器未安装")
             self.gpu_processor = None
-        
+
         # 🎯 加载用户首选设备配置
         self._load_user_preferred_device()
+        # 初始化统一音高服务（懒加载保证安全）
+        try:
+            if _PITCH_SERVICE_AVAILABLE:
+                _mn = getattr(self, 'current_performance_mode', None)
+                _mode_name = str(getattr(_mn, 'name', 'BALANCED'))
+                self.pitch_service = PitchDetectionService(
+                    sample_rate=float(self.sample_rate),
+                    min_frequency=float(self.min_frequency),
+                    max_frequency=float(self.max_frequency),
+                    yin_threshold=float(getattr(self, 'yin_threshold', 0.12)),
+                    mode_name=_mode_name
+                )
+                print("✅ PitchDetectionService 初始化完成")
+        except Exception as _e:
+            print(f"⚠️ PitchDetectionService 初始化失败: {_e}")
     
     def _load_user_preferred_device(self):
         """加载用户首选设备配置"""
@@ -1602,6 +1627,23 @@ class IntegratedAudioProcessor(QThread):
             # self.pitch_detector = None        # 不再使用
             
             self.status_updated.emit("简化分析器初始化完成")
+            # 默认启用YIN基线算法，保证与知唱音域音调仪类似的稳定体验
+            try:
+                if not hasattr(self, 'pitch_algo_mode'):
+                    self.pitch_algo_mode = 'yin'
+                    print("🎚️ 默认算法模式: yin (简化YIN基线)")
+                # 确保统一音高服务存在
+                if _PITCH_SERVICE_AVAILABLE and (self.pitch_service is None):
+                    self.pitch_service = PitchDetectionService(
+                        sample_rate=float(self.sample_rate),
+                        min_frequency=float(self.min_frequency),
+                        max_frequency=float(self.max_frequency),
+                        yin_threshold=float(getattr(self, 'yin_threshold', 0.12)),
+                        mode_name=str(getattr(getattr(self, 'current_performance_mode', None), 'name', 'BALANCED'))
+                    )
+                    print("✅ PitchDetectionService 就绪")
+            except Exception:
+                pass
             return True
             
         except Exception as e:
@@ -1614,6 +1656,12 @@ class IntegratedAudioProcessor(QThread):
             self.min_frequency = min_freq
             self.max_frequency = max_freq
             print(f"🎵 频率范围已设置: {min_freq}-{max_freq}Hz")
+            # 同步到统一音高服务
+            try:
+                if self.pitch_service:
+                    self.pitch_service.set_frequency_range(float(min_freq), float(max_freq))
+            except Exception:
+                pass
             return True
         else:
             print(f"❌ 无效的频率范围: {min_freq}-{max_freq}Hz")
@@ -1661,6 +1709,46 @@ class IntegratedAudioProcessor(QThread):
         if not hasattr(self, '_freq_smooth'):
             self._freq_smooth = 0.0
 
+        # 针对简化YIN模式，采用更轻的平滑，不做强跳变压制，避免“水平直线”与慢跟随
+        try:
+            mode = getattr(self, 'pitch_algo_mode', 'yin')
+        except Exception:
+            mode = 'yin'
+        if mode == 'yin':
+            # 大幅下跳直接复位（防止高位残留拖慢回落）
+            if (self._last_stable_frequency > 300 and
+                raw_frequency < self._last_stable_frequency * 0.45 and
+                (self._last_stable_frequency - raw_frequency) > 180):
+                self._freq_smooth = raw_frequency
+                self._last_stable_frequency = raw_frequency
+                return raw_frequency
+            # 自适应轻量平滑：更高alpha以保留微小变化
+            prev = self._freq_smooth if self._freq_smooth != 0 else raw_frequency
+            delta_hz = abs(raw_frequency - prev)
+            alpha = 0.85
+            if delta_hz < 2.0:
+                alpha = 0.93  # 极小波动，尽量贴近raw
+            elif delta_hz < 5.0:
+                alpha = 0.88
+            else:
+                alpha = 0.82
+            # 低电平时提高跟随，减少“直线化”
+            if getattr(self, '_last_frame_rms', 0.0) < 0.02:
+                alpha = min(0.96, alpha + 0.03)
+            # 上行加速一点点
+            if raw_frequency > prev * 1.04:
+                alpha = min(0.97, alpha + 0.04)
+            # 指数平滑
+            self._freq_smooth = alpha * raw_frequency + (1 - alpha) * prev
+            smooth = self._freq_smooth
+            # 微变化注入：在变化很小时保留少量原始细节，避免水平
+            if delta_hz < 3.0:
+                smooth = 0.94 * smooth + 0.06 * raw_frequency
+            smooth = max(50, min(2500, smooth))
+            self._freq_smooth = smooth
+            self._last_stable_frequency = smooth
+            return smooth
+
         # ====== 异常大幅下跳快速复位逻辑 ======
         # 说明: 之前算法在遇到 800Hz -> 150Hz 这类巨大下降时会“拉回”导致 smooth 远高于真实 raw
         # 当出现显著下降且之前频率较高，很可能是进入新音或前面是假高频/噪声，应直接重置平滑状态
@@ -1678,8 +1766,19 @@ class IntegratedAudioProcessor(QThread):
             if jump > max(150, self._last_stable_frequency * 0.35):  # 更温和参数
                 raw_frequency = self._last_stable_frequency + (raw_frequency - self._last_stable_frequency) * 0.25
 
-        # 指数平滑
-        alpha = 0.25  # 较低 alpha 保留 vibrato 细节
+        # 指数平滑（自适应）：小幅变化时提高alpha保留细微起伏，较大变化时保守平滑
+        if not hasattr(self, '_last_frame_rms'):
+            self._last_frame_rms = 0.0
+        delta = abs(raw_frequency - (self._last_stable_frequency or raw_frequency))
+        if delta < 0.8:
+            alpha = 0.60
+        elif delta < 2.0:
+            alpha = 0.45
+        else:
+            alpha = 0.28
+        # 低电平段适当提高alpha，避免“直线化”
+        if self._last_frame_rms < 0.02:
+            alpha = min(0.70, alpha + 0.10)
         if self._freq_smooth == 0:
             self._freq_smooth = raw_frequency
         else:
@@ -1687,9 +1786,9 @@ class IntegratedAudioProcessor(QThread):
 
         smooth = self._freq_smooth
         # ====== 平滑结果异常抑制 ======
-        # 若平滑值远高于当前 raw（>1.6倍）且 raw 合理，说明上一高值拖拽导致“悬浮” —— 限制回落速度
-        if raw_frequency > 0 and smooth > raw_frequency * 1.6:
-            smooth = raw_frequency * 1.6
+        # 若平滑值远高于当前 raw（>1.9倍）且 raw 合理且变化较大，限制回落速度
+        if raw_frequency > 0 and smooth > raw_frequency * 1.9 and delta > 5.0:
+            smooth = raw_frequency * 1.9
         # 若平滑值远低于 raw（极端快速上跳被压制），允许稍快跟随
         if raw_frequency > 0 and raw_frequency > self._last_stable_frequency * 1.8:
             # 加速上行：重新加权
@@ -1699,6 +1798,137 @@ class IntegratedAudioProcessor(QThread):
         smooth = max(50, min(2500, smooth))
         self._last_stable_frequency = smooth
         return smooth
+
+    # ========= 简化YIN基线检测（稳定、轻依赖，避免过度复杂引入冲突） ========= #
+    def set_pitch_algorithm_mode(self, mode: str = 'yin'):
+        """设置音高检测算法模式：'yin'（简化YIN基线，默认）或 'fusion'（多候选融合）。"""
+        try:
+            if mode not in ('yin', 'fusion'):
+                print(f"❌ 无效的算法模式: {mode}")
+                return False
+            self.pitch_algo_mode = mode
+            print(f"🎚️ 检测算法切换为: {mode}")
+            # 切换时重置平滑状态，避免模式残留影响
+            self._reset_pitch_analysis_state(f"switch_algo->{mode}")
+            return True
+        except Exception as e:
+            print(f"❌ 设置算法模式失败: {e}")
+            return False
+
+    def detect_pitch_simple_yin(self, audio_data: np.ndarray) -> float:
+        """简化YIN/CMNDF检测：
+        - 使用FFT自相关快速差分近似，CMNDF阈值优先选择首个最小值，避免低八度
+        - 采用窗口(≈40–46ms)与UI频率范围一致的tau边界
+        - 返回Hz，失败返回0
+        """
+        try:
+            x_in = np.array(audio_data, dtype=np.float64)
+            if len(x_in) < 64:
+                return 0.0
+            sr = float(getattr(self, 'sample_rate', 48000.0) or 48000.0)
+            # 使用已配置的帧窗口，避免重复累计与额外延迟
+            win_len = int(getattr(self, '_frame_window', 2048))
+            # 若当前数据不足窗口长度，尽量使用已有数据（不足则提前返回0）
+            if len(x_in) < win_len:
+                # 在处理循环中会按hop拼接足量数据，这里直接返回等待下一帧
+                return 0.0
+            # 使用当前帧数据末段，保证与处理循环一致
+            x = x_in[-win_len:]
+            # 在高采样率场景（>=88.2k/96k）下做x2下采样以降低计算量
+            # 仅用于检测阶段，不改变UI时间轴与原始采样
+            if sr >= 88000.0 and len(x) >= 1024:
+                x = x[::2]
+                sr = sr / 2.0
+                # 同步窗口长度变量，便于后续缓存匹配
+                win_len = len(x)
+            # 去均值 + 汉宁窗（带缓存，减少重复分配）
+            try:
+                if getattr(self, '_hann_cache_len', 0) != len(x):
+                    self._hann_win_cache = np.hanning(len(x))
+                    self._hann_cache_len = len(x)
+                x = (x - float(np.mean(x))) * self._hann_win_cache
+            except Exception:
+                x = (x - float(np.mean(x))) * np.hanning(len(x))
+            N = len(x)
+            # tau范围与UI一致
+            try:
+                ui_min_f, ui_max_f = self.get_frequency_range()
+            except Exception:
+                ui_min_f = float(getattr(self, 'min_frequency', 80.0))
+                ui_max_f = float(getattr(self, 'max_frequency', 1047.0))
+            tau_min = int(max(2, np.floor(sr / max(ui_max_f, 1.0))))
+            tau_max = int(min(N - 3, np.ceil(sr / max(ui_min_f, 50.0))))
+            if tau_max <= tau_min + 2:
+                return 0.0
+            # FFT自相关 -> 差分函数近似 d(tau) = 2*(r(0)-r(tau))
+            nfft = 1 << int(np.ceil(np.log2(2 * N)))
+            spec = np.fft.rfft(x, n=nfft)
+            ac = np.fft.irfft(spec * np.conj(spec), n=nfft)[:N]
+            ac0 = float(ac[0])
+            d = 2.0 * (ac0 - ac[:tau_max + 1])
+            # CMNDF
+            d1 = d[1:tau_max + 1]
+            if np.any(d1 < 0):
+                d1 = np.maximum(d1, 0.0)
+            cumsum = np.cumsum(d1)
+            idx = np.arange(1, len(d1) + 1, dtype=np.float64)
+            cmndf = np.ones_like(d)
+            denom = cumsum / idx
+            # 避免除零
+            denom = np.where(denom <= 1e-12, 1e-12, denom)
+            cmndf[1:tau_max + 1] = d1 / denom
+            # 阈值与选择：优先第一个过阈且为局部最小
+            yin_thr = float(getattr(self, 'yin_threshold', 0.12))
+            # 根据性能模式对阈值做轻微自适应，提升弱声段命中率
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                _pm_m = get_performance_manager()
+                _mode_m = _pm_m.get_current_mode() if _pm_m else None
+                if _mode_m == PerformanceMode.HIGH_PERFORMANCE:
+                    yin_thr = max(0.08, yin_thr - 0.02)
+                elif _mode_m == PerformanceMode.BALANCED:
+                    yin_thr = max(0.10, yin_thr - 0.01)
+            except Exception:
+                pass
+            search = cmndf[tau_min:tau_max + 1]
+            # 找到过阈位置
+            cand_tau = None
+            below = np.where(search < yin_thr)[0]
+            if below.size > 0:
+                # 取第一个过阈位置的局部最小
+                start = int(below[0])
+                # 在[start .. start+8]范围内找局部最小进一步稳定
+                s0 = tau_min + start
+                s1 = min(tau_max, s0 + 8)
+                loc = int(np.argmin(cmndf[s0:s1 + 1]))
+                cand_tau = s0 + loc
+            else:
+                # 回退：全局最小
+                cand_tau = int(np.argmin(cmndf[tau_min:tau_max + 1]) + tau_min)
+            if not (tau_min <= cand_tau <= tau_max):
+                return 0.0
+            # 抛物线插值（在CMNDF曲线）
+            if 1 < cand_tau < len(cmndf) - 1:
+                y1, y2, y3 = cmndf[cand_tau - 1], cmndf[cand_tau], cmndf[cand_tau + 1]
+                denom_q = (y1 - 2 * y2 + y3)
+                off = 0.0 if abs(denom_q) < 1e-12 else 0.5 * (y1 - y3) / denom_q
+            else:
+                off = 0.0
+            tau_hat = float(cand_tau) + float(np.clip(off, -1.0, 1.0))
+            if tau_hat <= 1e-6:
+                return 0.0
+            f0 = float(sr / tau_hat)
+            # 范围裁剪
+            if not (ui_min_f <= f0 <= ui_max_f * 1.02):
+                return 0.0
+            return f0
+        except Exception as e:
+            try:
+                if getattr(self, 'debug_flags', {}).get('pitch_log', False):
+                    self._log_rate_limit('yin_err', f"❌ YIN错误: {e}", interval=2.0)
+            except Exception:
+                pass
+            return 0.0
 
     def _benchmark_stream_config(self, stream_params: dict, duration_s: float = 0.35) -> dict:
         """对给定输入流参数进行短时基准测试，返回XRUN/稳定性与理论延迟等指标。
@@ -1864,12 +2094,21 @@ class IntegratedAudioProcessor(QThread):
             
             # 录音回调前置：根据性能模式设置合批与限频
             try:
-                from src.audio_processing.performance_manager import get_performance_manager
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
                 _pm = get_performance_manager()
                 _cfg = _pm.get_current_config() if _pm else None
-                self._callback_min_enqueue_samples = int(getattr(_cfg, 'chunk_size', 512))
+                _mode = _pm.get_current_mode() if _pm else None
+                # 进一步细化：按模式将回调入队阈值设为 chunk_size 的一半，降低延迟
+                base_chunk = int(getattr(_cfg, 'chunk_size', 128)) if _cfg else 128
+                if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)  # e.g., 256->128
+                elif _mode == PerformanceMode.BALANCED:
+                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)  # e.g., 512->256
+                else:
+                    self._callback_min_enqueue_samples = max(128, base_chunk // 2) # e.g., 1024->512
             except Exception:
-                self._callback_min_enqueue_samples = 512
+                # 无配置时默认128样本（@48kHz≈2.7ms；@96kHz≈1.3ms）
+                self._callback_min_enqueue_samples = 128
             # 回调侧累积缓冲与信号限频
             self._enqueue_accum = np.empty(0, dtype=np.float32)
             self._last_level_emit_t = time.time()
@@ -2161,6 +2400,12 @@ class IntegratedAudioProcessor(QThread):
                     print(f"   ├─ 预期性能: {config['expected_latency']}")
                     print(f"   └─ 音频格式: float32")
                     
+                    # 同步检测器采样率到实际输入采样率，避免频率缩放误差
+                    try:
+                        self._apply_actual_input_samplerate(actual_sample_rate)
+                    except Exception:
+                        pass
+
                     audio_stream_created = True
                     break
                     
@@ -2814,6 +3059,11 @@ class IntegratedAudioProcessor(QThread):
                 print(f"🎧 全局监听音频流已启动: {self.active_input_samplerate}Hz, {self.active_input_channels}声道, 块大小{self.active_blocksize}")
                 
                 # 启动音频处理线程
+                # 启动前同步检测器采样率
+                try:
+                    self._apply_actual_input_samplerate(self.active_input_samplerate)
+                except Exception:
+                    pass
                 self.start_audio_processing_thread()
                 
                 print("✅ 全局监听模式已激活，优先级最高")
@@ -4544,6 +4794,55 @@ class IntegratedAudioProcessor(QThread):
                 print("✅ 异步音频处理线程已停止")
         except Exception as e:
             print(f"❌ 停止音频处理线程错误: {e}")
+
+    def _apply_actual_input_samplerate(self, actual_rate: int):
+        """将检测器采样率与实际输入采样率对齐，避免频率缩放/八度错误。
+        - 更新 self.sample_rate 及相关子模块
+        - 触发帧化参数重算
+        - 清理检测缓冲和平滑状态
+        """
+        try:
+            ar = int(actual_rate)
+        except Exception:
+            return
+        if ar <= 0:
+            return
+        old = getattr(self, 'sample_rate', None)
+        if old != ar:
+            self.sample_rate = ar
+            try:
+                print(f"🔁 采样率同步: {old} -> {ar} Hz")
+            except Exception:
+                pass
+            # 同步相关组件
+            try:
+                if hasattr(self, 'audio_processor') and self.audio_processor is not None:
+                    if hasattr(self.audio_processor, 'sample_rate'):
+                        self.audio_processor.sample_rate = ar
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'noise_processor') and self.noise_processor is not None:
+                    if hasattr(self.noise_processor, 'sample_rate'):
+                        self.noise_processor.sample_rate = ar
+            except Exception:
+                pass
+            # 让帧化在新采样率下重新计算：删除标志以触发初始化分支
+            try:
+                if hasattr(self, '_frame_config_initialized'):
+                    delattr(self, '_frame_config_initialized')
+            except Exception:
+                pass
+            # 清理检测缓冲与平滑缓存（避免旧SR残留）
+            try:
+                self._dpv_buf = np.zeros(0, dtype=np.float64)
+            except Exception:
+                pass
+            for attr, val in (('_freq_smooth', 0.0), ('_last_stable_frequency', 0.0)):
+                try:
+                    setattr(self, attr, val)
+                except Exception:
+                    pass
     
     def _audio_processing_loop(self):
         """音频处理循环 - 在独立线程中运行"""
@@ -4560,6 +4859,19 @@ class IntegratedAudioProcessor(QThread):
             self._analysis_target_hz = float(_cfg.detection_frequency) if _cfg else 30.0
         except Exception:
             self._analysis_target_hz = 30.0
+        # 安全下限与上限，避免过低导致细节点稀疏
+        try:
+            if self._analysis_target_hz < 45.0:
+                try:
+                    cfg_val = getattr(_cfg, 'detection_frequency', 'N/A') if '_cfg' in locals() and _cfg else 'N/A'
+                except Exception:
+                    cfg_val = 'N/A'
+                print(f"⚠️ 检测频率过低({cfg_val}Hz)，使用默认45Hz")
+                self._analysis_target_hz = 45.0
+            elif self._analysis_target_hz > 120.0:
+                self._analysis_target_hz = 120.0
+        except Exception:
+            pass
         self._min_analysis_interval = 1.0 / max(1.0, self._analysis_target_hz)
         if not hasattr(self, '_last_analysis_time'):
             self._last_analysis_time = 0.0
@@ -4572,21 +4884,65 @@ class IntegratedAudioProcessor(QThread):
             # 规范到常见处理长度，利于 FFT / 自相关效率
             allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096]
             self._frame_window = min(4096, next((w for w in allowed_windows if w >= desired_window), 4096))
-            # hop 设为窗口的 1/4（增强时间分辨率）
-            self._frame_hop = max(256, self._frame_window // 4)
+            # hop 随性能模式自适应：Quiet=1/4, Balanced≈1/7, High≈1/8（进一步提高时间分辨率）
+            hop_div = 4
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                _pm0 = get_performance_manager()
+                _mode0 = _pm0.get_current_mode() if _pm0 else None
+                if _mode0 == PerformanceMode.HIGH_PERFORMANCE:
+                    hop_div = 8
+                elif _mode0 == PerformanceMode.BALANCED:
+                    hop_div = 7
+                else:
+                    hop_div = 4
+            except Exception:
+                hop_div = 4
+            # 允许更小的 hop 下限（128 样本），减少端到端延迟
+            self._frame_hop = max(128, self._frame_window // hop_div)
             self._frame_window_sec = self._frame_window / self.sample_rate
             self._frame_hop_sec = self._frame_hop / self.sample_rate
             self._frame_buffer = []
             self._frame_config_initialized = True
-            print(f"⚙️ 新帧配置: window={self._frame_window}({self._frame_window_sec*1000:.1f}ms) hop={self._frame_hop}({self._frame_hop_sec*1000:.1f}ms)")
+            if getattr(self, 'debug_flags', {}).get('queue_log', False):
+                print(f"⚙️ 新帧配置: window={self._frame_window}({self._frame_window_sec*1000:.1f}ms) hop={self._frame_hop}({self._frame_hop_sec*1000:.1f}ms)")
         else:
+            # 防御：若窗口或hop未设置，立即重新初始化（避免递归）
+            if not hasattr(self, '_frame_window') or not hasattr(self, '_frame_hop'):
+                min_f = getattr(self, 'min_frequency', 80) or 80
+                desired_window = int(self.sample_rate / min_f * 2.5)
+                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096]
+                self._frame_window = min(4096, next((w for w in allowed_windows if w >= desired_window), 4096))
+                # 自适应hop
+                hop_div = 4
+                try:
+                    from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                    _pm0 = get_performance_manager()
+                    _mode0 = _pm0.get_current_mode() if _pm0 else None
+                    if _mode0 == PerformanceMode.HIGH_PERFORMANCE:
+                        hop_div = 8
+                    elif _mode0 == PerformanceMode.BALANCED:
+                        hop_div = 7
+                    else:
+                        hop_div = 4
+                except Exception:
+                    hop_div = 4
+                # 更小的 hop 下限（128 样本）
+                self._frame_hop = max(128, self._frame_window // hop_div)
+                self._frame_window_sec = self._frame_window / self.sample_rate
+                self._frame_hop_sec = self._frame_hop / self.sample_rate
+                if not hasattr(self, '_frame_buffer'):
+                    self._frame_buffer = []
+                if getattr(self, 'debug_flags', {}).get('queue_log', False):
+                    print(f"⚙️ 帧配置修复: window={self._frame_window}({self._frame_window_sec*1000:.1f}ms) hop={self._frame_hop}({self._frame_hop_sec*1000:.1f}ms)")
             # 若已有旧配置且窗口过大（>4096或>45ms）则在空闲时渐进收缩
             if self._frame_window > 4096 or self._frame_window_sec > 0.045:
                 self._frame_window = 4096
-                self._frame_hop = max(256, self._frame_window // 4)
+                self._frame_hop = max(192, self._frame_window // 5)
                 self._frame_window_sec = self._frame_window / self.sample_rate
                 self._frame_hop_sec = self._frame_hop / self.sample_rate
-                print(f"⚙️ 帧配置回落: window={self._frame_window} hop={self._frame_hop}")
+                if getattr(self, 'debug_flags', {}).get('queue_log', False):
+                    print(f"⚙️ 帧配置回落: window={self._frame_window} hop={self._frame_hop}")
         
         # 🔥 记录处理开始时间用于检测频率计算
         self.processing_start_time = time.time()
@@ -4608,6 +4964,11 @@ class IntegratedAudioProcessor(QThread):
                     if _pm:
                         _cfg = _pm.get_current_config()
                         new_hz = float(_cfg.detection_frequency)
+                        # 安全下限/上限
+                        if new_hz < 45.0:
+                            new_hz = 45.0
+                        elif new_hz > 120.0:
+                            new_hz = 120.0
                         if abs(new_hz - getattr(self, '_analysis_target_hz', new_hz)) > 0.1:
                             self._analysis_target_hz = new_hz
                             self._min_analysis_interval = 1.0 / max(1.0, self._analysis_target_hz)
@@ -4634,8 +4995,8 @@ class IntegratedAudioProcessor(QThread):
                 need_samples = max(0, getattr(self, '_frame_window', 2048) - len(getattr(self, '_frame_buffer', [])))
                 # 预计需要的包数（考虑 chunk_size）
                 est_needed_packets = (need_samples // self.chunk_size) + 1 if need_samples > 0 else 1
-                # 基础批量 + backlog 放大， capped
-                max_batch = min(60, max(6, est_needed_packets, queue_backlog // 2))
+                # 基础批量 + backlog 放大， capped（进一步提高上限并更积极摄取）
+                max_batch = min(120, max(12, est_needed_packets * 2, queue_backlog))
                 while not self.audio_buffer_queue.empty() and len(audio_packets) < max_batch:
                     audio_packets.append(self.audio_buffer_queue.get_nowait())
             except queue.Empty:
@@ -4697,29 +5058,43 @@ class IntegratedAudioProcessor(QThread):
                         _pm = get_performance_manager()
                         _mode = _pm.get_current_mode() if _pm else None
                         if _mode == PerformanceMode.HIGH_PERFORMANCE:
-                            _max_frames = 10  # 高性能放宽但仍有限制
+                            _max_frames = 64  # 高性能：更高单轮上限
                         elif _mode == PerformanceMode.QUIET:
-                            _max_frames = 6   # 安静更保守
+                            _max_frames = 24  # 安静：适度提高
                         else:
-                            _max_frames = 8   # 平衡
+                            _max_frames = 56  # 平衡：提高追赶能力与密度
                     except Exception:
-                        _max_frames = 8
+                        _max_frames = 24
+                    # 自适应突发：积压较多时临时提升本轮上限，加速清空，避免累计延迟
+                    try:
+                        qsz = int(self.audio_buffer_queue.qsize())
+                    except Exception:
+                        qsz = 0
+                    try:
+                        buf_len = int(len(self._frame_buffer)) if hasattr(self, '_frame_buffer') else 0
+                    except Exception:
+                        buf_len = 0
+                    # 重度积压：更早触发显著提升（设更高硬上限，避免阻塞GUI）
+                    if (qsz >= 12) or (buf_len >= (self._frame_window + self._frame_hop * 4)):
+                        _max_frames = min(96, int(max(_max_frames, 56)))
+                    # 轻中度积压：更早倍增以快速追平
+                    elif (qsz >= 4) or (buf_len >= (self._frame_window + self._frame_hop * 2)):
+                        _max_frames = min(72, int(_max_frames * 2))
                     # 单循环尽量多产出，提升时间分辨率（有限上限防止阻塞GUI）
                     while len(self._frame_buffer) >= self._frame_window and produced < _max_frames:
                         frame = np.array(self._frame_buffer[:self._frame_window])
                         self._frame_buffer = self._frame_buffer[self._frame_hop:]
                         produced += 1
 
+                        # 在录音或全局监听下均执行分析；即使为纯监听也分析，以保持绘制密度与诊断
                         should_analyze_pitch = (
                             getattr(self, 'is_recording', False) or
-                            (self.is_global_monitoring_active and not getattr(self, 'is_monitoring_only', False))
+                            self.is_global_monitoring_active or
+                            getattr(self, 'is_monitoring_only', False)
                         )
                         if should_analyze_pitch:
-                            now_analysis = time.time()
-                            # 按模式限速：不超过 detection_frequency（Hz）
-                            if (now_analysis - getattr(self, '_last_analysis_time', 0.0)) >= self._min_analysis_interval:
-                                self.process_audio_for_pitch_async(frame)
-                                self._last_analysis_time = now_analysis
+                            # 对每个产出的帧直接执行一次分析，提升有效FPS与点密度
+                            self.process_audio_for_pitch_async(frame)
                     if produced and loop_counter % 300 == 0:
                         if getattr(self, 'debug_flags', {}).get('queue_log', False):
                             self._log_rate_limit('frame_prod', f"🎵 帧产出={produced} 剩余={len(self._frame_buffer)}", interval=2.0)
@@ -4737,10 +5112,8 @@ class IntegratedAudioProcessor(QThread):
     def process_audio_for_pitch_async(self, audio_data):
         """异步音高分析 - 简化版本，只使用单一可靠的检测算法"""
         try:
-            # 🔥 纯监听模式检查：只有在纯监听模式下才跳过，录音模式下总是执行
-            if getattr(self, 'is_monitoring_only', False) and not getattr(self, 'is_recording', False):
-                return
-                
+            # 纯监听模式下也执行分析，确保绘制与诊断一致
+            
             # 🎯 增加调试计数器
             if not hasattr(self, '_pitch_analysis_counter'):
                 self._pitch_analysis_counter = 0
@@ -4749,100 +5122,140 @@ class IntegratedAudioProcessor(QThread):
             self._pitch_analysis_counter += 1
             # 先记录当前时间
             current_time = time.time()
-            # 诊断：帧间隔统计（修复先使用后定义的错误）
-            if not hasattr(self, '_diag_last_pitch_time'):
-                self._diag_last_pitch_time = current_time
-                self._diag_pitch_intervals = deque(maxlen=300)
-                self._diag_pitch_last_report = current_time
-            else:
-                pitch_interval = current_time - self._diag_last_pitch_time
-                if 0 < pitch_interval < 1.0:
-                    self._diag_pitch_intervals.append(pitch_interval)
-                self._diag_last_pitch_time = current_time
-                if current_time - self._diag_pitch_last_report > 2.0 and self._diag_pitch_intervals:
-                    avg_pi = sum(self._diag_pitch_intervals)/len(self._diag_pitch_intervals)
-                    max_pi = max(self._diag_pitch_intervals)
-                    sorted_pi = sorted(self._diag_pitch_intervals)
-                    p95_pi = sorted_pi[int(0.95*len(sorted_pi)) - 1] if len(sorted_pi) >= 5 else max_pi
-                    est_fps = 1.0/avg_pi if avg_pi > 0 else 0.0
-                    if getattr(self, 'debug_flags', {}).get('queue_log', False):
+            # 诊断：帧间隔统计（仅在启用调试时计算，避免热路径开销）
+            if getattr(self, 'debug_flags', {}).get('queue_log', False):
+                if not hasattr(self, '_diag_last_pitch_time'):
+                    self._diag_last_pitch_time = current_time
+                    self._diag_pitch_intervals = deque(maxlen=300)
+                    self._diag_pitch_last_report = current_time
+                else:
+                    pitch_interval = current_time - self._diag_last_pitch_time
+                    if 0 < pitch_interval < 1.0:
+                        self._diag_pitch_intervals.append(pitch_interval)
+                    self._diag_last_pitch_time = current_time
+                    if current_time - self._diag_pitch_last_report > 2.0 and self._diag_pitch_intervals:
+                        avg_pi = sum(self._diag_pitch_intervals)/len(self._diag_pitch_intervals)
+                        max_pi = max(self._diag_pitch_intervals)
+                        sorted_pi = sorted(self._diag_pitch_intervals)
+                        p95_pi = sorted_pi[int(0.95*len(sorted_pi)) - 1] if len(sorted_pi) >= 5 else max_pi
+                        est_fps = 1.0/avg_pi if avg_pi > 0 else 0.0
                         now = time.time()
                         if not hasattr(self, '_last_frame_diag_log'):
                             self._last_frame_diag_log = 0.0
                         if now - self._last_frame_diag_log > 2.0:  # 2s节流
                             print(f"🎯 分析帧诊断: 平均间隔={avg_pi*1000:.1f}ms, 最大={max_pi*1000:.1f}ms, p95={p95_pi*1000:.1f}ms, 估计FPS={est_fps:.1f}")
                             self._last_frame_diag_log = now
-                    self._diag_pitch_last_report = current_time
+                        self._diag_pitch_last_report = current_time
             audio_rms = np.sqrt(np.mean(audio_data ** 2))
+            # 保存本帧RMS供平滑阶段自适应使用
+            try:
+                self._last_frame_rms = float(audio_rms)
+            except Exception:
+                self._last_frame_rms = float(audio_rms)
             
             # 前几次调用的详细调试
-            if self._pitch_analysis_counter <= 5:
+            # 初始若需详细调试，可通过 debug_flags 控制；默认禁用以减轻开销
+            if getattr(self, 'debug_flags', {}).get('pitch_log', False) and self._pitch_analysis_counter <= 5:
                 print(f"🔍 音高分析#{self._pitch_analysis_counter}: 数据长度={len(audio_data)}, RMS={audio_rms:.4f}")
             
-            # 🎯 使用简化的单一检测算法：仅使用 detect_pitch_with_vibrato
-            # 🔥 关键修复：降低降噪处理的严格程度，避免过度抑制歌声
+            # 🎯 快速路径：Balanced/High默认走超轻量路径：关闭降噪/融合/颤音/频域精修
+            fast_path = True
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                _pm = get_performance_manager()
+                _mode = _pm.get_current_mode() if _pm else None
+                if _mode == PerformanceMode.QUIET:
+                    fast_path = False
+            except Exception:
+                fast_path = True
+
             processed_audio = audio_data
             original_rms = np.sqrt(np.mean(audio_data ** 2))
-            
-            if self.noise_processor and self.noise_processor.noise_reduction_mode != "关闭":
+            if not fast_path and self.noise_processor and self.noise_processor.noise_reduction_mode != "关闭":
                 try:
                     processed_audio = self.noise_processor.process_audio(audio_data)
-                    processed_rms = np.sqrt(np.mean(processed_audio ** 2))
-                    # 歌声保护防抖：连续3帧过抑制触发，1秒冷却
-                    if processed_rms < original_rms * 0.3:
-                        self._over_suppress_counter += 1
-                    else:
-                        self._over_suppress_counter = 0
-                    now_t = time.time()
-                    if self._over_suppress_counter >= 3 and now_t >= self._suppress_cooldown_until:
-                        processed_audio = audio_data
-                        self._stat_counters['vocal_protect'] += 1
-                        self._suppress_cooldown_until = now_t + 1.0
-                        if self.debug_flags.get('vocal_protect_verbose'):
-                            if getattr(self, 'debug_flags', {}).get('vocal_protect_verbose', False):
-                                self._log_rate_limit('vocal_protect', f"🔧 歌声保护触发 rms {processed_rms:.4f}/{original_rms:.4f}", interval=1.0)
-                    if self._pitch_analysis_counter % 200 == 0:
-                        rms_change_percent = ((processed_rms - original_rms) / original_rms * 100) if original_rms > 0 else 0
-                        self._log_rate_limit('noise_status', f"📉 降噪RMS {original_rms:.4f}->{processed_rms:.4f} ({rms_change_percent:+.1f}%)", interval=2.0)
-                except Exception as e:
-                    self._log_rate_limit('noise_err', f"❌ 降噪错误: {e}", interval=5.0)
+                except Exception:
                     processed_audio = audio_data
             
             # ========= 呼吸/静音判定 (避免假高频 2500Hz) ========= #
             if not hasattr(self, '_last_valid_pitch_time'):
                 self._last_valid_pitch_time = current_time
 
-            breath_rms_threshold = 0.004  # 低于此RMS基本认为是呼吸/静音
-            min_voice_rms = 0.002         # 极低噪声下直接判无音高
+            breath_rms_threshold = 0.0025  # 更宽松：提升弱声段的检测机会
+            # 进一步放宽静音阈值，减少安静高音被直接判无音高
+            min_voice_rms = 0.0005
 
             # 若 RMS 极低，直接判定无音高（不更新平滑状态）
             if audio_rms < min_voice_rms:
-                frame = PitchFrame(
-                    timestamp=current_time,
-                    f0_raw=0.0,
-                    f0_smooth=0.0,
-                    confidence=0.0,
-                    note_info=None,
-                    has_pitch=False,
-                    audio_rms=audio_rms,
-                    vibrato_info={'has_vibrato': False}
-                )
-                if self.enable_pitch_visualization:
-                    self.pitch_detected.emit(frame.to_dict())
+                # 节流无音高信号，避免淹没UI队列（时间轴由独立计时器驱动，无需每帧发）
+                if not hasattr(self, '_no_pitch_emit_interval'):
+                    # 按模式初始化默认节流
+                    self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                    self._last_no_pitch_emit_t = 0.0
+                if (current_time - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                    frame = PitchFrame(
+                        timestamp=current_time,
+                        f0_raw=0.0,
+                        f0_smooth=0.0,
+                        confidence=0.0,
+                        note_info=None,
+                        has_pitch=False,
+                        audio_rms=audio_rms,
+                        vibrato_info={'has_vibrato': False}
+                    )
+                    try:
+                        self._emit_pitch_data_throttled(frame.to_dict())
+                    except Exception:
+                        pass
+                    self._last_no_pitch_emit_t = current_time
                 return
 
-            # 🎯 单一音高检测：只调用一次 detect_pitch_with_vibrato，得到 raw 频率
-            raw_frequency = self.detect_pitch_with_vibrato(processed_audio)
+            # 🎯 统一检测服务优先；保持原有模式开关与回退
+            raw_frequency = 0.0
+            if hasattr(self, 'pitch_service') and self.pitch_service is not None:
+                try:
+                    f0, conf = self.pitch_service.detect(np.array(processed_audio, dtype=np.float64, copy=False))
+                    raw_frequency = float(f0 or 0.0)
+                except Exception:
+                    raw_frequency = 0.0
+
+            if raw_frequency <= 0.0:
+                # 快速路径仅一次轻量YIN；仅在非快速路径时才考虑融合
+                if not hasattr(self, '_yin_miss_streak'):
+                    self._yin_miss_streak = 0
+                raw_frequency = self.detect_pitch_simple_yin(processed_audio)
+                if raw_frequency <= 0 and not fast_path:
+                    self._yin_miss_streak += 1
+                    if self._yin_miss_streak >= 3:
+                        # 仅在非快速路径下尝试融合
+                        raw_frequency = self.detect_pitch_with_vibrato(processed_audio)
+                        self._yin_miss_streak = 0
+                else:
+                    self._yin_miss_streak = 0
+
+            # 仅在存在“低八度”风险或与2f接近历史时才进行谱域精修，减少FFT开销
+            if raw_frequency > 0 and not fast_path:
+                # 非快速路径下的保守精修（已在上一次提交中严格节流）
+                try:
+                    # 若有队列积压则跳过精修
+                    if self.audio_buffer_queue.qsize() < 6:
+                        lf = float(getattr(self, '_last_stable_frequency', 0.0) or 0.0)
+                        if (raw_frequency < 150.0) and (lf > 0):
+                            ratio = max((raw_frequency * 2.0) / max(lf, 1e-6), 1e-6)
+                            if abs(np.log2(ratio)) <= (1.0 / 24.0):
+                                raw_frequency = self._finalize_frequency(float(raw_frequency), np.array(processed_audio, dtype=np.float64))
+                except Exception:
+                    pass
 
             # ========= 假高频 / 呼吸尖峰抑制 ========= #
             spurious_high = False
             if raw_frequency > 0:
                 # 条件1：超高频且能量低（典型呼吸尖峰）
-                if raw_frequency > 1700 and audio_rms < 0.02:
+                if raw_frequency > 1700 and audio_rms < 0.015:
                     spurious_high = True
                 # 条件2：相对上一稳定频率跳变倍数过大且信号不强
                 if not spurious_high and hasattr(self, '_last_stable_frequency') and self._last_stable_frequency > 0:
-                    if raw_frequency > self._last_stable_frequency * 2.5 and audio_rms < 0.02:
+                    if raw_frequency > self._last_stable_frequency * 2.5 and audio_rms < 0.015:
                         spurious_high = True
                 # 条件3：呼吸期（RMS 在静音与正常之间）且高频>1500
                 if not spurious_high and breath_rms_threshold > audio_rms >= min_voice_rms and raw_frequency > 1500:
@@ -4850,18 +5263,25 @@ class IntegratedAudioProcessor(QThread):
 
             if spurious_high:
                 # 不更新平滑状态，直接视为无音高（制造时间间隔用于段断开）
-                frame = PitchFrame(
-                    timestamp=current_time,
-                    f0_raw=0.0,
-                    f0_smooth=0.0,
-                    confidence=0.0,
-                    note_info=None,
-                    has_pitch=False,
-                    audio_rms=audio_rms,
-                    vibrato_info={'has_vibrato': False}
-                )
-                if self.enable_pitch_visualization:
-                    self.pitch_detected.emit(frame.to_dict())
+                if not hasattr(self, '_no_pitch_emit_interval'):
+                    self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                    self._last_no_pitch_emit_t = 0.0
+                if (current_time - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                    frame = PitchFrame(
+                        timestamp=current_time,
+                        f0_raw=0.0,
+                        f0_smooth=0.0,
+                        confidence=0.0,
+                        note_info=None,
+                        has_pitch=False,
+                        audio_rms=audio_rms,
+                        vibrato_info={'has_vibrato': False}
+                    )
+                    try:
+                        self._emit_pitch_data_throttled(frame.to_dict())
+                    except Exception:
+                        pass
+                    self._last_no_pitch_emit_t = current_time
                 return
 
             # Phase1: 后处理（跳变抑制 + 平滑）仅在非假高频情况下执行
@@ -4871,8 +5291,9 @@ class IntegratedAudioProcessor(QThread):
             if smooth_frequency > 10:  # 🔥 极低有效音高阈值 (20Hz → 10Hz)
                 note_info = self.frequency_to_note_info(smooth_frequency)
                 
-                # 检测颤音
-                vibrato_info = self.detect_vibrato(raw_frequency, current_time)  # 用 raw 频率
+                # 检测颤音：降低频度与在极低RMS时跳过，减少CPU负担
+                # 快速路径：跳过颤音检测
+                vibrato_info = {'has_vibrato': False}
                 
                 # 简单置信度占位：后续可从检测器返回值改造
                 confidence = 0.9 if raw_frequency > 0 else 0.0
@@ -4898,55 +5319,431 @@ class IntegratedAudioProcessor(QThread):
                         'confidence': confidence,
                         'note_info': note_info
                     })
-                    if self.enable_pitch_visualization:
-                        self.pitch_detected.emit(pitch_data)
+                    # 节流发射：避免Qt事件队列拥塞
+                    self._emit_pitch_data_throttled(pitch_data)
                     
                     # 成功检测调试输出
-                    if self._pitch_analysis_counter % 10 == 0:
-                        if getattr(self, 'debug_flags', {}).get('pitch_log', False):
-                            print(f"🎵✅ 音高成功(raw={raw_frequency:.1f}Hz, smooth={smooth_frequency:.1f}Hz) → {note_info.get('note_name', 'N/A')}{note_info.get('octave', '')}")
+                    # 仅在调试需要时打印，避免热路径开销
+                    if getattr(self, 'debug_flags', {}).get('pitch_log', False) and (self._pitch_analysis_counter % 10 == 0):
+                        print(f"🎵✅ 音高成功(raw={raw_frequency:.1f}Hz, smooth={smooth_frequency:.1f}Hz) → {note_info.get('note_name', 'N/A')}{note_info.get('octave', '')}")
                 except Exception as emit_error:
                     print(f"❌ 信号发送失败: {emit_error}")
                     
             else:
-                # 🔥 即使没有检测到音高，也发送时间戳保持连续性
-                frame = PitchFrame(
-                    timestamp=current_time,
-                    f0_raw=0.0,
-                    f0_smooth=0.0,
-                    confidence=0.0,
-                    note_info=None,
-                    has_pitch=False,
-                    audio_rms=audio_rms,
-                    vibrato_info={'has_vibrato': False}
-                )
-                timestamp_data = frame.to_dict()
-                try:
-                    if self.enable_pitch_visualization:
-                        self.pitch_detected.emit(timestamp_data)
-                except Exception:
-                    pass  # 忽略时间戳发送错误
+                # 无音高：节流时间戳信号（时间轴由timer推进，无需每帧发）
+                if not hasattr(self, '_no_pitch_emit_interval'):
+                    self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                    self._last_no_pitch_emit_t = 0.0
+                if (current_time - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                    frame = PitchFrame(
+                        timestamp=current_time,
+                        f0_raw=0.0,
+                        f0_smooth=0.0,
+                        confidence=0.0,
+                        note_info=None,
+                        has_pitch=False,
+                        audio_rms=audio_rms,
+                        vibrato_info={'has_vibrato': False}
+                    )
+                    timestamp_data = frame.to_dict()
+                    try:
+                        self._emit_pitch_data_throttled(timestamp_data)
+                    except Exception:
+                        pass
+                    self._last_no_pitch_emit_t = current_time
         
         except Exception as e:
             print(f"❌ 异步音高分析错误: {e}")
-            # 🔥 错误时也发送时间戳保持时间轴连续
+            # 错误时的时间戳信号也做节流，避免持续错误淹没UI
             try:
-                timestamp_data = {
-                    'timestamp': time.time(),
-                    'frequency': 0,
-                    'confidence': 0,
-                    'note_info': None,
-                    'has_pitch': False,
-                    'audio_rms': 0,
-                    'vibrato_info': {'has_vibrato': False}
-                }
-                if self.enable_pitch_visualization:
-                    self.pitch_detected.emit(timestamp_data)
+                now_err = time.time()
+                if not hasattr(self, '_no_pitch_emit_interval'):
+                    self._no_pitch_emit_interval = 0.08
+                    self._last_no_pitch_emit_t = 0.0
+                if (now_err - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                    timestamp_data = {
+                        'timestamp': now_err,
+                        'frequency': 0,
+                        'confidence': 0,
+                        'note_info': None,
+                        'has_pitch': False,
+                        'audio_rms': 0,
+                        'vibrato_info': {'has_vibrato': False}
+                    }
+                    self._emit_pitch_data_throttled(timestamp_data)
+                    self._last_no_pitch_emit_t = now_err
             except Exception:
                 pass  # 忽略错误情况下的信号发送失败
+
+    # ========= UI发射节流，防止Qt事件队列拥塞 ========= #
+    def _emit_pitch_data_throttled(self, pitch_dict: dict):
+        try:
+            now = time.time()
+            if not hasattr(self, '_ui_emit_min_interval'):
+                # 缺省最小间隔 30ms，可由模式调整 elsewhere
+                self._ui_emit_min_interval = float(getattr(self, '_ui_emit_min_interval_default', 0.03))
+                self._ui_last_emit_t = 0.0
+                self._ui_pending = None
+            # 到达最小间隔则发射，否则合并为待发，保留最新
+            if (now - getattr(self, '_ui_last_emit_t', 0.0)) >= self._ui_emit_min_interval:
+                try:
+                    self.pitch_detected.emit(pitch_dict)
+                finally:
+                    self._ui_last_emit_t = now
+                    self._ui_pending = None
+            else:
+                self._ui_pending = pitch_dict
+        except Exception:
+            try:
+                self.pitch_detected.emit(pitch_dict)
+            except Exception:
+                pass
     
+    # ========= 辅助：频域与谐波精修（避免弱基频的低八度误判） ========= #
+    def _get_fft_for_refine(self, audio: np.ndarray):
+        """计算用于谐波精修的FFT频谱，返回 (freqs, magnitude)。"""
+        try:
+            windowed = audio * np.hanning(len(audio))
+            spec = np.fft.rfft(windowed)
+            mag = np.abs(spec)
+            freqs = np.fft.rfftfreq(len(windowed), 1 / float(self.sample_rate))
+            return freqs, mag
+        except Exception:
+            return None, None
+
+    def _harmonic_support(self, f: float, freqs: np.ndarray, mag: np.ndarray, max_h: int = 6) -> float:
+        """对候选基频 f 计算谐波支持分数：S(f)=sum_k |X(kf)|/k，带宽±3%。"""
+        if f <= 0 or freqs is None or mag is None or len(freqs) != len(mag):
+            return 0.0
+        total = 0.0
+        # 频率分辨率，用于设定最小带宽，避免因bin间隔过大导致mask为空
+        try:
+            df = float(freqs[1] - freqs[0]) if len(freqs) > 1 else 0.0
+        except Exception:
+            df = 0.0
+        for k in range(1, max_h + 1):
+            target = k * f
+            if target > freqs[-1]:
+                break
+            # 带宽至少覆盖≥1个bin，且不少于2Hz；高频放宽到4%
+            bw = max(2.0, target * (0.03 if target < 800 else 0.04), df * 1.25)
+            mask = (freqs >= (target - bw)) & (freqs <= (target + bw))
+            if not np.any(mask):
+                continue
+            peak = float(np.max(mag[mask]))
+            total += peak / k
+        return total
+
+    def _hps_candidate_from_fft(self, freqs: np.ndarray, mag: np.ndarray, min_f: float, max_f: float, n_harm: int = 4) -> tuple:
+        """谐波乘积谱(HPS)候选：在频谱上做多次下采样相乘，突出基频，返回(best_f, score)。"""
+        try:
+            if freqs is None or mag is None or len(freqs) != len(mag) or len(mag) < 8:
+                return 0.0, 0.0
+            m = np.array(mag, dtype=np.float64)
+            hps = m.copy()
+            L = len(m)
+            for h in range(2, max(2, int(n_harm)) + 1):
+                l = L // h
+                if l <= 1:
+                    break
+                hps[:l] *= m[::h][:l]
+                # 其余尾部缩短，避免用未定义数据
+            # 频率范围内找峰
+            mask = (freqs >= float(min_f)) & (freqs <= float(max_f))
+            if not np.any(mask):
+                return 0.0, 0.0
+            idxs = np.where(mask)[0]
+            if idxs.size == 0:
+                return 0.0, 0.0
+            # 只在有效HPS长度内搜索
+            valid_len = np.max([L // max(2, int(n_harm)), 2])
+            lo, hi = int(idxs[0]), int(idxs[-1])
+            hi = min(hi, valid_len - 1)
+            if hi <= lo:
+                return 0.0, 0.0
+            seg = hps[lo:hi+1]
+            pi = int(np.argmax(seg))
+            best_idx = lo + pi
+            best_f = float(freqs[best_idx])
+            best_s = float(seg[pi])
+            return best_f, best_s
+        except Exception:
+            return 0.0, 0.0
+
+    def _shs_candidate_from_fft(self, freqs: np.ndarray, mag: np.ndarray, min_f: float, max_f: float,
+                                top_k: int = 8, max_harm: int = 6) -> tuple:
+        """从FFT峰值构建子谐波求和(SHS)候选，返回 (best_f, score)。
+        - 从人声范围内选取前K个峰值
+        - 对每个峰值 fp 产生候选 f = fp / h (h=1..max_harm)，用权重 mag/h 累加
+        - 将相近候选(±3%)聚合
+        """
+        try:
+            if freqs is None or mag is None or len(freqs) != len(mag) or len(freqs) == 0:
+                return 0.0, 0.0
+            mask = (freqs >= min_f) & (freqs <= max_f)
+            if not np.any(mask):
+                return 0.0, 0.0
+            vf = freqs[mask]
+            vm = mag[mask]
+            if len(vf) < 4:
+                return 0.0, 0.0
+            # 选取前K个峰：使用argpartition近似快速选择
+            k = min(top_k, len(vm))
+            idxs = np.argpartition(vm, -k)[-k:]
+            # 排序方便权重累加稳定
+            idxs = idxs[np.argsort(vm[idxs])[::-1]]
+
+            buckets = []  # [(f_center, score)]
+            def _accumulate(f_cand: float, w: float):
+                if f_cand < min_f or f_cand > max_f:
+                    return
+                # 合并到±3%内的桶
+                for i, (fc, sc) in enumerate(buckets):
+                    if abs(f_cand - fc) <= max(2.0, 0.03 * fc):
+                        # 简单加权平均与分数累加
+                        new_fc = (fc * sc + f_cand * w) / (sc + w)
+                        buckets[i] = (new_fc, sc + w)
+                        return
+                buckets.append((f_cand, w))
+
+            for idx in idxs:
+                fp = float(vf[idx])
+                amp = float(vm[idx])
+                if amp <= 0:
+                    continue
+                for h in range(1, max_harm + 1):
+                    f_cand = fp / h
+                    # 权重：峰值幅度/谐波序号（移除对~200Hz的集中偏置，改为更温和的极低频轻惩罚）
+                    # 原先以200Hz为分界的惩罚会造成候选在200Hz附近聚集，这里改为对<120Hz做极轻惩罚
+                    low_bias = 1.0 + 0.05 * max(0.0, (120.0 - f_cand) / 120.0)
+                    w = amp / (h * low_bias)
+                    _accumulate(f_cand, w)
+
+            if not buckets:
+                return 0.0, 0.0
+            # 选择分数最高者
+            buckets.sort(key=lambda t: t[1], reverse=True)
+            best_f, best_s = buckets[0]
+            return float(best_f), float(best_s)
+        except Exception:
+            return 0.0, 0.0
+
+    def _refine_f0_with_harmonics(self, f: float, freqs: np.ndarray, mag: np.ndarray, min_f: float, max_f: float,
+                                  last_stable: float = 0.0, rms: float = None) -> float:
+        """基于谐波支持、轻量倒谱提示与时间连续性的温和精修，仅向上修正以抑制“低八度”误判。"""
+        if f <= 0 or freqs is None or mag is None:
+            return f
+        cand = float(f)
+        # 谱域谐波支持
+        s1 = self._harmonic_support(cand, freqs, mag)
+        f2 = cand * 2.0
+        s2 = self._harmonic_support(f2, freqs, mag) if f2 <= max_f * 1.02 else 0.0
+        f3 = cand * 3.0
+        s3 = self._harmonic_support(f3, freqs, mag) if f3 <= max_f * 1.02 else 0.0
+
+        # 轻量 cepstrum 提示：比较 T 与 T/2 的倒谱峰
+        cep_hint_up = False
+        try:
+            # 从 rfft 幅度估计倒谱长度 N≈2*(len(mag)-1)
+            N = max(2 * (len(mag) - 1), 2)
+            # 防止 log(0)
+            cep = np.fft.irfft(np.log(mag + 1e-12), n=N)
+            # 期望周期（采样点）
+            T = int(round(float(self.sample_rate) / max(cand, 1e-6)))
+            T2 = int(round(float(self.sample_rate) / max(f2, 1e-6))) if f2 > 0 else 0
+            # 在安全范围内取局部最大值（±1邻域平均）
+            def _cep_peak(idx: int) -> float:
+                if idx <= 1 or idx >= len(cep) - 2:
+                    return 0.0
+                return float(max(cep[idx-1:idx+2].mean(), 0.0))
+            c1 = _cep_peak(T)
+            c2 = _cep_peak(T2)
+            # 当 T/2 线索显著更强时，给出“上修”提示
+            if c2 > c1 * 1.12 and c2 > 0:
+                cep_hint_up = True
+        except Exception:
+            cep_hint_up = False
+
+        # 时间连续性：2f 与上一稳定频率接近（≤1个半音）时，放宽上修条件
+        allow_up_by_temporal = False
+        try:
+            if last_stable and last_stable > 0 and f2 > 0:
+                # 以log2域衡量半音差：1个半音≈1/12
+                semitone_diff = abs(np.log2(max(f2, 1e-6) / max(last_stable, 1e-6)))
+                allow_up_by_temporal = semitone_diff <= (1.0 / 12.0)
+        except Exception:
+            allow_up_by_temporal = False
+
+        # 音量自适应：很小声时，适度放宽上修门槛
+        low_rms = False
+        try:
+            if rms is not None:
+                low_rms = rms < 0.010
+        except Exception:
+            low_rms = False
+
+        # 仅在候选较低、且 2f 在范围内时考虑上修
+        if (cand <= 480.0) and (f2 >= min_f) and (f2 <= max_f * 1.02):
+            cond_spec_strong = (s2 > s1 * 1.35 and s2 > s3 * 0.85)
+            cond_spec_moderate = (s2 > s1 * 1.20 and s2 > 0.0)
+            if allow_up_by_temporal:
+                # 有时间一致性时，倒谱提示或轻度谱域优势即可上修
+                if cep_hint_up or (s2 > s1 * (1.05 if low_rms else 1.10)):
+                    prev = cand
+                    cand = f2
+                    try:
+                        if getattr(self, 'debug_flags', {}).get('pitch_log', False):
+                            self._log_rate_limit('harm_refine', f"⬆️ 倍频上修 {prev:.1f}-> {cand:.1f}Hz (temporal ok, low_rms={low_rms})", interval=1.0)
+                    except Exception:
+                        pass
+            else:
+                # 无时间一致性，要求更强证据；很小声时略放宽
+                if (cond_spec_strong and cep_hint_up) or (s2 > s1 * (1.45 if not low_rms else 1.30)) or (cep_hint_up and cond_spec_moderate):
+                    prev = cand
+                    cand = f2
+                    try:
+                        if getattr(self, 'debug_flags', {}).get('pitch_log', False):
+                            self._log_rate_limit('harm_refine', f"⬆️ 倍频上修 {prev:.1f}-> {cand:.1f}Hz (spec/cep ok, low_rms={low_rms})", interval=1.0)
+                    except Exception:
+                        pass
+
+        return float(max(min_f, min(max_f, cand)))
+
+    def _yin_cmndf_at_period(self, x: np.ndarray, period: int) -> float:
+        """计算给定周期的YIN CMNDF值（越小越像周期信号）。仅用于候选对比，性能开销小。"""
+        try:
+            N = len(x)
+            if N < 4 or period < 2 or period >= N:
+                return 1.0
+            # 差分函数 d(tau)
+            tau = period
+            diff = np.sum((x[:N-tau] - x[tau:]) ** 2)
+            # 累积平均归一化差分 CMNDF(tau)
+            # 这里用近似：cmndf(tau) = d(tau) / ( (1/tau) * sum_{k=1..tau} d(k) )
+            # 逐步累积到 tau 的总差分（简化近似，足够做相对比较）
+            acc = 0.0
+            for k in range(1, tau + 1):
+                # 简化：使用等长窗口的滑动近似（权衡性能）
+                if k >= N:
+                    break
+                acc += np.sum((x[:N-k] - x[k:]) ** 2)
+            denom = acc / max(1, tau)
+            if denom <= 1e-12:
+                return 1.0
+            return float(diff / denom)
+        except Exception:
+            return 1.0
+
+    def _finalize_frequency(self, freq: float, audio_data: np.ndarray, fft_tuple=None, rms: float = None) -> float:
+        """统一的返回前精修与裁剪：谐波支持上修 + 与UI设定一致范围 + 轻量YIN判据的八度决策。"""
+        if freq is None or freq <= 0:
+            return 0.0
+        try:
+            # 与控制面板保持一致
+            if hasattr(self, 'get_frequency_range'):
+                min_f, max_f = self.get_frequency_range()
+            else:
+                min_f = float(getattr(self, 'min_frequency', 80.0))
+                max_f = float(getattr(self, 'max_frequency', 1047.0))
+            # 频谱（若未提供则计算一次）
+            if fft_tuple is not None and isinstance(fft_tuple, (tuple, list)) and len(fft_tuple) == 2:
+                freqs, mag = fft_tuple
+            else:
+                freqs, mag = self._get_fft_for_refine(audio_data)
+            last_stable = float(getattr(self, '_last_stable_frequency', 0.0) or 0.0)
+            refined = self._refine_f0_with_harmonics(float(freq), freqs, mag, float(min_f), float(max_f), last_stable=last_stable, rms=rms)
+
+            # 在非常可能低八度的场景中，允许迭代x2上修（最多到4f），以覆盖 C3->C5 这类误判
+            try:
+                if refined > 0 and refined <= 520.0:
+                    # 依据谱域支持与时间连续性，做至多一次额外上修
+                    f2 = refined * 2.0
+                    f4 = refined * 4.0
+                    candidates = [refined]
+                    if f2 <= max_f * 1.02:
+                        candidates.append(f2)
+                    if f4 <= max_f * 1.02:
+                        candidates.append(f4)
+                    if freqs is None or mag is None:
+                        freqs, mag = self._get_fft_for_refine(audio_data)
+                    # 结合谐波支持与轻量YIN进行评分
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    best = refined
+                    best_score = -1e9
+                    for fc in candidates:
+                        # 谐波支持
+                        s_h = self._harmonic_support(fc, freqs, mag)
+                        # YIN近似周期一致性（越小越好，这里用 1/(1+cmndf) 作为分值）
+                        T = int(round(sr / max(fc, 1e-6)))
+                        c = self._yin_cmndf_at_period(np.array(audio_data, dtype=np.float64), T)
+                        y_score = 1.0 / (1.0 + c)
+                        # 时间连续性偏好（与上一稳定频率接近者加分，且允许对2f/4f有偏好）
+                        temporal = 0.0
+                        if last_stable > 0:
+                            semitone = abs(np.log2(max(fc,1e-6) / max(last_stable,1e-6))) * 12.0
+                            temporal = max(0.0, 1.0 - (semitone / 2.0))  # 2半音内较大加分
+                        score = (0.65 * s_h) + (0.25 * y_score) + (0.10 * temporal)
+                        if score > best_score:
+                            best_score = score
+                            best = fc
+                    refined = best
+            except Exception:
+                pass
+
+            # 追加：在低电平时用轻量YIN判据对 refined 与 2f 进行一次八度决策（仅向上）
+            try:
+                x = np.array(audio_data, dtype=np.float64)
+                if rms is None:
+                    rms = float(np.sqrt(np.mean(x * x))) if len(x) > 0 else 0.0
+                low_level = rms < 0.012
+                if low_level and refined > 0 and refined <= 520.0:
+                    sr = float(getattr(self, 'sample_rate', 48000.0))
+                    f2 = refined * 2.0
+                    f4 = refined * 4.0 if refined * 4.0 <= max_f * 1.02 else None
+                    # 计算候选的 CMNDF
+                    T1 = int(round(sr / max(refined, 1e-6)))
+                    c1 = self._yin_cmndf_at_period(x, T1)
+                    choose = refined
+                    best_val = c1
+                    # 2f
+                    if f2 <= max_f * 1.02:
+                        T2 = int(round(sr / max(f2, 1e-6)))
+                        c2 = self._yin_cmndf_at_period(x, T2)
+                        # 时间偏好
+                        temporal_bias2 = 0.0
+                        if last_stable > 0:
+                            try:
+                                sd2 = abs(np.log2(max(f2,1e-6)/max(last_stable,1e-6)))
+                                temporal_bias2 = -0.04 if sd2 <= (1.0/12.0) else 0.0
+                            except Exception:
+                                temporal_bias2 = 0.0
+                        if (c2 + temporal_bias2) < (best_val - 0.04):
+                            choose = f2
+                            best_val = c2 + temporal_bias2
+                    # 4f
+                    if f4 is not None:
+                        T4 = int(round(sr / max(f4, 1e-6)))
+                        c4 = self._yin_cmndf_at_period(x, T4)
+                        temporal_bias4 = 0.0
+                        if last_stable > 0:
+                            try:
+                                sd4 = abs(np.log2(max(f4,1e-6)/max(last_stable,1e-6)))
+                                temporal_bias4 = -0.03 if sd4 <= (2.0/12.0) else 0.0
+                            except Exception:
+                                temporal_bias4 = 0.0
+                        if (c4 + temporal_bias4) < (best_val - 0.04):
+                            choose = f4
+                            best_val = c4 + temporal_bias4
+                    refined = choose
+            except Exception:
+                pass
+            # 最终裁剪
+            return float(max(min_f, min(max_f, refined)))
+        except Exception:
+            return float(freq)
+
     def detect_pitch_with_vibrato(self, audio_data):
-        """终极敏感音高检测 - 检测任何可能的音调信号"""
+        """终极敏感音高检测 - 多候选融合 (ACF/FFT/ZCR/SHS) + 谐波与YIN精修"""
         try:
             # 🔥 简化计数器
             if not hasattr(self, '_detection_counter'):
@@ -4957,11 +5754,39 @@ class IntegratedAudioProcessor(QThread):
             
             # 🔥 确保输入是numpy数组
             audio_data = np.array(audio_data, dtype=np.float64)
-            if len(audio_data) < 64:
+            if len(audio_data) < 16:
                 return 0
-                
-            # 🔥 计算基本信号特征
-            original_rms = np.sqrt(np.mean(audio_data ** 2))
+            
+            # 🔥 内部滚动缓冲，确保足够窗长进行稳定检测（对头声/弱基频很重要）
+            try:
+                if not hasattr(self, '_dpv_buf') or self._dpv_buf is None:
+                    self._dpv_buf = np.zeros(0, dtype=np.float64)
+                # 追加新数据
+                if len(audio_data) > 0:
+                    self._dpv_buf = np.concatenate([self._dpv_buf, audio_data])
+                # 根据采样率和最低频率动态设定检测窗与缓冲上限
+                sr = float(getattr(self, 'sample_rate', 48000) or 48000.0)
+                try:
+                    ui_min_f = float(getattr(self, 'min_frequency', 80.0))
+                except Exception:
+                    ui_min_f = 80.0
+                # 至少覆盖 ~2.5 个周期，且不低于 ~35ms 的时间窗，上限做保护
+                desired_win_period = int(max(1024, min(12288, sr / max(ui_min_f, 50.0) * 2.5)))
+                desired_win_time = int(max(1024, min(12288, sr * 0.035)))
+                win_len = int(max(desired_win_period, desired_win_time))
+                # 滚动缓冲上限：~80ms 或 2x 窗口，取较大者，保护上限 16384
+                max_len = int(min(16384, max(int(sr * 0.08), win_len * 2)))
+                if len(self._dpv_buf) > max_len:
+                    self._dpv_buf = self._dpv_buf[-max_len:]
+                if len(self._dpv_buf) < win_len:
+                    # 缓冲尚不够，先不检测
+                    return 0
+                x = self._dpv_buf[-win_len:]
+            except Exception:
+                x = audio_data
+
+            # 🔥 计算基本信号特征（基于检测窗）
+            original_rms = np.sqrt(np.mean(x ** 2))
             
             # 🔥 超低阈值：检测极微弱信号
             if original_rms < 0.0001:
@@ -4972,155 +5797,198 @@ class IntegratedAudioProcessor(QThread):
             # 🔥 激进的信号增强
             if original_rms < 0.1:
                 enhancement_factor = min(0.2 / original_rms, 100.0)
-                audio_data = audio_data * enhancement_factor
+                x = x * enhancement_factor
                 if self._detection_counter % 400 == 0:
-                    new_rms = np.sqrt(np.mean(audio_data ** 2))
+                    new_rms = np.sqrt(np.mean(x ** 2))
                     self._log_rate_limit('gain', f"🔊 增强 {original_rms:.4f}->{new_rms:.4f} x{enhancement_factor:.1f}", interval=4.0)
             
             # 🔥 基本预处理
-            audio_data = audio_data - np.mean(audio_data)  # 去DC
+            x = x - np.mean(x)  # 去DC
             
-            # 🔥 方法1：改进的自相关检测（保持频率精度）
+            # 准备与UI一致的频率范围（例如 C2–C6）
             try:
-                # 应用窗函数减少频谱泄漏
-                windowed_audio = audio_data * np.hanning(len(audio_data))
-                
-                # 计算自相关
-                correlation = np.correlate(windowed_audio, windowed_audio, mode='full')
-                correlation = correlation[len(correlation)//2:]
-                
-                # 归一化
-                if correlation[0] > 0:
-                    correlation = correlation / correlation[0]
-                else:
-                    correlation = np.zeros_like(correlation)
-                
-                # 🔥 超宽检测范围：10Hz - 10000Hz
-                min_freq, max_freq = 10, 10000
+                ui_min_f, ui_max_f = self.get_frequency_range()
+            except Exception:
+                ui_min_f = float(getattr(self, 'min_frequency', 80.0))
+                ui_max_f = float(getattr(self, 'max_frequency', 1047.0))
+
+            # 统一候选收集容器
+            candidates = []  # (name, freq, score, extra)
+
+            # 方法1：ACF候选（带抛物线插值）
+            try:
+                windowed_audio = x * np.hanning(len(x))
+                ac = np.correlate(windowed_audio, windowed_audio, mode='full')
+                ac = ac[len(ac)//2:]
+                if ac[0] > 0:
+                    ac = ac / ac[0]
+                min_freq, max_freq = float(ui_min_f), float(ui_max_f)
                 min_period = max(int(self.sample_rate / max_freq), 2)
-                max_period = min(int(self.sample_rate / min_freq), len(correlation) - 1)
-                
+                max_period = min(int(self.sample_rate / min_freq), len(ac) - 1)
                 if max_period > min_period:
-                    search_corr = correlation[min_period:max_period]
-                    
-                    # 🔥 寻找最强峰值
-                    if len(search_corr) > 0:
-                        peak_idx = np.argmax(search_corr)
-                        peak_value = search_corr[peak_idx]
-                        actual_period = peak_idx + min_period
-                        
-                        # 🎯 关键修复：使用抛物线插值提高频率精度
-                        if peak_idx > 0 and peak_idx < len(search_corr) - 1:
-                            # 抛物线插值获取更精确的峰值位置
-                            y1, y2, y3 = search_corr[peak_idx-1], search_corr[peak_idx], search_corr[peak_idx+1]
-                            x_offset = 0.5 * (y1 - y3) / (y1 - 2*y2 + y3) if (y1 - 2*y2 + y3) != 0 else 0
-                            interpolated_period = actual_period + x_offset
+                    seg = ac[min_period:max_period]
+                    if len(seg) > 0:
+                        pi = int(np.argmax(seg))
+                        pv = float(seg[pi])
+                        ap = pi + min_period
+                        if 0 < pi < len(seg) - 1:
+                            y1, y2, y3 = seg[pi-1], seg[pi], seg[pi+1]
+                            off = 0.5 * (y1 - y3) / (y1 - 2*y2 + y3) if (y1 - 2*y2 + y3) != 0 else 0.0
+                            ip = ap + off
                         else:
-                            interpolated_period = actual_period
-                        
-                        # 🎵 计算精确频率（保持小数精度）
-                        frequency = self.sample_rate / interpolated_period
-                        
-                        # 🔥 极低验证阈值
-                        if peak_value > 0.005 and min_freq <= frequency <= max_freq:
-                            if frequency > 3000:
-                                self._log_rate_limit('hf_suppress', f"⚠️ 抑制异常高频 {frequency:.1f}Hz", interval=3.0)
-                                return 0
+                            ip = float(ap)
+                        f_acf = float(self.sample_rate / ip) if ip > 0 else 0.0
+                        if min_freq <= f_acf <= max_freq and pv > 0.0025 and f_acf < 3000:
+                            candidates.append(("acf", f_acf, pv, None))
                             if self._detection_counter % 150 == 0:
-                                self._log_rate_limit('acf_freq', f"🎵 ACF {frequency:.2f}Hz pk={peak_value:.3f}", interval=1.5)
-                            return frequency
-                            
+                                self._log_rate_limit('acf_freq', f"🎵 ACF {f_acf:.2f}Hz pk={pv:.3f}", interval=1.5)
             except Exception as e:
                 if self._detection_counter % 600 == 0:
                     self._log_rate_limit('acf_fail', f"⚠️ ACF失败: {e}", interval=10.0)
-            
-            # 🔥 方法2：改进的FFT峰值检测（保持频率精度）
+
+            # 方法2：FFT峰值候选 + 频谱缓存
+            fft_freqs = None
+            fft_magnitude = None
             try:
-                # 计算FFT
-                fft_result = np.fft.rfft(audio_data)
+                fft_result = np.fft.rfft(x)
                 fft_magnitude = np.abs(fft_result)
-                fft_freqs = np.fft.rfftfreq(len(audio_data), 1/self.sample_rate)
-                
-                # 在人声范围内寻找峰值
-                voice_mask = (fft_freqs >= 50) & (fft_freqs <= 2000)
+                fft_freqs = np.fft.rfftfreq(len(x), 1/self.sample_rate)
+                voice_mask = (fft_freqs >= ui_min_f) & (fft_freqs <= ui_max_f)
                 if np.any(voice_mask):
-                    voice_magnitude = fft_magnitude[voice_mask]
-                    voice_freqs = fft_freqs[voice_mask]
-                    
-                    if len(voice_magnitude) > 0:
-                        peak_idx = np.argmax(voice_magnitude)
-                        peak_freq = voice_freqs[peak_idx]
-                        peak_mag = voice_magnitude[peak_idx]
-                        
-                        # 🎯 FFT抛物线插值提高频率精度
-                        if peak_idx > 0 and peak_idx < len(voice_magnitude) - 1:
-                            y1, y2, y3 = voice_magnitude[peak_idx-1], voice_magnitude[peak_idx], voice_magnitude[peak_idx+1]
+                    vm = fft_magnitude[voice_mask]
+                    vf = fft_freqs[voice_mask]
+                    if len(vm) > 0:
+                        pidx = int(np.argmax(vm))
+                        pf = float(vf[pidx])
+                        pm = float(vm[pidx])
+                        # 抛物线插值
+                        if 0 < pidx < len(vm) - 1:
+                            y1, y2, y3 = vm[pidx-1], vm[pidx], vm[pidx+1]
                             if (y1 - 2*y2 + y3) != 0:
-                                x_offset = 0.5 * (y1 - y3) / (y1 - 2*y2 + y3)
-                                freq_resolution = fft_freqs[1] - fft_freqs[0] if len(fft_freqs) > 1 else 1.0
-                                interpolated_freq = peak_freq + x_offset * freq_resolution
-                            else:
-                                interpolated_freq = peak_freq
-                        else:
-                            interpolated_freq = peak_freq
-                        
-                        # 计算信噪比
-                        mean_mag = np.mean(voice_magnitude)
-                        snr = peak_mag / (mean_mag + 1e-10)
-                        
-                        # 🔥 非常宽松的验证条件
-                        if snr > 1.2 and peak_mag > 0.001:
-                            if interpolated_freq > 3000:
-                                if getattr(self, 'debug_flags', {}).get('fft_log', False):
-                                    self._log_rate_limit('hf_suppress', f"⚠️ 抑制异常高频 {interpolated_freq:.1f}Hz(FFT)", interval=3.0)
-                                return 0
-                            if self._detection_counter % 300 == 0:
-                                if getattr(self, 'debug_flags', {}).get('fft_log', False):
-                                    self._log_rate_limit('fft_freq', f"🎵 FFT {interpolated_freq:.2f}Hz SNR={snr:.2f}", interval=2.0)
-                            return interpolated_freq
-                            
+                                xoff = 0.5 * (y1 - y3) / (y1 - 2*y2 + y3)
+                                fres = (fft_freqs[1] - fft_freqs[0]) if len(fft_freqs) > 1 else 1.0
+                                pf = pf + xoff * fres
+                        mean_mag = float(np.mean(vm))
+                        snr = pm / (mean_mag + 1e-10)
+                        if snr > 1.05 and pm > 0.001 and pf < 3000:
+                            candidates.append(("fft", pf, snr, {"fft": True}))
+                            if self._detection_counter % 300 == 0 and getattr(self, 'debug_flags', {}).get('fft_log', False):
+                                self._log_rate_limit('fft_freq', f"🎵 FFT {pf:.2f}Hz SNR={snr:.2f}", interval=2.0)
             except Exception as e:
                 if self._detection_counter % 600 == 0:
                     self._log_rate_limit('fft_fail', f"⚠️ FFT失败: {e}", interval=10.0)
-            
-            # 🔥 方法3：改进的零交叉检测（保持频率精度）
+
+            # 方法3：精确零交叉候选
             try:
-                # 寻找零交叉点
-                zero_crossings = np.where(np.diff(np.sign(audio_data)))[0]
-                if len(zero_crossings) > 4:  # 至少需要几个零交叉
-                    # 🎯 使用线性插值获取更精确的零交叉位置
-                    precise_crossings = []
-                    for i in zero_crossings:
-                        if i < len(audio_data) - 1:
-                            # 线性插值计算精确的零交叉位置
-                            y1, y2 = audio_data[i], audio_data[i+1]
-                            if y2 != y1:  # 避免除零
-                                precise_crossing = i - y1 / (y2 - y1)
-                                precise_crossings.append(precise_crossing)
+                zero_cross = np.where(np.diff(np.sign(x)))[0]
+                if len(zero_cross) > 4:
+                    pz = []
+                    for i in zero_cross:
+                        if i < len(x) - 1:
+                            y1, y2 = x[i], x[i+1]
+                            if y2 != y1:
+                                pz.append(i - y1 / (y2 - y1))
                             else:
-                                precise_crossings.append(float(i))
-                    
-                    if len(precise_crossings) > 1:
-                        # 计算平均周期（使用精确位置）
-                        periods = np.diff(precise_crossings)
-                        if len(periods) > 0:
-                            avg_period = np.mean(periods) * 2  # 零交叉周期是完整周期的一半
-                            frequency = self.sample_rate / avg_period
-                            
-                            if 50 <= frequency <= 2000:  # 合理的人声范围
+                                pz.append(float(i))
+                    if len(pz) > 1:
+                        per = np.diff(pz)
+                        if len(per) > 0:
+                            avgp = float(np.mean(per) * 2.0)
+                            f_zc = float(self.sample_rate / avgp) if avgp > 0 else 0.0
+                            if ui_min_f <= f_zc <= ui_max_f and f_zc > 0:
+                                candidates.append(("zcr", f_zc, 0.5, None))
                                 if self._detection_counter % 50 == 0:
-                                    print(f"🎵 精确零交叉检测: {frequency:.3f}Hz")
-                                return frequency
-                            
+                                    self._log_rate_limit('zc_freq', f"🎵 ZCR {f_zc:.2f}Hz", interval=2.0)
             except Exception as e:
                 if self._detection_counter % 100 == 0:
-                    print(f"⚠️ 零交叉检测失败: {e}")
-            
-            # 🔥 所有方法都失败时的调试信息
-            if self._detection_counter % 200 == 0:
-                print(f"❌ 未检测到音高: RMS={original_rms:.4f}, 数据长度={len(audio_data)}")
-            
-            return 0
+                    self._log_rate_limit('zc_fail', f"⚠️ ZCR失败: {e}", interval=10.0)
+
+            # 方法4：SHS子谐波候选（强修正低八度）
+            try:
+                if fft_freqs is None or fft_magnitude is None:
+                    fft_freqs, fft_magnitude = self._get_fft_for_refine(x)
+                if fft_freqs is not None and fft_magnitude is not None:
+                    f_shs, s_shs = self._shs_candidate_from_fft(fft_freqs, fft_magnitude, float(ui_min_f), float(ui_max_f))
+                    if f_shs > 0 and s_shs > 0:
+                        candidates.append(("shs", f_shs, s_shs, {"fft": True}))
+            except Exception:
+                pass
+
+            # 方法5：HPS谐波乘积候选（增强弱基频/假声）
+            try:
+                if fft_freqs is None or fft_magnitude is None:
+                    fft_freqs, fft_magnitude = self._get_fft_for_refine(x)
+                if fft_freqs is not None and fft_magnitude is not None:
+                    f_hps, s_hps = self._hps_candidate_from_fft(fft_freqs, fft_magnitude, float(ui_min_f), float(ui_max_f), n_harm=4)
+                    if f_hps > 0 and s_hps > 0:
+                        candidates.append(("hps", f_hps, s_hps, {"fft": True}))
+            except Exception:
+                pass
+
+            # 没有任何候选
+            if not candidates:
+                if self._detection_counter % 200 == 0:
+                    print(f"❌ 未检测到音高: RMS={original_rms:.4f}, 数据长度={len(audio_data)}")
+                return 0
+
+            # 选择器：融合多源证据，倾向与历史一致且谱域有力的候选
+            try:
+                last_stable = float(getattr(self, '_last_stable_frequency', 0.0) or 0.0)
+                # 归一化权重：SHS≈HPS > ACF > FFT > ZCR
+                base_w = {"shs": 1.00, "hps": 0.96, "acf": 0.90, "fft": 0.80, "zcr": 0.40}
+                # 找到分数范围便于归一
+                raw_scores = np.array([max(1e-9, c[2]) for c in candidates], dtype=np.float64)
+                s_min, s_max = float(np.min(raw_scores)), float(np.max(raw_scores))
+                def _norm(v: float) -> float:
+                    if s_max <= s_min:
+                        return 0.5
+                    return (v - s_min) / (s_max - s_min)
+
+                best_freq = 0.0
+                best_total = -1e9
+                for name, f_cand, s_val, extra in candidates:
+                    if not (ui_min_f <= f_cand <= ui_max_f):
+                        continue
+                    # 基础分 + 归一分
+                    score = 0.6 * base_w.get(name, 0.5) + 0.4 * _norm(float(s_val))
+                    # 谱域谐波支持再加分
+                    if fft_freqs is not None and fft_magnitude is not None:
+                        hs = self._harmonic_support(f_cand, fft_freqs, fft_magnitude)
+                        score += 0.15 * (np.tanh(hs / (np.max(fft_magnitude) + 1e-9)))
+                        # 对具有明显谐波结构的更高频候选给予额外偏好，缓解低八度粘连
+                        # 若存在近似2倍频的更强谐波支持，则对较低候选施加惩罚
+                        f2 = f_cand * 2.0
+                        if ui_min_f <= f2 <= ui_max_f:
+                            hs2 = self._harmonic_support(f2, fft_freqs, fft_magnitude)
+                            if hs2 > hs * 1.25:
+                                score -= 0.12
+                    # 时间连续性（与上一稳定频率接近有利；允许八度就近）
+                    if last_stable > 0:
+                        semitone = abs(np.log2(max(f_cand,1e-6) / max(last_stable,1e-6))) * 12.0
+                        octave_prox = abs(np.log2(max(f_cand*2,1e-6) / max(last_stable,1e-6))) * 12.0
+                        temporal = max(0.0, 1.0 - (min(semitone, octave_prox) / 3.0))
+                        score += 0.20 * temporal
+                    # 低八度惩罚：当存在明显更高的SHS候选时（如4f更合理），对过低频率施加轻惩罚
+                    for n2, f2cand, s2, _ in candidates:
+                        if n2 == "shs" and f2cand > f_cand * 1.9 and f2cand < f_cand * 4.2:
+                            score -= 0.10
+                            break
+                    if score > best_total:
+                        best_total = score
+                        best_freq = f_cand
+
+                if best_freq <= 0:
+                    # 后备：取分最高的候选
+                    best_freq = max(candidates, key=lambda t: t[2])[1]
+
+                # 最终谐波/YIN精修 + 范围裁剪
+                return self._finalize_frequency(best_freq, audio_data, (fft_freqs, fft_magnitude) if (fft_freqs is not None and fft_magnitude is not None) else None, rms=original_rms)
+            except Exception:
+                # 后备路径：取shs>acf>fft>zcr的优先级
+                order = {"shs": 4, "acf": 3, "fft": 2, "zcr": 1}
+                candidates.sort(key=lambda t: (order.get(t[0], 0), t[2]))
+                best = candidates[-1]
+                return self._finalize_frequency(best[1], audio_data, rms=original_rms)
             
         except Exception as e:
             if self._detection_counter % 100 == 0:
@@ -6567,7 +7435,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.audio_processor = None  # 运行时再注入
         self.time_window = 16.0
         self.max_points = 1024
-        self.update_interval = 33  # ~30FPS
+        self.update_interval = 16  # ~60FPS，提升实时感
 
         # ===== 视图 / 历史窗口初始化 =====
         self.max_history_time = 300.0
@@ -6707,18 +7575,18 @@ class ECGStylePitchVisualizer(QWidget):
                 print(f"[SUMMARY {dur:.1f}s] vocalProtect={vp} highLatency={hl} segRecompute={sre} segCacheHit={sch} fps~={fps_est:.1f}")
                 for k in self._stat_counters:
                     self._stat_counters[k] = 0
-                self._last_summary_time = now
-        self._maybe_summary = _maybe_summary
+            self._last_summary_time = now
+            self._maybe_summary = _maybe_summary
 
-        # ================== 运行/刷新计时器与阈值 ==================
-        # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
-        # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
-        self._min_heavy_interval = 0.028  # ~28ms，约等于 35FPS 的间隔基线
+            # ================== 运行/刷新计时器与阈值 ==================
+            # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
+            # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
+            self._min_heavy_interval = 0.020  # ~20ms，约等于 50FPS 的间隔基线，减少卡段感
 
-        # 高频轻量帧定时器（即使没有新点也推动时间轴+细节点刷新）
-        # 使用较小间隔以提升平滑度；如 CPU 允许可调至 8-12ms
-        # 默认放缓轻量刷新，减轻总负载；需要更丝滑可调到 8-10ms
-        self.fast_update_interval_ms = 12
+            # 高频轻量帧定时器（即使没有新点也推动时间轴+细节点刷新）
+            # 使用较小间隔以提升平滑度；如 CPU 允许可调至 8-12ms
+            # 默认放缓轻量刷新，减轻总负载；需要更丝滑可调到 8-10ms
+            self.fast_update_interval_ms = 10
         try:
             self.fast_update_timer = QTimer(self)
             # 精确定时器降低抖动
@@ -8515,7 +9383,7 @@ class ECGStylePitchVisualizer(QWidget):
             if smooth_active and hasattr(self, '_smooth_set_xlim'):
                 # 使用更灵敏的跟随参数，限制单步位移，避免“分段感”
                 try:
-                    self._smooth_set_xlim(x_min, x_max, strength=0.9, max_step=0.05)
+                    self._smooth_set_xlim(x_min, x_max, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
                 except Exception:
                     self.ax.set_xlim(x_min, x_max)
             else:
@@ -8989,7 +9857,14 @@ class ECGStylePitchVisualizer(QWidget):
             if not hasattr(self, '_last_heavy_redraw_time'):
                 self._last_heavy_redraw_time = 0.0
             gap = now_push - getattr(self, '_last_heavy_redraw_time', 0.0)
-            if gap >= self._min_heavy_interval * 0.95:  # 5% 余量
+            # 按模式自适应：高性能模式更积极触发有新点时的重绘
+            try:
+                from src.audio_processing.performance_manager import PerformanceMode
+                mode = getattr(self, 'current_performance_mode', None)
+                push_factor = float(getattr(self, '_push_heavy_factor', 0.95))
+            except Exception:
+                push_factor = 0.95
+            if gap >= self._min_heavy_interval * push_factor:
                 self._pending_instant_update = False
                 try:
                     self.update_display()
@@ -9137,7 +10012,7 @@ class ECGStylePitchVisualizer(QWidget):
             if chunks:
                 arr = np.asarray(chunks, dtype=float)
                 # 限制点数，避免过度绘制
-                max_pts = 1200
+                max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
                 if arr.shape[0] > max_pts:
                     step = int(np.ceil(arr.shape[0] / max_pts))
                     arr = arr[::step]
@@ -9359,7 +10234,7 @@ class ECGStylePitchVisualizer(QWidget):
                         current_xlim = self.ax.get_xlim()
                         # 使用平滑过渡，避免“分段移动”的观感
                         try:
-                            self._smooth_set_xlim(time_start, time_end, strength=0.9, max_step=0.05)
+                            self._smooth_set_xlim(time_start, time_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
                         except Exception:
                             if abs(current_xlim[0] - time_start) > 0.02 or abs(current_xlim[1] - time_end) > 0.02:
                                 self.ax.set_xlim(time_start, time_end)
@@ -9499,7 +10374,7 @@ class ECGStylePitchVisualizer(QWidget):
                     if hasattr(self, 'ax'):
                         # 使用平滑过渡，避免“瞬移/齿感”
                         try:
-                            self._smooth_set_xlim(time_start, time_end, strength=0.9, max_step=0.05)
+                            self._smooth_set_xlim(time_start, time_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
                         except Exception:
                             self.ax.set_xlim(time_start, time_end)
                         # 记录最近渲染窗口为实际 xlim，确保后续使用一致窗口
@@ -9538,7 +10413,7 @@ class ECGStylePitchVisualizer(QWidget):
                                     if chunks:
                                         arr = np.asarray(chunks, dtype=float)
                                         # 轻量抽样限制（稍放宽以减少“断续”感）
-                                        max_pts = 900
+                                        max_pts = int(getattr(self, '_batched_points_cap_light', 900))
                                         if arr.shape[0] > max_pts:
                                             step = int(np.ceil(arr.shape[0] / max_pts))
                                             arr = arr[::step]
@@ -9681,7 +10556,7 @@ class ECGStylePitchVisualizer(QWidget):
                 if hasattr(self, 'ax') and self.ax is not None:
                     if getattr(self, 'is_recording_active', False) and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and (not getattr(self, 'freeze_y_center', False)) and cur_t > self.center_display_time:
                         try:
-                            self._smooth_set_xlim(axis_start, axis_end, strength=0.9, max_step=0.05)
+                            self._smooth_set_xlim(axis_start, axis_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
                         except Exception:
                             self.ax.set_xlim(axis_start, axis_end)
                     else:
@@ -9796,11 +10671,14 @@ class ECGStylePitchVisualizer(QWidget):
                 # 条件：
                 #   - 有新点：总是重算
                 #   - 窗口平移较大：>0.08s（原0.02s，降低自滚期间的抖动）
-                #   - 时间过久：>0.18s（原0.10s，降低频率）
+                #   - 时间过久：>X（按模式自适应，Quiet≈0.14s / Balanced≈0.09s / High≈0.06s）
                 # 在>8s自动滚动阶段且无新点时，尽量沿用缓存（减少算力），靠轻量帧移动视窗
+                # 阈值来自模式：缺省时给出安全默认
+                _recomp_age = float(getattr(self, '_segments_recompute_max_age_s', 0.10))
+                _large_shift_th = float(getattr(self, '_segments_large_shift_threshold', 0.06))
                 has_new_pts = getattr(self, '_new_points_since_last_draw', 0) > 0
-                large_shift = window_shift > 0.08
-                too_old = (now_time - self._last_segments_recompute) > 0.18
+                large_shift = window_shift > _large_shift_th
+                too_old = (now_time - self._last_segments_recompute) > _recomp_age
                 if has_new_pts or large_shift or too_old:
                     recompute_needed = True
                 if (hasattr(self, '_segments_cache') and not recompute_needed and
@@ -9906,6 +10784,12 @@ class ECGStylePitchVisualizer(QWidget):
             draw_dur = (time.time() - t_start) * 1000
             self._draw_timing_samples.append(draw_dur)
             self._last_heavy_redraw_time = now
+            # 重帧后立即刷新批量细节点集合，避免轻量帧间隙出现“点稀疏/暂隐”
+            try:
+                if getattr(self, '_use_batched_points', False):
+                    self._refresh_batched_points_for_current_xlim()
+            except Exception:
+                pass
             if ('frame_trace' in locals() and frame_trace) or (perf_verbose and draw_dur > 12):
                 print(f"[FRAME] 重绘完成 CPU耗时={draw_dur:.1f}ms segs={len(segments) if 'segments' in locals() else 0} pts={len(times)}")
 
@@ -10275,7 +11159,7 @@ class ECGStylePitchVisualizer(QWidget):
                         arr = np.asarray(chunks, dtype=float)
                         total_pts = arr.shape[0]
                         # 视口点数过多时做等距抽样，限制 offsets 更新量，避免抖动
-                        max_pts = 1200
+                        max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
                         if total_pts > max_pts:
                             step = int(np.ceil(total_pts / max_pts))
                             arr = arr[::step]
@@ -10735,22 +11619,64 @@ class ECGStylePitchVisualizer(QWidget):
             mode = mode_enum or self.current_performance_mode or PerformanceMode.BALANCED
 
             if mode == PerformanceMode.QUIET:
-                new_update_ms = 45   # ~22 FPS
-                new_fast_ms = 16     # ~60 Hz 轻量
-                new_time_ms = 20     # ~50 Hz 时间轴
-                min_heavy_interval = 0.035
-            elif mode == PerformanceMode.HIGH_PERFORMANCE:
-                # 更激进但保持安全余量
-                new_update_ms = 24   # ~41 FPS（更平滑）
-                new_fast_ms = 8      # ~125 Hz 轻量
-                new_time_ms = 12     # ~83 Hz 时间轴
-                min_heavy_interval = 0.022
-            else:
-                # BALANCED
-                new_update_ms = 33   # ~30 FPS（现状）
+                new_update_ms = 36   # ~27 FPS（略提速保证顺滑）
                 new_fast_ms = 12     # ~83 Hz 轻量
                 new_time_ms = 16     # ~60 Hz 时间轴
-                min_heavy_interval = 0.028
+                min_heavy_interval = 0.030
+                # 无音高发射节流（更保守）
+                self._no_pitch_emit_interval_default = 0.08  # ~12.5 Hz
+                # UI信号发射节流（更保守）
+                self._ui_emit_min_interval_default = 0.04
+                # 分段与细节点策略（更保守）
+                self._segments_recompute_max_age_s = 0.14
+                self._segments_large_shift_threshold = 0.08
+                self._batched_points_cap_light = 900
+                self._batched_points_cap_heavy = 1200
+                # 平滑时间轴参数（更温和）
+                self._smooth_strength = 0.75
+                self._smooth_max_step = 0.05
+                # push重绘触发因子（更保守）
+                self._push_heavy_factor = 0.98
+            elif mode == PerformanceMode.HIGH_PERFORMANCE:
+                # 更激进但保持安全余量
+                new_update_ms = 18   # ~55 FPS（接近60FPS）
+                new_fast_ms = 6      # ~166 Hz 轻量
+                new_time_ms = 10     # ~100 Hz 时间轴
+                min_heavy_interval = 0.018
+                # 无音高发射节流（更积极以维持高密度时间线）
+                self._no_pitch_emit_interval_default = 0.03  # ~33 Hz
+                # UI信号发射节流（更积极）
+                self._ui_emit_min_interval_default = 0.02
+                # 分段与细节点策略（更积极，保证密度&实时感）
+                self._segments_recompute_max_age_s = 0.06
+                self._segments_large_shift_threshold = 0.05
+                self._batched_points_cap_light = 1800
+                self._batched_points_cap_heavy = 2400
+                # 平滑时间轴参数（更迅速）
+                self._smooth_strength = 0.95
+                self._smooth_max_step = 0.08
+                # push重绘触发因子（更积极）
+                self._push_heavy_factor = 0.88
+            else:
+                # BALANCED
+                new_update_ms = 24   # ~41 FPS
+                new_fast_ms = 10     # ~100 Hz 轻量
+                new_time_ms = 12     # ~83 Hz 时间轴
+                min_heavy_interval = 0.022
+                # 无音高发射节流（折中略提速，提升时间线连续性）
+                self._no_pitch_emit_interval_default = 0.04  # ~25 Hz
+                # UI信号发射节流（折中）
+                self._ui_emit_min_interval_default = 0.03
+                # 分段与细节点策略（折中）
+                self._segments_recompute_max_age_s = 0.09
+                self._segments_large_shift_threshold = 0.06
+                self._batched_points_cap_light = 1200
+                self._batched_points_cap_heavy = 1600
+                # 平滑时间轴参数（折中）
+                self._smooth_strength = 0.90
+                self._smooth_max_step = 0.06
+                # push重绘触发因子（适中）
+                self._push_heavy_factor = 0.93
 
             # 应用并尽量无闪断地重启定时器
             try:
@@ -10793,6 +11719,11 @@ class ECGStylePitchVisualizer(QWidget):
     def apply_performance_config_to_processor(self, config):
         """将性能配置应用到音频处理器"""
         try:
+            # 同步YIN阈值到本类，确保简化YIN使用一致阈值
+            try:
+                self.yin_threshold = float(getattr(config, 'yin_threshold', getattr(self, 'yin_threshold', 0.12)))
+            except Exception:
+                pass
             if hasattr(self.audio_processor, 'chunk_size'):
                 # 更新块大小
                 old_chunk_size = self.audio_processor.chunk_size
@@ -10806,7 +11737,7 @@ class ECGStylePitchVisualizer(QWidget):
                     print(f"🔧 更新YIN阈值: {config.yin_threshold}")
             
             # 设置GPU加速（如果可用）
-            if config.use_gpu_acceleration and self.gpu_accelerator and self.gpu_accelerator.is_gpu_available():
+            if config.use_gpu_acceleration and self.gpu_processor and self.gpu_processor.is_gpu_available():
                 # 启用GPU加速标志
                 self.audio_processor.use_gpu_acceleration = True
                 print("🚀 启用GPU加速")
@@ -10815,6 +11746,22 @@ class ECGStylePitchVisualizer(QWidget):
                 if hasattr(self.audio_processor, 'use_gpu_acceleration'):
                     self.audio_processor.use_gpu_acceleration = False
                 print("💻 使用CPU处理")
+
+            # 同步到统一音高服务
+            try:
+                if self.pitch_service and config is not None:
+                    # 为便携性补充 mode_name 字段
+                    if not hasattr(config, 'mode_name'):
+                        try:
+                            # 粗略推断
+                            mode_name = getattr(self, 'current_performance_mode', None)
+                            if mode_name:
+                                setattr(config, 'mode_name', str(getattr(mode_name, 'name', mode_name)))
+                        except Exception:
+                            pass
+                    self.pitch_service.apply_config(config)
+            except Exception as _e:
+                print(f"⚠️ 同步 PitchDetectionService 配置失败: {_e}")
             
         except Exception as e:
             print(f"⚠️ 应用性能配置失败: {e}")
@@ -11215,6 +12162,43 @@ class ECGStylePitchVisualizer(QWidget):
                 print(f"[PRESET INFO] {zoom_level}x -> {preset_info[zoom_level]}")
                 self._last_zoom_preset_logged = zoom_level
 
+    def reset_view(self):
+        """重置视图到初始观感（仅视图相关：时间偏移/缩放/Y中心），不改变其他设置。"""
+        try:
+            # 时间轴回到起点
+            self.time_offset = 0.0
+            # 清除平滑/历史渲染窗口缓存
+            if hasattr(self, '_smoothed_xlim'):
+                self._smoothed_xlim = None
+            if hasattr(self, '_last_render_window'):
+                try:
+                    delattr(self, '_last_render_window')
+                except Exception:
+                    pass
+            # 恢复Y轴中心
+            self.y_view_center = getattr(self, '_initial_y_center', 4.0)
+            # 恢复缩放
+            self.zoom_level = 1.0
+            if hasattr(self, 'zoom_slider'):
+                self.zoom_slider.blockSignals(True)
+                self.zoom_slider.setValue(10)
+                self.zoom_slider.blockSignals(False)
+            if hasattr(self, 'zoom_label'):
+                self.zoom_label.setText("1.0x")
+            # 刷新坐标与界面
+            self.update_axis_ranges()
+            try:
+                self.update_scrollbars()
+            except Exception:
+                pass
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+            if hasattr(self, 'update_status_display'):
+                self.update_status_display()
+            print("🔄 视图已重置（time_offset=0, zoom=1.0x, y_center 初始）")
+        except Exception as e:
+            print(f"⚠️ reset_view 失败: {e}")
+
     def get_vertical_compression_factor(self, zoom_level: float) -> float:
         """(已废弃) 兼容旧代码的占位。现改用 compute_half_range。"""
         return 1.0
@@ -11445,34 +12429,28 @@ class ECGStylePitchVisualizer(QWidget):
     def set_custom_max_history_time(self):
         """自定义设置最大历史时间"""
         try:
-            from PyQt6.QtWidgets import QInputDialog
+            from PyQt6.QtWidgets import QInputDialog as _QID
         except ImportError:
             try:
-                from PyQt5.QtWidgets import QInputDialog
+                from PyQt5.QtWidgets import QInputDialog as _QID
             except ImportError:
                 print("❌ 无法导入QInputDialog")
                 return
         
         # 弹出输入对话框
-        value, ok = QInputDialog.getDouble(
-            self, 
-            "设置自定义最大历史时间", 
+        value, ok = _QID.getDouble(
+            self,
+            "设置自定义最大历史时间",
             "请输入最大历史时间（秒）:",
             value=self.max_history_time,
-            min=60,  # 最少60秒
-            max=3600,  # 最多3600秒（1小时）
-            decimals=0
+            min=60,
+            max=3600,
+            decimals=0,
         )
-        
         if ok:
             self.set_max_history_time(value)
-    
-    def reset_view(self):
-        """重置视图到默认状态"""
-        self.y_view_center = 4.0  # C4为中心
-        self.y_view_range = 3.0   # ±3个八度
-        self.time_offset = 0.0    # 回到最新数据
-        self.zoom_level = 1.0     # 重置缩放级别
+        
+        self.zoom_level = 1.0  # 重置缩放级别
         
         # 重置控件状态
         if hasattr(self, 'zoom_slider'):
@@ -11622,7 +12600,7 @@ class ECGStylePitchVisualizer(QWidget):
                         if hasattr(self, 'ax'):
                             x_min = self.time_offset
                             x_max = self.time_offset + self.time_window
-                            self._smooth_set_xlim(x_min, x_max, strength=0.9, max_step=0.05)
+                            self._smooth_set_xlim(x_min, x_max, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
                     except Exception:
                         self.update_axis_ranges()
                 else:

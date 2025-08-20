@@ -104,13 +104,13 @@ class PerformanceManager:
         """创建安静模式配置 - 最低资源消耗"""
         return PerformanceConfig(
             # 音频处理 - 大块处理，低频率
-            chunk_size=2048,
+            chunk_size=1024,
             buffer_size=4096,
             overlap_ratio=0.25,
             
             # 检测参数 - 降低精度，提高速度
-            detection_frequency=15.0,  # 15Hz检测频率
-            yin_threshold=0.3,         # 较高阈值，减少计算
+            detection_frequency=45.0,  # 提升到最低稳定目标，避免点过稀
+            yin_threshold=0.24,        # 略放宽，提升弱声段命中
             signal_threshold=0.001,
             
             # 资源使用 - 最小化
@@ -133,13 +133,13 @@ class PerformanceManager:
         """创建平衡模式配置 - 合理的性能与质量平衡"""
         return PerformanceConfig(
             # 音频处理 - 中等配置
-            chunk_size=1024,
+            chunk_size=512,
             buffer_size=2048,
             overlap_ratio=0.5,
             
             # 检测参数 - 平衡精度与速度
-            detection_frequency=30.0,  # 30Hz检测频率
-            yin_threshold=0.25,
+            detection_frequency=60.0,  # 60Hz检测频率，保证细节点密度
+            yin_threshold=0.20,        # 更灵敏
             signal_threshold=0.0008,
             
             # 资源使用 - 适度使用
@@ -162,13 +162,13 @@ class PerformanceManager:
         """创建高性能模式配置 - 充分利用计算资源"""
         return PerformanceConfig(
             # 音频处理 - 小块高频处理
-            chunk_size=512,
+            chunk_size=256,
             buffer_size=1024,
             overlap_ratio=0.75,
             
             # 检测参数 - 最高精度
-            detection_frequency=60.0,  # 60Hz检测频率
-            yin_threshold=0.2,
+            detection_frequency=90.0,  # 更高检测频率上限（代码中仍有限制≤120Hz）
+            yin_threshold=0.16,
             signal_threshold=0.0005,
             
             # 资源使用 - 充分利用
