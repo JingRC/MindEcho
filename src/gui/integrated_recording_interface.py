@@ -203,8 +203,8 @@ try:
                                  QPushButton, QLabel, QSlider, QComboBox,
                                  QGroupBox, QProgressBar, QCheckBox, QSpinBox,
                                  QApplication, QMessageBox, QFrame, QGridLayout,
-                                 QScrollBar, QDialog, QMenu)
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QMetaObject, pyqtSlot
+                                 QScrollBar, QDialog, QMenu, QLineEdit, QFileDialog)
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QMetaObject, pyqtSlot, QSettings
     from PyQt6.QtGui import QFont, QPalette, QColor
     PYQT_VERSION = 6
 except ImportError:
@@ -212,8 +212,8 @@ except ImportError:
         from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                      QPushButton, QLabel, QSlider, QComboBox,
                                      QGroupBox, QProgressBar, QCheckBox, QSpinBox,
-                                     QApplication, QMessageBox, QFrame)
-        from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+                                     QApplication, QMessageBox, QFrame, QLineEdit, QFileDialog)
+        from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings
         from PyQt5.QtGui import QFont, QPalette, QColor
         PYQT_VERSION = 5
     except ImportError:
@@ -262,6 +262,28 @@ import matplotlib.patches as patches
 from matplotlib import font_manager
 
 
+# 通用：延迟显示格式化（避免出现 "Nonems" 等）
+def _format_latency_ms(val, default_text: str = "未知") -> str:
+    try:
+        if val is None:
+            return default_text
+        if isinstance(val, (int, float)):
+            # 处理 NaN/inf
+            try:
+                import math
+                if not math.isfinite(float(val)):
+                    return default_text
+            except Exception:
+                pass
+            return f"{float(val):.2f}ms"
+        s = str(val).strip()
+        if s.lower() in ("none", "unknown", "n/a", "na", ""):
+            return default_text
+        return s
+    except Exception:
+        return default_text
+
+
 class IntegratedAudioProcessor(QThread):
     """集成音频处理线程 - 同时处理录音和音高分析"""
     
@@ -293,6 +315,16 @@ class IntegratedAudioProcessor(QThread):
         self.pitch_history = deque(maxlen=1000)  # 保存最近1000个音高点
         
         print("🔥 关键修复：基础状态变量已初始化")
+
+        # 录音保存目录（可被主界面覆盖）
+        try:
+            self.save_base_dir = (project_root / "recordings")
+        except Exception:
+            self.save_base_dir = Path.cwd() / "recordings"
+        try:
+            Path(self.save_base_dir).mkdir(exist_ok=True)
+        except Exception:
+            pass
         
         # �🚀 专业级音频设备配置（Windows优化）
         print("🎵 正在配置专业级音频处理器...")
@@ -476,6 +508,19 @@ class IntegratedAudioProcessor(QThread):
             'bypass_on_transients': False,     # 🎯 关闭瞬态绕过（避免音质问题）
             'optimize_for_vocals': True        # 🎵 针对人声优化
         }
+
+    def set_save_base_dir(self, path: str):
+        """设置录音保存的基础目录（由主窗口调用）"""
+        try:
+            p = Path(path)
+            p.mkdir(parents=True, exist_ok=True)
+            self.save_base_dir = p
+            self._log_rate_limit("save_dir", f"💾 保存目录: {p}")
+        except Exception as e:
+            try:
+                self.error_occurred.emit(f"设置保存目录失败: {e}")
+            except Exception:
+                pass
 
         # 实时统计 - 🔥 pitch_history已在上方初始化
         # self.pitch_history = deque(maxlen=1000)  # 保存最近1000个音高点
@@ -1005,7 +1050,7 @@ class IntegratedAudioProcessor(QThread):
                 # WASAPI设备检测（第二优先级）- 更准确的检测方法
                 if device.get('hostapi', 0) == 2:  # hostapi=2 是WASAPI
                     self.audio_device_info['wasapi_devices'].append(device_info)
-                    print(f"🔊 检测到WASAPI设备: {device.get('name')} (索引{i}, {max_inputs}输入/{max_outputs}输出@{default_sr}Hz)")
+                    print(f"🔊 检测到WASAPI设备: {device.get('name')} (索引{i}, {max_inputs}输入/{max_outputs}输出@{int(default_sr)}Hz)")
                     
                     # 分别存储输入和输出设备
                     if max_inputs > 0:
@@ -1022,7 +1067,7 @@ class IntegratedAudioProcessor(QThread):
                 # ASIO设备检测（最高优先级）
                 elif 'ASIO' in device_name or max_inputs > 8:
                     self.audio_device_info['asio_devices'].append(device_info)
-                    print(f"🎧 检测到ASIO设备: {device.get('name')} ({max_inputs}输入/{max_outputs}输出@{default_sr}Hz)")
+                    print(f"🎧 检测到ASIO设备: {device.get('name')} ({max_inputs}输入/{max_outputs}输出@{int(default_sr)}Hz)")
                 
                 # DirectSound设备（第三优先级）
                 elif max_inputs > 0:
@@ -2365,7 +2410,7 @@ class IntegratedAudioProcessor(QThread):
                         self._stat_counters['high_latency'] += 1
                     else:
                         if getattr(self, 'debug_flags', {}).get('latency_warn_verbose', False):
-                            self._log_rate_limit('latency_ok', f"✅ 延迟良好: {total_latency:.2f}ms", interval=0.8)
+                            self._log_rate_limit('latency_ok', f"✅ 延迟良好: {_format_latency_ms(total_latency)}", interval=0.8)
                     
                     # 清理旧数据
                     self._processing_times = []
@@ -2449,8 +2494,8 @@ class IntegratedAudioProcessor(QThread):
                             stream_params['blocksize'] = config.get('blocksize', mode_block)
                         except Exception:
                             stream_params['blocksize'] = config.get('blocksize', self.chunk_size)
-                        verified_latency = config.get('verified_latency', 'unknown')
-                        print(f"🎯 使用WASAPI设备{config['device']}@{config['samplerate']}Hz (测试验证延迟: {verified_latency}ms)")
+                        verified_latency = config.get('verified_latency', None)
+                        print(f"🎯 使用WASAPI设备{config['device']}@{config['samplerate']}Hz (测试验证延迟: {_format_latency_ms(verified_latency)})")
                     else:
                         stream_params['samplerate'] = self.sample_rate
                         try:
@@ -2482,12 +2527,13 @@ class IntegratedAudioProcessor(QThread):
                         self.active_input_channels = int(getattr(self, 'active_input_channels', self.channels))
                         self.active_blocksize = int(getattr(self, 'active_blocksize', self.chunk_size))
                     theoretical_latency = (actual_blocksize / actual_sample_rate) * 1000
-                    verified_latency = config.get('verified_latency', theoretical_latency)
+                    _ver_lat = config.get('verified_latency', None)
+                    verified_latency = _ver_lat if isinstance(_ver_lat, (int, float)) else theoretical_latency
                     
                     print(f"✅ {config['name']}启动成功:")
                     print(f"   ├─ 配置: {actual_sample_rate}Hz, {actual_blocksize}样本")
                     print(f"   ├─ 理论延迟: {theoretical_latency:.2f}ms")
-                    print(f"   ├─ 验证延迟: {verified_latency}ms ⭐")
+                    print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=f"{theoretical_latency:.2f}ms")} ⭐")
                     print(f"   ├─ 预期性能: {config['expected_latency']}")
                     print(f"   └─ 音频格式: float32")
                     
@@ -2758,11 +2804,13 @@ class IntegratedAudioProcessor(QThread):
     def save_recording(self):
         """保存录音文件"""
         try:
-            # 确保录音目录存在
-            recordings_dir = project_root / "recordings"
-            recordings_dir.mkdir(exist_ok=True)
+            # 确保录音目录存在（优先使用用户选择）
+            recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            recordings_dir.mkdir(parents=True, exist_ok=True)
 
             # 生成文件路径
+            # 规范化：避免结尾空格/点
+            self.recording_filename = self.recording_filename.strip(" .")
             if not self.recording_filename.endswith('.wav'):
                 self.recording_filename += '.wav'
 
@@ -2813,8 +2861,9 @@ class IntegratedAudioProcessor(QThread):
                                  audio_array: np.ndarray, pitch_history: list, duration: float) -> str:
         """使用提供的快照数据保存录音与分析，避免与实时状态竞争。返回保存的wav路径。"""
         try:
-            recordings_dir = project_root / "recordings"
-            recordings_dir.mkdir(exist_ok=True)
+            recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            filename = filename.strip(" .")
             if not filename.endswith('.wav'):
                 filename = filename + '.wav'
             output_path = recordings_dir / filename
@@ -3061,7 +3110,7 @@ class IntegratedAudioProcessor(QThread):
                                 self._log_rate_limit('high_latency_monitor', f"⚠️ 监听延迟偏高 {total_monitoring_latency:.2f}ms", interval=1.0)
                             self._stat_counters['high_latency'] += 1
                         else:
-                            self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好 {total_monitoring_latency:.2f}ms", interval=2.0)
+                            self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好 {_format_latency_ms(total_monitoring_latency)}", interval=2.0)
                         self._monitoring_processing_times = []
                 
                 # 创建专业级低延迟音频流（监听模式智能配置）
@@ -3118,8 +3167,8 @@ class IntegratedAudioProcessor(QThread):
                             stream_params['device'] = config['device']
                             stream_params['samplerate'] = config['samplerate']
                             stream_params['blocksize'] = config.get('blocksize', self.chunk_size)
-                            verified_latency = config.get('verified_latency', 'unknown')
-                            print(f"🎯 监听使用WASAPI设备{config['device']}@{config['samplerate']}Hz (验证延迟: {verified_latency}ms)")
+                            verified_latency = config.get('verified_latency', None)
+                            print(f"🎯 监听使用WASAPI设备{config['device']}@{config['samplerate']}Hz (验证延迟: {_format_latency_ms(verified_latency)})")
                         else:
                             stream_params['samplerate'] = self.sample_rate
                             stream_params['blocksize'] = self.chunk_size
@@ -3144,12 +3193,13 @@ class IntegratedAudioProcessor(QThread):
                             self.active_input_channels = int(getattr(self, 'active_input_channels', self.channels))
                             self.active_blocksize = int(getattr(self, 'active_blocksize', self.chunk_size))
                         theoretical_latency = (actual_blocksize / actual_sample_rate) * 1000
-                        verified_latency = config.get('verified_latency', theoretical_latency)
+                        _ver_lat = config.get('verified_latency', None)
+                        verified_latency = _ver_lat if isinstance(_ver_lat, (int, float)) else theoretical_latency
                         
                         print(f"✅ {config['name']}启动成功:")
                         print(f"   ├─ 配置: {actual_sample_rate}Hz, {actual_blocksize}样本")
                         print(f"   ├─ 理论延迟: {theoretical_latency:.2f}ms")
-                        print(f"   ├─ 验证延迟: {verified_latency}ms ⭐")
+                        print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=f"{theoretical_latency:.2f}ms")} ⭐")
                         print(f"   ├─ 性能级别: {config['latency_class']}")
                         print(f"   └─ 音频格式: float32")
                         
@@ -3246,7 +3296,6 @@ class IntegratedAudioProcessor(QThread):
         """启动HECATE G4 Pro优化监听：基于设备33最优配置"""
         try:
             import sounddevice as sd
-            import numpy as np
             
             # 🎯 检查全局监听状态 - 如果已有监听运行，继续使用
             if self.is_global_monitoring_active:
@@ -4662,13 +4711,14 @@ class IntegratedAudioProcessor(QThread):
                         self.monitoring_stream = sd.Stream(**stream_params)
                         
                         theoretical_latency = config['block'] / config['rate'] * 1000
-                        verified_latency = config.get('verified_latency', theoretical_latency)
+                        _ver_lat = config.get('verified_latency', None)
+                        verified_latency = _ver_lat if isinstance(_ver_lat, (int, float)) else theoretical_latency
                         
                         print(f"✅ {config['name']}启动成功:")
                         print(f"   ├─ 配置: {config['rate']}Hz/{config['block']}样本")
                         print(f"   ├─ 理论延迟: {theoretical_latency:.2f}ms")
                         if 'verified_latency' in config:
-                            print(f"   ├─ 验证延迟: {verified_latency}ms ⭐")
+                            print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=f"{theoretical_latency:.2f}ms")} ⭐")
                         print(f"   ├─ 优先级: {config['priority']}")
                         print(f"   └─ 音频格式: float32")
                         
@@ -5175,17 +5225,18 @@ class IntegratedAudioProcessor(QThread):
                 _mode0 = _pm0.get_current_mode() if _pm0 else None
                 if _mode0 == PerformanceMode.HIGH_PERFORMANCE:
                     hop_div = 8
-                elif _mode0 == PerformanceMode.BALANCED:
-                    hop_div = 7
-                else:
-                    hop_div = 4
+                    # 在高性能模式下，稍微放宽 UI 发射与平滑步长
+                    self._ui_emit_min_interval_default = 0.018
+                    self._smooth_max_step = 0.095
+                    self._push_heavy_factor = 0.84
             except Exception:
                 hop_div = 4
             # 允许更小的 hop 下限（128 样本），减少端到端延迟
             self._frame_hop = max(128, self._frame_window // hop_div)
             self._frame_window_sec = self._frame_window / self.sample_rate
             self._frame_hop_sec = self._frame_hop / self.sample_rate
-            self._frame_buffer = []
+            if not hasattr(self, '_frame_buffer'):
+                self._frame_buffer = []
             self._frame_config_initialized = True
             if getattr(self, 'debug_flags', {}).get('queue_log', False):
                 print(f"⚙️ 新帧配置: window={self._frame_window}({self._frame_window_sec*1000:.1f}ms) hop={self._frame_hop}({self._frame_hop_sec*1000:.1f}ms)")
@@ -5258,14 +5309,14 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     pass
             
-            # 🎯 增强调试：更频繁地输出状态信息
-            if loop_counter <= 5 or loop_counter % 100 == 0:
+            # 🎯 增强调试：仅第一次输出关键状态，后续每100次输出简报（受节流控制）
+            if loop_counter == 1 or loop_counter % 100 == 0:
                 queue_size = self.audio_buffer_queue.qsize()
                 if getattr(self, 'debug_flags', {}).get('queue_log', False):
                     self._log_rate_limit('loop_brief', f"🔄 处理循环#{loop_counter}: 队列={queue_size}", interval=0.5, burst=3)
                 
                 # 检查关键状态
-                if loop_counter <= 5:
+                if loop_counter == 1:
                     print(f"   🎯 is_recording={self.is_recording}")
                     print(f"   🎯 is_monitoring_only={getattr(self, 'is_monitoring_only', 'Not set')}")
                     print(f"   🎯 should_save={getattr(self, 'should_save', 'Not set')}")
@@ -5833,6 +5884,30 @@ class IntegratedAudioProcessor(QThread):
                         'audio_rms': 0,
                         'vibrato_info': {'has_vibrato': False}
                     }
+
+                # 统一延迟显示，避免出现 "Nonems" 等异常格式
+                def _format_latency_ms(val, default_text: str = "未知") -> str:
+                    try:
+                        if val is None:
+                            return default_text
+                        # 数值型：保留两位小数并带单位
+                        if isinstance(val, (int, float)):
+                            # 处理 NaN/inf
+                            try:
+                                import math
+                                if not math.isfinite(float(val)):
+                                    return default_text
+                            except Exception:
+                                pass
+                            return f"{float(val):.2f}ms"
+                        # 字符串：标准化几种未知写法
+                        s = str(val).strip()
+                        if s.lower() in ("none", "unknown", "n/a", "na", ""):
+                            return default_text
+                        # 若已自带单位则原样返回
+                        return s
+                    except Exception:
+                        return default_text
                     self._emit_pitch_data_throttled(timestamp_data)
                     self._last_no_pitch_emit_t = now_err
             except Exception:
@@ -8013,6 +8088,15 @@ class ECGStylePitchVisualizer(QWidget):
         self._seg_timing_samples = deque(maxlen=120)
         self._draw_timing_samples = deque(maxlen=120)
         self._diag_last_perf_report = 0
+        # 近期头部点：用于极低延迟显示最近0.6秒内的细节点
+        self._head_points_scatter = None
+        self._head_points_window_s = 0.60
+        self._head_points_capacity = 240
+        try:
+            from collections import deque as _dq
+            self._head_points = _dq(maxlen=self._head_points_capacity)
+        except Exception:
+            self._head_points = []
         # 速率限制日志 & 统计
         self._last_log_times = {
             'vocal_protect': 0.0,
@@ -8075,7 +8159,7 @@ class ECGStylePitchVisualizer(QWidget):
             # ================== 运行/刷新计时器与阈值 ==================
             # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
             # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
-            self._min_heavy_interval = 0.018  # 微降阈值，缩短等待，提升细节点“即时感”
+            self._min_heavy_interval = 0.016  # 再小幅下降，提升“即时感”，配合 push 因子
 
             # 高频轻量帧定时器（即使没有新点也推动时间轴+细节点刷新）
             # 使用较小间隔以提升平滑度；如 CPU 允许可调至 8-12ms
@@ -8149,7 +8233,11 @@ class ECGStylePitchVisualizer(QWidget):
     def set_audio_processor(self, audio_processor):
         self.audio_processor = audio_processor
         print("🔗 音频处理器引用已设置到可视化器")
-        self.update_timer = QTimer()
+        self.update_timer = QTimer(self)
+        try:
+            self.update_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        except Exception:
+            pass
         self.update_timer.timeout.connect(self.update_display)
         self.update_timer.start(self.update_interval)
         print(f"🖥️ 可视化刷新定时器启动: {self.update_interval}ms")
@@ -8203,6 +8291,12 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 self.time_offset = 0.0
 
+            # 在完成一次较重更新后，给事件循环一个短让步，缓和主线程阻塞感
+            try:
+                if hasattr(QApplication, 'processEvents'):
+                    QApplication.processEvents()
+            except Exception:
+                pass
         # 没有新数据也让显示推进：缩短触发阈值，避免“半秒一卡”观感
         if hasattr(self, 'last_pitch_time') and self.current_global_time - self.last_pitch_time > 0.12:
             try:
@@ -8300,6 +8394,20 @@ class ECGStylePitchVisualizer(QWidget):
         # 清理段信息
         if hasattr(self, '_segments'):
             self._segments = []
+
+        # 清理头部即时散点
+        try:
+            if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                if self._head_points_scatter in self.ax.collections:
+                    self._head_points_scatter.remove()
+            self._head_points_scatter = None
+            if hasattr(self, '_head_points'):
+                try:
+                    self._head_points.clear()
+                except Exception:
+                    self._head_points = []
+        except Exception:
+            pass
         
         # 🔥 清理彩色渐变线条
         if hasattr(self, 'gradient_lines'):
@@ -9285,6 +9393,12 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 创建坐标轴
         self.ax = self.figure.add_subplot(111, facecolor=self.bg_color)
+        # 启用双缓冲（若后端支持）
+        try:
+            self.figure.set_tight_layout(False)
+            self.canvas.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        except Exception:
+            pass
         
         # 设置心电图式网格
         self.setup_ecg_grid()
@@ -10301,6 +10415,48 @@ class ECGStylePitchVisualizer(QWidget):
                             self.update_axis_ranges()
                             if shift > 0.25:
                                 print(f"⚠️ [YDRIFT] auto-follow center shift={shift:.2f} new_center={self.y_view_center:.2f}")
+
+                # === 头部即时散点：收集最近窗口内的点，降低端到端感知延迟 ===
+                try:
+                    if hasattr(self, '_head_points'):
+                        self._head_points.append((global_time, y_pos))
+                        # 清理窗口外数据
+                        cutoff = global_time - float(getattr(self, '_head_points_window_s', 0.60))
+                        if isinstance(self._head_points, list):
+                            self._head_points = [(t, y) for (t, y) in self._head_points if t >= cutoff][-self._head_points_capacity:]
+                        else:
+                            while self._head_points and self._head_points[0][0] < cutoff:
+                                try: self._head_points.popleft()
+                                except Exception: break
+                        # 快速更新散点集合（不触发重帧）
+                        if hasattr(self, 'ax'):
+                            # 注意：本函数顶部已使用全局 np（例如 np.log2），
+                            # 这里避免再次将 np 设为局部变量，使用别名以防止 UnboundLocalError。
+                            import numpy as _np
+                            pts = _np.asarray(list(self._head_points), dtype=float)
+                            if pts.size > 0:
+                                if getattr(self, '_head_points_scatter', None) is None:
+                                    try:
+                                        self._head_points_scatter = self.ax.scatter([], [], s=14, c=[(1.0,1.0,1.0)], alpha=0.9, linewidths=0, zorder=14)
+                                    except Exception:
+                                        self._head_points_scatter = None
+                                if self._head_points_scatter is not None:
+                                    try:
+                                        self._head_points_scatter.set_offsets(pts)
+                                        # 稍微加大头部点尺寸以突出
+                                        ms = max(9.0, min(16.0, 12.0))
+                                        self._head_points_scatter.set_sizes([ms])
+                                        self._head_points_scatter.set_alpha(0.95)
+                                    except Exception:
+                                        pass
+                            elif getattr(self, '_head_points_scatter', None) is not None:
+                                try:
+                                    self._head_points_scatter.set_offsets(_np.empty((0,2)))
+                                    self._head_points_scatter.set_alpha(0.0)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
             else:
                 # 无音高时，仍然更新时间相关状态，但不添加音高数据点
                 # 这样音调线条会断开，但时间轴继续推进
@@ -10454,12 +10610,24 @@ class ECGStylePitchVisualizer(QWidget):
             return
         now_t = time.time()
         # 简单去抖：避免在极短间隔内重复触发
-        if hasattr(self, '_last_fast_tick') and (now_t - self._last_fast_tick) < (self.fast_update_interval_ms/1000.0 * 0.8):
+        if hasattr(self, '_last_fast_tick') and (now_t - self._last_fast_tick) < (self.fast_update_interval_ms/1000.0 * 0.6):
             return
-        # 若有新点，fast tick 不做额外事情（push 已经触发）
+        # 若无新点：尽量用轻量滚动保持顺滑观感
         if getattr(self, '_new_points_since_last_draw', 0) == 0:
-            # 距离最近一次重帧时间过短则跳过，避免过度调用（更保守，降低CPU占用）
+            # 如果刚做过重绘且在抑制窗口内，则仅做轻量xlim平滑，不触发完整 update_display
             if hasattr(self, '_last_heavy_redraw_time') and (now_t - self._last_heavy_redraw_time) < self._min_heavy_redraw_time_threshold():
+                try:
+                    # 轻量滚动：对当前目标窗口做平滑逼近
+                    x_min = float(getattr(self, 'time_offset', 0.0))
+                    x_max = x_min + float(getattr(self, 'time_window', 16.0))
+                    self._smooth_set_xlim(x_min, x_max, 
+                        strength=float(getattr(self, '_smooth_strength', 0.9)), 
+                        max_step=float(getattr(self, '_smooth_max_step', 0.06)))
+                    if hasattr(self, 'canvas'):
+                        self.canvas.draw_idle()
+                except Exception:
+                    pass
+                self._last_fast_tick = now_t
                 return
         try:
             self.update_display()
@@ -10478,12 +10646,32 @@ class ECGStylePitchVisualizer(QWidget):
             mode = getattr(self, 'current_performance_mode', None)
             base = float(getattr(self, '_min_heavy_interval', 0.028))
             if mode == PerformanceMode.HIGH_PERFORMANCE:
-                return base * 0.70  # 更频繁允许轻量帧，但仍避免过密
+                return base * 0.65  # 更频繁允许轻量帧，但仍避免过密
             if mode == PerformanceMode.QUIET:
-                return base * 0.90  # 安静模式更倾向跳过
+                return base * 0.85  # 安静模式更倾向跳过但保持顺滑
             return base * 0.80
         except Exception:
             return float(getattr(self, '_min_heavy_interval', 0.028)) * 0.80
+
+    def _compute_axis_lead_seconds(self) -> float:
+        """计算时间轴目标的提前量（补偿绘制/调度延迟），范围 [0, 0.05]s。"""
+        try:
+            base = 0.020  # 基础前瞻
+            avg_draw = 0.0
+            if hasattr(self, '_draw_timing_samples') and self._draw_timing_samples:
+                import numpy as np
+                avg_draw = float(np.mean(self._draw_timing_samples)) if len(self._draw_timing_samples) > 0 else 0.0
+            # 取半个平均重绘耗时作为附加提前量，避免过冲
+            lead = base + min(0.02, avg_draw * 0.5)
+            return max(0.0, min(0.05, lead))
+        except Exception:
+            return 0.02
+
+    def _get_follow_smoothing(self) -> tuple:
+        """返回时间轴跟随时使用的 (strength, max_step) 平滑参数。"""
+        s = float(getattr(self, '_smooth_follow_strength', getattr(self, '_smooth_strength', 0.9)))
+        m = float(getattr(self, '_smooth_follow_max_step', getattr(self, '_smooth_max_step', 0.06)))
+        return (s, m)
 
     def _refresh_batched_points_for_current_xlim(self):
         """轻量刷新：根据当前 xlim 更新批量细节点集合，用于手动水平滚动/拖拽时保持细节点可见。"""
@@ -10511,7 +10699,8 @@ class ECGStylePitchVisualizer(QWidget):
                 x0, x1 = self.ax.get_xlim()
             except Exception:
                 x0, x1 = self.time_offset, self.time_offset + self.time_window
-            import numpy as np
+            # 避免与其他作用域中对 np 的使用发生局部覆盖，使用别名
+            import numpy as _np
             chunks = []
             for (seg_times, seg_pitches) in self._segments:
                 if not seg_times:
@@ -10520,11 +10709,11 @@ class ECGStylePitchVisualizer(QWidget):
                     if x0 <= t <= x1:
                         chunks.append((t, y))
             if chunks:
-                arr = np.asarray(chunks, dtype=float)
+                arr = _np.asarray(chunks, dtype=float)
                 # 限制点数，避免过度绘制
                 max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
                 if arr.shape[0] > max_pts:
-                    step = int(np.ceil(arr.shape[0] / max_pts))
+                    step = int(_np.ceil(arr.shape[0] / max_pts))
                     arr = arr[::step]
                 # 统一计算尺寸
                 def _calc_marker_size():
@@ -10540,8 +10729,8 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 # 无可见点则隐藏
                 try:
-                    import numpy as np
-                    self._batched_points.set_offsets(np.empty((0, 2)))
+                    import numpy as _np
+                    self._batched_points.set_offsets(_np.empty((0, 2)))
                 except Exception:
                     pass
                 self._batched_points.set_alpha(0.0)
@@ -10910,7 +11099,7 @@ class ECGStylePitchVisualizer(QWidget):
                             # 仅当集合存在时，按当前可视窗口快速刷新 offsets（无新点，仅滚动）
                             if self._batched_points is not None and hasattr(self, '_segments') and self._segments:
                                 try:
-                                    import numpy as np
+                                    import numpy as _np
                                     x0, x1 = self.ax.get_xlim()
                                     chunks = []
                                     for (seg_times, seg_pitches) in self._segments:
@@ -10921,11 +11110,11 @@ class ECGStylePitchVisualizer(QWidget):
                                             if x0 <= t <= x1:
                                                 chunks.append((t, y))
                                     if chunks:
-                                        arr = np.asarray(chunks, dtype=float)
+                                        arr = _np.asarray(chunks, dtype=float)
                                         # 轻量抽样限制（稍放宽以减少“断续”感）
                                         max_pts = int(getattr(self, '_batched_points_cap_light', 900))
                                         if arr.shape[0] > max_pts:
-                                            step = int(np.ceil(arr.shape[0] / max_pts))
+                                            step = int(_np.ceil(arr.shape[0] / max_pts))
                                             arr = arr[::step]
                                         # 基于当前缩放计算大小（与重帧一致）
                                         def _calc_marker_size():
@@ -10940,7 +11129,7 @@ class ECGStylePitchVisualizer(QWidget):
                                         self._batched_points.set_zorder(13)
                                     else:
                                         # 视口内无点则隐藏
-                                        self._batched_points.set_offsets(np.empty((0, 2)))
+                                        self._batched_points.set_offsets(_np.empty((0, 2)))
                                         self._batched_points.set_alpha(0.0)
                                 except Exception:
                                     # 避免轻量帧异常影响流畅度
@@ -11703,7 +11892,7 @@ class ECGStylePitchVisualizer(QWidget):
             # 批量细节点：实时优化；历史浏览关闭（使用逐段高保真）
             if use_batched_points and hasattr(self, '_batched_points') and (self._batched_points is not None):
                 try:
-                    import numpy as np
+                    import numpy as _np
                     # 当前可视窗口裁剪，避免对屏外大量点做无效更新
                     try:
                         x0, x1 = self.ax.get_xlim()
@@ -11729,19 +11918,19 @@ class ECGStylePitchVisualizer(QWidget):
                             for t, y in zip(seg_times, seg_pitches):
                                 chunks.append((t, y))
                     if chunks:
-                        arr = np.asarray(chunks, dtype=float)
+                        arr = _np.asarray(chunks, dtype=float)
                         total_pts = arr.shape[0]
                         # 视口点数过多时做等距抽样，限制 offsets 更新量，避免抖动
                         max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
                         if total_pts > max_pts:
-                            step = int(np.ceil(total_pts / max_pts))
+                            step = int(_np.ceil(total_pts / max_pts))
                             arr = arr[::step]
                         self._batched_points.set_offsets(arr)
                         self._batched_points.set_sizes([s_val_global] * len(arr))
                         self._batched_points.set_alpha(0.95)
                         self._batched_points.set_zorder(13)
                     else:
-                        self._batched_points.set_offsets(np.empty((0, 2)))
+                        self._batched_points.set_offsets(_np.empty((0, 2)))
                         self._batched_points.set_alpha(0.0)
                 except Exception as _bp_e:
                     # 降级：关闭批量点以避免持续异常，并恢复逐段散点可见
@@ -12198,10 +12387,10 @@ class ECGStylePitchVisualizer(QWidget):
             mode = mode_enum or self.current_performance_mode or PerformanceMode.BALANCED
 
             if mode == PerformanceMode.QUIET:
-                new_update_ms = 36   # ~27 FPS（略提速保证顺滑）
-                new_fast_ms = 12     # ~83 Hz 轻量
-                new_time_ms = 16     # ~60 Hz 时间轴
-                min_heavy_interval = 0.030
+                new_update_ms = 34   # ~29 FPS（小幅提速更顺滑）
+                new_fast_ms = 10     # ~100 Hz 轻量（更跟手）
+                new_time_ms = 14     # ~71 Hz 时间轴（更平滑）
+                min_heavy_interval = 0.028
                 # 无音高发射节流（更保守）
                 self._no_pitch_emit_interval_default = 0.08  # ~12.5 Hz
                 # UI信号发射节流（更保守）
@@ -12212,16 +12401,16 @@ class ECGStylePitchVisualizer(QWidget):
                 self._batched_points_cap_light = 900
                 self._batched_points_cap_heavy = 1200
                 # 平滑时间轴参数（更温和）
-                self._smooth_strength = 0.75
-                self._smooth_max_step = 0.05
+                self._smooth_strength = 0.80
+                self._smooth_max_step = 0.055
                 # push重绘触发因子（更保守）
                 self._push_heavy_factor = 0.98
             elif mode == PerformanceMode.HIGH_PERFORMANCE:
                 # 更激进但保持安全余量
-                new_update_ms = 18   # ~55 FPS（接近60FPS）
-                new_fast_ms = 6      # ~166 Hz 轻量
+                new_update_ms = 16   # 62.5 FPS（接近60FPS更稳）
+                new_fast_ms = 5      # 200 Hz 轻量（更丝滑）
                 new_time_ms = 10     # ~100 Hz 时间轴
-                min_heavy_interval = 0.018
+                min_heavy_interval = 0.016
                 # 无音高发射节流（更积极以维持高密度时间线）
                 self._no_pitch_emit_interval_default = 0.03  # ~33 Hz
                 # UI信号发射节流（更积极）
@@ -12232,16 +12421,16 @@ class ECGStylePitchVisualizer(QWidget):
                 self._batched_points_cap_light = 1800
                 self._batched_points_cap_heavy = 2400
                 # 平滑时间轴参数（更迅速）
-                self._smooth_strength = 0.95
-                self._smooth_max_step = 0.08
+                self._smooth_strength = 0.96
+                self._smooth_max_step = 0.085
                 # push重绘触发因子（更积极）
                 self._push_heavy_factor = 0.88
             else:
                 # BALANCED
-                new_update_ms = 22   # ~45 FPS（小幅提升）
-                new_fast_ms = 8      # ~125 Hz 轻量（更顺滑）
+                new_update_ms = 20   # 50 FPS（更顺滑）
+                new_fast_ms = 7      # ~143 Hz 轻量
                 new_time_ms = 12     # ~83 Hz 时间轴（保持）
-                min_heavy_interval = 0.020  # 更容易触发重帧
+                min_heavy_interval = 0.019  # 更容易触发重帧
                 # 无音高发射节流（小幅提速，提升连续性）
                 self._no_pitch_emit_interval_default = 0.035  # ~28.5 Hz
                 # UI信号发射节流（小幅提速）
@@ -12252,10 +12441,24 @@ class ECGStylePitchVisualizer(QWidget):
                 self._batched_points_cap_light = 1400
                 self._batched_points_cap_heavy = 1800
                 # 平滑时间轴参数（折中）
-                self._smooth_strength = 0.92
-                self._smooth_max_step = 0.065
+                self._smooth_strength = 0.935
+                self._smooth_max_step = 0.07
                 # push重绘触发因子（适中）
                 self._push_heavy_factor = 0.90
+
+            # 跟随滚动专用的平滑（在 8s 后开始移动时使用）
+            try:
+                if mode == PerformanceMode.QUIET:
+                    self._smooth_follow_strength = 0.88
+                    self._smooth_follow_max_step = 0.06
+                elif mode == PerformanceMode.HIGH_PERFORMANCE:
+                    self._smooth_follow_strength = 0.96
+                    self._smooth_follow_max_step = 0.085
+                else:  # BALANCED
+                    self._smooth_follow_strength = 0.935
+                    self._smooth_follow_max_step = 0.07
+            except Exception:
+                pass
 
             # 应用并尽量无闪断地重启定时器
             try:
@@ -13168,18 +13371,29 @@ class ECGStylePitchVisualizer(QWidget):
             self.current_global_time = time.time() - self.start_time
             
             # 手动滚动冻结逻辑：最近 2 秒用户交互则暂不自动滚动
-            manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
+            manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 1.6  # 略缩短让自动回归更快
 
             if self.auto_follow and self.auto_scroll_enabled and not manual_freeze:
                 if self.current_global_time > self.center_display_time:
-                    new_offset = self.current_global_time - self.center_display_time
-                    # 直接更新 offset，但使用平滑 xlim 过渡
-                    self.time_offset = min(new_offset, max(0, self.max_history_time - self.time_window))
+                    # 目标偏移=当前时间-中心显示时间，再加少量前瞻补偿（消除“8秒开始滚动”时的延迟感）
+                    lead = self._compute_axis_lead_seconds()
+                    target_offset = (self.current_global_time + lead) - self.center_display_time
+                    target_offset = min(target_offset, max(0, self.max_history_time - self.time_window))
+                    # 抖动防护：限制单帧偏移增量，避免偶发卡段导致的突跳
+                    try:
+                        last_offset = float(getattr(self, 'time_offset', 0.0))
+                        max_delta = max(0.03, float(getattr(self, '_smooth_max_step', 0.06)) * 1.5)
+                        if target_offset - last_offset > max_delta:
+                            target_offset = last_offset + max_delta
+                    except Exception:
+                        pass
+                    self.time_offset = target_offset
                     try:
                         if hasattr(self, 'ax'):
                             x_min = self.time_offset
                             x_max = self.time_offset + self.time_window
-                            self._smooth_set_xlim(x_min, x_max, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
+                            s, m = self._get_follow_smoothing()
+                            self._smooth_set_xlim(x_min, x_max, strength=s, max_step=m)
                     except Exception:
                         self.update_axis_ranges()
                 else:
@@ -14148,6 +14362,32 @@ class IntegratedRecordingInterface(QMainWindow):
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status_display)
         self.status_timer.start(100)  # 100ms更新一次
+
+        # 默认录音保存目录（可配置）
+        try:
+            self.default_recordings_dir = project_root / "recordings"
+            self.default_recordings_dir.mkdir(exist_ok=True)
+        except Exception:
+            self.default_recordings_dir = Path.cwd() / "recordings"
+            self.default_recordings_dir.mkdir(exist_ok=True)
+        # 从 QSettings 读取持久化的保存目录
+        try:
+            settings = QSettings("MindEcho", "IntegratedRecorder")
+            saved_dir = settings.value("save_base_dir", str(self.default_recordings_dir))
+        except Exception:
+            saved_dir = str(self.default_recordings_dir)
+        # 当前会话保存目录
+        try:
+            self.save_base_dir = Path(saved_dir)
+            self.save_base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            self.save_base_dir = Path(self.default_recordings_dir)
+        # 同步给音频处理器
+        if hasattr(self.audio_processor, 'set_save_base_dir'):
+            try:
+                self.audio_processor.set_save_base_dir(str(self.save_base_dir))
+            except Exception:
+                pass
     
     def _init_memory_pool(self):
         """初始化零拷贝内存池"""
@@ -14329,6 +14569,20 @@ class IntegratedRecordingInterface(QMainWindow):
         
         # 主布局
         main_layout = QVBoxLayout(central_widget)
+
+        # 顶部：设置按钮区域
+        header_layout = QHBoxLayout()
+        self.settings_btn = QPushButton("设置")
+        self.settings_btn.setStyleSheet(
+            """
+            QPushButton { background-color: #2C2C2C; border: 2px solid #4A90E2; border-radius: 6px; padding: 6px 12px; color: white; }
+            QPushButton:hover { border-color: #66BB6A; }
+            """
+        )
+        self.settings_btn.clicked.connect(self.open_settings_dialog)
+        header_layout.addWidget(self.settings_btn)
+        header_layout.addStretch()
+        main_layout.addLayout(header_layout)
         
         # 创建控制面板
         control_panel = self.create_control_panel()
@@ -14352,6 +14606,90 @@ class IntegratedRecordingInterface(QMainWindow):
         
         # 🎯 初始化默认降噪模式为"基础频域降噪"
         self.init_default_noise_reduction()
+
+    def open_settings_dialog(self):
+        """打开设置对话框，配置录音保存位置"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("设置")
+        dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+
+        v = QVBoxLayout(dlg)
+
+        # 录音保存位置
+        group = QGroupBox("录音保存位置")
+        group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
+        g_layout = QVBoxLayout(group)
+        row = QHBoxLayout()
+        self.save_path_edit = QLineEdit(str(self.save_base_dir))
+        self.save_path_edit.setPlaceholderText("选择或输入保存文件夹")
+        browse_btn = QPushButton("选择文件夹")
+        def _browse():
+            try:
+                if PYQT_VERSION == 6:
+                    path = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(self.save_base_dir))
+                else:
+                    path = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(self.save_base_dir))
+                if path:
+                    self.save_path_edit.setText(path)
+            except Exception:
+                pass
+        browse_btn.clicked.connect(_browse)
+        row.addWidget(self.save_path_edit)
+        row.addWidget(browse_btn)
+        g_layout.addLayout(row)
+
+        # 恢复默认按钮
+        default_row = QHBoxLayout()
+        restore_btn = QPushButton("恢复默认")
+        def _restore():
+            self.save_path_edit.setText(str(self.default_recordings_dir))
+        restore_btn.clicked.connect(_restore)
+        default_row.addStretch()
+        default_row.addWidget(restore_btn)
+        g_layout.addLayout(default_row)
+
+        v.addWidget(group)
+
+        # 操作按钮
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("确定")
+        cancel_btn = QPushButton("取消")
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        v.addLayout(btn_row)
+
+        def _apply_and_close():
+            path_text = self.save_path_edit.text().strip()
+            if not path_text:
+                path_text = str(self.default_recordings_dir)
+            try:
+                p = Path(path_text)
+                p.mkdir(parents=True, exist_ok=True)
+                self.save_base_dir = p
+                # 同步给音频处理器
+                if hasattr(self.audio_processor, 'set_save_base_dir'):
+                    try:
+                        self.audio_processor.set_save_base_dir(str(p))
+                    except Exception:
+                        pass
+                # 持久化到 QSettings
+                try:
+                    settings = QSettings("MindEcho", "IntegratedRecorder")
+                    settings.setValue("save_base_dir", str(p))
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "路径错误", f"无法使用该路径:\n{e}")
+                except Exception:
+                    pass
+            dlg.accept()
+
+        ok_btn.clicked.connect(_apply_and_close)
+        cancel_btn.clicked.connect(dlg.reject)
+
+        dlg.exec()
     
     def init_default_noise_reduction(self):
         """初始化默认降噪模式"""
@@ -14439,15 +14777,26 @@ class IntegratedRecordingInterface(QMainWindow):
         self.sample_rate_combo.setCurrentText("48000")  # 默认48kHz
         params_layout.addWidget(self.sample_rate_combo)
         
-        params_layout.addWidget(QLabel("文件名前缀:"))
+        params_layout.addWidget(QLabel("录音文件名:"))
         self.filename_prefix = QComboBox()
         self.filename_prefix.setEditable(True)
+        # 预置常用中英文示例，同时支持自由输入
         self.filename_prefix.addItems([
             "recording",
-            "practice", 
+            "practice",
             "performance",
-            "test"
+            "test",
+            "录音",
+            "练习",
+            "演出",
+            "测试"
         ])
+        try:
+            editor = self.filename_prefix.lineEdit()
+            if editor is not None:
+                editor.setPlaceholderText("可输入中文或英文作为录音文件名")
+        except Exception:
+            pass
         params_layout.addWidget(self.filename_prefix)
         
         params_layout.addWidget(QLabel("保存录音:"))
@@ -14644,11 +14993,24 @@ class IntegratedRecordingInterface(QMainWindow):
             sample_rate = int(self.sample_rate_combo.currentText())
             should_save = self.save_checkbox.isChecked()
             
-            # 生成文件名
+            # 生成文件名（允许中英文自定义）
             if should_save:
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                prefix = self.filename_prefix.currentText()
-                filename = f"{prefix}_{timestamp}"
+                raw_name = (self.filename_prefix.currentText() or "").strip()
+                # 清洗：保留常见合法字符；对 Windows 不允许的字符进行替换为下划线
+                # 允许：中文、英文、数字、空格、- _ () [] {}
+                try:
+                    import re
+                    # 先替换 Windows 非法字符 <>:"/\\|?* 为下划线
+                    cleaned = re.sub(r"[<>:\"/\\\\|?*]", "_", raw_name)
+                    # 去除首尾点和空格，避免 Win 末尾点/空格问题
+                    cleaned = cleaned.strip(" .")
+                    # 防御：若为空则回退到默认前缀
+                    if not cleaned:
+                        cleaned = "recording"
+                except Exception:
+                    cleaned = raw_name or "recording"
+                filename = f"{cleaned}_{timestamp}"
             else:
                 filename = None
             

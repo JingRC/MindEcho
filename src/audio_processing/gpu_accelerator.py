@@ -22,6 +22,9 @@ class GPUAcceleratedProcessor:
         
     def _initialize_gpu(self):
         """初始化GPU计算环境"""
+        # 仅首次初始化时打印成功信息，避免重复刷屏
+        if not hasattr(GPUAcceleratedProcessor, "_printed_once"):
+            GPUAcceleratedProcessor._printed_once = False
         # 尝试CUDA
         try:
             import cupy as cp
@@ -29,7 +32,9 @@ class GPUAcceleratedProcessor:
             self.gpu_available = True
             self.gpu_type = "CUDA"
             self.cp = cp
-            print("✅ CUDA GPU 加速已启用")
+            if not GPUAcceleratedProcessor._printed_once:
+                print("✅ CUDA GPU 加速已启用")
+                GPUAcceleratedProcessor._printed_once = True
             return
         except Exception as e:
             print(f"⚠️ CUDA 不可用: {e}")
@@ -44,7 +49,9 @@ class GPUAcceleratedProcessor:
                 self.gpu_available = True
                 self.gpu_type = "OpenCL"
                 self.cl = cl
-                print("✅ OpenCL GPU 加速已启用")
+                if not GPUAcceleratedProcessor._printed_once:
+                    print("✅ OpenCL GPU 加速已启用")
+                    GPUAcceleratedProcessor._printed_once = True
                 return
         except Exception as e:
             print(f"⚠️ OpenCL 不可用: {e}")
