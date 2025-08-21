@@ -1687,27 +1687,56 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             pass
         # 清除平滑/跳变抑制内部变量
-        for attr in ["_last_stable_frequency", "_freq_smooth", "_pitch_analysis_counter", "_audio_accumulator_buffer", "_last_raw_frequency"]:
+        for attr in [
+            # 录音态核心
+            "_last_stable_frequency", "_freq_smooth", "_pitch_analysis_counter", "_audio_accumulator_buffer", "_last_raw_frequency",
+            "_last_frame_rms", "_yin_miss_streak",
+            # 换气/边界/绘制参考
+            "_bj_streak", "_bj_last_f0", "_bj_last_t", "_breath_suppress_until", "_prevoice_wait_frames",
+            "_last_drawn_t", "_last_drawn_f0",
+            # 诊断与节流
+            "_diag_last_pitch_time", "_diag_pitch_intervals", "_diag_pitch_last_report",
+            "_last_no_pitch_emit_t", "_ui_last_emit_t",
+            # Hann缓存
+            "_hann_cache_len", "_hann_win_cache",
+            # 帧缓冲（切换到录音后重新对齐）
+            "_frame_buffer",
+            # 监听态专用（防止残留影响录音）
+            "_mon_last_stable_frequency", "_mon_freq_smooth", "_mon_last_frame_rms",
+            "_mon_bj_streak", "_mon_bj_last_f0", "_mon_bj_last_t", "_mon_breath_suppress_until", "_mon_prevoice_wait_frames",
+            "_mon_last_drawn_t", "_mon_last_drawn_f0",
+        ]:
             if hasattr(self, attr):
                 try:
                     delattr(self, attr)
                 except Exception:
                     setattr(self, attr, None)
+        # 确保下一轮帧化参数在当前上下文下重算（避免监听/录音切换时沿用旧窗口与hop）
+        try:
+            if hasattr(self, '_frame_config_initialized'):
+                delattr(self, '_frame_config_initialized')
+        except Exception:
+            pass
         print(f"🔄 重置音高分析状态完成: {reason}")
 
     # ========= 音高后处理（Phase1: 提取独立逻辑） ========= #
-    def _post_process_pitch(self, raw_frequency: float) -> float:
+    def _post_process_pitch(self, raw_frequency: float, preview_only: bool = False) -> float:
         """对原始检测频率执行跳变抑制与平滑，返回平滑后的频率。
         - 保留 raw_frequency 以供 vibrato 与调试
-        - self._last_stable_frequency / self._freq_smooth 维护内部状态
+        - 根据 preview_only 选择写入录音态或监听态的内部状态：
+          录音态使用 _last_stable_frequency/_freq_smooth；监听态使用 _mon_last_stable_frequency/_mon_freq_smooth
         """
         if raw_frequency <= 0:
             return 0.0
 
-        if not hasattr(self, '_last_stable_frequency'):
-            self._last_stable_frequency = 0.0
-        if not hasattr(self, '_freq_smooth'):
-            self._freq_smooth = 0.0
+        # 选择命名空间（录音/监听）
+        ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
+        fs_name = '_mon_freq_smooth' if preview_only else '_freq_smooth'
+        lfr_name = '_mon_last_frame_rms' if preview_only else '_last_frame_rms'
+        if not hasattr(self, ls_name):
+            setattr(self, ls_name, 0.0)
+        if not hasattr(self, fs_name):
+            setattr(self, fs_name, 0.0)
 
         # 针对简化YIN模式，采用更轻的平滑，不做强跳变压制，避免“水平直线”与慢跟随
         try:
@@ -1715,15 +1744,18 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             mode = 'yin'
         if mode == 'yin':
+            # 取出当前状态
+            _last_stable_frequency = float(getattr(self, ls_name, 0.0) or 0.0)
+            _freq_smooth = float(getattr(self, fs_name, 0.0) or 0.0)
             # 大幅下跳直接复位（防止高位残留拖慢回落）
-            if (self._last_stable_frequency > 300 and
-                raw_frequency < self._last_stable_frequency * 0.45 and
-                (self._last_stable_frequency - raw_frequency) > 180):
-                self._freq_smooth = raw_frequency
-                self._last_stable_frequency = raw_frequency
+            if (_last_stable_frequency > 300 and
+                raw_frequency < _last_stable_frequency * 0.45 and
+                (_last_stable_frequency - raw_frequency) > 180):
+                setattr(self, fs_name, raw_frequency)
+                setattr(self, ls_name, raw_frequency)
                 return raw_frequency
             # 自适应轻量平滑：更高alpha以保留微小变化
-            prev = self._freq_smooth if self._freq_smooth != 0 else raw_frequency
+            prev = _freq_smooth if _freq_smooth != 0 else raw_frequency
             delta_hz = abs(raw_frequency - prev)
             alpha = 0.85
             if delta_hz < 2.0:
@@ -1733,43 +1765,45 @@ class IntegratedAudioProcessor(QThread):
             else:
                 alpha = 0.82
             # 低电平时提高跟随，减少“直线化”
-            if getattr(self, '_last_frame_rms', 0.0) < 0.02:
+            if float(getattr(self, lfr_name, getattr(self, '_last_frame_rms', 0.0) or 0.0)) < 0.02:
                 alpha = min(0.96, alpha + 0.03)
             # 上行加速一点点
             if raw_frequency > prev * 1.04:
                 alpha = min(0.97, alpha + 0.04)
             # 指数平滑
-            self._freq_smooth = alpha * raw_frequency + (1 - alpha) * prev
-            smooth = self._freq_smooth
+            _freq_smooth = alpha * raw_frequency + (1 - alpha) * prev
+            smooth = _freq_smooth
             # 微变化注入：在变化很小时保留少量原始细节，避免水平
             if delta_hz < 3.0:
                 smooth = 0.94 * smooth + 0.06 * raw_frequency
             smooth = max(50, min(2500, smooth))
-            self._freq_smooth = smooth
-            self._last_stable_frequency = smooth
+            setattr(self, fs_name, smooth)
+            setattr(self, ls_name, smooth)
             return smooth
 
         # ====== 异常大幅下跳快速复位逻辑 ======
         # 说明: 之前算法在遇到 800Hz -> 150Hz 这类巨大下降时会“拉回”导致 smooth 远高于真实 raw
         # 当出现显著下降且之前频率较高，很可能是进入新音或前面是假高频/噪声，应直接重置平滑状态
-        if (self._last_stable_frequency > 300 and
-            raw_frequency < self._last_stable_frequency * 0.45 and  # 大幅下降
-            (self._last_stable_frequency - raw_frequency) > 180):     # 绝对差值
+        _last_stable_frequency = float(getattr(self, ls_name, 0.0) or 0.0)
+        _freq_smooth = float(getattr(self, fs_name, 0.0) or 0.0)
+        if (_last_stable_frequency > 300 and
+            raw_frequency < _last_stable_frequency * 0.45 and  # 大幅下降
+            (_last_stable_frequency - raw_frequency) > 180):     # 绝对差值
             # 直接复位，防止高位残留造成后续多帧粘滞
-            self._freq_smooth = raw_frequency
-            self._last_stable_frequency = raw_frequency
+            setattr(self, fs_name, raw_frequency)
+            setattr(self, ls_name, raw_frequency)
             return raw_frequency
 
         # 跳变抑制
-        if self._last_stable_frequency > 0:
-            jump = abs(raw_frequency - self._last_stable_frequency)
-            if jump > max(150, self._last_stable_frequency * 0.35):  # 更温和参数
-                raw_frequency = self._last_stable_frequency + (raw_frequency - self._last_stable_frequency) * 0.25
+        if _last_stable_frequency > 0:
+            jump = abs(raw_frequency - _last_stable_frequency)
+            if jump > max(150, _last_stable_frequency * 0.35):  # 更温和参数
+                raw_frequency = _last_stable_frequency + (raw_frequency - _last_stable_frequency) * 0.25
 
         # 指数平滑（自适应）：小幅变化时提高alpha保留细微起伏，较大变化时保守平滑
-        if not hasattr(self, '_last_frame_rms'):
-            self._last_frame_rms = 0.0
-        delta = abs(raw_frequency - (self._last_stable_frequency or raw_frequency))
+        if not hasattr(self, lfr_name):
+            setattr(self, lfr_name, 0.0)
+        delta = abs(raw_frequency - (_last_stable_frequency or raw_frequency))
         if delta < 0.8:
             alpha = 0.60
         elif delta < 2.0:
@@ -1777,26 +1811,27 @@ class IntegratedAudioProcessor(QThread):
         else:
             alpha = 0.28
         # 低电平段适当提高alpha，避免“直线化”
-        if self._last_frame_rms < 0.02:
+        if float(getattr(self, lfr_name, 0.0)) < 0.02:
             alpha = min(0.70, alpha + 0.10)
-        if self._freq_smooth == 0:
-            self._freq_smooth = raw_frequency
+        if _freq_smooth == 0:
+            _freq_smooth = raw_frequency
         else:
-            self._freq_smooth = alpha * raw_frequency + (1 - alpha) * self._freq_smooth
+            _freq_smooth = alpha * raw_frequency + (1 - alpha) * _freq_smooth
 
-        smooth = self._freq_smooth
+        smooth = _freq_smooth
         # ====== 平滑结果异常抑制 ======
         # 若平滑值远高于当前 raw（>1.9倍）且 raw 合理且变化较大，限制回落速度
         if raw_frequency > 0 and smooth > raw_frequency * 1.9 and delta > 5.0:
             smooth = raw_frequency * 1.9
         # 若平滑值远低于 raw（极端快速上跳被压制），允许稍快跟随
-        if raw_frequency > 0 and raw_frequency > self._last_stable_frequency * 1.8:
+        if raw_frequency > 0 and raw_frequency > _last_stable_frequency * 1.8:
             # 加速上行：重新加权
-            smooth = self._last_stable_frequency * 0.4 + raw_frequency * 0.6
+            smooth = _last_stable_frequency * 0.4 + raw_frequency * 0.6
 
         # 合理范围裁剪
         smooth = max(50, min(2500, smooth))
-        self._last_stable_frequency = smooth
+        setattr(self, ls_name, smooth)
+        setattr(self, fs_name, smooth)
         return smooth
 
     # ========= 简化YIN基线检测（稳定、轻依赖，避免过度复杂引入冲突） ========= #
@@ -2068,9 +2103,60 @@ class IntegratedAudioProcessor(QThread):
                 # 🔁 统一：在监听基础上转入录音必须重置音高相关状态，保证与“直接录音”一致
                 self._reset_pitch_analysis_state(reason="monitor->record switch")
 
+                # 🔧 关键一致性：强制以当前实际输入采样率对齐检测器与帧参数
+                try:
+                    _sr_now = int(getattr(self, 'active_input_samplerate', 0) or getattr(self, 'sample_rate', 0) or 0)
+                    if _sr_now > 0:
+                        self._apply_actual_input_samplerate(_sr_now)
+                except Exception:
+                    pass
+
+                # ✅ 与“直接录音”一致：确保分析器（特别是 PitchDetectionService）已初始化
+                # 部分监听路径（如 unified 监听）未创建 pitch_service，导致录音沿用简化YIN而与“仅录音”不同。
+                try:
+                    if not getattr(self, 'pitch_service', None):
+                        print("🔧 统一初始化分析器（监听→录音路径）")
+                        self.setup_analyzers()
+                    else:
+                        # 已存在服务则同步采样率，确保内部状态一致
+                        try:
+                            if hasattr(self, 'active_input_samplerate') and int(self.active_input_samplerate) > 0:
+                                if hasattr(self.pitch_service, 'set_sample_rate'):
+                                    self.pitch_service.set_sample_rate(float(int(self.active_input_samplerate)))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
                 # 🔥 重要修复：确保录音时全局监控的音频处理线程会进行音高检测
                 print("🔥 全局监控模式录音：强制启用音高检测处理")
                 self.enable_pitch_visualization = True  # 录音分析允许绘制
+                # 同步重置监听回调累积缓冲，避免残留造成首段卡顿
+                try:
+                    import numpy as _np_local
+                    self._enqueue_accum = _np_local.empty(0, dtype=_np_local.float32)
+                except Exception:
+                    self._enqueue_accum = None
+                # 额外：主动清空待处理队列，防止监听残留分帧影响录音首段
+                try:
+                    from queue import Empty
+                    while True:
+                        self.audio_buffer_queue.get_nowait()
+                except Empty:
+                    pass
+                except Exception:
+                    pass
+                # 重新初始化帧缓冲
+                try:
+                    self._frame_buffer = []
+                except Exception:
+                    pass
+                # 重置节流计时，确保UI发射/无音高节流从0开始
+                try:
+                    self._last_no_pitch_emit_t = 0.0
+                    self._ui_last_emit_t = 0.0
+                except Exception:
+                    pass
                 
                 self.status_updated.emit("录音已在全局监听中启动")
                 return True
@@ -2288,6 +2374,11 @@ class IntegratedAudioProcessor(QThread):
             if self.is_global_monitoring_active:
                 print("🎯 使用现有全局监听音频流进行录音")
                 self.is_recording = True
+                # 过渡期：轻量平滑，避免切换瞬间卡顿
+                try:
+                    self._prepare_transition(tag="monitor->record")
+                except Exception:
+                    pass
                 
                 # 🎯 重要修复：确保音频处理线程在录音时正常运行
                 if not self.is_audio_processing:
@@ -2823,6 +2914,28 @@ class IntegratedAudioProcessor(QThread):
             # 🔥 关键设置：纯监听模式，不生成音调线
             self.is_monitoring_only = True
             self.enable_pitch_visualization = False
+
+            # 监听回调的合批与限频设置（与录音回调保持一致，降低队列压力、减少卡顿）
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                _pm = get_performance_manager()
+                _cfg = _pm.get_current_config() if _pm else None
+                _mode = _pm.get_current_mode() if _pm else None
+                base_chunk = int(getattr(_cfg, 'chunk_size', 128)) if _cfg else 128
+                if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)
+                elif _mode == PerformanceMode.BALANCED:
+                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)
+                else:
+                    self._callback_min_enqueue_samples = max(128, base_chunk // 2)
+            except Exception:
+                self._callback_min_enqueue_samples = 128
+            # 合批累积缓冲与电平节流初始化
+            self._enqueue_accum = np.empty(0, dtype=np.float32)
+            self._last_level_emit_t = time.time()
+            self._level_emit_interval = 0.05  # 50ms 一次
+            # 监听回调内DSP默认关闭，保持原始数据用于分析
+            self.enable_monitoring_callback_dsp = False
             
             # 设置分析器
             if not self.setup_analyzers():
@@ -2843,69 +2956,79 @@ class IntegratedAudioProcessor(QThread):
                         if 'input overflow' not in str(status).lower():
                             print(f"🔊 监听音频状态: {status}")
                     
-                    # 获取单声道数据
+                    # 获取单声道“原始”数据（与录音路径一致），并限定幅度到[-1,1]
                     if self.channels == 1 and indata.shape[1] > 1:
-                        audio_data = np.mean(indata, axis=1)
+                        raw_audio = np.mean(indata, axis=1)
                     else:
-                        audio_data = indata[:, 0] if len(indata.shape) > 1 else indata
-                    
-                    # 🎯 监听模式的大音量稳定性优化
+                        raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata
                     try:
-                        # 计算RMS和峰值
-                        rms = np.sqrt(np.mean(audio_data ** 2))
-                        peak = np.max(np.abs(audio_data))
-                        
-                        # 智能削峰限制
-                        if peak > 0.95:
-                            audio_data = np.tanh(audio_data * 0.8) * 0.9
-                        
-                        # 动态范围压缩
-                        if rms > 0.5:  # 大音量压缩
-                            audio_data = audio_data * 0.6
-                        elif rms < 0.05:  # 小音量增强
-                            enhancement_ratio = min(2.0, 0.05 / max(rms, 0.001))
-                            audio_data = audio_data * enhancement_ratio
-                        
-                        # 最终安全限制
-                        audio_data = np.clip(audio_data, -1.0, 1.0)
-                        
-                    except Exception as e:
-                        # 基本削峰保护
-                        audio_data = np.clip(audio_data, -1.0, 1.0)
-                    
-                    # 🎯 处理监听和录音（全局模式）
+                        raw_audio = np.clip(raw_audio, -1.0, 1.0)
+                    except Exception:
+                        pass
+
+                    # 可选：仅用于耳返/表头的轻量处理（不影响入队raw）
+                    audio_for_level = raw_audio
+                    if getattr(self, 'enable_monitoring_callback_dsp', False) and (not self.is_recording):
+                        try:
+                            rms = np.sqrt(np.mean(raw_audio ** 2))
+                            peak = np.max(np.abs(raw_audio))
+                            tmp = raw_audio
+                            if peak > 0.95:
+                                tmp = np.tanh(tmp * 0.8) * 0.9
+                            if rms > 0.5:
+                                tmp = tmp * 0.6
+                            elif rms < 0.05:
+                                enhancement_ratio = min(2.0, 0.05 / max(rms, 0.001))
+                                tmp = tmp * enhancement_ratio
+                            audio_for_level = np.clip(tmp, -1.0, 1.0)
+                        except Exception:
+                            audio_for_level = raw_audio
+
+                    # 🎯 处理监听和录音（全局模式）— 合批入队（与录音一致），始终用raw_audio
                     try:
                         # 判断是否需要保存音频数据
                         should_save_audio = self.is_recording and self.should_save
-                        
-                        if not self.audio_buffer_queue.full():
-                            self.audio_buffer_queue.put_nowait({
-                                'data': audio_data.copy(),
-                                'timestamp': time.time(),
-                                'should_save': should_save_audio  # 根据录音状态决定是否保存
-                            })
+
+                        # 追加到累积缓冲
+                        if self._enqueue_accum.size == 0:
+                            self._enqueue_accum = raw_audio.copy()
                         else:
-                            # 队列满时，移除最老的数据
-                            try:
-                                self.audio_buffer_queue.get_nowait()
+                            self._enqueue_accum = np.concatenate((self._enqueue_accum, raw_audio))
+
+                        # 批量吐出满足阈值的包
+                        min_samples = int(self._callback_min_enqueue_samples)
+                        while self._enqueue_accum.size >= min_samples:
+                            packet = self._enqueue_accum[:min_samples]
+                            self._enqueue_accum = self._enqueue_accum[min_samples:]
+
+                            if not self.audio_buffer_queue.full():
                                 self.audio_buffer_queue.put_nowait({
-                                    'data': audio_data.copy(),
+                                    'data': packet.copy(),
                                     'timestamp': time.time(),
                                     'should_save': should_save_audio
                                 })
-                            except queue.Empty:
-                                pass
-                        
-                        # 注意：录音缓冲区由处理线程统一写入，避免回调与线程重复写入导致时长/音质问题
-                            
+                            else:
+                                try:
+                                    self.audio_buffer_queue.get_nowait()
+                                    self.audio_buffer_queue.put_nowait({
+                                        'data': packet.copy(),
+                                        'timestamp': time.time(),
+                                        'should_save': should_save_audio
+                                    })
+                                except queue.Empty:
+                                    pass
+                        # 注意：录音缓冲区由处理线程统一写入
                     except Exception as e:
                         print(f"监听队列错误: {e}")
                     
                     # 计算音频电平
                     try:
-                        audio_level = np.sqrt(np.mean(audio_data ** 2))
-                        if not self.isFinished():
-                            self.audio_level_updated.emit(float(audio_level))
+                        now_t = time.time()
+                        if (now_t - self._last_level_emit_t) >= getattr(self, '_level_emit_interval', 0.05):
+                            audio_level = np.sqrt(np.mean(audio_for_level ** 2))
+                            if not self.isFinished():
+                                self.audio_level_updated.emit(float(audio_level))
+                            self._last_level_emit_t = now_t
                     except RuntimeError:
                         return
                     
@@ -3152,6 +3275,26 @@ class IntegratedAudioProcessor(QThread):
             if hasattr(self, 'pitch_history'):
                 self.pitch_history.clear()
             self.recording_start_time = time.time()
+
+            # 与录音路径保持一致的合批与限频参数（保证分析输入一致性）
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                _pm = get_performance_manager()
+                _cfg = _pm.get_current_config() if _pm else None
+                _mode = _pm.get_current_mode() if _pm else None
+                base_chunk = int(getattr(_cfg, 'chunk_size', 128)) if _cfg else 128
+                if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)
+                elif _mode == PerformanceMode.BALANCED:
+                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)
+                else:
+                    self._callback_min_enqueue_samples = max(128, base_chunk // 2)
+            except Exception:
+                self._callback_min_enqueue_samples = 128
+            # 回调侧累积缓冲与电平节流
+            self._enqueue_accum = np.empty(0, dtype=np.float32)
+            self._last_level_emit_t = time.time()
+            self._level_emit_interval = 0.05
             
             # � HECATE优化监听回调：基于设备33测试结果
             def hecate_optimized_callback(indata, outdata, frames, time_info, status):
@@ -3209,34 +3352,37 @@ class IntegratedAudioProcessor(QThread):
                                 smoothed[1:-1] = (audio_data[:-2] + audio_data[1:-1] + audio_data[2:]) / 3.0
                                 audio_data = audio_data * 0.75 + smoothed * 0.25
                     
-                    # 🎯 处理录音需求（在全局监听模式下）
+                    # 🎯 处理录音需求（在全局监听模式下）+ 合批入队 raw 音频，保持与录音一致
                     try:
-                        if self.is_recording and self.should_save:
+                        should_save_audio = self.is_recording and self.should_save
+                        # 保存录音原始/增强波形到缓冲，仅当需要保存
+                        if should_save_audio:
                             self.audio_buffer.extend(audio_data)
-                        
-            # 🔥 重要修复：分析用队列使用 raw_audio 保持与纯录音一致
-                        if not self.audio_buffer_queue.full():
-                            self.audio_buffer_queue.put_nowait({
-                'data': raw_audio.copy(),
-                                'timestamp': time.time(),
-                                'should_save': self.is_recording and self.should_save
-                            })
-                            
-                            # 🔥 强制调试：确认数据入队成功
-                            if not hasattr(self, '_hecate_queue_debug_counter'):
-                                self._hecate_queue_debug_counter = 0
-                                print("🔥 HECATE回调首次数据入队成功!")
-                            
-                            self._hecate_queue_debug_counter += 1
-                            if self._hecate_queue_debug_counter % 1000 == 0:
-                                queue_size = self.audio_buffer_queue.qsize()
-                                if getattr(self, 'debug_flags', {}).get('queue_log', False):
-                                    print(f"🔥 HECATE入队#{self._hecate_queue_debug_counter}: 队列大小={queue_size}")
+                        # 合批累积并按阈值吐包
+                        if self._enqueue_accum.size == 0:
+                            self._enqueue_accum = raw_audio.copy()
                         else:
-                            if not hasattr(self, '_hecate_queue_full_warned'):
-                                print("⚠️ HECATE: 音频队列已满")
-                                self._hecate_queue_full_warned = True
-                                
+                            self._enqueue_accum = np.concatenate((self._enqueue_accum, raw_audio))
+                        min_samples = int(self._callback_min_enqueue_samples)
+                        while self._enqueue_accum.size >= min_samples:
+                            packet = self._enqueue_accum[:min_samples]
+                            self._enqueue_accum = self._enqueue_accum[min_samples:]
+                            if not self.audio_buffer_queue.full():
+                                self.audio_buffer_queue.put_nowait({
+                                    'data': packet.copy(),
+                                    'timestamp': time.time(),
+                                    'should_save': should_save_audio
+                                })
+                            else:
+                                try:
+                                    self.audio_buffer_queue.get_nowait()
+                                    self.audio_buffer_queue.put_nowait({
+                                        'data': packet.copy(),
+                                        'timestamp': time.time(),
+                                        'should_save': should_save_audio
+                                    })
+                                except queue.Empty:
+                                    pass
                     except Exception as process_error:
                         print(f"⚠️ HECATE音频处理错误: {process_error}")
                     
@@ -3541,11 +3687,32 @@ class IntegratedAudioProcessor(QThread):
                             print("🎧 HECATE G4 Pro全局监听已启动")
                             print("✨ 特性: 192kHz原生采样 + 超低延迟 + 专业音质")
                             
-                            # 🔥 重要修复：同步采样率到音频处理器
+                            # 🔥 重要修复：同步采样率/块大小/通道到处理器与活动参数
                             actual_samplerate = stream_params['samplerate']
+                            actual_blocksize = stream_params['blocksize']
+                            try:
+                                # 记录活动参数（与recording路径一致字段名）
+                                self.active_input_samplerate = int(actual_samplerate)
+                                # HECATE路径 channels 可能为tuple，统一取输入通道
+                                _chs = stream_params.get('channels', 1)
+                                self.active_input_channels = int(_chs[0] if isinstance(_chs, tuple) else _chs)
+                                self.active_blocksize = int(actual_blocksize)
+                            except Exception:
+                                pass
                             if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
                                 print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
                                 self.sample_rate = actual_samplerate
+                            # 同步到检测器/帧化（与录音路径保持一致）
+                            try:
+                                self._apply_actual_input_samplerate(int(actual_samplerate))
+                            except Exception:
+                                pass
+                            # 确保分析器可用（监听路径有时未初始化服务）
+                            try:
+                                if not getattr(self, 'pitch_service', None):
+                                    self.setup_analyzers()
+                            except Exception:
+                                pass
                             
                             # 🔥 关键修复：启动音频处理线程进行音高检测
                             self.start_audio_processing_thread()
@@ -3771,11 +3938,27 @@ class IntegratedAudioProcessor(QThread):
                             self.channels = config['channels']  # 更新全局通道数
                             print("🎧 HECATE备用设备全局监听已启动")
                             
-                            # 🔥 重要修复：同步采样率到音频处理器
+                            # 🔥 重要修复：同步采样率/块大小/通道
                             actual_samplerate = config['samplerate']
+                            actual_blocksize = config.get('blocksize', getattr(self, 'chunk_size', 128))
+                            try:
+                                self.active_input_samplerate = int(actual_samplerate)
+                                self.active_input_channels = int(config.get('channels', self.channels))
+                                self.active_blocksize = int(actual_blocksize)
+                            except Exception:
+                                pass
                             if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
                                 print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
                                 self.sample_rate = actual_samplerate
+                            try:
+                                self._apply_actual_input_samplerate(int(actual_samplerate))
+                            except Exception:
+                                pass
+                            try:
+                                if not getattr(self, 'pitch_service', None):
+                                    self.setup_analyzers()
+                            except Exception:
+                                pass
                             
                             # 🔥 关键修复：启动音频处理线程进行音高检测
                             self.start_audio_processing_thread()
@@ -3869,11 +4052,27 @@ class IntegratedAudioProcessor(QThread):
                         self.active_audio_stream = self.monitoring_stream
                         print("🎧 通用全局监听已启动")
                         
-                        # 🔥 重要修复：同步采样率到音频处理器
+                        # 🔥 重要修复：同步采样率/块大小/通道到处理器
                         actual_samplerate = config['rate']
+                        actual_blocksize = config['block']
+                        try:
+                            self.active_input_samplerate = int(actual_samplerate)
+                            self.active_input_channels = int(stream_params.get('channels', self.channels))
+                            self.active_blocksize = int(actual_blocksize)
+                        except Exception:
+                            pass
                         if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
                             print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
                             self.sample_rate = actual_samplerate
+                        try:
+                            self._apply_actual_input_samplerate(int(actual_samplerate))
+                        except Exception:
+                            pass
+                        try:
+                            if not getattr(self, 'pitch_service', None):
+                                self.setup_analyzers()
+                        except Exception:
+                            pass
                         
                         # 🔥 关键修复：启动音频处理线程进行音高检测
                         self.start_audio_processing_thread()
@@ -4827,6 +5026,12 @@ class IntegratedAudioProcessor(QThread):
                         self.noise_processor.sample_rate = ar
             except Exception:
                 pass
+            # 同步统一音高服务的采样率
+            try:
+                if hasattr(self, 'pitch_service') and self.pitch_service is not None and hasattr(self.pitch_service, 'set_sample_rate'):
+                    self.pitch_service.set_sample_rate(float(ar))
+            except Exception:
+                pass
             # 让帧化在新采样率下重新计算：删除标志以触发初始化分支
             try:
                 if hasattr(self, '_frame_config_initialized'):
@@ -4843,6 +5048,82 @@ class IntegratedAudioProcessor(QThread):
                     setattr(self, attr, val)
                 except Exception:
                     pass
+
+    # ========= 轻量性能调优 & 过渡平滑 ========= #
+    def _apply_performance_tuning(self):
+        """根据性能模式细化UI发射节流、无音高节流与分析目标帧率，提升流畅度。"""
+        try:
+            from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+            _pm = get_performance_manager()
+            _cfg = _pm.get_current_config() if _pm else None
+            _mode = _pm.get_current_mode() if _pm else None
+        except Exception:
+            _pm = _cfg = _mode = None
+
+        try:
+            if _mode is None:
+                # 默认（相当于Balanced）
+                ui_int = 0.025
+                no_pitch_int = 0.05
+                target_hz = 60.0
+            else:
+                from src.audio_processing.performance_manager import PerformanceMode
+                if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                    ui_int = 0.018  # 更紧UI节流，降低抖动
+                    no_pitch_int = 0.035
+                    target_hz = float(getattr(_cfg, 'detection_frequency', 90.0) or 90.0)
+                elif _mode == PerformanceMode.BALANCED:
+                    ui_int = 0.023
+                    no_pitch_int = 0.045
+                    target_hz = float(getattr(_cfg, 'detection_frequency', 60.0) or 60.0)
+                else:  # QUIET / 省电
+                    ui_int = 0.032
+                    no_pitch_int = 0.060
+                    target_hz = 45.0
+            # 应用到实例（立即生效）
+            self._ui_emit_min_interval_default = float(ui_int)
+            self._ui_emit_min_interval = float(ui_int)
+            self._no_pitch_emit_interval_default = float(no_pitch_int)
+            # 调整分析目标帧率（尊重全局约束）
+            self._analysis_target_hz = max(45.0, min(120.0, float(target_hz)))
+            self._min_analysis_interval = 1.0 / max(1.0, self._analysis_target_hz)
+        except Exception:
+            pass
+
+    def _prepare_transition(self, tag: str = "", pause_ms_ui: int = 220, pause_ms_analysis: int = 160):
+        """在监听/录音切换或启动/停止时，进行一次性轻量过渡平滑：
+        - 暂停UI发射/重计算短时窗口，避免抖动
+        - 清空队列、累积缓冲与帧缓冲，降低卡顿风险
+        """
+        try:
+            now = time.time()
+            self._ui_suspend_until = now + (pause_ms_ui / 1000.0)
+            self._analysis_backoff_until = now + (pause_ms_analysis / 1000.0)
+        except Exception:
+            pass
+        # 温和清空队列和累积，不阻塞
+        try:
+            from queue import Empty
+            drained = 0
+            while True:
+                try:
+                    self.audio_buffer_queue.get_nowait()
+                    drained += 1
+                    if drained >= 64:  # 限制清理工作量，避免长阻塞
+                        break
+                except Empty:
+                    break
+        except Exception:
+            pass
+        try:
+            import numpy as _np
+            self._enqueue_accum = _np.empty(0, dtype=_np.float32)
+        except Exception:
+            self._enqueue_accum = None
+        try:
+            self._frame_buffer = []
+        except Exception:
+            pass
     
     def _audio_processing_loop(self):
         """音频处理循环 - 在独立线程中运行"""
@@ -4875,6 +5156,8 @@ class IntegratedAudioProcessor(QThread):
         self._min_analysis_interval = 1.0 / max(1.0, self._analysis_target_hz)
         if not hasattr(self, '_last_analysis_time'):
             self._last_analysis_time = 0.0
+        # 应用一次性能调优，确保UI/分析频率与模式一致
+        self._apply_performance_tuning()
 
         if not hasattr(self, '_frame_config_initialized'):
             # 根据最小频率动态设置窗口（覆盖旧的固定40ms设计）
@@ -5112,7 +5395,10 @@ class IntegratedAudioProcessor(QThread):
     def process_audio_for_pitch_async(self, audio_data):
         """异步音高分析 - 简化版本，只使用单一可靠的检测算法"""
         try:
-            # 纯监听模式下也执行分析，确保绘制与诊断一致
+            # 纯监听模式下也执行分析，确保绘制与诊断一致；但使用独立preview状态不污染录音
+            preview_only = (not getattr(self, 'is_recording', False)) and (
+                bool(getattr(self, 'is_monitoring_only', False)) or bool(getattr(self, 'is_global_monitoring_active', False))
+            )
             
             # 🎯 增加调试计数器
             if not hasattr(self, '_pitch_analysis_counter'):
@@ -5147,11 +5433,15 @@ class IntegratedAudioProcessor(QThread):
                             self._last_frame_diag_log = now
                         self._diag_pitch_last_report = current_time
             audio_rms = np.sqrt(np.mean(audio_data ** 2))
-            # 保存本帧RMS供平滑阶段自适应使用
+            # 保存本帧RMS供平滑阶段自适应使用（监听/录音分离）
             try:
-                self._last_frame_rms = float(audio_rms)
+                lfr_name = '_mon_last_frame_rms' if preview_only else '_last_frame_rms'
+                setattr(self, lfr_name, float(audio_rms))
             except Exception:
-                self._last_frame_rms = float(audio_rms)
+                try:
+                    self._last_frame_rms = float(audio_rms)
+                except Exception:
+                    pass
             
             # 前几次调用的详细调试
             # 初始若需详细调试，可通过 debug_flags 控制；默认禁用以减轻开销
@@ -5239,7 +5529,7 @@ class IntegratedAudioProcessor(QThread):
                 try:
                     # 若有队列积压则跳过精修
                     if self.audio_buffer_queue.qsize() < 6:
-                        lf = float(getattr(self, '_last_stable_frequency', 0.0) or 0.0)
+                        lf = float(getattr(self, ('_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'), 0.0) or 0.0)
                         if (raw_frequency < 150.0) and (lf > 0):
                             ratio = max((raw_frequency * 2.0) / max(lf, 1e-6), 1e-6)
                             if abs(np.log2(ratio)) <= (1.0 / 24.0):
@@ -5254,8 +5544,9 @@ class IntegratedAudioProcessor(QThread):
                 if raw_frequency > 1700 and audio_rms < 0.015:
                     spurious_high = True
                 # 条件2：相对上一稳定频率跳变倍数过大且信号不强
-                if not spurious_high and hasattr(self, '_last_stable_frequency') and self._last_stable_frequency > 0:
-                    if raw_frequency > self._last_stable_frequency * 2.5 and audio_rms < 0.015:
+                _ls_for_jump = float(getattr(self, ('_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'), 0.0) or 0.0)
+                if not spurious_high and _ls_for_jump > 0:
+                    if raw_frequency > _ls_for_jump * 2.5 and audio_rms < 0.015:
                         spurious_high = True
                 # 条件3：呼吸期（RMS 在静音与正常之间）且高频>1500
                 if not spurious_high and breath_rms_threshold > audio_rms >= min_voice_rms and raw_frequency > 1500:
@@ -5285,23 +5576,32 @@ class IntegratedAudioProcessor(QThread):
                 return
 
             # Phase1: 后处理（跳变抑制 + 平滑）仅在非假高频情况下执行
-            smooth_frequency = self._post_process_pitch(raw_frequency) if raw_frequency > 0 else 0.0
+            smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only) if raw_frequency > 0 else 0.0
 
             # ========= 换气抑制：低能量 + 短时多半音跨幅（轻量规则） ========= #
             # 目标：在换气时常出现半个八度到一个八度的快速上下抖动；在低能量段触发抑制绘制，但不影响时间推进
             if smooth_frequency > 0:
                 try:
                     # 初始化换气检测状态
-                    if not hasattr(self, '_bj_streak'):
-                        self._bj_streak = 0
-                        self._bj_last_f0 = 0.0
-                        self._bj_last_t = 0.0
-                        self._breath_suppress_until = 0.0
-                        self._prevoice_wait_frames = 0
+                    # 监听/录音 双命名空间
+                    prefix = '_mon_' if preview_only else ''
+                    bj_streak_n = prefix + 'bj_streak'
+                    bj_last_f0_n = prefix + 'bj_last_f0'
+                    bj_last_t_n = prefix + 'bj_last_t'
+                    breath_until_n = prefix + 'breath_suppress_until'
+                    prevoice_wait_n = prefix + 'prevoice_wait_frames'
+                    last_draw_t_n = prefix + 'last_drawn_t'
+                    last_draw_f0_n = prefix + 'last_drawn_f0'
+                    if not hasattr(self, bj_streak_n):
+                        setattr(self, bj_streak_n, 0)
+                        setattr(self, bj_last_f0_n, 0.0)
+                        setattr(self, bj_last_t_n, 0.0)
+                        setattr(self, breath_until_n, 0.0)
+                        setattr(self, prevoice_wait_n, 0)
 
                     now_t = current_time
                     # 若仍处于抑制窗口内：按无音高节流发射并返回
-                    if now_t < float(getattr(self, '_breath_suppress_until', 0.0) or 0.0):
+                    if now_t < float(getattr(self, breath_until_n, 0.0) or 0.0):
                         if not hasattr(self, '_no_pitch_emit_interval'):
                             self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
                             self._last_no_pitch_emit_t = 0.0
@@ -5324,14 +5624,14 @@ class IntegratedAudioProcessor(QThread):
                         return
 
                     # 抑制刚结束后的预热：跳过首帧，防止边界突点
-                    if int(getattr(self, '_prevoice_wait_frames', 0) or 0) > 0:
+                    if int(getattr(self, prevoice_wait_n, 0) or 0) > 0:
                         try:
-                            self._prevoice_wait_frames = int(self._prevoice_wait_frames) - 1
+                            setattr(self, prevoice_wait_n, int(getattr(self, prevoice_wait_n)) - 1)
                         except Exception:
-                            self._prevoice_wait_frames = 0
+                            setattr(self, prevoice_wait_n, 0)
                         # 预热阶段重置参考，等待稳定有声再建模
-                        self._bj_last_f0 = 0.0
-                        self._bj_streak = 0
+                        setattr(self, bj_last_f0_n, 0.0)
+                        setattr(self, bj_streak_n, 0)
                         if not hasattr(self, '_no_pitch_emit_interval'):
                             self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
                             self._last_no_pitch_emit_t = 0.0
@@ -5353,8 +5653,8 @@ class IntegratedAudioProcessor(QThread):
                             self._last_no_pitch_emit_t = now_t
                         return
 
-                    last_f0 = float(getattr(self, '_bj_last_f0', 0.0) or 0.0)
-                    last_t = float(getattr(self, '_bj_last_t', 0.0) or 0.0)
+                    last_f0 = float(getattr(self, bj_last_f0_n, 0.0) or 0.0)
+                    last_t = float(getattr(self, bj_last_t_n, 0.0) or 0.0)
                     # 仅在低能量（但不至于判静音）时启用换气检测
                     breath_rms_upper = 0.006  # 经验上限：高于此一般是明显有声
                     if (min_voice_rms <= audio_rms <= breath_rms_upper) and last_f0 > 0 and (now_t - last_t) <= 0.14:
@@ -5362,25 +5662,25 @@ class IntegratedAudioProcessor(QThread):
                         semitone_jump = abs(12.0 * np.log2(max(1e-9, smooth_frequency / max(last_f0, 1e-9))))
                         # 半个八度(≥6半音)视为一次显著跳变
                         if semitone_jump >= 6.0:
-                            self._bj_streak = min(5, int(self._bj_streak) + 1)
+                            setattr(self, bj_streak_n, min(5, int(getattr(self, bj_streak_n)) + 1))
                         else:
                             # 温和衰减，避免单个稳定帧立即清零
-                            self._bj_streak = max(0, int(self._bj_streak) - 1)
+                            setattr(self, bj_streak_n, max(0, int(getattr(self, bj_streak_n)) - 1))
                         # 单次大跨幅：更低能量下若一次性≥9半音，直接判为换气
                         if semitone_jump >= 9.0 and (now_t - last_t) <= 0.12:
-                            self._breath_suppress_until = now_t + 0.22
-                            self._prevoice_wait_frames = 1  # 抑制结束后跳过首帧
+                            setattr(self, breath_until_n, now_t + 0.22)
+                            setattr(self, prevoice_wait_n, 1)  # 抑制结束后跳过首帧
                             # 重置参考，避免用噪声频率作为下一帧比较基准
-                            self._bj_last_f0 = 0.0
-                            self._bj_streak = 0
+                            setattr(self, bj_last_f0_n, 0.0)
+                            setattr(self, bj_streak_n, 0)
                             return
                         # 若在短窗口内累计≥2次显著跳变，判为换气，抑制一小段时间
-                        if self._bj_streak >= 2:
-                            self._breath_suppress_until = now_t + 0.20  # 稍延长抑制窗口，空隙更完整
-                            self._prevoice_wait_frames = 1  # 抑制结束后跳过首帧
+                        if int(getattr(self, bj_streak_n)) >= 2:
+                            setattr(self, breath_until_n, now_t + 0.20)  # 稍延长抑制窗口，空隙更完整
+                            setattr(self, prevoice_wait_n, 1)  # 抑制结束后跳过首帧
                             # 重置参考
-                            self._bj_last_f0 = 0.0
-                            self._bj_streak = 0
+                            setattr(self, bj_last_f0_n, 0.0)
+                            setattr(self, bj_streak_n, 0)
                             # 首次触发时立即按“无音高”节流发射一次，以推进时间线
                             if not hasattr(self, '_no_pitch_emit_interval'):
                                 self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
@@ -5415,26 +5715,26 @@ class IntegratedAudioProcessor(QThread):
                                 zcr = 0.0
                             # 强阈值：明显噪声，直接较长抑制
                             if zcr >= 0.30:
-                                self._breath_suppress_until = now_t + 0.16
-                                self._prevoice_wait_frames = 1
+                                setattr(self, breath_until_n, now_t + 0.16)
+                                setattr(self, prevoice_wait_n, 1)
                                 # 重置参考
-                                self._bj_last_f0 = 0.0
-                                self._bj_streak = 0
+                                setattr(self, bj_last_f0_n, 0.0)
+                                setattr(self, bj_streak_n, 0)
                                 return
                             # 中阈值：疑似换气中段的零星细节点，仅在距离上次有效绘制较长时触发，抑制更短
-                            last_draw_t = float(getattr(self, '_last_drawn_t', 0.0) or 0.0)
+                            last_draw_t = float(getattr(self, last_draw_t_n, 0.0) or 0.0)
                             if zcr >= 0.22 and (now_t - last_draw_t) >= 0.18:
-                                self._breath_suppress_until = now_t + 0.12
-                                self._prevoice_wait_frames = 1
-                                self._bj_last_f0 = 0.0
-                                self._bj_streak = 0
+                                setattr(self, breath_until_n, now_t + 0.12)
+                                setattr(self, prevoice_wait_n, 1)
+                                setattr(self, bj_last_f0_n, 0.0)
+                                setattr(self, bj_streak_n, 0)
                                 return
                         except Exception:
                             pass
 
                     # 更新上一帧参考
-                    self._bj_last_f0 = float(smooth_frequency)
-                    self._bj_last_t = now_t
+                    setattr(self, bj_last_f0_n, float(smooth_frequency))
+                    setattr(self, bj_last_t_n, now_t)
                 except Exception:
                     pass
             
@@ -5464,16 +5764,22 @@ class IntegratedAudioProcessor(QThread):
                 
                 # 🔥 强制保存历史数据和发送信号
                 try:
-                    self.pitch_history.append({
-                        'frequency': smooth_frequency,
-                        'timestamp': current_time,
-                        'confidence': confidence,
-                        'note_info': note_info
-                    })
+                    # 监听态不写入录音历史，避免污染
+                    if not preview_only:
+                        self.pitch_history.append({
+                            'frequency': smooth_frequency,
+                            'timestamp': current_time,
+                            'confidence': confidence,
+                            'note_info': note_info
+                        })
                     # 记录最近一次有效绘制，用于换气中段柔性抑制参考
                     try:
-                        self._last_drawn_t = float(current_time)
-                        self._last_drawn_f0 = float(smooth_frequency)
+                        if preview_only:
+                            setattr(self, last_draw_t_n, float(current_time))
+                            setattr(self, last_draw_f0_n, float(smooth_frequency))
+                        else:
+                            self._last_drawn_t = float(current_time)
+                            self._last_drawn_f0 = float(smooth_frequency)
                     except Exception:
                         pass
                     # 节流发射：避免Qt事件队列拥塞
@@ -7544,7 +7850,29 @@ class IntegratedAudioProcessor(QThread):
         """停止统一监听功能"""
         try:
             print("🛑 正在停止监听(统一)...")
+            # 如果正在录音：仅关闭耳返回传与监听标志，保留采集与分析不中断
+            if getattr(self, 'is_recording', False):
+                # 立即关闭回传，避免用户继续听到自身声音
+                if hasattr(self, 'monitor_audio_passthrough'):
+                    self.monitor_audio_passthrough = False
 
+                # 更新状态标志（录音不中断）
+                self.is_monitoring_only = False
+                # 将监听模式标记清空；回调继续运行但不做回传
+                if hasattr(self, 'monitoring_mode'):
+                    self.monitoring_mode = None
+                # 从语义上关闭“监听功能”，但不动输入流/处理线程
+                self.is_global_monitoring_active = False
+
+                # 确保录音分析绘制仍启用
+                if hasattr(self, 'enable_pitch_visualization'):
+                    self.enable_pitch_visualization = True
+
+                print("✅ 已在录音中：仅关闭监听回传，保持采集与分析")
+                self.status_updated.emit("已关闭监听回传（录音继续）")
+                return True
+
+            # 非录音状态：完整停止监听（线程与音频流）
             # 立即关闭回传，避免用户继续听到自身声音
             if hasattr(self, 'monitor_audio_passthrough'):
                 self.monitor_audio_passthrough = False
@@ -13736,6 +14064,8 @@ class IntegratedRecordingInterface(QMainWindow):
         self.is_recording = False
         self.is_analyzing = False
         self.should_save_recording = True
+        # 调试计数器（防御初始化，避免早期引用报错）
+        self._pitch_precision_debug_counter = 0
         
         # 当前音高状态（用于交互式标注）
         self.current_pitch_y = 4.0  # 当前音高的y坐标
@@ -14833,16 +15163,13 @@ class IntegratedRecordingInterface(QMainWindow):
                 self.visualizer.add_pitch_data(pitch_data)
             else:
                 # 纯监听模式：跳过音调线绘制
-                if self._pitch_precision_debug_counter <= 5:
+                if getattr(self, '_pitch_precision_debug_counter', 0) <= 5:
                     print("🎧 纯监听模式：跳过音调线绘制")
             
             # 🔥 音高精度验证调试（前50次检测）
-            if hasattr(self, '_pitch_precision_debug_counter'):
-                self._pitch_precision_debug_counter += 1
-            else:
-                self._pitch_precision_debug_counter = 1
+            self._pitch_precision_debug_counter = getattr(self, '_pitch_precision_debug_counter', 0) + 1
+            if self._pitch_precision_debug_counter == 1:
                 print("🎵 开始音高精度验证...")
-            
             if self._pitch_precision_debug_counter <= 50 and has_pitch and frequency > 0:
                 if raw_frequency is not None:
                     print(f"🎵 音高精度#{self._pitch_precision_debug_counter}: raw={raw_frequency:.3f}Hz smooth={frequency:.3f}Hz")

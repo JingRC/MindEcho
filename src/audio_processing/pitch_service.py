@@ -47,6 +47,20 @@ class PitchDetectionService:
         self.cfg.min_frequency = float(min_f)
         self.cfg.max_frequency = float(max_f)
 
+    def set_sample_rate(self, sr: float):
+        """更新内部采样率配置，并重置与采样率相关的内部缓存。"""
+        try:
+            sr_f = float(sr)
+        except Exception:
+            return
+        if sr_f <= 0:
+            return
+        if getattr(self.cfg, 'sample_rate', None) != sr_f:
+            self.cfg.sample_rate = sr_f
+            # 采样率变化时，重置窗口缓存，避免长度不匹配
+            self._hann_len = 0
+            self._hann = None
+
     def apply_config(self, pm_config) -> None:
         """从性能管理器配置同步必要参数（轻量）。"""
         try:
