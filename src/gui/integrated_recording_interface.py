@@ -5286,6 +5286,148 @@ class IntegratedAudioProcessor(QThread):
 
             # Phase1: 后处理（跳变抑制 + 平滑）仅在非假高频情况下执行
             smooth_frequency = self._post_process_pitch(raw_frequency) if raw_frequency > 0 else 0.0
+
+            # ========= 换气抑制：低能量 + 短时多半音跨幅（轻量规则） ========= #
+            # 目标：在换气时常出现半个八度到一个八度的快速上下抖动；在低能量段触发抑制绘制，但不影响时间推进
+            if smooth_frequency > 0:
+                try:
+                    # 初始化换气检测状态
+                    if not hasattr(self, '_bj_streak'):
+                        self._bj_streak = 0
+                        self._bj_last_f0 = 0.0
+                        self._bj_last_t = 0.0
+                        self._breath_suppress_until = 0.0
+                        self._prevoice_wait_frames = 0
+
+                    now_t = current_time
+                    # 若仍处于抑制窗口内：按无音高节流发射并返回
+                    if now_t < float(getattr(self, '_breath_suppress_until', 0.0) or 0.0):
+                        if not hasattr(self, '_no_pitch_emit_interval'):
+                            self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                            self._last_no_pitch_emit_t = 0.0
+                        if (now_t - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                            frame = PitchFrame(
+                                timestamp=now_t,
+                                f0_raw=0.0,
+                                f0_smooth=0.0,
+                                confidence=0.0,
+                                note_info=None,
+                                has_pitch=False,
+                                audio_rms=audio_rms,
+                                vibrato_info={'has_vibrato': False}
+                            )
+                            try:
+                                self._emit_pitch_data_throttled(frame.to_dict())
+                            except Exception:
+                                pass
+                            self._last_no_pitch_emit_t = now_t
+                        return
+
+                    # 抑制刚结束后的预热：跳过首帧，防止边界突点
+                    if int(getattr(self, '_prevoice_wait_frames', 0) or 0) > 0:
+                        try:
+                            self._prevoice_wait_frames = int(self._prevoice_wait_frames) - 1
+                        except Exception:
+                            self._prevoice_wait_frames = 0
+                        # 预热阶段重置参考，等待稳定有声再建模
+                        self._bj_last_f0 = 0.0
+                        self._bj_streak = 0
+                        if not hasattr(self, '_no_pitch_emit_interval'):
+                            self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                            self._last_no_pitch_emit_t = 0.0
+                        if (now_t - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                            frame = PitchFrame(
+                                timestamp=now_t,
+                                f0_raw=0.0,
+                                f0_smooth=0.0,
+                                confidence=0.0,
+                                note_info=None,
+                                has_pitch=False,
+                                audio_rms=audio_rms,
+                                vibrato_info={'has_vibrato': False}
+                            )
+                            try:
+                                self._emit_pitch_data_throttled(frame.to_dict())
+                            except Exception:
+                                pass
+                            self._last_no_pitch_emit_t = now_t
+                        return
+
+                    last_f0 = float(getattr(self, '_bj_last_f0', 0.0) or 0.0)
+                    last_t = float(getattr(self, '_bj_last_t', 0.0) or 0.0)
+                    # 仅在低能量（但不至于判静音）时启用换气检测
+                    breath_rms_upper = 0.006  # 经验上限：高于此一般是明显有声
+                    if (min_voice_rms <= audio_rms <= breath_rms_upper) and last_f0 > 0 and (now_t - last_t) <= 0.14:
+                        # 半音跨幅（避免除零）
+                        semitone_jump = abs(12.0 * np.log2(max(1e-9, smooth_frequency / max(last_f0, 1e-9))))
+                        # 半个八度(≥6半音)视为一次显著跳变
+                        if semitone_jump >= 6.0:
+                            self._bj_streak = min(5, int(self._bj_streak) + 1)
+                        else:
+                            # 温和衰减，避免单个稳定帧立即清零
+                            self._bj_streak = max(0, int(self._bj_streak) - 1)
+                        # 单次大跨幅：更低能量下若一次性≥9半音，直接判为换气
+                        if semitone_jump >= 9.0 and (now_t - last_t) <= 0.12:
+                            self._breath_suppress_until = now_t + 0.22
+                            self._prevoice_wait_frames = 1  # 抑制结束后跳过首帧
+                            # 重置参考，避免用噪声频率作为下一帧比较基准
+                            self._bj_last_f0 = 0.0
+                            self._bj_streak = 0
+                            return
+                        # 若在短窗口内累计≥2次显著跳变，判为换气，抑制一小段时间
+                        if self._bj_streak >= 2:
+                            self._breath_suppress_until = now_t + 0.20  # 稍延长抑制窗口，空隙更完整
+                            self._prevoice_wait_frames = 1  # 抑制结束后跳过首帧
+                            # 重置参考
+                            self._bj_last_f0 = 0.0
+                            self._bj_streak = 0
+                            # 首次触发时立即按“无音高”节流发射一次，以推进时间线
+                            if not hasattr(self, '_no_pitch_emit_interval'):
+                                self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                                self._last_no_pitch_emit_t = 0.0
+                            if (now_t - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                                frame = PitchFrame(
+                                    timestamp=now_t,
+                                    f0_raw=0.0,
+                                    f0_smooth=0.0,
+                                    confidence=0.0,
+                                    note_info=None,
+                                    has_pitch=False,
+                                    audio_rms=audio_rms,
+                                    vibrato_info={'has_vibrato': False}
+                                )
+                                try:
+                                    self._emit_pitch_data_throttled(frame.to_dict())
+                                except Exception:
+                                    pass
+                                self._last_no_pitch_emit_t = now_t
+                            # 抑制绘制
+                            return
+
+                    # 附加：低能量噪声的ZCR快速判定
+                    if min_voice_rms <= audio_rms <= breath_rms_upper:
+                        try:
+                            pa = np.asarray(processed_audio, dtype=np.float64)
+                            if pa.size > 1:
+                                z = np.mean(np.abs(np.diff(np.sign(pa))))
+                                zcr = float(z / 2.0)
+                            else:
+                                zcr = 0.0
+                            if zcr >= 0.30:
+                                self._breath_suppress_until = now_t + 0.16
+                                self._prevoice_wait_frames = 1
+                                # 重置参考
+                                self._bj_last_f0 = 0.0
+                                self._bj_streak = 0
+                                return
+                        except Exception:
+                            pass
+
+                    # 更新上一帧参考
+                    self._bj_last_f0 = float(smooth_frequency)
+                    self._bj_last_t = now_t
+                except Exception:
+                    pass
             
             # 🔥 关键修复：大幅降低有效音高的最低要求
             if smooth_frequency > 10:  # 🔥 极低有效音高阈值 (20Hz → 10Hz)
@@ -5392,7 +5534,16 @@ class IntegratedAudioProcessor(QThread):
                     self._ui_last_emit_t = now
                     self._ui_pending = None
             else:
-                self._ui_pending = pitch_dict
+                # 若已接近窗口尾部，允许提早一点点发送以减少体感延迟
+                tail_ratio = (now - getattr(self, '_ui_last_emit_t', 0.0)) / max(self._ui_emit_min_interval, 1e-6)
+                if tail_ratio >= 0.70 and (self._ui_pending is None):
+                    try:
+                        self.pitch_detected.emit(pitch_dict)
+                    finally:
+                        self._ui_last_emit_t = now
+                        self._ui_pending = None
+                else:
+                    self._ui_pending = pitch_dict
         except Exception:
             try:
                 self.pitch_detected.emit(pitch_dict)
@@ -7581,7 +7732,7 @@ class ECGStylePitchVisualizer(QWidget):
             # ================== 运行/刷新计时器与阈值 ==================
             # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
             # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
-            self._min_heavy_interval = 0.020  # ~20ms，约等于 50FPS 的间隔基线，减少卡段感
+            self._min_heavy_interval = 0.018  # 微降阈值，缩短等待，提升细节点“即时感”
 
             # 高频轻量帧定时器（即使没有新点也推动时间轴+细节点刷新）
             # 使用较小间隔以提升平滑度；如 CPU 允许可调至 8-12ms
@@ -9861,7 +10012,7 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 from src.audio_processing.performance_manager import PerformanceMode
                 mode = getattr(self, 'current_performance_mode', None)
-                push_factor = float(getattr(self, '_push_heavy_factor', 0.95))
+                push_factor = float(getattr(self, '_push_heavy_factor', 0.92))
             except Exception:
                 push_factor = 0.95
             if gap >= self._min_heavy_interval * push_factor:
@@ -9871,6 +10022,7 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception as _e_push:
                     print(f"⚠️ push重绘失败: {_e_push}")
             else:
+                # 更激进地插入一次微延迟即时刷新，降低“略不实时”感
                 if not hasattr(self, '_pending_instant_update') or not self._pending_instant_update:
                     self._pending_instant_update = True
                     QTimer.singleShot(0, self._instant_refresh)
@@ -9940,6 +10092,21 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _fast_update_tick(self):
         """高频轻量刷新：无新点时仅驱动轻量帧以保持平滑滚动。"""
+        # 先尝试刷新一次待发UI数据，减少“节流尾部”延迟
+        try:
+            now_t = time.time()
+            if hasattr(self, '_ui_pending') and self._ui_pending is not None:
+                min_int = float(getattr(self, '_ui_emit_min_interval', getattr(self, '_ui_emit_min_interval_default', 0.03)))
+                last_t = float(getattr(self, '_ui_last_emit_t', 0.0))
+                if (now_t - last_t) >= min_int:
+                    try:
+                        self.pitch_detected.emit(self._ui_pending)
+                    finally:
+                        self._ui_last_emit_t = now_t
+                        self._ui_pending = None
+        except Exception:
+            pass
+
         if not getattr(self, 'is_recording_active', False):
             return
         now_t = time.time()
@@ -10350,14 +10517,14 @@ class ECGStylePitchVisualizer(QWidget):
                         force_latency_redraw = True
                 except Exception:
                     pass
-            # 轻量帧条件：无新点 + 正在录音的自动跟随阶段 + 未到重帧间隔 + 无强制延迟重绘
+            # 轻量帧条件：放宽但保留核心限制，避免压掉新点即时呈现
             if (getattr(self, '_new_points_since_last_draw', 0) == 0 and
                 getattr(self, 'is_recording_active', False) and
                 getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
                 # 使用全局时间判断进入平滑滚动阶段，避免以“最新数据时间”造成卡段
                 getattr(self, 'current_global_time', 0.0) > self.center_display_time and
                 # 用户主动滚动时放宽阈值，保持连续感
-                (now - self._last_heavy_redraw_time) < (heavy_interval_threshold * (1.4 if (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0 else 1.0)) and
+                (now - self._last_heavy_redraw_time) < (heavy_interval_threshold * (1.25 if (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0 else 1.0)) and
                 not force_latency_redraw):
                 try:
                     # 轻量帧：以“全局时间”为滚动基准，消除按数据到达批次带来的分段感
@@ -11659,24 +11826,24 @@ class ECGStylePitchVisualizer(QWidget):
                 self._push_heavy_factor = 0.88
             else:
                 # BALANCED
-                new_update_ms = 24   # ~41 FPS
-                new_fast_ms = 10     # ~100 Hz 轻量
-                new_time_ms = 12     # ~83 Hz 时间轴
-                min_heavy_interval = 0.022
-                # 无音高发射节流（折中略提速，提升时间线连续性）
-                self._no_pitch_emit_interval_default = 0.04  # ~25 Hz
-                # UI信号发射节流（折中）
-                self._ui_emit_min_interval_default = 0.03
+                new_update_ms = 22   # ~45 FPS（小幅提升）
+                new_fast_ms = 8      # ~125 Hz 轻量（更顺滑）
+                new_time_ms = 12     # ~83 Hz 时间轴（保持）
+                min_heavy_interval = 0.020  # 更容易触发重帧
+                # 无音高发射节流（小幅提速，提升连续性）
+                self._no_pitch_emit_interval_default = 0.035  # ~28.5 Hz
+                # UI信号发射节流（小幅提速）
+                self._ui_emit_min_interval_default = 0.025
                 # 分段与细节点策略（折中）
                 self._segments_recompute_max_age_s = 0.09
                 self._segments_large_shift_threshold = 0.06
-                self._batched_points_cap_light = 1200
-                self._batched_points_cap_heavy = 1600
+                self._batched_points_cap_light = 1400
+                self._batched_points_cap_heavy = 1800
                 # 平滑时间轴参数（折中）
-                self._smooth_strength = 0.90
-                self._smooth_max_step = 0.06
+                self._smooth_strength = 0.92
+                self._smooth_max_step = 0.065
                 # push重绘触发因子（适中）
-                self._push_heavy_factor = 0.93
+                self._push_heavy_factor = 0.90
 
             # 应用并尽量无闪断地重启定时器
             try:
