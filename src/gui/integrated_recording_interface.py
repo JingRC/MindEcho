@@ -5404,7 +5404,7 @@ class IntegratedAudioProcessor(QThread):
                             # 抑制绘制
                             return
 
-                    # 附加：低能量噪声的ZCR快速判定
+                    # 附加：低能量噪声的ZCR判定（双阈值，柔性）
                     if min_voice_rms <= audio_rms <= breath_rms_upper:
                         try:
                             pa = np.asarray(processed_audio, dtype=np.float64)
@@ -5413,10 +5413,19 @@ class IntegratedAudioProcessor(QThread):
                                 zcr = float(z / 2.0)
                             else:
                                 zcr = 0.0
+                            # 强阈值：明显噪声，直接较长抑制
                             if zcr >= 0.30:
                                 self._breath_suppress_until = now_t + 0.16
                                 self._prevoice_wait_frames = 1
                                 # 重置参考
+                                self._bj_last_f0 = 0.0
+                                self._bj_streak = 0
+                                return
+                            # 中阈值：疑似换气中段的零星细节点，仅在距离上次有效绘制较长时触发，抑制更短
+                            last_draw_t = float(getattr(self, '_last_drawn_t', 0.0) or 0.0)
+                            if zcr >= 0.22 and (now_t - last_draw_t) >= 0.18:
+                                self._breath_suppress_until = now_t + 0.12
+                                self._prevoice_wait_frames = 1
                                 self._bj_last_f0 = 0.0
                                 self._bj_streak = 0
                                 return
@@ -5461,6 +5470,12 @@ class IntegratedAudioProcessor(QThread):
                         'confidence': confidence,
                         'note_info': note_info
                     })
+                    # 记录最近一次有效绘制，用于换气中段柔性抑制参考
+                    try:
+                        self._last_drawn_t = float(current_time)
+                        self._last_drawn_f0 = float(smooth_frequency)
+                    except Exception:
+                        pass
                     # 节流发射：避免Qt事件队列拥塞
                     self._emit_pitch_data_throttled(pitch_data)
                     
@@ -11198,16 +11213,78 @@ class ECGStylePitchVisualizer(QWidget):
             sig_mismatch = (len(getattr(self, '_segment_sigs', [])) != len(cur_sigs))
             lazy_tail = max(0, min(getattr(self, '_lazy_points_update_n', 3), len(segments)))
 
+            # === 轻量不稳定度 → 透明度计算（按段） ===
+            # 规则：
+            #  - 大跳跃(≥9半音) → 强淡化（alpha≈0.25）
+            #  - 中跳跃(≥6半音) → 中淡化（alpha≈0.35）
+            #  - 平均跳跃(≥3半音) → 轻淡化（alpha≈0.55）
+            #  - 稀疏且点很少（dt_avg>0.12 且 点≤3）→ 轻淡化上限（≤0.45）
+            #  - 其余保持稳定显示（alpha≈stable_alpha）
+            stable_alpha = float(getattr(self, '_stable_line_alpha', 0.85))
+            thr_big = float(getattr(self, '_fade_thr_big_jump', 9.0))
+            thr_mid = float(getattr(self, '_fade_thr_mid_jump', 6.0))
+            thr_mean = float(getattr(self, '_fade_thr_mean_jump', 3.0))
+            sparse_dt = float(getattr(self, '_fade_thr_sparse_dt', 0.12))
+            # 缓存：使用分段签名作为key，避免重复计算
+            if not hasattr(self, '_segment_alpha_cache'):
+                self._segment_alpha_cache = {}
+
+            def _compute_alpha_for_segment(sig_key, seg_times, seg_pitches):
+                try:
+                    # 命中缓存
+                    if sig_key in self._segment_alpha_cache:
+                        return self._segment_alpha_cache[sig_key]
+                    n = len(seg_times)
+                    if n < 2:
+                        alpha_val = 0.0 if n == 1 else 0.0
+                        self._segment_alpha_cache[sig_key] = alpha_val
+                        return alpha_val
+                    # 以“八度坐标”的差值近似半音跳跃（×12）
+                    max_jump = 0.0
+                    sum_abs = 0.0
+                    # 计算时间间隔平均值（判断稀疏）
+                    dt_sum = 0.0
+                    for j in range(1, n):
+                        dj = abs((seg_pitches[j] - seg_pitches[j-1]) * 12.0)
+                        if dj > max_jump:
+                            max_jump = dj
+                        sum_abs += dj
+                        dt_sum += max(0.0, (seg_times[j] - seg_times[j-1]))
+                    mean_jump = (sum_abs / (n - 1)) if n > 1 else 0.0
+                    dt_avg = (dt_sum / (n - 1)) if n > 1 else 0.0
+
+                    # 分级淡化
+                    alpha_val = stable_alpha
+                    if max_jump >= thr_big:
+                        alpha_val = 0.25
+                    elif max_jump >= thr_mid:
+                        alpha_val = 0.35
+                    elif mean_jump >= thr_mean:
+                        alpha_val = 0.55
+
+                    # 稀疏片段再轻度下调（仅在点极少时）
+                    if dt_avg > sparse_dt and n <= 3:
+                        alpha_val = min(alpha_val, 0.45)
+
+                    # 约束范围
+                    alpha_val = max(0.0, min(stable_alpha, alpha_val))
+                    self._segment_alpha_cache[sig_key] = alpha_val
+                    return alpha_val
+                except Exception:
+                    # 出错时保守返回稳定显示
+                    return stable_alpha
+
             for i, (seg_times, seg_pitches) in enumerate(segments):
                 seg_loop_start = _tmod.time()
                 # 允许单点段（显示细节点）
                 if i >= len(self._segment_lines):
                     # 新建 line
                     if len(seg_times) >= 2:
+                        alpha_val = _compute_alpha_for_segment(cur_sigs[i], seg_times, seg_pitches)
                         line, = self.ax.plot(seg_times, seg_pitches,
                                              color=curve_rgb,
                                              linewidth=self.current_linewidth,
-                                             alpha=0.85,
+                                             alpha=alpha_val,
                                              solid_capstyle='round',
                                              solid_joinstyle='round')
                     else:
@@ -11236,7 +11313,8 @@ class ECGStylePitchVisualizer(QWidget):
                     if len(seg_times) >= 2:
                         if need_update:
                             line.set_data(seg_times, seg_pitches)
-                        line.set_alpha(0.85)
+                        alpha_val = _compute_alpha_for_segment(cur_sigs[i], seg_times, seg_pitches)
+                        line.set_alpha(alpha_val)
                         line.set_linewidth(self.current_linewidth)
                     else:
                         if need_update:
@@ -11354,6 +11432,12 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 更新签名缓存
             self._segment_sigs = cur_sigs
+            # 清理透明度缓存，仅保留当前窗口段的键，避免无限增长
+            try:
+                if hasattr(self, '_segment_alpha_cache') and isinstance(self._segment_alpha_cache, dict):
+                    self._segment_alpha_cache = {k: self._segment_alpha_cache.get(k) for k in cur_sigs if k in self._segment_alpha_cache}
+            except Exception:
+                pass
             
             # 停止后不降级线条透明度，保持与实时一致的样式（alpha 在段更新处统一为 0.85）
             if self.debug_flags.get('display_diag'):
