@@ -37,10 +37,14 @@ except ImportError:
     PYQTGRAPH_AVAILABLE = False
     print("⚠️ PyQtGraph 不可用，建议安装: pip install pyqtgraph")
 
-# 导入音频处理模块
+# 导入音频处理模块（兼容多种包结构，避免静态未解析错误）
 try:
-    from src.audio_processing.integrated_processor import IntegratedAudioProcessor
-except ImportError:
+    import importlib
+    try:
+        IntegratedAudioProcessor = importlib.import_module('src.audio_processing.integrated_processor').IntegratedAudioProcessor
+    except Exception:
+        IntegratedAudioProcessor = importlib.import_module('audio_processing.integrated_processor').IntegratedAudioProcessor
+except Exception:
     print("⚠️ 音频处理模块不可用，将使用模拟数据")
     IntegratedAudioProcessor = None
 
@@ -62,7 +66,8 @@ class HybridPitchVisualizer(QWidget):
         # 显示参数
         self.time_window = 10.0
         self.y_range = [1.0, 7.0]
-        self.display_mode = "心电图模式"
+        # 统一显示模式命名：原“心电图模式”改为“普通模式”
+        self.display_mode = "普通模式"
         
         # 性能监控
         self.last_update_time = time.time()
@@ -189,7 +194,7 @@ class HybridPitchVisualizer(QWidget):
         
         row1.addWidget(QLabel("显示模式:"))
         self.mode_combo = QComboBox()
-        modes = ["心电图模式", "彩色渐变", "频谱模式", "动态拖尾", "3D效果"]
+        modes = ["普通模式", "彩色渐变", "频谱模式", "动态拖尾", "3D效果"]
         self.mode_combo.addItems(modes)
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
         row1.addWidget(self.mode_combo)
@@ -379,7 +384,6 @@ class HybridPitchVisualizer(QWidget):
                 self.fps = self.update_count / (current_time - self.last_update_time)
                 self.last_update_time = current_time
                 self.update_count = 0
-                
         except Exception as e:
             print(f"更新可视化错误: {e}")
     
@@ -391,7 +395,7 @@ class HybridPitchVisualizer(QWidget):
         
         mode = self.mode_combo.currentText()
         
-        if mode == "心电图模式":
+        if mode in ("普通模式", "心电图模式"):
             self.update_ecg_mode_pyqtgraph(times, pitches)
         elif mode == "彩色渐变":
             self.update_gradient_mode_pyqtgraph(times, pitches, confidences)
@@ -602,7 +606,7 @@ class HybridPitchVisualizer(QWidget):
         self.fps_label = QLabel("FPS: 0")
         layout.addWidget(self.fps_label)
         
-        self.mode_status_label = QLabel("模式: 心电图")
+        self.mode_status_label = QLabel("模式: 普通模式")
         layout.addWidget(self.mode_status_label)
         
         layout.addStretch()
@@ -725,7 +729,7 @@ class HybridPitchVisualizer(QWidget):
         """运行完整性能测试"""
         print("📊 运行完整性能测试...")
         
-        modes = ["心电图模式", "彩色渐变", "频谱模式", "动态拖尾"]
+        modes = ["普通模式", "彩色渐变", "频谱模式", "动态拖尾"]
         results = {}
         
         for mode in modes:
@@ -779,27 +783,21 @@ def test_hybrid_visualizer():
     print("🚀 启动 MindEcho PyQtGraph 增强版可视化器")
     print(f"✅ PyQtGraph 可用: {PYQTGRAPH_AVAILABLE}")
     
-    try:
-        # 优先使用PyQtGraph
-        visualizer = HybridPitchVisualizer(use_pyqtgraph=PYQTGRAPH_AVAILABLE)
-        visualizer.show()
-        
-        print("\n💡 使用说明:")
-        print("  🎵 点击'加载颤音测试'查看细线条效果")
-        print("  🌈 点击'测试渐变效果'验证彩色渐变")
-        print("  📊 点击'性能测试'对比不同模式")
-        print("  🎛️ 切换显示模式体验不同效果")
-        print("\n🎯 重点测试:")
-        print("  • 彩色渐变模式是否正常显示")
-        print("  • 心电图模式线条是否够细")
-        print("  • 整体性能是否流畅")
-        
-        sys.exit(app.exec())
-        
-    except Exception as e:
-        print(f"❌ 启动失败: {e}")
-        import traceback
-        traceback.print_exc()
+    # 优先使用PyQtGraph
+    visualizer = HybridPitchVisualizer(use_pyqtgraph=PYQTGRAPH_AVAILABLE)
+    visualizer.show()
+    
+    print("\n💡 使用说明:")
+    print("  🎵 点击'加载颤音测试'查看细线条效果")
+    print("  🌈 点击'测试渐变效果'验证彩色渐变")
+    print("  📊 点击'性能测试'对比不同模式")
+    print("  🎛️ 切换显示模式体验不同效果")
+    print("\n🎯 重点测试:")
+    print("  • 彩色渐变模式是否正常显示")
+    print("  • 普通模式线条是否够细")
+    print("  • 整体性能是否流畅")
+    
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

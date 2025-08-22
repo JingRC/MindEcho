@@ -49,12 +49,13 @@ class PyQtGraphPitchVisualizer(QWidget):
         self.time_data = deque(maxlen=self.max_points)
         self.pitch_data = deque(maxlen=self.max_points)
         self.confidence_data = deque(maxlen=self.max_points)
-        
+
         # 显示参数
         self.time_window = 10.0  # 时间窗口（秒）
         self.y_range = [1.0, 7.0]  # 音高范围（八度）
-        self.display_mode = "心电图模式"
-        
+        # 默认显示模式（原“心电图模式”统一更名为“普通模式”）
+        self.display_mode = "普通模式"
+
         # 颜色方案
         self.colors = {
             'background': '#1a1a1a',
@@ -157,7 +158,8 @@ class PyQtGraphPitchVisualizer(QWidget):
         # 显示模式选择
         layout.addWidget(QLabel("显示模式:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["心电图模式", "彩色渐变", "频谱模式", "3D渐变"])
+        # 统一名称：将“心电图模式”改为“普通模式”
+        self.mode_combo.addItems(["普通模式", "彩色渐变", "频谱模式", "3D渐变"])
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
         layout.addWidget(self.mode_combo)
         
@@ -279,8 +281,8 @@ class PyQtGraphPitchVisualizer(QWidget):
             
             # 根据显示模式更新
             mode = self.mode_combo.currentText()
-            
-            if mode == "心电图模式":
+            # 兼容旧配置：同时识别“心电图模式”
+            if mode in ("普通模式", "心电图模式"):
                 self.update_ecg_mode(times, pitches, confidences)
             elif mode == "彩色渐变":
                 self.update_gradient_mode(times, pitches, confidences)
@@ -296,8 +298,8 @@ class PyQtGraphPitchVisualizer(QWidget):
             print(f"更新显示错误: {e}")
     
     def update_ecg_mode(self, times, pitches, confidences):
-        """心电图模式 - 细线条显示"""
-        print("🏥 更新心电图模式")
+        """普通模式 - 细线条显示（原心电图模式）"""
+        print("✅ 更新普通模式")
         
         # 设置细线条
         pen = pg.mkPen(color=self.colors['ecg_line'], width=1.0)  # 细线条

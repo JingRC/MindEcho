@@ -9479,7 +9479,12 @@ class ECGStylePitchVisualizer(QWidget):
             self.pitch_line, = self.ax.plot([], [], color=self.line_color, 
                                        linewidth=self.current_linewidth, alpha=1.0)
             self.confidence_scatter = self.ax.scatter([], [], c=[], 
-                                                s=20, alpha=0.7, cmap='viridis')
+                                                s=20, alpha=0.0, cmap='viridis')
+            try:
+                # 初始即隐藏，防止误显现导致彩色（紫色）点
+                self.confidence_scatter.set_visible(False)
+            except Exception:
+                pass
         
         # 初始化PyQtGraph彩色渐变组件（如果可用）
         self.pyqtgraph_gradient_widget = None

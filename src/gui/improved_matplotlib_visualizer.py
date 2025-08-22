@@ -53,7 +53,8 @@ class ImprovedMatplotlibVisualizer(QWidget):
         # 显示参数
         self.time_window = 10.0
         self.y_range = [1.0, 7.0]
-        self.display_mode = "心电图模式"
+        # 默认模式：统一为“普通模式”（兼容原“心电图模式”）
+        self.display_mode = "普通模式"
         
         # 性能监控
         self.update_count = 0
@@ -147,7 +148,7 @@ class ImprovedMatplotlibVisualizer(QWidget):
         
         row1.addWidget(QLabel("显示模式:"))
         self.mode_combo = QComboBox()
-        modes = ["心电图模式", "彩色渐变", "高性能渐变", "分段彩色", "光谱渐变"]
+        modes = ["普通模式", "彩色渐变", "高性能渐变", "分段彩色", "光谱渐变"]
         self.mode_combo.addItems(modes)
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
         row1.addWidget(self.mode_combo)
@@ -315,7 +316,7 @@ class ImprovedMatplotlibVisualizer(QWidget):
         try:
             mode = self.mode_combo.currentText()
             
-            if mode == "心电图模式":
+            if mode in ("普通模式", "心电图模式"):
                 self.render_ecg_mode()
             elif mode == "彩色渐变":
                 self.render_color_gradient()
