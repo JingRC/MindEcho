@@ -377,6 +377,17 @@ class IntegratedAudioProcessor(QThread):
                     print(msg)
                 except Exception:
                     pass
+                # 细粒度 push：若距离上次重帧已超过阈值的一定比例，主动触发一次 draw_idle
+                try:
+                    now_t = time.time()
+                    if hasattr(self, '_last_heavy_redraw_time'):
+                        gap = now_t - float(getattr(self, '_last_heavy_redraw_time', 0.0))
+                        base = float(getattr(self, '_heavy_redraw_base', 0.030))
+                        push_factor = float(getattr(self, '_push_heavy_factor', 0.90))
+                        if gap > base * push_factor and hasattr(self, 'canvas'):
+                            self.canvas.draw_idle()
+                except Exception:
+                    pass
         self._log_rate_limit = _log_rate_limit
         # Scroll日志去重签名
         self._last_scroll_signature = None
@@ -2001,6 +2012,18 @@ class IntegratedAudioProcessor(QThread):
             # 范围裁剪
             if not (ui_min_f <= f0 <= ui_max_f * 1.02):
                 return 0.0
+            # 谐波可行性守护：在低置信场景，优先与上次稳定频率保持一致的倍频
+            try:
+                prev_f = float(getattr(self, '_last_stable_freq', 0.0))
+                conf_hint = float(getattr(self, '_last_stable_conf', 0.0))
+                if prev_f > 0 and conf_hint < 0.5:
+                    import numpy as _np
+                    cands = [f0, f0*2.0, f0*0.5]
+                    errs = [abs(_np.log2(c/prev_f)) for c in cands]
+                    best_i = int(_np.argmin(_np.asarray(errs)))
+                    f0 = cands[best_i]
+            except Exception:
+                pass
             return f0
         except Exception as e:
             try:
@@ -2804,55 +2827,22 @@ class IntegratedAudioProcessor(QThread):
     def save_recording(self):
         """保存录音文件"""
         try:
-            # 确保录音目录存在（优先使用用户选择）
-            recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
-            recordings_dir.mkdir(parents=True, exist_ok=True)
+            # 基本校验
+            if not getattr(self, 'recording_filename', None):
+                return None
+            if not getattr(self, 'audio_buffer', None):
+                return None
 
-            # 生成文件路径
-            # 规范化：避免结尾空格/点
-            self.recording_filename = self.recording_filename.strip(" .")
-            if not self.recording_filename.endswith('.wav'):
-                self.recording_filename += '.wav'
-
-            output_path = recordings_dir / self.recording_filename
-
-            # 保存WAV文件
+            # 当前缓冲与参数快照
             audio_array = np.array(self.audio_buffer, dtype=np.float32)
+            sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+            ch = int(getattr(self, 'active_input_channels', self.channels))
+            duration = float(getattr(self, 'current_duration', len(audio_array) / max(sr, 1)))
+            pitches = list(getattr(self, 'pitch_history', []))
 
-            # 使用实际输入采样率与声道数
-            _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
-            _ch = int(getattr(self, 'active_input_channels', self.channels))
-            with wave.open(str(output_path), 'wb') as wav_file:
-                wav_file.setnchannels(_ch)
-                wav_file.setsampwidth(2)  # 16位
-                wav_file.setframerate(_sr)
-
-                # 转换为16位整数
-                audio_int16 = (audio_array * 32767).astype(np.int16)
-                wav_file.writeframes(audio_int16.tobytes())
-
-            # 保存分析结果
-            analysis_path = output_path.with_suffix('.json')
-            analysis_data = {
-                'recording_info': {
-                    'filename': self.recording_filename,
-                    'sample_rate': _sr,
-                    'channels': _ch,
-                    'duration': self.current_duration,
-                    'total_samples': len(self.audio_buffer)
-                },
-                'pitch_analysis': {
-                    'total_detections': len(self.pitch_history),
-                    'detection_rate': len(self.pitch_history) / max(self.current_duration, 1),
-                    'pitch_data': list(self.pitch_history)
-                }
-            }
-
-            with open(analysis_path, 'w', encoding='utf-8') as f:
-                json.dump(analysis_data, f, indent=2, ensure_ascii=False)
-
-            return str(output_path)
-
+            # 复用快照保存逻辑，避免与实时状态竞争
+            out_path = self._save_recording_snapshot(self.recording_filename, sr, ch, audio_array, pitches, duration)
+            return out_path or None
         except Exception as e:
             self.error_occurred.emit(f"保存录音失败: {e}")
             return None
@@ -8080,6 +8070,11 @@ class ECGStylePitchVisualizer(QWidget):
         self._use_batched_points = True
         # 仅更新末尾N段的细节点（旧段点位不变，减少每帧 set_offsets 开销）
         self._lazy_points_update_n = 3
+        # 绘制负载上限（保证恒定复杂度）：降低默认上限，避免长时录制后窗口过密
+        self._batched_points_cap_light = getattr(self, '_batched_points_cap_light', 700)
+        self._batched_points_cap_heavy = getattr(self, '_batched_points_cap_heavy', 1000)
+        self._window_points_soft_cap = getattr(self, '_window_points_soft_cap', 3000)
+        self._window_points_downsample_target = getattr(self, '_window_points_downsample_target', 2000)
         # 分段签名缓存：[(first_t, last_t, length), ...]
         self._segment_sigs = []
         # 时间轴平滑滚动状态
@@ -8097,6 +8092,15 @@ class ECGStylePitchVisualizer(QWidget):
             self._head_points = _dq(maxlen=self._head_points_capacity)
         except Exception:
             self._head_points = []
+        # 静音判定阈值：超出该时长未收到新点，则按墙钟推进时间轴与纵向辅助线
+        self._silence_follow_threshold = 0.12
+        # 扁平点缓冲：实时录音时的快速可视窗口采样（避免每帧遍历所有段）
+        try:
+            from collections import deque as _dq2
+            # 预留约 6000 点的滑窗（足够覆盖 16s 可视窗 + 余量）
+            self._flat_points = _dq2(maxlen=6000)
+        except Exception:
+            self._flat_points = []
         # 速率限制日志 & 统计
         self._last_log_times = {
             'vocal_protect': 0.0,
@@ -8118,8 +8122,26 @@ class ECGStylePitchVisualizer(QWidget):
         self._diag_display_intervals = []
         self._diag_add_to_display_latencies = []
         self._diag_pending_points = 0
+
+        # ====== 高音段稳健性（假声/头声优化）======
+        # 目标：缓解相邻点出现1个八度上下抖动的问题，纠正常见倍频/半频误判，同时保持实时与流畅
+        try:
+            from collections import deque as _dq3
+            self._robust_freq_window = _dq3(maxlen=9)   # 频率稳健窗口（中位/参考）
+        except Exception:
+            self._robust_freq_window = []
+        self._last_stable_freq = None
+        self._last_stable_conf = 0.0
+        # 允许的单步最大跳变（半音）——超过则进行倍频修正或限幅
+        self._max_step_semitones = 7.0
+        # 置信度门限：高于此值放宽限幅（更跟手），低于此值更保守
+        self._high_confidence_thr = 0.65
+        # 倍频修正搜索范围（-2 到 2，单位：倍频的指数）
+        self._octave_adjust_range = (-2, 2)
+        # 限幅后的融合强度（数值越大越靠近期望值，0-1）
+        self._clamp_blend_strength = 0.70
         self._diag_last_report = 0.0
-        # 日志辅助
+        # 日志辅助（节流）
         import time as _t
         def _log_rate_limit(key: str, msg: str, interval: float = 0.5):
             now = _t.time()
@@ -8153,18 +8175,18 @@ class ECGStylePitchVisualizer(QWidget):
                 print(f"[SUMMARY {dur:.1f}s] vocalProtect={vp} highLatency={hl} segRecompute={sre} segCacheHit={sch} fps~={fps_est:.1f}")
                 for k in self._stat_counters:
                     self._stat_counters[k] = 0
-            self._last_summary_time = now
-            self._maybe_summary = _maybe_summary
+                self._last_summary_time = now
+        self._maybe_summary = _maybe_summary
 
-            # ================== 运行/刷新计时器与阈值 ==================
-            # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
-            # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
-            self._min_heavy_interval = 0.016  # 再小幅下降，提升“即时感”，配合 push 因子
+        # ================== 运行/刷新计时器与阈值 ==================
+        # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
+        # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
+        self._min_heavy_interval = 0.016  # 再小幅下降，提升“即时感”，配合 push 因子
 
-            # 高频轻量帧定时器（即使没有新点也推动时间轴+细节点刷新）
-            # 使用较小间隔以提升平滑度；如 CPU 允许可调至 8-12ms
-            # 默认放缓轻量刷新，减轻总负载；需要更丝滑可调到 8-10ms
-            self.fast_update_interval_ms = 10
+        # 高频轻量帧定时器（即使没有新点也推动时间轴+细节点刷新）
+        # 使用较小间隔以提升平滑度；如 CPU 允许可调至 8-12ms
+        # 默认放缓轻量刷新，减轻总负载；需要更丝滑可调到 8-10ms
+        self.fast_update_interval_ms = 10
         try:
             self.fast_update_timer = QTimer(self)
             # 精确定时器降低抖动
@@ -8291,10 +8313,14 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 self.time_offset = 0.0
 
-            # 在完成一次较重更新后，给事件循环一个短让步，缓和主线程阻塞感
+            # 限流：避免频繁 processEvents 造成微卡（仅每 ~120ms 至多一次）
             try:
                 if hasattr(QApplication, 'processEvents'):
-                    QApplication.processEvents()
+                    now_ts_pe = now_ts
+                    last_pe = float(getattr(self, '_last_pe_t', 0.0))
+                    if (now_ts_pe - last_pe) > 0.12:
+                        QApplication.processEvents()
+                        self._last_pe_t = now_ts_pe
             except Exception:
                 pass
         # 没有新数据也让显示推进：缩短触发阈值，避免“半秒一卡”观感
@@ -8394,6 +8420,30 @@ class ECGStylePitchVisualizer(QWidget):
         # 清理段信息
         if hasattr(self, '_segments'):
             self._segments = []
+        # 清理扁平点缓冲与尾部滑窗缓存，防止跨会话残留影响后续会话
+        try:
+            if hasattr(self, '_flat_points') and self._flat_points is not None:
+                try:
+                    self._flat_points.clear()
+                except Exception:
+                    self._flat_points = []
+            if hasattr(self, '_tail_time'):
+                try:
+                    self._tail_time.clear()
+                except Exception:
+                    self._tail_time = []
+            if hasattr(self, '_tail_pitch'):
+                try:
+                    self._tail_pitch.clear()
+                except Exception:
+                    self._tail_pitch = []
+            if hasattr(self, '_tail_conf'):
+                try:
+                    self._tail_conf.clear()
+                except Exception:
+                    self._tail_conf = []
+        except Exception:
+            pass
 
         # 清理头部即时散点
         try:
@@ -8886,10 +8936,19 @@ class ECGStylePitchVisualizer(QWidget):
         controls_row1_layout.addWidget(self.sensitivity_label)
         
         # 显示模式
-        controls_row1_layout.addWidget(QLabel("显示模式:"))
+        self._diag_last_display_time = None
+        try:
+            from collections import deque as _dq_diag
+            self._diag_display_intervals = _dq_diag(maxlen=2000)
+            self._diag_add_to_display_latencies = _dq_diag(maxlen=2000)
+        except Exception:
+            self._diag_display_intervals = []
+            self._diag_add_to_display_latencies = []
+        self._diag_pending_points = 0
+        # 下拉框：显示模式
         self.display_mode = QComboBox()
         self.display_mode.addItems([
-            "心电图模式", 
+            "普通模式",
             "彩色渐变"
         ])
         self.display_mode.currentTextChanged.connect(self.on_display_mode_changed)
@@ -8897,6 +8956,19 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 性能模式选择
         controls_row1_layout.addWidget(QLabel(" | 性能:"))
+        # 尾部滑窗缓存：仅保持可视窗+余量范围内的三元组，避免每帧复制全量历史
+        try:
+            from collections import deque as _dq_tail
+            self._tail_time = _dq_tail()
+            self._tail_pitch = _dq_tail()
+            self._tail_conf = _dq_tail()
+        except Exception:
+            self._tail_time = []
+            self._tail_pitch = []
+            self._tail_conf = []
+        # 额外保留秒数与点数上限（保护）
+        self._tail_keep_extra_s = 2.5
+        self._tail_cap_points = 8000
         self.performance_mode = QComboBox()
         self.performance_mode.addItems([
             "安静模式",      # 最低配置，节省资源  
@@ -8913,9 +8985,9 @@ class ECGStylePitchVisualizer(QWidget):
             self.performance_mode.setCurrentText("平衡模式")
         self.performance_mode.currentTextChanged.connect(self.on_performance_mode_changed)
         self.performance_mode.setToolTip(
-            "安静模式: 最低资源消耗，15Hz检测频率\n"
-            "平衡模式: 合理性能与质量平衡，30Hz检测频率\n"
-            "高性能模式: 充分利用计算资源，60Hz检测频率，GPU加速"
+            "安静模式: 最低资源消耗，≈45Hz检测频率\n"
+            "平衡模式: 合理性能与质量平衡，≈60Hz检测频率\n"
+            "高性能模式: 充分利用计算资源，≈90Hz检测频率，可用时启用GPU"
         )
         self.performance_mode.setStyleSheet("""
             QComboBox {
@@ -9369,7 +9441,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.plot_container.update()
     
     def create_ecg_plot(self):
-        """创建心电图式绘图区域（支持交互和PyQtGraph彩色渐变）"""
+        """创建普通模式绘图区域（支持交互和PyQtGraph彩色渐变）"""
         # 设置matplotlib参数
         plt.rcParams['figure.facecolor'] = self.bg_color
         plt.rcParams['axes.facecolor'] = self.bg_color
@@ -9400,13 +9472,13 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         
-        # 设置心电图式网格
-        self.setup_ecg_grid()
+            # 设置心电图式网格
+            self.setup_ecg_grid()
         
-        # 初始化空的线条
-        self.pitch_line, = self.ax.plot([], [], color=self.line_color, 
+            # 初始化空的线条
+            self.pitch_line, = self.ax.plot([], [], color=self.line_color, 
                                        linewidth=self.current_linewidth, alpha=1.0)
-        self.confidence_scatter = self.ax.scatter([], [], c=[], 
+            self.confidence_scatter = self.ax.scatter([], [], c=[], 
                                                 s=20, alpha=0.7, cmap='viridis')
         
         # 初始化PyQtGraph彩色渐变组件（如果可用）
@@ -9432,12 +9504,12 @@ class ECGStylePitchVisualizer(QWidget):
             if self.chinese_font_available:
                 self.ax.set_xlabel('时间 (秒)', **chinese_font)
                 self.ax.set_ylabel('音高', **chinese_font)
-                self.ax.set_title('实时音高分析 - 心电图式显示 (可拖拽查看)', **title_font)
+                self.ax.set_title('实时音高分析 - 普通模式显示 (可拖拽查看)', **title_font)
                 print("🔤 使用中文标签")
             else:
                 self.ax.set_xlabel('Time (seconds)', **chinese_font)
                 self.ax.set_ylabel('Pitch', **chinese_font)  
-                self.ax.set_title('Real-time Pitch Analysis - ECG Style Display', **title_font)
+                self.ax.set_title('Real-time Pitch Analysis - Normal Mode Display', **title_font)
                 print("🔤 使用英文标签（中文字体不可用）")
                 
         except Exception as e:
@@ -9445,7 +9517,7 @@ class ECGStylePitchVisualizer(QWidget):
             # 备用方案：使用英文标签
             self.ax.set_xlabel('Time (seconds)', fontsize=12)
             self.ax.set_ylabel('Pitch', fontsize=12)
-            self.ax.set_title('Real-time Pitch Analysis - ECG Style Display', fontsize=14, fontweight='bold')
+            self.ax.set_title('Real-time Pitch Analysis - Normal Mode Display', fontsize=14, fontweight='bold')
         
         # 隐藏Y轴的数字刻度，只保留音名标注
         self.ax.set_yticklabels([])
@@ -9494,6 +9566,8 @@ class ECGStylePitchVisualizer(QWidget):
         # 保存分段曲线对象（避免被 clear 抹掉后下一帧才重绘导致的闪烁 / 丢失感）
         saved_segment_lines = []
         saved_segment_points = []
+        # 保存“头部即时散点”（近期窗口点，最容易出现闪烁）
+        saved_head_points_scatter = None
         try:
             if hasattr(self, '_segment_lines') and self._segment_lines:
                 for ln in self._segment_lines:
@@ -9508,6 +9582,10 @@ class ECGStylePitchVisualizer(QWidget):
             if hasattr(self, '_batched_points') and self._batched_points is not None:
                 if self._batched_points in self.ax.collections:
                     saved_batched_points = self._batched_points
+            # 头部即时散点
+            if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                if self._head_points_scatter in self.ax.collections:
+                    saved_head_points_scatter = self._head_points_scatter
         except Exception:
             pass
         
@@ -9577,6 +9655,28 @@ class ECGStylePitchVisualizer(QWidget):
                 self._segment_points = saved_segment_points
             except Exception as _rec_e:
                 print(f"⚠️ 重新挂载分段曲线失败: {_rec_e}")
+
+        # 恢复头部即时散点，避免清轴后一小段时间内细节点消失
+        if saved_head_points_scatter is not None:
+            try:
+                if saved_head_points_scatter not in self.ax.collections:
+                    self.ax.add_collection(saved_head_points_scatter)
+                self._head_points_scatter = saved_head_points_scatter
+                try:
+                    # 提升层级，避免被线条覆盖
+                    self._head_points_scatter.set_zorder(14)
+                    # 保守可见性
+                    if hasattr(self._head_points_scatter, 'set_alpha'):
+                        cur_a = None
+                        try:
+                            cur_a = self._head_points_scatter.get_alpha()
+                        except Exception:
+                            cur_a = None
+                        self._head_points_scatter.set_alpha(0.9 if cur_a is None else max(0.6, cur_a))
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     def setup_ecg_grid(self, create_pitch_line: bool = True):
         """设置心电图式网格（智能标注）
@@ -9971,12 +10071,9 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
         else:
-            # 录音态：优先使用最后渲染窗口，必要时启用平滑
-            if hasattr(self, '_last_render_window'):
-                x_min, x_max = self._last_render_window
-            else:
-                x_min = self.time_offset
-                x_max = self.time_offset + self.time_window
+            # 录音态：始终依据当前目标窗口推进，避免“锁在上次渲染窗口”导致累积滞后
+            x_min = self.time_offset
+            x_max = self.time_offset + self.time_window
             # 平滑滚动：超过中心时间后且自动跟随时使用平滑过渡
             try:
                 smooth_active = (
@@ -9989,16 +10086,45 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 smooth_active = False
             if smooth_active and hasattr(self, '_smooth_set_xlim'):
-                # 使用更灵敏的跟随参数，限制单步位移，避免“分段感”
+                # 使用“自适应跟随”参数，减少顿挫
                 try:
-                    self._smooth_set_xlim(x_min, x_max, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
+                    s, m = self._get_follow_smoothing()
+                    self._smooth_set_xlim(x_min, x_max, strength=float(s), max_step=float(m))
                 except Exception:
                     self.ax.set_xlim(x_min, x_max)
             else:
                 self.ax.set_xlim(x_min, x_max)
 
-        # 重新设置网格（无论是否有数据都要设置）
-        self.setup_ecg_grid()
+        # 仅在模式或Y范围变化时重建网格，避免频繁 clear 带来的闪烁
+        try:
+            profile_mode = (getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()).get('mode')
+        except Exception:
+            profile_mode = None
+        need_grid = False
+        try:
+            last_state = getattr(self, '_last_grid_state', None)
+            cur_state = (profile_mode, float(y_min), float(y_max))
+            if last_state is None:
+                need_grid = True
+            else:
+                # 模式改变或Y范围发生变化（阈值极小，保证切换时重绘）
+                ly_mode, ly0, ly1 = last_state
+                if ly_mode != cur_state[0] or abs(ly0 - cur_state[1]) > 1e-6 or abs(ly1 - cur_state[2]) > 1e-6:
+                    need_grid = True
+        except Exception:
+            need_grid = True
+        if need_grid:
+            self.setup_ecg_grid()
+            try:
+                self._last_grid_state = (profile_mode, float(y_min), float(y_max))
+            except Exception:
+                self._last_grid_state = (profile_mode, y_min, y_max)
+        else:
+            # 网格无需重建时，仍确保辅助线与标签同步
+            try:
+                self.update_guides()
+            except Exception:
+                pass
 
         # 强制刷新画布以确保时间轴标签正确显示
         self.canvas.draw_idle()
@@ -10064,6 +10190,12 @@ class ECGStylePitchVisualizer(QWidget):
         dx_data = -dx / fig_width * self.time_window * 1.5  # 负号实现反向拖拽
         new_time_offset = self.drag_start_time_offset + dx_data
         self.time_offset = max(0, min(self.max_history_time - self.time_window, new_time_offset))
+        # 标记手动操作时间，供平滑器在短期内提升响应或避免与手动冲突
+        try:
+            import time as _t
+            self._last_manual_scroll_time = _t.time()
+        except Exception:
+            pass
         
         # 更新显示（轻量：仅设置 xlim，避免重建网格导致粘滞感）
         try:
@@ -10201,7 +10333,12 @@ class ECGStylePitchVisualizer(QWidget):
         # 将滚动条值 (0-100) 映射到时间偏移范围
         # 移除对time_data的依赖，改为直接使用max_history_time
         max_time = self.max_history_time  # 直接使用最大历史时间
-        
+        # 标记手动操作时间，供平滑器参考
+        try:
+            import time as _t
+            self._last_manual_scroll_time = _t.time()
+        except Exception:
+            pass
         # 滚动条左端(0)对应最开始时间(时间偏移0)，右端(100)对应最大偏移
         normalized_value = value / 100.0
         max_offset = max(0, max_time - self.time_window)
@@ -10358,9 +10495,51 @@ class ECGStylePitchVisualizer(QWidget):
                         print(f"⚠️ 网格重建失败: {_rg_e}")
                 if getattr(self, '_suppress_updates_until_new_data', False):
                     self._suppress_updates_until_new_data = False
-                # 🔥 修复音高精度丢失问题：保持完整的小数精度
-                # 转换频率到Y轴位置（保持连续精度，不量化到半音）
-                midi_number = 69 + 12 * np.log2(frequency / 440)  # A4 = 440Hz = MIDI 69
+                # === 频率稳健化（倍频纠正 + 跳变限幅 + 置信度自适应）===
+                try:
+                    f_in = float(frequency)
+                    conf = float(confidence)
+                    # 维护短窗频率集合用于参考（中位数抗异常）
+                    self._robust_freq_window.append(f_in)
+                    import numpy as _np
+                    ref_freq = None
+                    if len(self._robust_freq_window) >= 3:
+                        ref_freq = float(_np.median(_np.asarray(self._robust_freq_window, dtype=float)))
+                    # 基于参考频率进行倍频搜索，选择与参考最一致的候选
+                    f_cand = f_in
+                    if ref_freq and ref_freq > 0:
+                        best_f = f_in
+                        best_err = abs(_np.log2(max(f_in,1e-9)/ref_freq))
+                        lo, hi = self._octave_adjust_range
+                        for k in range(lo, hi+1):
+                            if k == 0:
+                                continue
+                            f_try = f_in * (2.0 ** k)
+                            err = abs(_np.log2(max(f_try,1e-9)/ref_freq))
+                            if err < best_err:
+                                best_err = err
+                                best_f = f_try
+                        f_cand = best_f
+                    # 将候选频率转换为连续MIDI值
+                    midi_number = 69 + 12 * np.log2(max(f_cand,1e-9) / 440.0)
+                    # 与上一个稳定频率比较，进行单步跳变限幅（单位：半音）
+                    if self._last_stable_freq and self._last_stable_freq > 0:
+                        prev_midi = 69 + 12 * np.log2(self._last_stable_freq / 440.0)
+                        delta = midi_number - prev_midi
+                        max_step = self._max_step_semitones
+                        # 置信度高时适度放宽
+                        if conf > self._high_confidence_thr:
+                            max_step *= 1.25
+                        if abs(delta) > max_step:
+                            # 限幅，同时保留一定比例原值，避免突兀
+                            clamped = prev_midi + _np.sign(delta) * max_step
+                            midi_number = (self._clamp_blend_strength * clamped + (1.0 - self._clamp_blend_strength) * midi_number)
+                    # 更新稳定频率（回写为本次候选，增强后续参考）
+                    self._last_stable_freq = max(f_cand, 1e-9)
+                    self._last_stable_conf = conf
+                except Exception:
+                    # 退化到原始计算
+                    midi_number = 69 + 12 * np.log2(frequency / 440)
                 # 🎯 关键修复：保持完整的MIDI音符精度，不进行整数化
                 octave_exact = midi_number / 12 - 1  # 保持小数精度的八度
                 y_pos = octave_exact  # 直接使用精确的八度值作为Y轴位置
@@ -10378,6 +10557,55 @@ class ECGStylePitchVisualizer(QWidget):
                 self.time_data.append(global_time)
                 self.confidence_data.append(confidence)
                 self.note_data.append(note_info)
+                # 维护尾部滑动窗口缓存（用于长时录制保持恒定复杂度）
+                try:
+                    keep_s = float(getattr(self, 'time_window', 16.0)) + float(getattr(self, '_tail_buffer_sec', 0.25)) + float(getattr(self, '_tail_keep_extra_s', 2.5))
+                    cutoff_tail = global_time - keep_s
+                    if hasattr(self, '_tail_time') and hasattr(self, '_tail_pitch') and hasattr(self, '_tail_conf'):
+                        # 追加
+                        self._tail_time.append(global_time)
+                        self._tail_pitch.append(y_pos)
+                        self._tail_conf.append(confidence)
+                        # 修剪（按时间）
+                        if isinstance(self._tail_time, list):
+                            zipped = [(t, p, c) for (t, p, c) in zip(self._tail_time, self._tail_pitch, self._tail_conf) if t >= cutoff_tail]
+                            cap = int(getattr(self, '_tail_cap_points', 8000))
+                            if len(zipped) > cap:
+                                zipped = zipped[-cap:]
+                            self._tail_time = [t for (t, _, __) in zipped]
+                            self._tail_pitch = [p for (_, p, __) in zipped]
+                            self._tail_conf = [c for (_, __, c) in zipped]
+                        else:
+                            while self._tail_time and self._tail_time[0] < cutoff_tail:
+                                try:
+                                    self._tail_time.popleft(); self._tail_pitch.popleft(); self._tail_conf.popleft()
+                                except Exception:
+                                    break
+                            cap = int(getattr(self, '_tail_cap_points', 8000))
+                            while len(self._tail_time) > cap:
+                                try:
+                                    self._tail_time.popleft(); self._tail_pitch.popleft(); self._tail_conf.popleft()
+                                except Exception:
+                                    break
+                except Exception:
+                    pass
+                # 快速路径：维护扁平点缓冲（用于批量细节点快速刷新）
+                try:
+                    if hasattr(self, '_flat_points') and self._flat_points is not None:
+                        self._flat_points.append((global_time, y_pos))
+                        # 适度修剪：只保留可视窗+1.5s 余量，减少刷新扫描成本
+                        win = float(getattr(self, 'time_window', 16.0))
+                        cutoff = global_time - (win + 1.0)
+                        if isinstance(self._flat_points, list):
+                            self._flat_points = [(t, y) for (t, y) in self._flat_points if t >= cutoff][-6000:]
+                        else:
+                            while self._flat_points and self._flat_points[0][0] < cutoff:
+                                try:
+                                    self._flat_points.popleft()
+                                except Exception:
+                                    break
+                except Exception:
+                    pass
                 
                 # 更新当前音高状态（用于交互式标注）
                 self.current_pitch_y = y_pos
@@ -10385,6 +10613,11 @@ class ECGStylePitchVisualizer(QWidget):
                 self.last_pitch_time = time.time()  # 记录最后活跃时间
                 # 记录最后一次有效音高用于横向辅助线
                 self.last_active_pitch_y = y_pos
+                # 有新点：标记需要尽快重帧，避免长时间仅轻量帧导致可见滞后
+                try:
+                    self._force_redraw_on_next_update = True
+                except Exception:
+                    pass
                 
                 # 调试信息（每10个数据点打印一次）
                 if len(self.pitch_data) % 10 == 0:
@@ -10442,11 +10675,18 @@ class ECGStylePitchVisualizer(QWidget):
                                         self._head_points_scatter = None
                                 if self._head_points_scatter is not None:
                                     try:
+                                        # 若因 clear() 暂时脱离轴，则先重新挂载
+                                        if self._head_points_scatter not in getattr(self.ax, 'collections', []):
+                                            try:
+                                                self.ax.add_collection(self._head_points_scatter)
+                                            except Exception:
+                                                pass
                                         self._head_points_scatter.set_offsets(pts)
                                         # 稍微加大头部点尺寸以突出
                                         ms = max(9.0, min(16.0, 12.0))
                                         self._head_points_scatter.set_sizes([ms])
                                         self._head_points_scatter.set_alpha(0.95)
+                                        self._head_points_scatter.set_zorder(14)
                                     except Exception:
                                         pass
                             elif getattr(self, '_head_points_scatter', None) is not None:
@@ -10475,26 +10715,8 @@ class ECGStylePitchVisualizer(QWidget):
                     self._no_pitch_counter = 1
                     print("⏸️ 进入无音高模式 - 时间轴继续，音调线断开")
             
-            # 时间轴自动跟随（无论是否有音高都要处理）
-            if self.auto_follow and self.auto_scroll_enabled:
-                # 新的滚动逻辑：第8秒之前不滚动，第8秒后开始滚动
-                if global_time <= self.center_display_time:
-                    # 前8秒：时间偏移保持为0，显示从0到16秒的内容
-                    self.time_offset = 0.0
-                else:
-                    # 第8秒后：开始滚动，保持音调曲线在屏幕中央生成
-                    # 计算需要的时间偏移，使当前时间点在屏幕中央（8秒位置）
-                    if not hasattr(self, '_auto_scroll_started'):
-                        print(f"▶ 自动滚动启动: t={global_time:.2f}s (center={self.center_display_time}s)")
-                        self._auto_scroll_started = True
-                    self.time_offset = global_time - self.center_display_time
-                    
-                    # 确保时间偏移不超过最大历史时间限制
-                    max_offset = max(0, self.max_history_time - self.time_window)
-                    self.time_offset = min(self.time_offset, max_offset)
-                    
-                    # 实时更新滚动条位置，确保滚动条与时间偏移同步
-                    self.update_scrollbars()
+            # 时间轴自动跟随改为由 update_time_axis/_fast_update_tick 统一处理，避免数据到达批次驱动导致的分段感
+            # 这里不再直接改写 time_offset，仅由定时器路径推进时间轴
 
             # 触发一次即时刷新（去除0.5秒后批量突显）
             # === 增量刷新节流与分段快速追加 ===
@@ -10551,41 +10773,113 @@ class ECGStylePitchVisualizer(QWidget):
     # --- 平滑时间轴工具 ---
     def _smooth_set_xlim(self, target_start: float, target_end: float, strength: float = 0.35, max_step: float = 0.12):
         """
-        将当前xlim以插值方式逼近目标，减少跳变。strength∈(0,1] 越大响应越快；
-        max_step 限制每次最大移动（秒），避免大跨度瞬移。
+        平滑推进到目标xlim：
+        - 按“中心位移插值”，保持窗口宽度恒定，避免宽度抖动；
+        - 使用“时间尺度不变”的指数插值（强度随dt折算），削弱计时器抖动；
+        - 单步最大位移随 dt 与积压误差自适应，消除“跟随不够→粘滞感”。
         """
         try:
             if not hasattr(self, 'ax'):
                 return
+            import time as _t
+            import math as _m
             cur_start, cur_end = self.ax.get_xlim()
-            # 首次或无平滑历史：直接设置并记录
+            # 初始化平滑历史
             if self._smoothed_xlim is None:
                 self._smoothed_xlim = (cur_start, cur_end)
             s_cur, e_cur = self._smoothed_xlim
-            # 目标与当前差值
-            ds = target_start - s_cur
-            de = target_end - e_cur
-            # 限制单步最大位移
-            step_s = max(-max_step, min(max_step, ds * strength))
-            step_e = max(-max_step, min(max_step, de * strength))
-            s_new = s_cur + step_s
-            e_new = e_cur + step_e
-            # 若已接近目标（误差<1ms），直接落到目标
-            if abs(target_start - s_new) < 0.001 and abs(target_end - e_new) < 0.001:
-                s_new, e_new = target_start, target_end
+            # dt 自适应（基于 fast_update_interval）
+            now_t = _t.time()
+            last_t = getattr(self, '_smooth_last_t', None)
+            dt = 0.0 if last_t is None else max(0.004, min(0.080, now_t - last_t))
+            ideal_dt = 0.02
+            try:
+                ideal_dt = max(0.008, float(getattr(self, 'fast_update_interval_ms', 20)) / 1000.0)
+            except Exception:
+                pass
+            # 基础最大步长按dt缩放
+            dyn_max_step = max_step * (dt / ideal_dt if ideal_dt > 0 else 1.0)
+            # 自动跟随阶段：直接对齐目标（确保每秒推进1秒，无平滑滞后）
+            try:
+                cur_gt = float(getattr(self, 'current_global_time', 0.0))
+                if cur_gt > float(getattr(self, 'center_display_time', 8.0)) and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
+                    # 第8秒后处于自动跟随：直接设定到目标窗口，保证1:1速度
+                    self.ax.set_xlim(target_start, target_end)
+                    try:
+                        self.update_guides()
+                    except Exception:
+                        pass
+                    if hasattr(self, 'canvas'):
+                        self.canvas.draw_idle()
+                    self._smoothed_xlim = (target_start, target_end)
+                    self._smooth_last_t = now_t
+                    return
+            except Exception:
+                pass
+            # 目标中心与宽度
+            t_width = float(target_end - target_start)
+            c_tar = (float(target_start) + float(target_end)) * 0.5
+            c_cur = (float(s_cur) + float(e_cur)) * 0.5
+            # 以中心插值（时间尺度不变）：eff_strength = 1 - (1 - strength)^(dt/ideal_dt)
+            try:
+                frac = (dt / ideal_dt) if ideal_dt > 1e-6 else 1.0
+                frac = max(0.0, min(4.0, frac))
+                eff = 1.0 - pow(max(0.0, 1.0 - float(strength)), frac)
+            except Exception:
+                eff = strength
+            raw_delta = (c_tar - c_cur)
+            delta_c = raw_delta * eff
+            # 若积压较大，临时放宽最大步长以“追赶”，避免滞后感
+            backlog = abs(raw_delta)
+            if backlog > 0.0:
+                # 0.15s起逐步增强，最多3倍
+                boost = 1.0 + min(2.0, backlog / 0.15)
+                dyn_max_step *= boost
+            if delta_c > dyn_max_step:
+                delta_c = dyn_max_step
+            elif delta_c < -dyn_max_step:
+                delta_c = -dyn_max_step
+            c_new = c_cur + delta_c
+            # 接近阈值（<1ms）直接落到目标中心
+            if abs(c_tar - c_new) < 0.001:
+                c_new = c_tar
+            # 新窗口：保持目标宽度，避免宽度随插值漂移
+            s_new = c_new - t_width * 0.5
+            e_new = c_new + t_width * 0.5
+            # 亚像素级微抖抑制：若换算成像素位移 < 0.15px 且未到目标，跳过本次设置（减小死区以减少“粘住不动”）
+            try:
+                px_w = float(self.ax.bbox.width)
+                sec_per_px = max(1e-9, (e_cur - s_cur) / max(1.0, px_w))
+                px_shift = abs(s_new - s_cur) / sec_per_px
+                if px_shift < 0.10 and abs(c_tar - c_new) >= 0.001:
+                    s_new, e_new = s_cur, e_cur
+            except Exception:
+                pass
             # 应用并缓存
             if abs(cur_start - s_new) > 1e-6 or abs(cur_end - e_new) > 1e-6:
                 self.ax.set_xlim(s_new, e_new)
+                # 轻量滚动时同步更新纵向/横向辅助线，保持视觉一致
+                try:
+                    self.update_guides()
+                except Exception:
+                    pass
                 if hasattr(self, 'canvas'):
                     self.canvas.draw_idle()
             self._smoothed_xlim = (s_new, e_new)
+            self._smooth_last_t = now_t
         except Exception:
             # 退回直接设置
             try:
                 self.ax.set_xlim(target_start, target_end)
+                try:
+                    self.update_guides()
+                except Exception:
+                    pass
                 if hasattr(self, 'canvas'):
                     self.canvas.draw_idle()
                 self._smoothed_xlim = (target_start, target_end)
+                import time as _t
+                self._smooth_last_t = _t.time()
             except Exception:
                 pass
 
@@ -10623,6 +10917,16 @@ class ECGStylePitchVisualizer(QWidget):
                     self._smooth_set_xlim(x_min, x_max, 
                         strength=float(getattr(self, '_smooth_strength', 0.9)), 
                         max_step=float(getattr(self, '_smooth_max_step', 0.06)))
+                    # 同步刷新批量细节点，避免仅xlim移动时细节点短暂缺席
+                    try:
+                        self._refresh_batched_points_for_current_xlim()
+                    except Exception:
+                        pass
+                    # 同步辅助线，避免轻量滚动时纵向线滞后
+                    try:
+                        self.update_guides()
+                    except Exception:
+                        pass
                     if hasattr(self, 'canvas'):
                         self.canvas.draw_idle()
                 except Exception:
@@ -10656,21 +10960,57 @@ class ECGStylePitchVisualizer(QWidget):
     def _compute_axis_lead_seconds(self) -> float:
         """计算时间轴目标的提前量（补偿绘制/调度延迟），范围 [0, 0.05]s。"""
         try:
-            base = 0.020  # 基础前瞻
+            base = 0.030  # 略增基础前瞻，降低长时录制的主观延迟
             avg_draw = 0.0
             if hasattr(self, '_draw_timing_samples') and self._draw_timing_samples:
                 import numpy as np
-                avg_draw = float(np.mean(self._draw_timing_samples)) if len(self._draw_timing_samples) > 0 else 0.0
+                # 样本以毫秒记录，这里统一换算为秒
+                avg_draw_ms = float(np.mean(self._draw_timing_samples)) if len(self._draw_timing_samples) > 0 else 0.0
+                avg_draw = avg_draw_ms / 1000.0
             # 取半个平均重绘耗时作为附加提前量，避免过冲
-            lead = base + min(0.02, avg_draw * 0.5)
-            return max(0.0, min(0.05, lead))
+            lead = base + min(0.028, avg_draw * 0.55)
+            return max(0.0, min(0.065, lead))
         except Exception:
-            return 0.02
+            return 0.028
+
+    def _get_follow_target_time(self, latest_time: float | None = None) -> float:
+        """在录音+自动跟随时，返回用于居中的目标时间：以“最新数据时间+少量前瞻”为主，
+        防止用墙钟 current_global_time 导致>8秒后时间轴跑在数据前面、产生“线条滞后”的观感。
+
+        规则：
+        - 以最新点时间 latest_time 为基础；没有数据时退回 current_global_time。
+        - 为确保“新点出现在中央”，正常有数据时不再添加前瞻（lead=0）。
+        - 仅在长静音时，采用墙钟推进以保持匀速移动的观感。
+        """
+        try:
+            if latest_time is None:
+                latest_time = self.time_data[-1] if getattr(self, 'time_data', None) else getattr(self, 'current_global_time', 0.0)
+            cg = float(getattr(self, 'current_global_time', latest_time))
+            silence_thr = float(getattr(self, '_silence_follow_threshold', 0.12))
+            in_silence = (cg - float(latest_time)) > silence_thr
+            if not in_silence:
+                # 正常：严格与最新数据时间对齐，避免“辅助线在点前面”
+                target = float(latest_time)
+            else:
+                # 静音：跟随墙钟匀速推进（无前瞻）
+                target = float(cg)
+            return float(target)
+        except Exception:
+            return float(getattr(self, 'current_global_time', 0.0))
 
     def _get_follow_smoothing(self) -> tuple:
         """返回时间轴跟随时使用的 (strength, max_step) 平滑参数。"""
         s = float(getattr(self, '_smooth_follow_strength', getattr(self, '_smooth_strength', 0.9)))
         m = float(getattr(self, '_smooth_follow_max_step', getattr(self, '_smooth_max_step', 0.06)))
+        # 若刚有手动交互，临时提升响应以更快贴合，避免顿挫
+        try:
+            import time as _t
+            last_manual = float(getattr(self, '_last_manual_scroll_time', 0.0))
+            if (_t.time() - last_manual) < 0.35:
+                s = max(s, 0.95)
+                m = max(m, 0.10)
+        except Exception:
+            pass
         return (s, m)
 
     def _refresh_batched_points_for_current_xlim(self):
@@ -10692,24 +11032,35 @@ class ECGStylePitchVisualizer(QWidget):
                     self.ax.add_collection(self._batched_points)
                 except Exception:
                     pass
-            # 仅当已有分段数据时更新
-            if not hasattr(self, '_segments') or not self._segments:
-                return
+            # 若有扁平缓冲，优先使用以避免逐段扫描
             try:
                 x0, x1 = self.ax.get_xlim()
             except Exception:
                 x0, x1 = self.time_offset, self.time_offset + self.time_window
             # 避免与其他作用域中对 np 的使用发生局部覆盖，使用别名
             import numpy as _np
-            chunks = []
-            for (seg_times, seg_pitches) in self._segments:
-                if not seg_times:
-                    continue
-                for t, y in zip(seg_times, seg_pitches):
-                    if x0 <= t <= x1:
-                        chunks.append((t, y))
-            if chunks:
-                arr = _np.asarray(chunks, dtype=float)
+            arr = None
+            if hasattr(self, '_flat_points') and self._flat_points:
+                try:
+                    fp = list(self._flat_points)
+                    if fp:
+                        arr = _np.asarray(fp, dtype=float)
+                        mask = _np.logical_and(arr[:,0] >= x0, arr[:,0] <= x1)
+                        arr = arr[mask]
+                except Exception:
+                    arr = None
+            if arr is None or arr.size == 0:
+                if not hasattr(self, '_segments') or not self._segments:
+                    return
+                chunks = []
+                for (seg_times, seg_pitches) in self._segments:
+                    if not seg_times:
+                        continue
+                    for t, y in zip(seg_times, seg_pitches):
+                        if x0 <= t <= x1:
+                            chunks.append((t, y))
+                arr = _np.asarray(chunks, dtype=float) if chunks else _np.empty((0,2), dtype=float)
+            if arr.size > 0:
                 # 限制点数，避免过度绘制
                 max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
                 if arr.shape[0] > max_pts:
@@ -10724,7 +11075,8 @@ class ECGStylePitchVisualizer(QWidget):
                 s_val_global = _calc_marker_size()
                 self._batched_points.set_offsets(arr)
                 self._batched_points.set_sizes([s_val_global] * len(arr))
-                self._batched_points.set_alpha(0.95)
+                # 录音态批量点作背景，保持较高可见度
+                self._batched_points.set_alpha(0.88)
                 self._batched_points.set_zorder(13)
             else:
                 # 无可见点则隐藏
@@ -10733,7 +11085,8 @@ class ECGStylePitchVisualizer(QWidget):
                     self._batched_points.set_offsets(_np.empty((0, 2)))
                 except Exception:
                     pass
-                self._batched_points.set_alpha(0.0)
+                # 若录音仍在进行，保留极低的不透明度以避免“闪一下”
+                self._batched_points.set_alpha(0.06 if getattr(self, 'is_recording_active', False) else 0.0)
         except Exception:
             # 轻量刷新失败不影响主流程
             pass
@@ -10743,19 +11096,55 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if not hasattr(self, 'ax'):
                 return
-            # 纵向位置：≤8s 跟随当前时间，>8s 时严格居中（基于当前 xlim 中点，避免与 time_offset 误差）
+            # 纵向位置：
+            #   - ≤8s：跟随当前时间（夹紧到窗口）
+            #   - >8s 且自动跟随：将视觉位置锁定在图表像素中心，避免因 xlim 微抖导致的“左右晃动”
             time_start, time_end = self.ax.get_xlim() if hasattr(self, 'ax') else (self.time_offset, self.time_offset + self.time_window)
             cur_t = getattr(self, 'current_global_time', 0.0)
-            if cur_t > self.center_display_time:
-                v_x = (time_start + time_end) * 0.5
+            want_center = (cur_t > getattr(self, 'center_display_time', 8.0) and
+                           getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True))
+            # 计算目标 x（数据坐标）
+            if want_center:
+                # 优先用像素中心反变换得到的数据坐标，确保辅助线始终位于图表正中像素
+                try:
+                    bbox = self.ax.bbox  # 像素坐标系
+                    pix_center_x = (bbox.x0 + bbox.x1) * 0.5
+                    from matplotlib.transforms import Transform
+                    inv = self.ax.transData.inverted()
+                    v_target = float(inv.transform((pix_center_x, 0))[0])
+                except Exception:
+                    # 回退：使用当前 xlim 中点
+                    v_target = (time_start + time_end) * 0.5
             else:
-                v_x = min(max(time_start, cur_t), time_end)
+                v_target = min(max(time_start, cur_t), time_end)
+
+            # 轻量平滑与最大步长限制：仅在“未进入中心模式”时生效；中心模式锁定在像素中心
+            try:
+                if want_center:
+                    v_x = (time_start + time_end) * 0.5
+                    self._smoothed_vx = v_x
+                else:
+                    alpha = float(getattr(self, '_guide_vx_alpha', 0.35))
+                    max_step = float(getattr(self, '_guide_vx_max_step', 0.10))
+                    prev = getattr(self, '_smoothed_vx', None)
+                    if prev is None:
+                        v_x = v_target
+                    else:
+                        delta = (v_target - prev) * alpha
+                        if delta > max_step:
+                            delta = max_step
+                        elif delta < -max_step:
+                            delta = -max_step
+                        v_x = prev + delta
+                    self._smoothed_vx = v_x
+            except Exception:
+                v_x = v_target
 
             # 横向位置：最后一次有效音高（静音保持不变），默认以当前中心代替
             if self.last_active_pitch_y is None:
                 self.last_active_pitch_y = getattr(self, 'current_pitch_y', self.y_view_center)
 
-            # 纵向：柔光底线
+        # 纵向：柔光底线
             need_new_v_glow = (
                 getattr(self, 'v_guide_glow_line', None) is None or
                 getattr(getattr(self, 'v_guide_glow_line', None), 'axes', None) is None or
@@ -10773,7 +11162,6 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             else:
                 try:
-                    self.v_guide_glow_line.set_xdata([v_x, v_x])
                     self.v_guide_glow_line.set_visible(self.guides_enabled)
                     self.v_guide_glow_line.set_zorder(80)
                 except Exception:
@@ -10804,11 +11192,54 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             else:
                 try:
-                    self.v_guide_line.set_xdata([v_x, v_x])
                     self.v_guide_line.set_visible(self.guides_enabled)
                     self.v_guide_line.set_zorder(90)
                 except Exception:
                     pass
+
+            # —— 纵向线位置与变换：中心模式 vs 数据模式 ——
+            try:
+                ymin, ymax = self.ax.get_ylim()
+                manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
+                center_mode = bool(want_center and (not manual_freeze))
+                if center_mode:
+                    # 固定在图表正中（x=0.5 轴坐标），随y轴缩放自适应
+                    trans = self.ax.get_yaxis_transform()
+                    xdata_center = [0.5, 0.5]
+                    ydata_span = [ymin, ymax]
+                    # 柔光
+                    try:
+                        self.v_guide_glow_line.set_transform(trans)
+                        self.v_guide_glow_line.set_xdata(xdata_center)
+                        self.v_guide_glow_line.set_ydata(ydata_span)
+                    except Exception:
+                        pass
+                    # 主线
+                    try:
+                        self.v_guide_line.set_transform(trans)
+                        self.v_guide_line.set_xdata(xdata_center)
+                        self.v_guide_line.set_ydata(ydata_span)
+                    except Exception:
+                        pass
+                else:
+                    # 数据坐标（随时间移动），使用 EMA 平滑得到的 v_x
+                    trans = self.ax.transData
+                    xdata_v = [v_x, v_x]
+                    ydata_span = [ymin, ymax]
+                    try:
+                        self.v_guide_glow_line.set_transform(trans)
+                        self.v_guide_glow_line.set_xdata(xdata_v)
+                        self.v_guide_glow_line.set_ydata(ydata_span)
+                    except Exception:
+                        pass
+                    try:
+                        self.v_guide_line.set_transform(trans)
+                        self.v_guide_line.set_xdata(xdata_v)
+                        self.v_guide_line.set_ydata(ydata_span)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
             # 横向：柔光底线
             need_new_h_glow = (
@@ -10907,7 +11338,13 @@ class ECGStylePitchVisualizer(QWidget):
                     if not hasattr(self, '_auto_scroll_started'):
                         print(f"▶ 自动滚动启动: t={self.current_global_time:.2f}s (center={self.center_display_time}s)")
                         self._auto_scroll_started = True
-                    self.time_offset = self.current_global_time - self.center_display_time
+                    # 使用“最新数据时间+前瞻”作为目标，降低>8s后的主观延迟
+                    try:
+                        latest_time = self.time_data[-1] if self.time_data else self.current_global_time
+                        target_t = float(self._get_follow_target_time(latest_time=latest_time))
+                    except Exception:
+                        target_t = self.current_global_time
+                    self.time_offset = max(0.0, target_t - self.center_display_time)
                     
                     # 确保时间偏移不超过最大历史时间限制
                     max_offset = max(0, self.max_history_time - self.time_window)
@@ -10929,20 +11366,19 @@ class ECGStylePitchVisualizer(QWidget):
                         # 更新X轴范围以显示当前时间窗口
                         time_start = self.time_offset
                         time_end = self.time_offset + self.time_window
-                        
-                        current_xlim = self.ax.get_xlim()
                         # 使用平滑过渡，避免“分段移动”的观感
                         try:
-                            self._smooth_set_xlim(time_start, time_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
+                            self._smooth_set_xlim(time_start, time_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.06)))
                         except Exception:
-                            if abs(current_xlim[0] - time_start) > 0.02 or abs(current_xlim[1] - time_end) > 0.02:
+                            cur_xlim = self.ax.get_xlim()
+                            if abs(cur_xlim[0] - time_start) > 0.02 or abs(cur_xlim[1] - time_end) > 0.02:
                                 self.ax.set_xlim(time_start, time_end)
                                 self.canvas.draw_idle()
                         try:
                             self.update_guides()
                         except Exception:
                             pass
-                except Exception as e:
+                except Exception:
                     # 静默处理绘制错误
                     pass
                     
@@ -11009,9 +11445,9 @@ class ECGStylePitchVisualizer(QWidget):
             if not hasattr(self, '_aggressive_mode'):
                 self._aggressive_mode = True  # 激进平滑模式开关
             if not hasattr(self, '_heavy_redraw_base'):
-                self._heavy_redraw_base = 0.035
+                self._heavy_redraw_base = 0.030
             # 激进模式进一步压缩基线
-            base_target = 0.020 if self._aggressive_mode else 0.030
+            base_target = 0.018 if self._aggressive_mode else 0.028
             # 若存在最近的自适应压缩历史则平滑过渡
             self._heavy_redraw_base = (self._heavy_redraw_base*0.65 + base_target*0.35)
             adaptive_factor = 1.0
@@ -11023,16 +11459,41 @@ class ECGStylePitchVisualizer(QWidget):
                 elif avg_draw < 3 and getattr(self, '_stutter_events', 0) > 5:
                     adaptive_factor = 0.72  # 更积极收紧但更稳
             heavy_interval_threshold = self._heavy_redraw_base * adaptive_factor
+            # 运行时自适应：根据近期FPS和重绘耗时微调平滑步长与push因子
+            try:
+                if not hasattr(self, '_rt_autotune_last'):
+                    self._rt_autotune_last = 0.0
+                if now - self._rt_autotune_last > 0.5 and self._diag_display_intervals:
+                    win = list(self._diag_display_intervals)[-90:]
+                    fps = 1.0 / (sum(win)/len(win)) if win else 0.0
+                    draw_avg = (sum(self._draw_timing_samples[-30:])/min(30, len(self._draw_timing_samples))) if self._draw_timing_samples else 0.0
+                    # 若FPS<45或绘制均值>9ms：收紧平滑步长、降低push，减少顿挫
+                    if fps and (fps < 45.0 or draw_avg > 9.0):
+                        self._smooth_max_step = max(0.05, float(getattr(self, '_smooth_max_step', 0.08)) * 0.96)
+                        self._push_heavy_factor = min(0.98, float(getattr(self, '_push_heavy_factor', 0.9)) * 1.02)
+                    # 若FPS>58且绘制均值<5.5ms：放宽步长、提高push，增强“即时感”
+                    elif fps and (fps > 58.0 and draw_avg > 0 and draw_avg < 5.5):
+                        self._smooth_max_step = min(0.12, float(getattr(self, '_smooth_max_step', 0.08)) * 1.03)
+                        self._push_heavy_factor = max(0.82, float(getattr(self, '_push_heavy_factor', 0.9)) * 0.98)
+                    self._rt_autotune_last = now
+            except Exception:
+                pass
+            # >8s 自动跟随期间，适度缩短重帧阈值，让新点更快落位
+            try:
+                if getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and getattr(self, 'current_global_time', 0.0) > getattr(self, 'center_display_time', 8.0):
+                    heavy_interval_threshold *= 0.82
+            except Exception:
+                pass
             # 最近延迟窗口（避免全历史拉高平均）
             if self._diag_add_to_display_latencies:
                 _lat_list = list(self._diag_add_to_display_latencies)[-120:]
                 sl = sorted(_lat_list)
                 p90_lat = sl[int(0.9*len(sl))-1] if len(sl) > 5 else 0
                 p50_lat = sl[int(0.5*len(sl))-1] if len(sl) > 1 else 0
-                # 若 p90 延迟 >50ms 或 p50 >35ms 说明输出滞后，主动再收紧重帧阈值
-                if (p90_lat > 0.050 or p50_lat > 0.035):
+                # 若 p90 延迟 >40ms 或 p50 >28ms 说明输出滞后，主动再收紧重帧阈值
+                if (p90_lat > 0.040 or p50_lat > 0.028):
                     if not hasattr(self,'_last_latency_compress') or (now - self._last_latency_compress) > 0.4:
-                        heavy_interval_threshold *= 0.78  # 适度压缩，避免过度重绘引起抖动
+                        heavy_interval_threshold *= 0.74  # 适度更积极
                         self._last_latency_compress = now
                         if frame_trace:
                             print(f"[FRAME_ADAPT] latency compress p50={p50_lat*1000:.1f}ms p90={p90_lat*1000:.1f}ms new_thr={heavy_interval_threshold*1000:.1f}ms")
@@ -11040,12 +11501,12 @@ class ECGStylePitchVisualizer(QWidget):
             force_latency_redraw = False
             if self._diag_add_to_display_latencies:
                 last_lat = self._diag_add_to_display_latencies[-1]
-                if last_lat > 0.060:
+                if last_lat > 0.045:
                     force_latency_redraw = True
             # 轻量帧 watchdog：最近显示间隔>120ms 也强制重帧
             if not force_latency_redraw and self._diag_display_intervals:
                 try:
-                    if self._diag_display_intervals[-1] > 0.120:
+                    if self._diag_display_intervals[-1] > 0.090:
                         force_latency_redraw = True
                 except Exception:
                     pass
@@ -11058,22 +11519,22 @@ class ECGStylePitchVisualizer(QWidget):
                 # 用户主动滚动时放宽阈值，保持连续感
                 (now - self._last_heavy_redraw_time) < (heavy_interval_threshold * (1.25 if (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0 else 1.0)) and
                 not force_latency_redraw):
+                # Watchdog：若重帧间隔已经超过两倍阈值，放弃轻量帧直接走重帧，避免长时段漂移
+                if (now - self._last_heavy_redraw_time) > (heavy_interval_threshold * 2.0):
+                    raise RuntimeError("skip_light_frame_watchdog")
                 try:
-                    # 轻量帧：以“全局时间”为滚动基准，消除按数据到达批次带来的分段感
-                    latest_time = self.time_data[-1] if self.time_data else 0.0
-                    cur_t = getattr(self, 'current_global_time', latest_time)
-                    manual_freeze = (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
-                    if (not manual_freeze) and cur_t > self.center_display_time:
-                        time_start = cur_t - self.center_display_time
-                        time_end = time_start + self.time_window
-                    else:
-                        # 初期(<8s)或手动冻结：保持固定窗口
-                        time_start = 0.0 if cur_t <= self.center_display_time else self.time_offset
-                        time_end = time_start + self.time_window
+                    # 轻量帧：严格以唯一权威的 time_offset 为准，避免与其它路径目标不一致导致的拉扯/粘滞
                     if hasattr(self, 'ax'):
-                        # 使用平滑过渡，避免“瞬移/齿感”
+                        time_start = float(getattr(self, 'time_offset', 0.0))
+                        time_end = time_start + float(getattr(self, 'time_window', 16.0))
                         try:
-                            self._smooth_set_xlim(time_start, time_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
+                            # 8秒后加快跟随步长，避免窗口落后于最新点
+                            s = float(getattr(self,'_smooth_strength',0.9))
+                            m = float(getattr(self,'_smooth_max_step',0.05))
+                            if getattr(self, 'current_global_time', 0.0) > getattr(self, 'center_display_time', 8.0):
+                                m = max(m, 0.10)
+                                s = max(0.86, s)
+                            self._smooth_set_xlim(time_start, time_end, strength=s, max_step=m)
                         except Exception:
                             self.ax.set_xlim(time_start, time_end)
                         # 记录最近渲染窗口为实际 xlim，确保后续使用一致窗口
@@ -11101,16 +11562,37 @@ class ECGStylePitchVisualizer(QWidget):
                                 try:
                                     import numpy as _np
                                     x0, x1 = self.ax.get_xlim()
-                                    chunks = []
-                                    for (seg_times, seg_pitches) in self._segments:
-                                        if not seg_times:
-                                            continue
-                                        # 只收集视口范围内的点
-                                        for t, y in zip(seg_times, seg_pitches):
-                                            if x0 <= t <= x1:
-                                                chunks.append((t, y))
-                                    if chunks:
-                                        arr = _np.asarray(chunks, dtype=float)
+                                    # 优先用扁平缓冲，避免逐段扫描；使用向量化过滤
+                                    use_flat = hasattr(self, '_flat_points') and self._flat_points is not None and len(self._flat_points) > 0
+                                    if use_flat:
+                                        fp = list(self._flat_points)
+                                        if fp:
+                                            arr = _np.asarray(fp, dtype=_np.float32)
+                                            mask = (_np.asarray(arr[:, 0] >= x0) & _np.asarray(arr[:, 0] <= x1))
+                                            arr = arr[mask]
+                                        else:
+                                            arr = _np.empty((0, 2), dtype=_np.float32)
+                                    else:
+                                        chunks = []
+                                        for (seg_times, seg_pitches) in self._segments:
+                                            if not seg_times:
+                                                continue
+                                            for t, y in zip(seg_times, seg_pitches):
+                                                if x0 <= t <= x1:
+                                                    chunks.append((t, y))
+                                        arr = _np.asarray(chunks, dtype=_np.float32) if chunks else _np.empty((0, 2), dtype=_np.float32)
+                                    # 若逐段点集合存在，确保其置顶可见
+                                    try:
+                                        if hasattr(self, '_segment_points'):
+                                            for _coll in self._segment_points:
+                                                try:
+                                                    _coll.set_visible(True)
+                                                    _coll.set_zorder(14)
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
+                                    if arr.size > 0:
                                         # 轻量抽样限制（稍放宽以减少“断续”感）
                                         max_pts = int(getattr(self, '_batched_points_cap_light', 900))
                                         if arr.shape[0] > max_pts:
@@ -11125,12 +11607,12 @@ class ECGStylePitchVisualizer(QWidget):
                                         s_val_global = _calc_marker_size()
                                         self._batched_points.set_offsets(arr)
                                         self._batched_points.set_sizes([s_val_global] * len(arr))
-                                        self._batched_points.set_alpha(0.95)
-                                        self._batched_points.set_zorder(13)
+                                        self._batched_points.set_alpha(0.18 if not getattr(self, 'is_recording_active', False) else 0.15)
+                                        self._batched_points.set_zorder(10)
                                     else:
                                         # 视口内无点则隐藏
-                                        self._batched_points.set_offsets(_np.empty((0, 2)))
-                                        self._batched_points.set_alpha(0.0)
+                                        self._batched_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                                        self._batched_points.set_alpha(0.05 if getattr(self, 'is_recording_active', False) else 0.0)
                                 except Exception:
                                     # 避免轻量帧异常影响流畅度
                                     pass
@@ -11235,7 +11717,8 @@ class ECGStylePitchVisualizer(QWidget):
             # === 轴窗口 & 数据窗口分离 ===
             # 轴显示窗口(视觉范围)：统一以“最新数据时间”为中心（>=8s）作为目标，确保细节点始终居中且无抖动
             latest_time = self.time_data[-1] if self.time_data else 0.0
-            cur_t = getattr(self, 'current_global_time', latest_time)
+            # >8s 后用最新数据时间+小前瞻作为目标，减少“数据在中线后面”
+            cur_t = getattr(self, '_get_follow_target_time', lambda lt: getattr(self,'current_global_time', lt))(latest_time)
             manual_freeze = (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
             if getattr(self, 'is_recording_active', False):
                 if (getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True)
@@ -11250,12 +11733,19 @@ class ECGStylePitchVisualizer(QWidget):
                 # 停止录音：永远尊重用户 time_offset（允许拖到未来空白区）
                 axis_start = self.time_offset
                 axis_end = axis_start + self.time_window
-            # 录音态才允许平滑设置坐标轴范围；停止态直接设置，防止被回拽
+            # 录音态：仅依据唯一权威的 time_offset 应用 xlim；停止态尊重用户 time_offset
             try:
                 if hasattr(self, 'ax') and self.ax is not None:
-                    if getattr(self, 'is_recording_active', False) and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and (not getattr(self, 'freeze_y_center', False)) and cur_t > self.center_display_time:
+                    if getattr(self, 'is_recording_active', False):
+                        axis_start = float(getattr(self, 'time_offset', 0.0))
+                        axis_end = axis_start + float(getattr(self, 'time_window', 16.0))
                         try:
-                            self._smooth_set_xlim(axis_start, axis_end, strength=float(getattr(self,'_smooth_strength',0.9)), max_step=float(getattr(self,'_smooth_max_step',0.05)))
+                            s = float(getattr(self,'_smooth_strength',0.9))
+                            m = float(getattr(self,'_smooth_max_step',0.05))
+                            if getattr(self, 'current_global_time', 0.0) > getattr(self, 'center_display_time', 8.0):
+                                m = max(m, 0.10)
+                                s = max(0.86, s)
+                            self._smooth_set_xlim(axis_start, axis_end, strength=s, max_step=m)
                         except Exception:
                             self.ax.set_xlim(axis_start, axis_end)
                     else:
@@ -11274,88 +11764,128 @@ class ECGStylePitchVisualizer(QWidget):
                 self._last_render_window = (axis_start, axis_end)
             
             # 过滤时间窗口内的数据（保持顺序）
-            # 修复：原实现只前向递增start_idx，向左/回到早期时间会丢失旧点
-            # 统一使用bisect二分定位窗口起始索引，支持双向滚动；性能O(logN)
-            # 为避免 deque 在某些极端情况下与 bisect/索引交互导致意外 slice 对象索引错误，用列表拷贝做局部只读视图
-            _time_seq = list(self.time_data)
-            data_len = len(_time_seq)
-            if data_len == 0:
-                valid_indices = []
-            else:
-                import bisect
+            # 长时录制优化：在“录音中+自动跟随+非手动冻结+已过中心时间”时，优先使用尾部滑窗缓存，避免对全量历史做 list 拷贝与二分
+            use_tail = False
+            try:
+                if (getattr(self, 'is_recording_active', False)
+                    and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True)
+                    and (not manual_freeze) and cur_t > self.center_display_time
+                    and hasattr(self, '_tail_time') and self._tail_time):
+                    use_tail = True
+            except Exception:
+                use_tail = False
+
+            times = []
+            pitches = []
+            confidences = []
+            last_t_global = None
+            if use_tail:
                 try:
-                    start_idx = bisect.bisect_left(_time_seq, data_start - 1e-6)
-                except Exception as _bis_e:
-                    print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} data_start={data_start:.4f}")
-                    # 回退线性查找
-                    start_idx = 0
-                    while start_idx < data_len and _time_seq[start_idx] < data_start - 1e-6:
-                        start_idx += 1
-                # 仍向后线性扩展到窗口结束（数据局部连续，线性更快）
-                end_idx = start_idx
-                while end_idx < data_len and _time_seq[end_idx] <= data_end + 1e-6:
-                    end_idx += 1
-                valid_indices = list(range(start_idx, end_idx))
-                # 记录用于下一帧（允许轻微回退缓存1个点）
-                self._last_window_start_index = max(0, start_idx - 1)
-                # 调试：可选打印一次方向变化（节流）
-                if hasattr(self, '_last_window_start_index_real'):
-                    if start_idx < getattr(self, '_last_window_start_index_real_previous', start_idx+1):
-                        # 向后滚动发生
-                        if self.debug_flags.get('segment_log') and not hasattr(self, '_last_backward_scroll_logged'):
-                            print(f"🔁 回退滚动重建窗口: start_idx={start_idx}")
-                            self._last_backward_scroll_logged = True
-                    else:
-                        # 正向滚动恢复可再次允许一次回退日志
-                        if hasattr(self, '_last_backward_scroll_logged'):
-                            delattr(self, '_last_backward_scroll_logged')
-                self._last_window_start_index_real_previous = start_idx
-                self._last_window_start_index_real = start_idx
-            
+                    # 只遍历尾部缓存（其长度受控在数千点以内）
+                    for (t, p, c) in zip(self._tail_time, self._tail_pitch, self._tail_conf):
+                        last_t_global = t
+                        if t < data_start - 1e-6:
+                            continue
+                        if t > data_end + 1e-6:
+                            break
+                        times.append(t); pitches.append(p); confidences.append(c)
+                except Exception:
+                    # 回退到完整路径
+                    use_tail = False
+
+            if not use_tail:
+                # 统一使用bisect二分定位窗口起始索引，支持双向滚动；性能O(logN)
+                # 为避免 deque 在极端情况下与 bisect/索引交互导致意外 slice 对象索引错误，用列表拷贝做局部只读视图
+                _time_seq = list(self.time_data)
+                data_len = len(_time_seq)
+                if data_len == 0:
+                    valid_indices = []
+                else:
+                    import bisect
+                    try:
+                        start_idx = bisect.bisect_left(_time_seq, data_start - 1e-6)
+                    except Exception as _bis_e:
+                        print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} data_start={data_start:.4f}")
+                        # 回退线性查找
+                        start_idx = 0
+                        while start_idx < data_len and _time_seq[start_idx] < data_start - 1e-6:
+                            start_idx += 1
+                    # 仍向后线性扩展到窗口结束（数据局部连续，线性更快）
+                    end_idx = start_idx
+                    while end_idx < data_len and _time_seq[end_idx] <= data_end + 1e-6:
+                        end_idx += 1
+                    valid_indices = list(range(start_idx, end_idx))
+                    # 记录用于下一帧（允许轻微回退缓存1个点）
+                    self._last_window_start_index = max(0, start_idx - 1)
+                    # 调试：可选打印一次方向变化（节流）
+                    if hasattr(self, '_last_window_start_index_real'):
+                        if start_idx < getattr(self, '_last_window_start_index_real_previous', start_idx+1):
+                            if self.debug_flags.get('segment_log') and not hasattr(self, '_last_backward_scroll_logged'):
+                                print(f"🔁 回退滚动重建窗口: start_idx={start_idx}")
+                                self._last_backward_scroll_logged = True
+                        else:
+                            if hasattr(self, '_last_backward_scroll_logged'):
+                                delattr(self, '_last_backward_scroll_logged')
+                    self._last_window_start_index_real_previous = start_idx
+                    self._last_window_start_index_real = start_idx
+
+                # 提取有效数据
+                if data_len > 0 and valid_indices:
+                    try:
+                        times = [_time_seq[i] for i in valid_indices]
+                        pitches = [self.pitch_data[i] for i in valid_indices]
+                        confidences = [self.confidence_data[i] for i in valid_indices]
+                    except TypeError as _idx_e:
+                        # 捕获可能的 slice 索引异常，输出详细上下文
+                        print(f"[INDEX_ERR] {type(_idx_e).__name__}: {_idx_e} valid_indices_sample={valid_indices[:10]} len_valid={len(valid_indices)} data_len={data_len}")
+                        print(f"[INDEX_STATE] start_idx={valid_indices[0] if valid_indices else 'NA'} end_idx={(valid_indices[-1] if valid_indices else 'NA')} axis_window=({axis_start:.3f},{axis_end:.3f}) data_window=({data_start:.3f},{data_end:.3f})")
+                        import traceback as _tb
+                        print("[INDEX_TRACE]" + ''.join(_tb.format_exc()))
+                        # 回退：直接整窗截取（线性扫描）
+                        times = _time_seq
+                        pitches = list(self.pitch_data)
+                        confidences = list(self.confidence_data)
+                else:
+                    times = []
+                    pitches = []
+                    confidences = []
+
             # 停止录音后且完全在数据末尾之后的空白区域，直接走轻路径：不重算段、不绘制，保留当前空视图，避免粘滞
-            if not valid_indices:
+            if not times:
                 try:
-                    last_t = _time_seq[-1] if _time_seq else None
+                    last_t = (self._tail_time[-1] if (use_tail and self._tail_time) else (self.time_data[-1] if self.time_data else None))
                 except Exception:
                     last_t = None
                 viewing_future_blank = (not getattr(self,'is_recording_active', False)) and (last_t is not None) and (axis_start > last_t + 1e-3)
                 if viewing_future_blank:
-                    # 轻量：仅保持 xlim 与辅助线同步
                     try:
                         self.update_guides()
                     except Exception:
                         pass
-                    # 更新状态显示与滚动条
                     self.update_status_display()
                     self.update_scrollbars()
                     if hasattr(self, 'canvas'):
                         self.canvas.draw_idle()
                     return
-                # 其他情况（窗口内确无数据）：清空显示
                 self.pitch_line.set_data([], [])
                 self.canvas.draw_idle()
                 return
-            
-            # 提取有效数据
-            try:
-                times = [_time_seq[i] for i in valid_indices]
-                pitches = [self.pitch_data[i] for i in valid_indices]
-                confidences = [self.confidence_data[i] for i in valid_indices]
-            except TypeError as _idx_e:
-                # 捕获可能的 slice 索引异常，输出详细上下文
-                print(f"[INDEX_ERR] {type(_idx_e).__name__}: {_idx_e} valid_indices_sample={valid_indices[:10]} len_valid={len(valid_indices)} data_len={data_len}")
-                print(f"[INDEX_STATE] start_idx={valid_indices[0] if valid_indices else 'NA'} end_idx={(valid_indices[-1] if valid_indices else 'NA')} axis_window=({axis_start:.3f},{axis_end:.3f}) data_window=({data_start:.3f},{data_end:.3f})")
-                import traceback as _tb
-                print("[INDEX_TRACE]" + ''.join(_tb.format_exc()))
-                # 回退：直接整窗截取（线性扫描）
-                times = _time_seq
-                pitches = list(self.pitch_data)
-                confidences = list(self.confidence_data)
             phase_after_window = time.time()
             if 'frame_trace' in locals() and frame_trace:
                 print("[FRAME] 窗口过滤 点数={} 用时={:.2f}ms".format(len(times), (phase_after_window - frame_cpu_start)*1000))
             
             # 断续段分割：增量优化（新增点 / 数据窗口平移 / 超时 才重算）
+            # 极端密集点保护：若窗口内点数远超阈值，先做轻采样以避免下游分段/绘图过载
+            try:
+                if len(times) > int(getattr(self, '_window_points_soft_cap', 5500)):
+                    import numpy as _np
+                    step = int(_np.ceil(len(times) / float(getattr(self, '_window_points_downsample_target', 3800))))
+                    if step > 1:
+                        times = times[::step]
+                        pitches = pitches[::step]
+                        confidences = confidences[::step]
+            except Exception:
+                pass
             segments = []
             recompute_needed = False
             if len(times) > 1:
@@ -11509,18 +12039,55 @@ class ECGStylePitchVisualizer(QWidget):
                     self._diag_last_perf_report = now
             
             # 根据显示模式进行额外处理
-            display_mode = self.display_mode.currentText() if hasattr(self, 'display_mode') else "心电图模式"
+            display_mode = self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式"
             
-            if display_mode == "心电图模式":
+            if display_mode == "普通模式":
                 # 确保使用Matplotlib组件
                 if self.main_plot_area != self.canvas:
                     self.switch_display_widget(use_pyqtgraph=False)
                 
                 # 心电图模式：更细的线条，提高颤音等细节显示清晰度
                 # 注意：这里不再使用set_data，因为已经在draw_segmented_pitch_line中处理
-                if hasattr(self, '_last_display_mode') and self._last_display_mode != "心电图模式":
-                    print("💚 切换到心电图模式（断续曲线）")
-                self._last_display_mode = "心电图模式"
+                if hasattr(self, '_last_display_mode') and self._last_display_mode != "普通模式":
+                    print("💚 切换到普通模式（断续曲线）")
+                self._last_display_mode = "普通模式"
+
+                # 普通模式下，强制只保留白色逐段细节点，隐藏其他散点来源
+                try:
+                    if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+                        try:
+                            if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                                self.gradient_overlay_points.remove()
+                        except Exception:
+                            pass
+                        self.gradient_overlay_points = None
+                    if hasattr(self, '_batched_points') and self._batched_points is not None:
+                        try:
+                            self._batched_points.set_alpha(0.0)
+                            self._batched_points.set_visible(False)
+                        except Exception:
+                            pass
+                    if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                        try:
+                            self._head_points_scatter.set_alpha(0.0)
+                            self._head_points_scatter.set_visible(False)
+                        except Exception:
+                            pass
+                    if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
+                        try:
+                            self.confidence_scatter.set_alpha(0.0)
+                            self.confidence_scatter.set_visible(False)
+                        except Exception:
+                            pass
+                    if hasattr(self, '_segment_points'):
+                        for coll in self._segment_points:
+                            try:
+                                coll.set_alpha(0.98)
+                                coll.set_zorder(14)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 
             elif display_mode == "彩色渐变":
                 # 彩色渐变模式：使用优化的Matplotlib LineCollection超细渐变
@@ -11650,6 +12217,157 @@ class ECGStylePitchVisualizer(QWidget):
                 self.canvas.draw_idle()  # 🔥 修复：即使没有段也要重绘画布
                 return
             
+            # —— 渲染前预处理：针对高音/密集区域的可视化平滑与自适应抽样 ——
+            # 目标：在不改变真实数据的前提下，降低视觉抖动与点密度，提升流畅度
+            def _prepare_segment_for_render(seg_times, seg_pitches):
+                try:
+                    import numpy as _np
+                    n = len(seg_times)
+                    if n <= 2:
+                        return seg_times, seg_pitches
+                    t = _np.asarray(seg_times, dtype=_np.float32)
+                    y = _np.asarray(seg_pitches, dtype=_np.float32)
+                    # 估计局部特征
+                    dt = _np.diff(t, prepend=t[0])
+                    dy = _np.diff(y, prepend=y[0])
+                    # 配置参数（可覆盖）
+                    high_thr = float(getattr(self, '_high_pitch_threshold', 5.5))  # 约6八度以上视为高音
+                    beta_base = float(getattr(self, '_vis_ema_beta_base', 0.45))   # EMA权重：越小越平滑
+                    beta_high_scale = float(getattr(self, '_vis_ema_beta_high_scale', 0.72))  # 高音段缩放（趋向更平滑）
+                    dense_dt_thr = float(getattr(self, '_vis_dense_dt_thr', 0.006)) # 密集阈值
+                    jitter_semi_thr = float(getattr(self, '_vis_jitter_semi_thr', 5.5))  # 半音级跳变视为抖动
+                    min_step_base = float(getattr(self, '_vis_min_spacing_base', 0.0035))  # 基础最小间隔
+                    min_step_high = float(getattr(self, '_vis_min_spacing_high', 0.0065))  # 高音段最小间隔
+                    slope_keep_semi = float(getattr(self, '_vis_keep_slope_semi', 10.0))   # 斜率阈值（半音/步）
+                    seg_cap = int(getattr(self, '_vis_segment_points_cap', 2400))
+                    # 是否为高音段（以中位数判断更稳）
+                    y_med = float(_np.median(y))
+                    is_high = y_med >= high_thr
+                    # EMA 平滑（逐点）
+                    y_s = _np.empty_like(y)
+                    y_s[0] = y[0]
+                    for k in range(1, n):
+                        beta = beta_base
+                        if is_high:
+                            beta *= beta_high_scale
+                        if dt[k] < dense_dt_thr:
+                            beta *= 0.80
+                        # 突发抖动更强平滑
+                        if abs((y[k] - y[k-1]) * 12.0) > jitter_semi_thr and dt[k] < 0.020:
+                            beta *= 0.70
+                        # 限制范围
+                        beta = max(0.08, min(0.85, beta))
+                        y_s[k] = y_s[k-1] + beta * (y[k] - y_s[k-1])
+                    # 自适应抽样：时间最小间隔 + 斜率保护 + 首尾保留
+                    min_step = min_step_high if is_high else min_step_base
+                    keep_idx = [0]
+                    last_keep_t = t[0]
+                    for k in range(1, n-1):
+                        # 斜率保护（半音尺度）
+                        slope_semi = abs((y_s[k] - y_s[k-1]) * 12.0)
+                        if slope_semi >= slope_keep_semi:
+                            keep_idx.append(k)
+                            last_keep_t = t[k]
+                            continue
+                        # 时间间隔阈值
+                        if (t[k] - last_keep_t) >= min_step:
+                            keep_idx.append(k)
+                            last_keep_t = t[k]
+                    if n-1 not in keep_idx:
+                        keep_idx.append(n-1)
+                    rt = t[keep_idx].tolist()
+                    rp = y_s[keep_idx].tolist()
+                    # 超大段再做均匀抽样上限保护
+                    if len(rt) > seg_cap:
+                        step = int(_np.ceil(len(rt) / seg_cap))
+                        rt = rt[::step]
+                        rp = rp[::step]
+                    return rt, rp
+                except Exception:
+                    return seg_times, seg_pitches
+
+            # 透明度（alpha）基于“原始段”计算：保留“半个八度以上跳变 → 降低透明度”的规则
+            # 使用签名(raw_sigs)映射缓存，避免重复计算
+            if not hasattr(self, '_segment_alpha_cache_raw'):
+                self._segment_alpha_cache_raw = {}
+            def _compute_alpha_for_segment_raw(sig_key, seg_times, seg_pitches):
+                try:
+                    if sig_key in self._segment_alpha_cache_raw:
+                        return self._segment_alpha_cache_raw[sig_key]
+                    n = len(seg_times)
+                    # 默认稳定透明度
+                    stable_alpha = float(getattr(self, '_stable_line_alpha', 0.85))
+                    if n < 2:
+                        alpha_val = 0.0 if n == 1 else 0.0
+                        self._segment_alpha_cache_raw[sig_key] = alpha_val
+                        return alpha_val
+                    # 多档阈值（半音）：小幅、半个八度、一个八度、超大跨幅
+                    thr_small = float(getattr(self, '_fade_thr_small_jump', 3.0))  # ≈小幅跳变
+                    thr_half  = float(getattr(self, '_fade_thr_half_oct', 6.0))   # ≈半个八度
+                    thr_oct   = float(getattr(self, '_fade_thr_one_oct', 12.0))   # ≈一个八度
+                    thr_huge  = float(getattr(self, '_fade_thr_huge', 16.0))      # 超大跨幅（可调）
+                    # 对应透明度（这里“alpha”为不透明度）：
+                    # 跳变越小 → 越不透明；跳变越大 → 越透明
+                    alpha_small = float(getattr(self, '_alpha_small_jump', 0.92))
+                    alpha_half  = float(getattr(self, '_alpha_half_oct', 0.75))
+                    alpha_oct   = float(getattr(self, '_alpha_one_oct', 0.55))
+                    alpha_huge  = float(getattr(self, '_alpha_huge_jump', 0.30))
+                    # 以原始数据的半音差评估不稳定度
+                    max_jump = 0.0
+                    sum_abs = 0.0
+                    dt_sum = 0.0
+                    for j in range(1, n):
+                        dj = abs((seg_pitches[j] - seg_pitches[j-1]) * 12.0)
+                        if dj > max_jump:
+                            max_jump = dj
+                        sum_abs += dj
+                        dt_sum += max(0.0, (seg_times[j] - seg_times[j-1]))
+                    mean_jump = (sum_abs / (n - 1)) if n > 1 else 0.0
+                    # 透明度分级（按最大跳变主导；次之看平均跳变）
+                    if max_jump >= thr_huge:
+                        alpha_val = alpha_huge
+                    elif max_jump >= thr_oct:
+                        alpha_val = alpha_oct
+                    elif max_jump >= thr_half:
+                        alpha_val = alpha_half
+                    elif mean_jump >= thr_small:
+                        alpha_val = alpha_small
+                    else:
+                        alpha_val = stable_alpha
+                    # 稀疏且点少时上限
+                    sparse_dt = float(getattr(self, '_fade_thr_sparse_dt', 0.12))
+                    if (dt_sum / max(1, (n - 1))) > sparse_dt and n <= 3:
+                        alpha_val = min(alpha_val, 0.45)
+                    # 限制在 [0,1]
+                    alpha_val = max(0.0, min(1.0, alpha_val))
+                    self._segment_alpha_cache_raw[sig_key] = alpha_val
+                    return alpha_val
+                except Exception:
+                    return float(getattr(self, '_stable_line_alpha', 0.85))
+
+            # 对传入的段做一次可视化预处理，同时准备原始段的透明度
+            raw_sigs = []
+            raw_alphas = []
+            segments_orig = segments
+            render_segments = []
+            for _seg_times, _seg_pitches in segments_orig:
+                # 原始签名：用于与透明度缓存关联
+                if len(_seg_times):
+                    sig_key = (_seg_times[0], _seg_times[-1], len(_seg_times))
+                else:
+                    sig_key = (None, None, 0)
+                raw_sigs.append(sig_key)
+                raw_alphas.append(_compute_alpha_for_segment_raw(sig_key, _seg_times, _seg_pitches))
+                r_t, r_p = _prepare_segment_for_render(_seg_times, _seg_pitches)
+                render_segments.append((r_t, r_p))
+            segments = render_segments
+            # 对外暴露：渲染后段用于后续轻量帧等路径的批量点刷新；同时保留原始段用于诊断
+            try:
+                self._segments = segments
+                self._segments_raw = segments_orig
+            except Exception:
+                pass
+
             # 增量策略：保留已有对象，按段索引更新，减少闪烁并保持>8秒自动滚动时细节点可见
             if not hasattr(self, '_segment_lines'):
                 self._segment_lines = []
@@ -11675,16 +12393,20 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         self._batched_points = None
                 # 确保可见（可能在历史浏览时被隐藏）
-                try:
-                    if self._batched_points is not None:
-                        self._batched_points.set_visible(True)
-                except Exception:
-                    pass
+                    try:
+                        if self._batched_points is not None:
+                            self._batched_points.set_visible(True)
+                            # 保持低可见度背景
+                            if getattr(self, 'is_recording_active', False):
+                                self._batched_points.set_alpha(max(0.12, self._batched_points.get_alpha() or 0.12))
+                    except Exception:
+                        pass
             else:
                 # 高保真浏览：如存在批量集合则隐藏之，避免与逐段散点重复/冲突
                 try:
                     if hasattr(self, '_batched_points') and self._batched_points is not None:
-                        self._batched_points.set_alpha(0.0)
+                        # 历史浏览时可完全隐藏；录音态保留极低可见度，避免瞬时闪烁
+                        self._batched_points.set_alpha(0.0 if high_fidelity_browse else 0.08)
                         try:
                             self._batched_points.set_visible(False)
                         except Exception:
@@ -11710,7 +12432,7 @@ class ECGStylePitchVisualizer(QWidget):
                 # 线宽与缩放综合：放大倍数越大点可适当变小，反之放大
                 zoom = float(getattr(self, 'zoom_level', 1.0))
                 # 期望直径（points单位）
-                diameter = max(1.6, min(base_w * 3.2 / (0.6 if zoom < 1 else min(zoom, 3.0)), 4.0))
+                diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
                 # matplotlib scatter s = points^2
                 return diameter ** 2
 
@@ -11720,7 +12442,12 @@ class ECGStylePitchVisualizer(QWidget):
             import time as _tmod
             # 本帧固定一次点大小，避免每段重复计算
             s_val_global = _calc_marker_size()
-            # 生成本帧分段签名，用于跳过未变更段
+            # 读取当前可视窗口，供分段点与批量点裁剪/更新策略使用
+            try:
+                x0, x1 = self.ax.get_xlim()
+            except Exception:
+                x0, x1 = None, None
+            # 生成本帧分段签名（基于“渲染段”）用于跳过未变更段
             cur_sigs = []
             for (seg_times, seg_pitches) in segments:
                 if len(seg_times):
@@ -11730,66 +12457,8 @@ class ECGStylePitchVisualizer(QWidget):
             sig_mismatch = (len(getattr(self, '_segment_sigs', [])) != len(cur_sigs))
             lazy_tail = max(0, min(getattr(self, '_lazy_points_update_n', 3), len(segments)))
 
-            # === 轻量不稳定度 → 透明度计算（按段） ===
-            # 规则：
-            #  - 大跳跃(≥9半音) → 强淡化（alpha≈0.25）
-            #  - 中跳跃(≥6半音) → 中淡化（alpha≈0.35）
-            #  - 平均跳跃(≥3半音) → 轻淡化（alpha≈0.55）
-            #  - 稀疏且点很少（dt_avg>0.12 且 点≤3）→ 轻淡化上限（≤0.45）
-            #  - 其余保持稳定显示（alpha≈stable_alpha）
+            # 轻量不稳定度 → 透明度（按段）：使用“原始段”的跳变度量
             stable_alpha = float(getattr(self, '_stable_line_alpha', 0.85))
-            thr_big = float(getattr(self, '_fade_thr_big_jump', 9.0))
-            thr_mid = float(getattr(self, '_fade_thr_mid_jump', 6.0))
-            thr_mean = float(getattr(self, '_fade_thr_mean_jump', 3.0))
-            sparse_dt = float(getattr(self, '_fade_thr_sparse_dt', 0.12))
-            # 缓存：使用分段签名作为key，避免重复计算
-            if not hasattr(self, '_segment_alpha_cache'):
-                self._segment_alpha_cache = {}
-
-            def _compute_alpha_for_segment(sig_key, seg_times, seg_pitches):
-                try:
-                    # 命中缓存
-                    if sig_key in self._segment_alpha_cache:
-                        return self._segment_alpha_cache[sig_key]
-                    n = len(seg_times)
-                    if n < 2:
-                        alpha_val = 0.0 if n == 1 else 0.0
-                        self._segment_alpha_cache[sig_key] = alpha_val
-                        return alpha_val
-                    # 以“八度坐标”的差值近似半音跳跃（×12）
-                    max_jump = 0.0
-                    sum_abs = 0.0
-                    # 计算时间间隔平均值（判断稀疏）
-                    dt_sum = 0.0
-                    for j in range(1, n):
-                        dj = abs((seg_pitches[j] - seg_pitches[j-1]) * 12.0)
-                        if dj > max_jump:
-                            max_jump = dj
-                        sum_abs += dj
-                        dt_sum += max(0.0, (seg_times[j] - seg_times[j-1]))
-                    mean_jump = (sum_abs / (n - 1)) if n > 1 else 0.0
-                    dt_avg = (dt_sum / (n - 1)) if n > 1 else 0.0
-
-                    # 分级淡化
-                    alpha_val = stable_alpha
-                    if max_jump >= thr_big:
-                        alpha_val = 0.25
-                    elif max_jump >= thr_mid:
-                        alpha_val = 0.35
-                    elif mean_jump >= thr_mean:
-                        alpha_val = 0.55
-
-                    # 稀疏片段再轻度下调（仅在点极少时）
-                    if dt_avg > sparse_dt and n <= 3:
-                        alpha_val = min(alpha_val, 0.45)
-
-                    # 约束范围
-                    alpha_val = max(0.0, min(stable_alpha, alpha_val))
-                    self._segment_alpha_cache[sig_key] = alpha_val
-                    return alpha_val
-                except Exception:
-                    # 出错时保守返回稳定显示
-                    return stable_alpha
 
             for i, (seg_times, seg_pitches) in enumerate(segments):
                 seg_loop_start = _tmod.time()
@@ -11797,25 +12466,28 @@ class ECGStylePitchVisualizer(QWidget):
                 if i >= len(self._segment_lines):
                     # 新建 line
                     if len(seg_times) >= 2:
-                        alpha_val = _compute_alpha_for_segment(cur_sigs[i], seg_times, seg_pitches)
+                        # 使用基于原始段计算的透明度
+                        alpha_val = raw_alphas[i] if i < len(raw_alphas) else stable_alpha
                         line, = self.ax.plot(seg_times, seg_pitches,
                                              color=curve_rgb,
                                              linewidth=self.current_linewidth,
                                              alpha=alpha_val,
                                              solid_capstyle='round',
-                                             solid_joinstyle='round')
+                                             solid_joinstyle='round',
+                                             zorder=13)
                     else:
                         line, = self.ax.plot(seg_times, seg_pitches,
                                              color=curve_rgb,
                                              linewidth=self.current_linewidth,
                                              alpha=0.0)
                     self._segment_lines.append(line)
+                    # 逐段细节点：放在曲线之上，确保肉眼可见且“贴”在线上
                     pts = self.ax.scatter(seg_times, seg_pitches,
                                           s=s_val_global,
                                           c=detail_rgb,
-                                          alpha=(0.2 if use_batched_points else 0.95),
+                                          alpha=(0.20 if use_batched_points else 0.98),
                                           linewidths=0,
-                                          zorder=12)
+                                          zorder=14)
                     self._segment_points.append(pts)
                 else:
                     line = self._segment_lines[i]
@@ -11830,9 +12502,14 @@ class ECGStylePitchVisualizer(QWidget):
                     if len(seg_times) >= 2:
                         if need_update:
                             line.set_data(seg_times, seg_pitches)
-                        alpha_val = _compute_alpha_for_segment(cur_sigs[i], seg_times, seg_pitches)
+                        # 使用基于原始段计算的透明度（保留“半八度跳变淡化”）
+                        alpha_val = raw_alphas[i] if i < len(raw_alphas) else stable_alpha
                         line.set_alpha(alpha_val)
                         line.set_linewidth(self.current_linewidth)
+                        try:
+                            line.set_zorder(13)
+                        except Exception:
+                            pass
                     else:
                         if need_update:
                             line.set_data(seg_times, seg_pitches)
@@ -11850,22 +12527,31 @@ class ECGStylePitchVisualizer(QWidget):
                         if high_fidelity_browse:
                             update_points = True
                         else:
-                            # 使用批量散点时，跳过逐段 offsets 更新，降低每帧 set_offsets 次数
-                            update_points = (not use_batched_points) and (need_update or (i >= len(segments) - lazy_tail))
+                            # 录音态：即使启用批量点，也确保“当前可视窗口内”的分段细点与曲线同步，避免偏离
+                            dense_seg = len(seg_times) > int(getattr(self, '_dense_segment_threshold', 400))
+                            in_view = False
+                            if x0 is None or x1 is None:
+                                in_view = True if len(seg_times) else False
+                            elif len(seg_times):
+                                in_view = not (seg_times[-1] < x0 or seg_times[0] > x1)
+                            if use_batched_points:
+                                update_points = (not dense_seg) and (need_update or (i >= len(segments) - lazy_tail) or in_view)
+                            else:
+                                update_points = (not dense_seg) and (need_update or (i >= len(segments) - lazy_tail))
                         if update_points:
                             offs = np.column_stack((seg_times, seg_pitches)) if len(seg_times) else np.empty((0, 2))
                             old_pts.set_offsets(offs)
                             old_pts.set_sizes([s_val_global] * (len(seg_times) if len(seg_times) else 1))
                             # 历史浏览：高可见度；实时：与原逻辑一致
-                            old_pts.set_alpha(0.95 if len(seg_times) else 0.0)
+                            old_pts.set_alpha(0.98 if len(seg_times) else 0.0)
                         else:
                             # 仅同步可见性/透明度，保留 offsets 与 sizes，降低每帧压力
                             if use_batched_points:
-                                # 实时批量点：分段点集弱可见，避免重复
-                                old_pts.set_alpha(0.15 if len(seg_times) else 0.0)
+                                # 实时批量点：分段点集弱可见，但不至于完全消失
+                                old_pts.set_alpha(0.12 if len(seg_times) else (0.06 if getattr(self, 'is_recording_active', False) else 0.0))
                             else:
-                                old_pts.set_alpha(0.95 if len(seg_times) else 0.0)
-                        old_pts.set_zorder(12)
+                                old_pts.set_alpha(0.98 if len(seg_times) else 0.0)
+                        old_pts.set_zorder(14)
                     except Exception:
                         try:
                             if old_pts in self.ax.collections:
@@ -11893,32 +12579,29 @@ class ECGStylePitchVisualizer(QWidget):
             if use_batched_points and hasattr(self, '_batched_points') and (self._batched_points is not None):
                 try:
                     import numpy as _np
-                    # 当前可视窗口裁剪，避免对屏外大量点做无效更新
-                    try:
-                        x0, x1 = self.ax.get_xlim()
-                    except Exception:
-                        x0, x1 = None, None
+                    # 当前可视窗口裁剪，避免对屏外大量点做无效更新（x0/x1 已在上方获取）
                     # 若集合被 clear 移除，则重新挂回
                     if self._batched_points not in getattr(self.ax, 'collections', []):
                         try:
                             self.ax.add_collection(self._batched_points)
                         except Exception:
                             pass
-                    chunks = []
                     total_pts = 0
+                    # 为保证录制中“点在线上”，批量点优先来自本次渲染后的段（与曲线同源）
+                    chunks = []
                     for (seg_times, seg_pitches) in segments:
                         if not seg_times:
                             continue
                         if x0 is not None and x1 is not None:
-                            # 仅保留窗口内点（含边界）
+                            # 仅收集视口内点
                             for t, y in zip(seg_times, seg_pitches):
                                 if x0 <= t <= x1:
                                     chunks.append((t, y))
                         else:
                             for t, y in zip(seg_times, seg_pitches):
                                 chunks.append((t, y))
-                    if chunks:
-                        arr = _np.asarray(chunks, dtype=float)
+                    arr = _np.asarray(chunks, dtype=_np.float32) if chunks else _np.empty((0, 2), dtype=_np.float32)
+                    if arr.size > 0:
                         total_pts = arr.shape[0]
                         # 视口点数过多时做等距抽样，限制 offsets 更新量，避免抖动
                         max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
@@ -11927,11 +12610,13 @@ class ECGStylePitchVisualizer(QWidget):
                             arr = arr[::step]
                         self._batched_points.set_offsets(arr)
                         self._batched_points.set_sizes([s_val_global] * len(arr))
-                        self._batched_points.set_alpha(0.95)
-                        self._batched_points.set_zorder(13)
+                        # 批量点只作填充背景，避免与逐段点争抢视觉焦点
+                        # 录音态保持一个稳定的低可见度，避免与逐段点切换时闪烁
+                        self._batched_points.set_alpha(0.18 if not getattr(self, 'is_recording_active', False) else 0.15)
+                        self._batched_points.set_zorder(10)
                     else:
-                        self._batched_points.set_offsets(_np.empty((0, 2)))
-                        self._batched_points.set_alpha(0.0)
+                        self._batched_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                        self._batched_points.set_alpha(0.05 if getattr(self, 'is_recording_active', False) else 0.0)
                 except Exception as _bp_e:
                     # 降级：关闭批量点以避免持续异常，并恢复逐段散点可见
                     try:
@@ -11949,10 +12634,10 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 更新签名缓存
             self._segment_sigs = cur_sigs
-            # 清理透明度缓存，仅保留当前窗口段的键，避免无限增长
+            # 清理透明度缓存，仅保留“原始段签名”的当前窗口键，避免无限增长
             try:
-                if hasattr(self, '_segment_alpha_cache') and isinstance(self._segment_alpha_cache, dict):
-                    self._segment_alpha_cache = {k: self._segment_alpha_cache.get(k) for k in cur_sigs if k in self._segment_alpha_cache}
+                if hasattr(self, '_segment_alpha_cache_raw') and isinstance(self._segment_alpha_cache_raw, dict):
+                    self._segment_alpha_cache_raw = {k: self._segment_alpha_cache_raw.get(k) for k in raw_sigs if k in self._segment_alpha_cache_raw}
             except Exception:
                 pass
             
@@ -12016,6 +12701,38 @@ class ECGStylePitchVisualizer(QWidget):
                 except:
                     pass
                 self.highlight_point = None
+
+            # 安全移除上一帧的白色叠加细节点，避免重复
+            if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+                try:
+                    if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                        self.gradient_overlay_points.remove()
+                except:
+                    pass
+                self.gradient_overlay_points = None
+
+            # 渐变模式下避免冲突：隐藏批量细节点、逐段细节点与头部即时点
+            try:
+                if hasattr(self, '_batched_points') and self._batched_points is not None:
+                    self._batched_points.set_alpha(0.0)
+                    try:
+                        self._batched_points.set_visible(False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_segment_points') and isinstance(self._segment_points, list):
+                    for coll in self._segment_points:
+                        try: coll.set_alpha(0.0)
+                        except Exception: pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                    self._head_points_scatter.set_alpha(0.0)
+            except Exception:
+                pass
             
             print(f"🌈 LineCollection真彩色渐变，数据点: {len(times)}")
             
@@ -12082,24 +12799,23 @@ class ECGStylePitchVisualizer(QWidget):
                 self.gradient_lines.append(line_collection)
                 print(f"✅ LineCollection创建成功：{len(segments)}个线段，线条粗细={self.current_linewidth:.1f}px")
             
-            # 方法2：仅显示最前端的单个高亮粒子
-            if len(times) > 0:
-                latest_time = times[-1]
-                latest_pitch = pitches[-1]
-                
-                # 根据最新音高确定HSV彩虹高亮点颜色
-                hue = ((latest_pitch - 1.0) % 6.0) / 6.0
-                rgb = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-                
-                # 创建中等大小的最前端高亮点
-                try:
-                    self.highlight_point = self.ax.scatter([latest_time], [latest_pitch], 
-                                                         s=120, c=[rgb], alpha=1.0, 
-                                                         zorder=20, edgecolors='white', 
-                                                         linewidths=2)
-                    print(f"✅ 前端高亮点创建成功: 时间={latest_time:.2f}, 音高={latest_pitch:.2f}")
-                except Exception as e:
-                    print(f"❌ 前端高亮点创建失败: {e}")
+            # 方法2（调整）：在渐变线上叠加“白色细节点”，确保在线且纯白，无彩色冲突
+            try:
+                # 计算点大小（与分段模式一致的感知大小）
+                base_w = float(getattr(self, 'current_linewidth', 0.6))
+                zoom = float(getattr(self, 'zoom_level', 1.0))
+                diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                marker_s = diameter ** 2  # scatter s 单位为 points^2
+                # 使用插值后的轨迹作为叠加点坐标（若无插值则为原始数据）
+                overlay_times = interp_times if 'interp_times' in locals() else times
+                overlay_pitches = interp_pitches if 'interp_pitches' in locals() else pitches
+                white = (1.0, 1.0, 1.0)
+                self.gradient_overlay_points = self.ax.scatter(overlay_times, overlay_pitches,
+                                                               s=marker_s, c=[white], alpha=0.98,
+                                                               linewidths=0, zorder=14)
+                print(f"✅ 渐变线上叠加白色细节点：{len(overlay_times)} 个")
+            except Exception as e:
+                print(f"⚠️ 叠加白色细节点失败: {e}")
                     
             print(f"🎨 超细平滑彩虹渐变更新完成，共创建 {len(self.gradient_lines)} 个视觉元素")
             return True  # 返回成功状态
@@ -12142,18 +12858,60 @@ class ECGStylePitchVisualizer(QWidget):
                 print(f"完全重建线条失败: {e2}")
     
     def update_ecg_mode(self, times, pitches, confidences):
-        """心电图模式更新 - 可调节线条显示，提高颤音等细节清晰度"""
-        # 设置线条样式，使用用户设置的粗细
-        self.pitch_line.set_color('#00FF44')  # 明亮绿色，心电图特征色
-        self.pitch_line.set_linewidth(self.current_linewidth)  # 使用用户设置的线条粗细
-        self.pitch_line.set_alpha(1.0)       # 完全不透明，确保清晰可见
-        
-        # 心电图模式专注于精细音高变化分析
-        # 可调节线条粗细以适应不同的分析需求
-        # 控制打印频率，避免刷屏
+        """普通模式更新 - 仅保留白色细节点在线条上，避免任何彩色/重复点冲突"""
+        # 线条样式（保持既有的分段绘制策略；主线颜色不影响细节点纯白）
+        self.pitch_line.set_color('#00FF44')
+        self.pitch_line.set_linewidth(self.current_linewidth)
+        self.pitch_line.set_alpha(1.0)
+
+        # 普通模式强制只显示“线上白色细节点”：
+        # 1) 隐藏/弱化批量细节点，避免和逐段白点重复
+        if hasattr(self, '_batched_points') and self._batched_points is not None:
+            try:
+                self._batched_points.set_alpha(0.0)
+                self._batched_points.set_visible(False)
+            except Exception:
+                pass
+        # 2) 隐藏头部短窗白点，避免和逐段白点叠加产生双层效果
+        if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+            try:
+                self._head_points_scatter.set_alpha(0.0)
+                self._head_points_scatter.set_visible(False)
+            except Exception:
+                pass
+        # 3) 隐藏渐变模式可能叠加的白色点
+        if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+            try:
+                if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                    self.gradient_overlay_points.remove()
+            except Exception:
+                pass
+            self.gradient_overlay_points = None
+        # 4) 置信度散点在普通模式下不参与主图叠加
+        if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
+            try:
+                self.confidence_scatter.set_alpha(0.0)
+                self.confidence_scatter.set_visible(False)
+            except Exception:
+                pass
+
+        # 确保逐段白色细节点在线条上且高可见（draw_segmented_pitch_line里已设置为白色+zorder=14）
+        # 这里只做一次性强化，防御其他路径把alpha调低
+        try:
+            if hasattr(self, '_segment_points'):
+                for coll in self._segment_points:
+                    try:
+                        coll.set_alpha(0.98)
+                        coll.set_zorder(14)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 轻量日志
         self.ecg_print_counter += 1
         if self.ecg_print_counter % self.ecg_print_interval == 0:
-            print(f"💚 心电图模式：{self.current_linewidth:.1f}px绿线，数据点={len(times)} (第{self.ecg_print_counter}次更新)")
+            print(f"💚 普通模式：{self.current_linewidth:.1f}px线条，数据点={len(times)} (第{self.ecg_print_counter}次更新)")
     
     def update_frequency_mode(self, times, pitches, confidences):
         """频率曲线模式"""
@@ -12267,6 +13025,45 @@ class ECGStylePitchVisualizer(QWidget):
             # 延迟应用线条粗细，确保新模式的元素已创建
             QTimer.singleShot(100, lambda: self.apply_linewidth(self.current_linewidth))
         
+        # 模式专属的图层可见性
+        try:
+            if mode == "普通模式":
+                # 仅保留逐段白色细节点，隐藏其他可能叠加/上色的散点
+                if hasattr(self, '_batched_points') and self._batched_points is not None:
+                    try:
+                        self._batched_points.set_alpha(0.0)
+                        self._batched_points.set_visible(False)
+                    except Exception:
+                        pass
+                if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                    try:
+                        self._head_points_scatter.set_alpha(0.0)
+                        self._head_points_scatter.set_visible(False)
+                    except Exception:
+                        pass
+                if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+                    try:
+                        if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                            self.gradient_overlay_points.remove()
+                    except Exception:
+                        pass
+                    self.gradient_overlay_points = None
+                if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
+                    try:
+                        self.confidence_scatter.set_alpha(0.0)
+                        self.confidence_scatter.set_visible(False)
+                    except Exception:
+                        pass
+                if hasattr(self, '_segment_points'):
+                    for coll in self._segment_points:
+                        try:
+                            coll.set_alpha(0.98)
+                            coll.set_zorder(14)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
         print(f"🔄 显示模式切换到: {mode}，将保持当前线条粗细: {getattr(self, 'current_linewidth', 0.6):.1f}px")
     
     def on_performance_mode_changed(self, mode_name):
@@ -12387,76 +13184,77 @@ class ECGStylePitchVisualizer(QWidget):
             mode = mode_enum or self.current_performance_mode or PerformanceMode.BALANCED
 
             if mode == PerformanceMode.QUIET:
-                new_update_ms = 34   # ~29 FPS（小幅提速更顺滑）
-                new_fast_ms = 10     # ~100 Hz 轻量（更跟手）
-                new_time_ms = 14     # ~71 Hz 时间轴（更平滑）
-                min_heavy_interval = 0.028
+                # 轻负载但消除顿挫：主绘制放宽，轻量/时间轴略提速
+                new_update_ms = 30   # ~33 FPS（更顺滑）
+                new_fast_ms = 8      # ~125 Hz 轻量（维持平滑滚动）
+                new_time_ms = 12     # ~83 Hz 时间轴（更平滑）
+                min_heavy_interval = 0.024
                 # 无音高发射节流（更保守）
-                self._no_pitch_emit_interval_default = 0.08  # ~12.5 Hz
+                self._no_pitch_emit_interval_default = 0.06  # ~16.7 Hz
                 # UI信号发射节流（更保守）
-                self._ui_emit_min_interval_default = 0.04
+                self._ui_emit_min_interval_default = 0.03
                 # 分段与细节点策略（更保守）
-                self._segments_recompute_max_age_s = 0.14
-                self._segments_large_shift_threshold = 0.08
-                self._batched_points_cap_light = 900
-                self._batched_points_cap_heavy = 1200
+                self._segments_recompute_max_age_s = 0.12
+                self._segments_large_shift_threshold = 0.07
+                self._batched_points_cap_light = 1100
+                self._batched_points_cap_heavy = 1500
                 # 平滑时间轴参数（更温和）
-                self._smooth_strength = 0.80
-                self._smooth_max_step = 0.055
+                self._smooth_strength = 0.86
+                self._smooth_max_step = 0.065
                 # push重绘触发因子（更保守）
-                self._push_heavy_factor = 0.98
+                self._push_heavy_factor = 0.95
             elif mode == PerformanceMode.HIGH_PERFORMANCE:
                 # 更激进但保持安全余量
-                new_update_ms = 16   # 62.5 FPS（接近60FPS更稳）
+                new_update_ms = 16   # ~62 FPS
                 new_fast_ms = 5      # 200 Hz 轻量（更丝滑）
-                new_time_ms = 10     # ~100 Hz 时间轴
-                min_heavy_interval = 0.016
+                new_time_ms = 8      # ~125 Hz 时间轴
+                min_heavy_interval = 0.014
                 # 无音高发射节流（更积极以维持高密度时间线）
                 self._no_pitch_emit_interval_default = 0.03  # ~33 Hz
                 # UI信号发射节流（更积极）
-                self._ui_emit_min_interval_default = 0.02
+                self._ui_emit_min_interval_default = 0.016
                 # 分段与细节点策略（更积极，保证密度&实时感）
-                self._segments_recompute_max_age_s = 0.06
-                self._segments_large_shift_threshold = 0.05
-                self._batched_points_cap_light = 1800
-                self._batched_points_cap_heavy = 2400
+                self._segments_recompute_max_age_s = 0.05
+                self._segments_large_shift_threshold = 0.045
+                self._batched_points_cap_light = 2200
+                self._batched_points_cap_heavy = 3000
                 # 平滑时间轴参数（更迅速）
-                self._smooth_strength = 0.96
-                self._smooth_max_step = 0.085
+                self._smooth_strength = 0.97
+                self._smooth_max_step = 0.095
                 # push重绘触发因子（更积极）
-                self._push_heavy_factor = 0.88
+                self._push_heavy_factor = 0.86
             else:
-                # BALANCED
-                new_update_ms = 20   # 50 FPS（更顺滑）
-                new_fast_ms = 7      # ~143 Hz 轻量
-                new_time_ms = 12     # ~83 Hz 时间轴（保持）
-                min_heavy_interval = 0.019  # 更容易触发重帧
+                # BALANCED（提速并增强自动跟随的响应）
+                new_update_ms = 18   # ~55 FPS（主绘制更顺滑）
+                new_fast_ms = 6      # ~166 Hz 轻量（进一步跟手）
+                new_time_ms = 9      # ~111 Hz 时间轴（更平滑）
+                min_heavy_interval = 0.016  # 更积极地允许重帧
                 # 无音高发射节流（小幅提速，提升连续性）
-                self._no_pitch_emit_interval_default = 0.035  # ~28.5 Hz
+                self._no_pitch_emit_interval_default = 0.03  # ~33 Hz
                 # UI信号发射节流（小幅提速）
-                self._ui_emit_min_interval_default = 0.025
+                self._ui_emit_min_interval_default = 0.02
                 # 分段与细节点策略（折中）
-                self._segments_recompute_max_age_s = 0.09
-                self._segments_large_shift_threshold = 0.06
-                self._batched_points_cap_light = 1400
-                self._batched_points_cap_heavy = 1800
+                self._segments_recompute_max_age_s = 0.08
+                self._segments_large_shift_threshold = 0.055
+                self._batched_points_cap_light = 1600
+                self._batched_points_cap_heavy = 2200
                 # 平滑时间轴参数（折中）
-                self._smooth_strength = 0.935
-                self._smooth_max_step = 0.07
+                self._smooth_strength = 0.955
+                self._smooth_max_step = 0.09
                 # push重绘触发因子（适中）
-                self._push_heavy_factor = 0.90
+                self._push_heavy_factor = 0.87
 
             # 跟随滚动专用的平滑（在 8s 后开始移动时使用）
             try:
                 if mode == PerformanceMode.QUIET:
-                    self._smooth_follow_strength = 0.88
-                    self._smooth_follow_max_step = 0.06
-                elif mode == PerformanceMode.HIGH_PERFORMANCE:
-                    self._smooth_follow_strength = 0.96
-                    self._smooth_follow_max_step = 0.085
-                else:  # BALANCED
-                    self._smooth_follow_strength = 0.935
+                    self._smooth_follow_strength = 0.90
                     self._smooth_follow_max_step = 0.07
+                elif mode == PerformanceMode.HIGH_PERFORMANCE:
+                    self._smooth_follow_strength = 0.975
+                    self._smooth_follow_max_step = 0.10
+                else:  # BALANCED
+                    self._smooth_follow_strength = 0.965
+                    self._smooth_follow_max_step = 0.095
             except Exception:
                 pass
 
@@ -13357,51 +14155,97 @@ class ECGStylePitchVisualizer(QWidget):
         # 启动时间更新定时器
         if hasattr(self, 'time_update_timer'):
             self.time_update_timer.start(self.time_update_interval)
-        # 重置自动滚动偏移
+        # 重置自动滚动与平滑缓存，避免“沿用上次状态慢慢靠拢”
         self.time_offset = 0.0
+        try:
+            self._smoothed_xlim = None
+            self._smooth_last_t = None
+            self._smoothed_vx = None
+            self._auto_scroll_started = False
+            self._last_manual_scroll_time = 0.0
+        except Exception:
+            pass
+        # 立即设置初始可视窗口并对齐辅助线到当前窗口中心
+        try:
+            if hasattr(self, 'ax') and self.ax is not None:
+                x_min = 0.0
+                x_max = float(getattr(self, 'time_window', 16.0))
+                self.ax.set_xlim(x_min, x_max)
+                # 立刻刷新辅助线（_smoothed_vx=None 将直接落到目标）
+                self.update_guides()
+        except Exception:
+            pass
+        # 确保录音态细节点集合就绪：批量点与头部点散点均挂载，避免首帧“没有点”
+        try:
+            detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
+            if getattr(self, '_use_batched_points', False) and hasattr(self, 'ax') and self.ax is not None:
+                if (not hasattr(self, '_batched_points')) or (self._batched_points is None):
+                    self._batched_points = self.ax.scatter([], [], s=16, c=[detail_rgb], alpha=0.18, linewidths=0, zorder=10)
+                elif self._batched_points not in getattr(self.ax, 'collections', []):
+                    try:
+                        self.ax.add_collection(self._batched_points)
+                    except Exception:
+                        pass
+                # 初始保持低可见度，但不是 0，避免“结束后才出现”的错觉
+                try:
+                    self._batched_points.set_alpha(0.22)
+                    self._batched_points.set_zorder(10)
+                except Exception:
+                    pass
+            # 头部即刻散点
+            if not hasattr(self, '_head_points'):
+                from collections import deque as _dq
+                self._head_points = _dq(maxlen=int(getattr(self, '_head_points_capacity', 240)))
+            else:
+                try:
+                    # 清空旧会话残留
+                    if isinstance(self._head_points, list):
+                        self._head_points = []
+                    else:
+                        while self._head_points:
+                            self._head_points.popleft()
+                except Exception:
+                    pass
+            if hasattr(self, 'ax') and getattr(self, '_head_points_scatter', None) is None:
+                try:
+                    self._head_points_scatter = self.ax.scatter([], [], s=14, c=[(1.0,1.0,1.0)], alpha=0.0, linewidths=0, zorder=14)
+                except Exception:
+                    self._head_points_scatter = None
+        except Exception:
+            pass
         if hasattr(self, 'update_status_display'):
             self.update_status_display()
     def update_time_axis(self):
         """更新时间轴（支持断续音调曲线）"""
         if not self.is_recording_active or self.start_time is None:
             return
-        
         try:
             # 更新全局时间
             self.current_global_time = time.time() - self.start_time
-            
+
             # 手动滚动冻结逻辑：最近 2 秒用户交互则暂不自动滚动
-            manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 1.6  # 略缩短让自动回归更快
+            manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 1.4
 
             if self.auto_follow and self.auto_scroll_enabled and not manual_freeze:
                 if self.current_global_time > self.center_display_time:
-                    # 目标偏移=当前时间-中心显示时间，再加少量前瞻补偿（消除“8秒开始滚动”时的延迟感）
-                    lead = self._compute_axis_lead_seconds()
-                    target_offset = (self.current_global_time + lead) - self.center_display_time
-                    target_offset = min(target_offset, max(0, self.max_history_time - self.time_window))
-                    # 抖动防护：限制单帧偏移增量，避免偶发卡段导致的突跳
-                    try:
-                        last_offset = float(getattr(self, 'time_offset', 0.0))
-                        max_delta = max(0.03, float(getattr(self, '_smooth_max_step', 0.06)) * 1.5)
-                        if target_offset - last_offset > max_delta:
-                            target_offset = last_offset + max_delta
-                    except Exception:
-                        pass
-                    self.time_offset = target_offset
-                    try:
-                        if hasattr(self, 'ax'):
-                            x_min = self.time_offset
-                            x_max = self.time_offset + self.time_window
-                            s, m = self._get_follow_smoothing()
-                            self._smooth_set_xlim(x_min, x_max, strength=s, max_step=m)
-                    except Exception:
-                        self.update_axis_ranges()
+                    # 第8秒后严格按墙钟推进：每秒推进1秒，保证轴速不滞后
+                    target_offset = self.current_global_time - self.center_display_time
+                    target_offset = min(target_offset, max(0.0, self.max_history_time - self.time_window))
+                    self.time_offset = max(0.0, float(target_offset))
                 else:
-                    # 初期阶段保持 offset=0，窗口缩放在 update_display 中处理
+                    # 初期阶段保持 offset=0
                     if self.time_offset != 0.0:
                         self.time_offset = 0.0
-                        self.update_axis_ranges()
-            
+                # 同步滚动条与辅助线
+                try:
+                    self.update_scrollbars()
+                except Exception:
+                    pass
+                try:
+                    self.update_guides()
+                except Exception:
+                    pass
+
             # 每秒更新一次状态显示
             if hasattr(self, '_last_status_update'):
                 if self.current_global_time - self._last_status_update >= 1.0:
@@ -13409,7 +14253,7 @@ class ECGStylePitchVisualizer(QWidget):
                     self._last_status_update = self.current_global_time
             else:
                 self._last_status_update = self.current_global_time
-                
+
         except Exception as e:
             print(f"❌ 时间轴更新错误: {e}")
     
@@ -13947,226 +14791,44 @@ class ECGStylePitchVisualizer(QWidget):
         """刷新音频设备列表"""
         try:
             main_window = self.get_main_window()
-            if main_window and hasattr(main_window, 'audio_processor'):
-                print("🔄 正在刷新音频设备列表...")
-                
-                # 清除缓存的配置
+            if not main_window or not hasattr(main_window, 'audio_processor'):
+                print("⚠️ 无法获取音频处理器引用")
+                return
+
+            print("🔄 正在刷新音频设备列表...")
+
+            # 清除缓存的配置（如果存在）
+            try:
                 if hasattr(main_window.audio_processor, '_cached_wasapi_configs'):
                     delattr(main_window.audio_processor, '_cached_wasapi_configs')
-                
-                # 重新扫描设备
-                try:
-                    import sounddevice as sd
-                    sd._terminate()
-                    sd._initialize()
-                    print("✅ 音频系统已重新初始化")
-                except:
-                    print("⚠️ 无法重新初始化音频系统，使用现有连接")
-                
-                # 重新获取WASAPI配置
-                try:
-                    configs = main_window.audio_processor._get_optimal_wasapi_configs()
-                    print(f"✅ 已刷新设备列表，发现 {len(configs)} 个配置")
-                except Exception as e:
-                    print(f"⚠️ 刷新设备配置失败: {e}")
-                
-                print("✅ 设备列表刷新完成")
-            else:
-                print("⚠️ 无法获取音频处理器引用")
+            except Exception:
+                pass
+
+            # 重新初始化 sounddevice（可选）
+            try:
+                import sounddevice as sd
+                sd._terminate()
+                sd._initialize()
+                print("✅ 音频系统已重新初始化")
+            except Exception as e:
+                print(f"⚠️ 无法重新初始化音频系统，使用现有连接: {e}")
+
+            # 重新获取 WASAPI 配置
+            try:
+                configs = main_window.audio_processor._get_optimal_wasapi_configs()
+                print(f"✅ 已刷新设备列表，发现 {len(configs)} 个配置")
+            except Exception as e:
+                print(f"⚠️ 刷新设备配置失败: {e}")
+
+            # 尝试刷新设备相关菜单/界面（如果提供了方法）
+            try:
+                if hasattr(self, 'rebuild_device_menu'):
+                    self.rebuild_device_menu()
+            except Exception:
+                pass
+
         except Exception as e:
-            print(f"❌ 刷新设备列表失败: {e}")
-    
-    def optimize_buffer_settings(self):
-        """优化缓冲区设置"""
-        try:
-            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QCheckBox
-            from PyQt6.QtCore import Qt
-            
-            # 创建优化对话框
-            dialog = QDialog(self)
-            dialog.setWindowTitle("⚡ 缓冲区优化")
-            dialog.setModal(True)
-            dialog.resize(400, 300)
-            dialog.setStyleSheet("""
-                QDialog {
-                    background-color: #1e1e1e;
-                    color: white;
-                }
-                QLabel {
-                    color: #FFFFFF;
-                    margin: 5px;
-                }
-                QSlider::groove:horizontal {
-                    border: 1px solid #555555;
-                    height: 8px;
-                    background: #2d2d2d;
-                    margin: 2px 0;
-                    border-radius: 4px;
-                }
-                QSlider::handle:horizontal {
-                    background: #1976D2;
-                    border: 1px solid #2196F3;
-                    width: 18px;
-                    margin: -2px 0;
-                    border-radius: 9px;
-                }
-                QPushButton {
-                    background: #1976D2;
-                    border: 1px solid #2196F3;
-                    border-radius: 4px;
-                    padding: 8px 16px;
-                    color: white;
-                    min-width: 80px;
-                }
-                QPushButton:hover {
-                    background: #1E88E5;
-                }
-                QCheckBox {
-                    color: white;
-                    spacing: 5px;
-                }
-                QCheckBox::indicator:unchecked {
-                    border: 1px solid #555555;
-                    background: #2d2d2d;
-                }
-                QCheckBox::indicator:checked {
-                    border: 1px solid #1976D2;
-                    background: #1976D2;
-                }
-            """)
-            
-            layout = QVBoxLayout(dialog)
-            
-            # 标题
-            title_label = QLabel("⚡ 音频缓冲区优化设置")
-            title_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 10px;")
-            layout.addWidget(title_label)
-            
-            # 缓冲区大小滑块
-            buffer_layout = QHBoxLayout()
-            buffer_label = QLabel("缓冲区大小:")
-            buffer_layout.addWidget(buffer_label)
-            
-            buffer_slider = QSlider(Qt.Orientation.Horizontal)
-            buffer_slider.setMinimum(0)  # 对应32样本
-            buffer_slider.setMaximum(4)  # 对应512样本
-            buffer_slider.setValue(2)    # 默认128样本
-            buffer_layout.addWidget(buffer_slider)
-            
-            buffer_value_label = QLabel("128 样本")
-            buffer_layout.addWidget(buffer_value_label)
-            layout.addLayout(buffer_layout)
-            
-            # 采样率滑块
-            rate_layout = QHBoxLayout()
-            rate_label = QLabel("采样率:")
-            rate_layout.addWidget(rate_label)
-            
-            rate_slider = QSlider(Qt.Orientation.Horizontal)
-            rate_slider.setMinimum(0)  # 对应44100Hz
-            rate_slider.setMaximum(3)  # 对应192000Hz
-            rate_slider.setValue(1)    # 默认48000Hz
-            rate_layout.addWidget(rate_slider)
-            
-            rate_value_label = QLabel("48000 Hz")
-            rate_layout.addWidget(rate_value_label)
-            layout.addLayout(rate_layout)
-            
-            # 优化选项
-            options_label = QLabel("优化选项:")
-            options_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
-            layout.addWidget(options_label)
-            
-            low_latency_cb = QCheckBox("🚀 极低延迟模式")
-            low_latency_cb.setChecked(True)
-            layout.addWidget(low_latency_cb)
-            
-            exclusive_cb = QCheckBox("🎯 独占模式 (WASAPI)")
-            exclusive_cb.setChecked(True)
-            layout.addWidget(exclusive_cb)
-            
-            # 预计延迟显示
-            latency_label = QLabel("预计延迟: 2.67ms")
-            latency_label.setStyleSheet("color: #4CAF50; font-weight: bold; margin-top: 10px;")
-            layout.addWidget(latency_label)
-            
-            # 更新函数
-            def update_values():
-                buffer_sizes = [32, 64, 128, 256, 512]
-                sample_rates = [44100, 48000, 96000, 192000]
-                
-                buffer_size = buffer_sizes[buffer_slider.value()]
-                sample_rate = sample_rates[rate_slider.value()]
-                
-                buffer_value_label.setText(f"{buffer_size} 样本")
-                rate_value_label.setText(f"{sample_rate} Hz")
-                
-                latency_ms = (buffer_size / sample_rate) * 1000
-                latency_label.setText(f"预计延迟: {latency_ms:.2f}ms")
-                
-                # 延迟颜色指示
-                if latency_ms < 2.0:
-                    latency_label.setStyleSheet("color: #4CAF50; font-weight: bold; margin-top: 10px;")
-                elif latency_ms < 5.0:
-                    latency_label.setStyleSheet("color: #FF9800; font-weight: bold; margin-top: 10px;")
-                else:
-                    latency_label.setStyleSheet("color: #F44336; font-weight: bold; margin-top: 10px;")
-            
-            buffer_slider.valueChanged.connect(update_values)
-            rate_slider.valueChanged.connect(update_values)
-            
-            # 按钮
-            button_layout = QHBoxLayout()
-            apply_btn = QPushButton("应用设置")
-            cancel_btn = QPushButton("取消")
-            
-            def apply_settings():
-                try:
-                    buffer_sizes = [32, 64, 128, 256, 512]
-                    sample_rates = [44100, 48000, 96000, 192000]
-                    
-                    buffer_size = buffer_sizes[buffer_slider.value()]
-                    sample_rate = sample_rates[rate_slider.value()]
-                    
-                    print(f"🔧 应用优化设置: {sample_rate}Hz/{buffer_size}样本")
-                    print(f"   极低延迟: {'启用' if low_latency_cb.isChecked() else '禁用'}")
-                    print(f"   独占模式: {'启用' if exclusive_cb.isChecked() else '禁用'}")
-                    
-                    # 这里可以应用设置到音频处理器
-                    main_window = self.get_main_window()
-                    if main_window and hasattr(main_window, 'audio_processor'):
-                        # 创建优化配置
-                        optimized_config = {
-                            'name': f'优化配置 ({sample_rate}Hz/{buffer_size}样本)',
-                            'samplerate': sample_rate,
-                            'blocksize': buffer_size,
-                            'low_latency': low_latency_cb.isChecked(),
-                            'exclusive': exclusive_cb.isChecked(),
-                            'optimized': True
-                        }
-                        
-                        main_window.audio_processor._optimized_config = optimized_config
-                        print("✅ 优化配置已保存")
-                    
-                    dialog.accept()
-                except Exception as e:
-                    print(f"❌ 应用设置失败: {e}")
-            
-            apply_btn.clicked.connect(apply_settings)
-            cancel_btn.clicked.connect(dialog.reject)
-            
-            button_layout.addWidget(apply_btn)
-            button_layout.addWidget(cancel_btn)
-            layout.addLayout(button_layout)
-            
-            # 初始更新
-            update_values()
-            
-            # 显示对话框
-            dialog.exec()
-            
-        except Exception as e:
-            print(f"❌ 缓冲区优化失败: {e}")
+            print(f"❌ 刷新音频设备列表失败: {e}")
     
     def test_audio_latency(self):
         """测试音频延迟"""
