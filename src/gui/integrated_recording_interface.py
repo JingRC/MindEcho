@@ -297,9 +297,13 @@ class IntegratedAudioProcessor(QThread):
     
     def __init__(self):
         super().__init__()
-
         # 基础状态控制变量
         self.is_recording = False
+        self.is_paused = False               # 是否处于暂停
+        self._pause_started_at = None        # 暂停起始时间
+        # 暂停时长累计（如采用调整start_time方式可不使用）
+        self._total_paused_time = 0.0
+
         self.should_save = False
         self.recording_filename = None
         self.is_audio_processing = False
@@ -307,13 +311,13 @@ class IntegratedAudioProcessor(QThread):
         self.is_monitoring_only = False
         # 可视化控制：录音分析时 True，纯监听 False
         self.enable_pitch_visualization = False
-        
+
         # 🔥 关键修复：初始化音频队列
         self.audio_buffer_queue = queue.Queue(maxsize=100)  # 音频数据队列
         self.processing_queue = queue.Queue(maxsize=50)     # 处理队列
         self.audio_buffer = []
         self.pitch_history = deque(maxlen=1000)  # 保存最近1000个音高点
-        
+
         print("🔥 关键修复：基础状态变量已初始化")
 
         # 录音保存目录（可被主界面覆盖）
@@ -325,31 +329,29 @@ class IntegratedAudioProcessor(QThread):
             Path(self.save_base_dir).mkdir(exist_ok=True)
         except Exception:
             pass
-        
-        # �🚀 专业级音频设备配置（Windows优化）
+
+        # 专业级音频设备配置（Windows优化）
         print("🎵 正在配置专业级音频处理器...")
         self._configure_professional_audio_settings()
-        
+
         # 录音参数 - 终极超低延迟配置
         self.sample_rate = 96000  # 🚀 96kHz超高采样率，提升时间分辨率
         self.channels = 1
         self.chunk_size = 32      # 🎵 终极小块（理论延迟0.33ms @96kHz）
-        
+
         # 🔥 初始化性能优化工具
         self.audio_processor = AudioProcessor(sample_rate=96000)  # 🚀 使用96kHz处理器
         self.latency_measurer = LatencyMeasurer(window_size=200)
-        
+
         # 🔥 设置系统优先级
         set_realtime_priority()
-        
+
         # 🎯 实时延迟监控
         self._latency_monitor_counter = 0
         self._last_latency_report_time = time.time()
         self._processing_times = []
-        
-        # 音频缓冲区管理器 - 解决input overflow问题
-        # self.audio_buffer_queue = queue.Queue(maxsize=100)  # 🔥 已在上方初始化
-        # self.processing_queue = queue.Queue(maxsize=50)     # 🔥 已在上方初始化
+
+        # 计数
         self.buffer_overflow_count = 0
         self.total_audio_frames = 0
 
@@ -357,6 +359,7 @@ class IntegratedAudioProcessor(QThread):
         class _RateLimiter:
             def __init__(self):
                 self.state = {}
+
             def allow(self, key: str, interval: float, burst: int = 1):
                 now = time.time()
                 st = self.state.get(key, {'next': 0.0, 'remain': burst})
@@ -370,7 +373,9 @@ class IntegratedAudioProcessor(QThread):
                     self.state[key] = st
                     return True
                 return False
+
         self._rate_limiter = _RateLimiter()
+
         def _log_rate_limit(key: str, msg: str, interval: float = 0.6, burst: int = 1):
             if self._rate_limiter.allow(key, interval, burst):
                 try:
@@ -388,7 +393,9 @@ class IntegratedAudioProcessor(QThread):
                             self.canvas.draw_idle()
                 except Exception:
                     pass
+
         self._log_rate_limit = _log_rate_limit
+
         # Scroll日志去重签名
         self._last_scroll_signature = None
         self._last_scroll_log_time = 0.0
@@ -428,38 +435,30 @@ class IntegratedAudioProcessor(QThread):
 
         # （Visualizer 相关参数应在 ECGStylePitchVisualizer 内部，不应出现在此处）
 
-        # 状态控制 - 🔥 已在上方初始化
-        # self.is_recording = False
-        # self.should_save = False
-        # self.recording_filename = None
-        
         # 🚀 零延迟优化组件
         self.audio_processing_thread = None
         self.zero_copy_enabled = True
         self.memory_pool = None
         self.preallocated_buffers = {}
-        
+
         # 🎯 独立音频处理线程配置
         self.dedicated_audio_thread = None
         self.audio_queue = queue.Queue(maxsize=10)  # 小队列，减少延迟
         self.processing_lock = threading.Lock()
-        
+
         # 🔥 零拷贝内存管理
         self._init_memory_pool()
-        
+
         # 启动专用音频处理线程
         self._start_dedicated_audio_thread()
-        
-        # 音频数据存储 - 🔥 已在上方初始化
-        # self.audio_buffer = []
+
+        # 音频数据存储
         self.audio_stream = None
-        
-        # 异步音频处理线程 - 🔥 已在上方初始化
+
+        # 异步音频处理线程
         self.audio_processing_thread = None
-        # self.is_audio_processing = False
-        
-        # 颤音检测相关 - 🔥 pitch_history已在上方初始化
-        # self.pitch_history = deque(maxlen=300)  # 增加历史长度，支持颤音检测
+
+        # 颤音检测相关
         self.vibrato_detection_window = 60      # 颤音检测窗口
         self.vibrato_threshold = 2.0            # 颤音深度阈值(Hz)
 
@@ -467,10 +466,9 @@ class IntegratedAudioProcessor(QThread):
         self.min_frequency = 80     # 最低检测频率（可通过界面调整）
         self.max_frequency = 1047   # 最高检测频率（C6，可通过界面调整）
 
-        # 音高分析器
+        # 音高分析器 / 服务
         self.pitch_analyzer = None
         self.overlapping_analyzer = None
-        # 统一音高检测服务实例
         self.pitch_service = None
 
         # 🔥 关键修复：降噪处理器初始化 - 设置为温和模式
@@ -515,7 +513,7 @@ class IntegratedAudioProcessor(QThread):
             'manual_control_enabled': False,  # 🎚️ 手动控制默认禁用
             'quality_priority': True,   # 🎵 音质优先模式
             'gentle_enhancement': True, # 🎵 温和增强模式
-            'high_volume_fast_response': True, # � 大音量快速响应
+            'high_volume_fast_response': True, # 大音量快速响应
             'bypass_on_transients': False,     # 🎯 关闭瞬态绕过（避免音质问题）
             'optimize_for_vocals': True        # 🎵 针对人声优化
         }
@@ -2155,6 +2153,10 @@ class IntegratedAudioProcessor(QThread):
     def start_recording(self, filename=None, should_save=True):
         """开始录音"""
         try:
+            # 进入新一轮录音前，重置暂停相关状态，避免沿用上一次暂停
+            self.is_paused = False
+            self._pause_started_at = None
+            self._total_paused_time = 0.0
             # 🎯 检查全局监听状态 - 如果已有监听运行，不要干扰
             if self.is_global_monitoring_active:
                 print("🎯 检测到全局监听模式已激活，录音将与监听共享音频流")
@@ -2163,6 +2165,10 @@ class IntegratedAudioProcessor(QThread):
                 self.should_save = should_save
                 self.is_recording = True  # 标记为录音状态
                 self.is_monitoring_only = False  # 🎯 重要：录音时需要完整音频处理，不是纯监听
+                # 确保不在暂停态
+                self.is_paused = False
+                self._pause_started_at = None
+                self._total_paused_time = 0.0
                 if self.should_save:
                     self.audio_buffer = []  # 只有需要保存时才清空缓冲区
                     # 进入录音时重置录音计时，确保时长准确
@@ -2274,6 +2280,19 @@ class IntegratedAudioProcessor(QThread):
 
             # 音频回调函数 - 优化以减少input overflow，增加详细调试
             def audio_callback(indata, frames, time_info, status):
+                # 暂停时跳过处理与保存，但保持流运行以维持设备状态
+                if getattr(self, 'is_paused', False):
+                    try:
+                        # 仍然适度更新电平显示为0，避免UI卡死
+                        now_t = time.time()
+                        if (now_t - getattr(self, '_last_level_emit_t', 0.0)) >= getattr(self, '_level_emit_interval', 0.05):
+                            if hasattr(self, 'is_audio_processing') and self.is_audio_processing and not self.isFinished():
+                                self.audio_level_updated.emit(0.0)
+                            self._last_level_emit_t = now_t
+                        # 录音进度在暂停期间保持不变，这里不更新
+                    except Exception:
+                        pass
+                    return
                 # 🎯 开始延迟监控
                 callback_start_time = time.time()
                 
@@ -2392,7 +2411,11 @@ class IntegratedAudioProcessor(QThread):
                     now_t = time.time()
                     if (now_t - self._last_progress_emit_t) >= self._progress_emit_interval:
                         if self.recording_start_time and hasattr(self, 'is_audio_processing') and self.is_audio_processing and not self.isFinished():
-                            self.current_duration = now_t - self.recording_start_time
+                            # 暂停期间不推进时长
+                            if getattr(self, 'is_paused', False):
+                                pass
+                            else:
+                                self.current_duration = now_t - self.recording_start_time
                             self.recording_progress.emit(self.current_duration)
                             self._last_progress_emit_t = now_t
                 except RuntimeError:
@@ -2716,6 +2739,9 @@ class IntegratedAudioProcessor(QThread):
     def stop_recording(self):
         """停止录音"""
         try:
+            # 停止时清理暂停标志，恢复到默认非暂停状态
+            self.is_paused = False
+            self._pause_started_at = None
             self.is_recording = False
             
             # 🎯 如果全局监听模式激活，不要停止音频流，只停止录音
@@ -3242,6 +3268,47 @@ class IntegratedAudioProcessor(QThread):
             print(f"❌ 启动监听功能失败: {e}")
             self.is_global_monitoring_active = False
             self.error_occurred.emit(f"启动监听失败: {e}")
+            return False
+
+    # =============== 暂停/恢复（处理器侧） ===============
+    def pause_recording(self):
+        """暂停录音/分析但不关闭音频流与处理线程。"""
+        try:
+            if not getattr(self, 'is_recording', False):
+                return False
+            if getattr(self, 'is_paused', False):
+                return True
+            self.is_paused = True
+            self._pause_started_at = time.time()
+            # 暂停期间不应保存音频
+            return True
+        except Exception:
+            return False
+
+    def resume_recording(self):
+        """从暂停恢复，保持时长连续。"""
+        try:
+            if not getattr(self, 'is_recording', False):
+                return False
+            if not getattr(self, 'is_paused', False):
+                return True
+            paused_span = 0.0
+            try:
+                if self._pause_started_at:
+                    paused_span = max(0.0, time.time() - float(self._pause_started_at))
+            except Exception:
+                paused_span = 0.0
+            # 通过平移 recording_start_time 抵消暂停时长，保证 current_duration 连续
+            try:
+                if hasattr(self, 'recording_start_time') and self.recording_start_time:
+                    self.recording_start_time += paused_span
+            except Exception:
+                pass
+            self._total_paused_time = float(getattr(self, '_total_paused_time', 0.0)) + paused_span
+            self._pause_started_at = None
+            self.is_paused = False
+            return True
+        except Exception:
             return False
     
     def stop_monitoring(self):
@@ -5313,6 +5380,10 @@ class IntegratedAudioProcessor(QThread):
             
             # ================== 队列摄取优化 ==================
             audio_packets = []
+            # 暂停时不从队列取数据、不进行分析，保持现有数据与时间轴冻结
+            if getattr(self, 'is_paused', False):
+                time.sleep(min(0.02, 1.0 / max(60.0, float(getattr(self, '_analysis_target_hz', 60.0)))) )
+                continue
             try:
                 queue_backlog = self.audio_buffer_queue.qsize()
                 # 自适应批量：不足一帧时一次性尽可能填满，避免高等待
@@ -10658,48 +10729,19 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     if hasattr(self, '_head_points'):
                         self._head_points.append((global_time, y_pos))
-                        # 清理窗口外数据
-                        cutoff = global_time - float(getattr(self, '_head_points_window_s', 0.60))
+                        # 清理窗口外数据（将窗口扩为 1.0s，营造“融化”为小点的过渡）
+                        cutoff = global_time - float(getattr(self, '_head_points_window_s', 1.00))
                         if isinstance(self._head_points, list):
                             self._head_points = [(t, y) for (t, y) in self._head_points if t >= cutoff][-self._head_points_capacity:]
                         else:
                             while self._head_points and self._head_points[0][0] < cutoff:
                                 try: self._head_points.popleft()
                                 except Exception: break
-                        # 快速更新散点集合（不触发重帧）
-                        if hasattr(self, 'ax'):
-                            # 注意：本函数顶部已使用全局 np（例如 np.log2），
-                            # 这里避免再次将 np 设为局部变量，使用别名以防止 UnboundLocalError。
-                            import numpy as _np
-                            pts = _np.asarray(list(self._head_points), dtype=float)
-                            if pts.size > 0:
-                                if getattr(self, '_head_points_scatter', None) is None:
-                                    try:
-                                        self._head_points_scatter = self.ax.scatter([], [], s=14, c=[(1.0,1.0,1.0)], alpha=0.9, linewidths=0, zorder=14)
-                                    except Exception:
-                                        self._head_points_scatter = None
-                                if self._head_points_scatter is not None:
-                                    try:
-                                        # 若因 clear() 暂时脱离轴，则先重新挂载
-                                        if self._head_points_scatter not in getattr(self.ax, 'collections', []):
-                                            try:
-                                                self.ax.add_collection(self._head_points_scatter)
-                                            except Exception:
-                                                pass
-                                        self._head_points_scatter.set_offsets(pts)
-                                        # 稍微加大头部点尺寸以突出
-                                        ms = max(9.0, min(16.0, 12.0))
-                                        self._head_points_scatter.set_sizes([ms])
-                                        self._head_points_scatter.set_alpha(0.95)
-                                        self._head_points_scatter.set_zorder(14)
-                                    except Exception:
-                                        pass
-                            elif getattr(self, '_head_points_scatter', None) is not None:
-                                try:
-                                    self._head_points_scatter.set_offsets(_np.empty((0,2)))
-                                    self._head_points_scatter.set_alpha(0.0)
-                                except Exception:
-                                    pass
+                        # 头部点即时刷新（保持“最新1s大点”）
+                        try:
+                            self._update_head_points_scatter()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             else:
@@ -10947,6 +10989,65 @@ class ECGStylePitchVisualizer(QWidget):
             if hasattr(self, 'debug_flags') and self.debug_flags.get('perf_verbose'):
                 print(f"⚠️ fast tick 异常: {e}")
         self._last_fast_tick = now_t
+
+    def _update_head_points_scatter(self):
+        """统一刷新头部即时点散点集合：
+        - 最近1秒使用更大点（视觉直径≈1.0px*scale），其余保持正常小点；
+        - 仅在需要时更新 offsets/size，避免每次重复设定样式；
+        - 自动挂载到轴，避免被 clear 后丢失。
+        """
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            import numpy as _np
+            # 准备集合
+            if getattr(self, '_head_points_scatter', None) is None:
+                try:
+                    self._head_points_scatter = self.ax.scatter([], [], s=14, c=[(1.0,1.0,1.0)], alpha=0.95, linewidths=0, zorder=14)
+                except Exception:
+                    self._head_points_scatter = None
+            if self._head_points_scatter is None:
+                return
+            if self._head_points_scatter not in getattr(self.ax, 'collections', []):
+                try:
+                    self.ax.add_collection(self._head_points_scatter)
+                except Exception:
+                    pass
+            # 读取数据
+            pts = _np.asarray(list(getattr(self, '_head_points', []) or []), dtype=float)
+            if pts.size == 0:
+                try:
+                    self._head_points_scatter.set_offsets(_np.empty((0, 2)))
+                    self._head_points_scatter.set_alpha(0.0)
+                except Exception:
+                    pass
+                return
+            # 计算点大小：最近1秒更大，其余正常（这里用两档尺寸近似视觉“融化”）
+            now_t = float(getattr(self, 'current_global_time', pts[-1,0]))
+            head_window = float(getattr(self, '_head_points_window_s', 1.00))
+            dt = now_t - pts[:, 0]
+            # 基础尺寸（与分段点一致的感知大小）
+            base_w = float(getattr(self, 'current_linewidth', 0.6))
+            zoom = float(getattr(self, 'zoom_level', 1.0))
+            # 小点直径（points）
+            small_d = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+            # 大点直径（≈提升到 ~1.0px 感知，可略大于小点）
+            large_d = max(small_d * 1.35, small_d + 1.2)
+            small_s = small_d ** 2
+            large_s = large_d ** 2
+            sizes = _np.where(dt <= head_window, large_s, small_s)
+            # 更新集合
+            self._head_points_scatter.set_offsets(pts)
+            # 若尺寸数量变化或阈值改变时才整体设置，避免每帧冗余
+            try:
+                self._head_points_scatter.set_sizes(sizes)
+            except Exception:
+                # 降级到统一尺寸
+                self._head_points_scatter.set_sizes([large_s])
+            self._head_points_scatter.set_alpha(0.98)
+            self._head_points_scatter.set_zorder(14)
+        except Exception:
+            pass
 
     def _min_heavy_redraw_time_threshold(self):
         """返回轻量帧跳过重绘的最小时间阈值，随模式微调。"""
@@ -12072,12 +12173,11 @@ class ECGStylePitchVisualizer(QWidget):
                             self._batched_points.set_visible(False)
                         except Exception:
                             pass
-                    if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
-                        try:
-                            self._head_points_scatter.set_alpha(0.0)
-                            self._head_points_scatter.set_visible(False)
-                        except Exception:
-                            pass
+                    # 普通模式下显示头部即时点（最近1秒更大），不隐藏
+                    try:
+                        self._update_head_points_scatter()
+                    except Exception:
+                        pass
                     if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
                         try:
                             self.confidence_scatter.set_alpha(0.0)
@@ -12169,6 +12269,12 @@ class ECGStylePitchVisualizer(QWidget):
             
             # 每次显示更新时也同步更新滚动条，确保实时响应
             self.update_scrollbars()
+            # 重帧后再次刷新头部即时点，确保“最近1秒大点”与曲线同步
+            try:
+                if display_mode == "普通模式":
+                    self._update_head_points_scatter()
+            except Exception:
+                pass
             # ---- 末尾帧总结 ----
             total_cpu = (time.time() - frame_cpu_start) * 1000
             if ('frame_trace' in locals() and frame_trace) or (perf_verbose and total_cpu > 15):
@@ -14261,6 +14367,35 @@ class ECGStylePitchVisualizer(QWidget):
 
         except Exception as e:
             print(f"❌ 时间轴更新错误: {e}")
+
+    # 暂停仅冻结时间轴推进，不清空任何数据
+    def pause_time_tracking(self):
+        try:
+            if not getattr(self, 'is_recording_active', False):
+                return
+            if hasattr(self, 'time_update_timer'):
+                self.time_update_timer.stop()
+            # 记录暂停起点用于调试
+            self._viz_pause_started_at = time.time()
+        except Exception:
+            pass
+
+    def resume_time_tracking(self):
+        try:
+            if not getattr(self, 'is_recording_active', False):
+                return
+            # 将可视化的 start_time 前移暂停时长，确保 add_pitch_data 使用的 (timestamp-start_time) 去掉暂停间隔
+            try:
+                if hasattr(self, '_viz_pause_started_at') and self._viz_pause_started_at and hasattr(self, 'start_time') and self.start_time:
+                    paused_span = max(0.0, time.time() - float(self._viz_pause_started_at))
+                    self.start_time += paused_span
+            except Exception:
+                pass
+            if hasattr(self, 'time_update_timer'):
+                self.time_update_timer.start(self.time_update_interval)
+            self._viz_pause_started_at = None
+        except Exception:
+            pass
     
     def show_monitor_context_menu(self, position):
         """显示监听按钮的右键菜单（增强版：包含设备选择）"""
@@ -15710,6 +15845,11 @@ class IntegratedRecordingInterface(QMainWindow):
                 """)
                 
                 self.pause_button.setEnabled(True)
+                # 每次开始录音时，确保按钮文本为“暂停”，避免继承上次状态
+                try:
+                    self.pause_button.setText("暂停")
+                except Exception:
+                    pass
                 
                 # 清除统计数据
                 self.total_pitches_detected = 0
@@ -15734,6 +15874,11 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             self.audio_processor.stop_recording()
             self.is_recording = False
+            # 重置暂停按钮文本为“暂停”，并禁用
+            try:
+                self.pause_button.setText("暂停")
+            except Exception:
+                pass
             
             # 停止时间追踪
             self.visualizer.stop_time_tracking()
@@ -15763,13 +15908,36 @@ class IntegratedRecordingInterface(QMainWindow):
     
     def pause_recording(self):
         """暂停/恢复录音"""
-        # 这里可以实现暂停逻辑
-        if self.pause_button.text() == "暂停":
-            self.pause_button.setText("继续")
-            # 实现暂停逻辑
-        else:
-            self.pause_button.setText("暂停")
-            # 实现继续逻辑
+        try:
+            if self.pause_button.text() == "暂停":
+                # 执行暂停
+                ok = True
+                if hasattr(self, 'audio_processor') and self.audio_processor:
+                    ok = bool(self.audio_processor.pause_recording())
+                if ok:
+                    # 冻结可视化时间推进
+                    if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'pause_time_tracking'):
+                        self.visualizer.pause_time_tracking()
+                    self.pause_button.setText("继续")
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText("已暂停，点击继续")
+                else:
+                    QMessageBox.warning(self, "暂停失败", "当前未在录音，或暂停操作不可用。")
+            else:
+                # 执行恢复
+                ok = True
+                if hasattr(self, 'audio_processor') and self.audio_processor:
+                    ok = bool(self.audio_processor.resume_recording())
+                if ok:
+                    if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'resume_time_tracking'):
+                        self.visualizer.resume_time_tracking()
+                    self.pause_button.setText("暂停")
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText("录音继续")
+                else:
+                    QMessageBox.warning(self, "继续失败", "无法继续，可能未处于暂停状态。")
+        except Exception as e:
+            QMessageBox.critical(self, "暂停/继续错误", str(e))
     
     def toggle_monitoring(self):
         """切换监听功能（优化版：只音频回放，不分析）"""
