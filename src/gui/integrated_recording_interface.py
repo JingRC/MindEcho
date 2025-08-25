@@ -136,7 +136,7 @@ try:
                                  QGroupBox, QProgressBar, QCheckBox, QSpinBox,
                                  QApplication, QMessageBox, QFrame, QGridLayout,
                                  QScrollBar, QDialog, QMenu, QFileDialog, QLineEdit)
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject, QObject
     from PyQt6.QtGui import QFont, QPalette, QColor
     PYQT_VERSION = 6
 except ImportError:
@@ -145,12 +145,13 @@ except ImportError:
                                      QPushButton, QLabel, QSlider, QComboBox,
                                      QGroupBox, QProgressBar, QCheckBox, QSpinBox,
                                      QApplication, QMessageBox, QFrame, QFileDialog, QLineEdit)
-        from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject
+        from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject, QObject
         from PyQt5.QtGui import QFont, QPalette, QColor
         PYQT_VERSION = 5
     except ImportError:
         print("PyQt6/PyQt5 未安装")
-        raise
+    raise
+
 
 # 导入分析模块
 try:
@@ -16853,6 +16854,12 @@ class IntegratedRecordingInterface(QMainWindow):
                 print(f"⚠️ 切换回听模式失败: {_e}")
         self.listenback_button.toggled.connect(_toggle_listenback)
         recording_layout.addWidget(self.listenback_button)
+
+        # 本地音高解析入口（先加按钮，功能后续逐步完善）
+        self.local_pitch_btn = QPushButton("本地音高解析")
+        self.local_pitch_btn.setToolTip("从本地音频文件进行音高分析或转换")
+        self.local_pitch_btn.clicked.connect(self.open_local_pitch_dialog)
+        recording_layout.addWidget(self.local_pitch_btn)
         
         recording_layout.addStretch()
         layout.addLayout(recording_layout)
@@ -17074,6 +17081,158 @@ class IntegratedRecordingInterface(QMainWindow):
             self.start_recording()
         else:
             self.stop_recording()
+
+    # ===== 本地音高解析：按钮与对话流（占位实现，先把按钮与流程接上） =====
+    def open_local_pitch_dialog(self):
+        """打开“本地音高解析”一级对话框：提供“纯人声 / 纯人声转化”分支。"""
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("本地音高解析")
+            dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+            v = QVBoxLayout(dlg)
+
+            tip = QLabel("请选择要进行的操作")
+            v.addWidget(tip)
+
+            row = QHBoxLayout()
+            btn_pure = QPushButton("纯人声")
+            btn_convert = QPushButton("纯人声转化")
+            row.addWidget(btn_pure)
+            row.addWidget(btn_convert)
+            v.addLayout(row)
+
+            def _open_pure():
+                dlg.accept()
+                self._open_pure_vocal_mode_dialog()
+
+            def _open_convert():
+                dlg.accept()
+                self._open_pure_vocal_convert_dialog()
+
+            btn_pure.clicked.connect(_open_pure)
+            btn_convert.clicked.connect(_open_convert)
+
+            dlg.exec()
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "本地音高解析", f"打开对话框失败:\n{e}")
+            except Exception:
+                print(f"[LocalPitch] open_local_pitch_dialog error: {e}")
+
+    def _open_pure_vocal_mode_dialog(self):
+        """纯人声子对话：提供“实时分析 / 一次性绘制”。"""
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("纯人声")
+            dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+            v = QVBoxLayout(dlg)
+            v.addWidget(QLabel("选择分析方式"))
+
+            row = QHBoxLayout()
+            btn_realtime = QPushButton("实时分析")
+            btn_onepass = QPushButton("一次性绘制")
+            row.addWidget(btn_realtime)
+            row.addWidget(btn_onepass)
+            v.addLayout(row)
+
+            def _choose_file_and_realtime():
+                try:
+                    if PYQT_VERSION == 6:
+                        file_path, _ = QFileDialog.getOpenFileName(
+                            self, "选择音频文件", str(self.save_base_dir),
+                            "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
+                        )
+                    else:
+                        file_path, _ = QFileDialog.getOpenFileName(
+                            self, "选择音频文件", str(self.save_base_dir),
+                            "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
+                        )
+                except Exception:
+                    file_path = ""
+                if file_path:
+                    dlg.accept()
+                    try:
+                        # 调用占位入口（若后续提供真实实现将自动委托）
+                        _enter_local_file_realtime_mode(self, file_path)
+                    except Exception as _e:
+                        try:
+                            QMessageBox.information(self, "本地音高解析", f"入口已就绪，但功能尚未完全实现。\n文件: {file_path}\n异常: {_e}")
+                        except Exception:
+                            print(f"[LocalPitch] realtime invoke error: {_e}")
+
+            def _one_pass_render():
+                try:
+                    if PYQT_VERSION == 6:
+                        file_path, _ = QFileDialog.getOpenFileName(
+                            self, "选择音频文件（一次性绘制）", str(self.save_base_dir),
+                            "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
+                        )
+                    else:
+                        file_path, _ = QFileDialog.getOpenFileName(
+                            self, "选择音频文件（一次性绘制）", str(self.save_base_dir),
+                            "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
+                        )
+                except Exception:
+                    file_path = ""
+                if file_path:
+                    dlg.accept()
+                    try:
+                        QMessageBox.information(self, "一次性绘制", "该功能将很快提供：会对整个文件进行分析并一次性绘制结果。")
+                    except Exception:
+                        print("[LocalPitch] one-pass placeholder invoked.")
+
+            btn_realtime.clicked.connect(_choose_file_and_realtime)
+            btn_onepass.clicked.connect(_one_pass_render)
+
+            dlg.exec()
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "纯人声", f"打开子对话失败:\n{e}")
+            except Exception:
+                print(f"[LocalPitch] _open_pure_vocal_mode_dialog error: {e}")
+
+    def _open_pure_vocal_convert_dialog(self):
+        """纯人声转化子对话：选择源文件与输出目录（占位实现）。"""
+        try:
+            # 选择源文件
+            try:
+                if PYQT_VERSION == 6:
+                    src_file, _ = QFileDialog.getOpenFileName(
+                        self, "选择需要转化的音频文件", str(self.save_base_dir),
+                        "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
+                    )
+                else:
+                    src_file, _ = QFileDialog.getOpenFileName(
+                        self, "选择需要转化的音频文件", str(self.save_base_dir),
+                        "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
+                    )
+            except Exception:
+                src_file = ""
+
+            if not src_file:
+                return
+
+            # 选择输出目录
+            try:
+                if PYQT_VERSION == 6:
+                    out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(self.save_base_dir))
+                else:
+                    out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(self.save_base_dir))
+            except Exception:
+                out_dir = ""
+
+            if not out_dir:
+                return
+
+            try:
+                QMessageBox.information(self, "纯人声转化", "该功能将很快提供：会执行本地文件的纯人声转化与导出。")
+            except Exception:
+                print(f"[LocalPitch] convert placeholder: src={src_file}, out={out_dir}")
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "纯人声转化", f"操作失败:\n{e}")
+            except Exception:
+                print(f"[LocalPitch] _open_pure_vocal_convert_dialog error: {e}")
     
     def start_recording(self):
         """开始录音"""
@@ -17851,6 +18010,380 @@ def main():
     main_window.show()
     
     sys.exit(app.exec())
+
+
+# —— 本地文件实时分析：占位式入口（避免 NameError）——
+def _enter_local_file_realtime_mode(self, file_path: str):
+    """占位入口：避免 NameError，并给出友好提示。
+    若后续已实现类方法 _enter_local_file_realtime_mode，可由调用方改为调用实例方法。
+    """
+    try:
+        # 若类上已有真正实现，则委托
+        impl = getattr(self, '_enter_local_file_realtime_mode', None)
+        if callable(impl) and impl is not _enter_local_file_realtime_mode:
+            return impl(file_path)
+    except Exception:
+        pass
+    try:
+        QMessageBox.information(self, "本地文件实时分析", "入口已就绪，但功能尚未完全实现。\n建议更新到最新版本，或等待后续实现。")
+    except Exception:
+        print("[Info] 本地文件实时分析入口已调用：功能尚未实现。")
+
+# ========================= 本地音高检测：纯人声·实时分析 实现 ========================= #
+class _LocalFileRealtimeController(QObject):
+    tick = pyqtSignal(float)  # 播放头位置(秒)更新
+
+    def __init__(self, parent_ifc, file_path: str):
+        super().__init__(parent_ifc)
+        self.ifc = parent_ifc
+        self.file_path = file_path
+        self.sr_target = int(getattr(self.ifc.audio_processor, 'sample_rate', 48000) or 48000)
+        self.audio = None
+        self.total_s = 0.0
+        self.pos_samples = 0
+        self.playing = False
+        self._stream = None
+        self._ui_timer = None
+        self._ana_timer = None
+        self._last_emit_pos_s = 0.0
+        self._frame_window = int(getattr(self.ifc.audio_processor, '_frame_window', 2048) or 2048)
+        self._frame_hop = int(getattr(self.ifc.audio_processor, '_frame_hop', max(1, self._frame_window // 4)))
+        self.coverage = []  # 已分析覆盖区间
+
+    def _decode_file(self) -> None:
+        import numpy as np
+        path = str(self.file_path)
+        data = None
+        sr = None
+        try:
+            import soundfile as sf
+            data, sr = sf.read(path, always_2d=True)
+        except Exception:
+            try:
+                import wave
+                with wave.open(path, 'rb') as wf:
+                    sr = wf.getframerate()
+                    n = wf.getnframes()
+                    ch = wf.getnchannels()
+                    raw = wf.readframes(n)
+                arr = np.frombuffer(raw, dtype=np.int16)
+                if ch > 1:
+                    arr = arr.reshape(-1, ch).mean(axis=1)
+                data = arr.astype(np.float32) / 32768.0
+                data = data.reshape(-1, 1)
+            except Exception as e:
+                raise RuntimeError(f"无法读取音频文件: {e}")
+        if data is None or sr is None:
+            raise RuntimeError("解码失败")
+        if data.ndim == 2 and data.shape[1] > 1:
+            data = data.mean(axis=1, dtype=np.float64)
+        else:
+            data = data.squeeze()
+        data = data.astype(np.float32)
+        if int(sr) != int(self.sr_target):
+            data = self._resample_linear(data, int(sr), self.sr_target)
+        self.audio = np.ascontiguousarray(data.astype(np.float32))
+        self.total_s = float(len(self.audio)) / float(self.sr_target)
+
+    @staticmethod
+    def _resample_linear(x, sr_in: int, sr_out: int):
+        import numpy as np
+        if sr_in == sr_out or len(x) == 0:
+            return x.copy()
+        t_in = np.linspace(0.0, 1.0, num=len(x), endpoint=False, dtype=np.float64)
+        n_out = int(round(len(x) * (sr_out / float(sr_in))))
+        if n_out <= 1:
+            return x[:1].copy()
+        t_out = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+        y = np.interp(t_out, t_in, x.astype(np.float64))
+        return y.astype(np.float32)
+
+    def _is_range_processed(self, i0: int, i1: int) -> bool:
+        for a, b in self.coverage:
+            if i0 >= a and i1 <= b:
+                return True
+        return False
+
+    def _mark_processed(self, i0: int, i1: int) -> None:
+        merged = []
+        new_a, new_b = i0, i1
+        for a, b in sorted(self.coverage + [(new_a, new_b)]):
+            if not merged:
+                merged.append([a, b])
+            else:
+                la, lb = merged[-1]
+                if a <= lb + 1:
+                    merged[-1][1] = max(lb, b)
+                else:
+                    merged.append([a, b])
+        self.coverage = [(a, b) for a, b in merged]
+
+    def start(self):
+        self._decode_file()
+        import sounddevice as sd
+        self._stream = sd.OutputStream(samplerate=self.sr_target, channels=1, dtype='float32', callback=self._sd_callback)
+        self._stream.start()
+        self._ui_timer = QTimer(self)
+        self._ui_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._ui_timer.timeout.connect(self._on_ui_tick)
+        self._ui_timer.start(30)
+        self._ana_timer = QTimer(self)
+        self._ana_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._ana_timer.timeout.connect(self._on_analysis_tick)
+        self._ana_timer.start(10)
+
+    def stop(self):
+        try:
+            if self._ui_timer:
+                self._ui_timer.stop()
+        except Exception:
+            pass
+        try:
+            if self._ana_timer:
+                self._ana_timer.stop()
+        except Exception:
+            pass
+        try:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+        except Exception:
+            pass
+        self.playing = False
+
+    def play(self):
+        self.playing = True
+        try:
+            if hasattr(self.ifc.visualizer, 'start_time'):
+                self.ifc.visualizer.start_time = time.time() - self.get_pos_seconds()
+                self.ifc.visualizer.is_recording_active = True
+        except Exception:
+            pass
+
+    def pause(self):
+        self.playing = False
+        try:
+            if hasattr(self.ifc.visualizer, 'is_recording_active'):
+                self.ifc.visualizer.is_recording_active = False
+        except Exception:
+            pass
+
+    def seek_seconds(self, sec: float):
+        sec = max(0.0, min(float(sec), self.total_s))
+        self.pos_samples = int(round(sec * self.sr_target))
+        try:
+            if hasattr(self.ifc.visualizer, 'start_time'):
+                self.ifc.visualizer.start_time = time.time() - sec
+        except Exception:
+            pass
+        self.tick.emit(sec)
+
+    def get_pos_seconds(self) -> float:
+        return float(self.pos_samples) / float(self.sr_target)
+
+    def _sd_callback(self, outdata, frames, time_info, status):  # noqa: D401
+        import numpy as np
+        if self.audio is None or not self.playing:
+            outdata[:] = 0
+            return
+        i0 = self.pos_samples
+        i1 = min(i0 + frames, len(self.audio))
+        chunk = self.audio[i0:i1]
+        if chunk.shape[0] < frames:
+            pad = np.zeros((frames - chunk.shape[0],), dtype=np.float32)
+            chunk = np.concatenate([chunk, pad])
+        outdata[:, 0] = chunk
+        self.pos_samples = min(self.pos_samples + frames, len(self.audio))
+
+    def _on_ui_tick(self):
+        pos_s = self.get_pos_seconds()
+        if abs(pos_s - self._last_emit_pos_s) >= 0.02:
+            self._last_emit_pos_s = pos_s
+            self.tick.emit(pos_s)
+
+    def _on_analysis_tick(self):
+        if self.audio is None:
+            return
+        cur = int(self.pos_samples)
+        lead = int(self.sr_target * 0.02)
+        target = min(cur + lead, len(self.audio))
+        if not hasattr(self, '_ana_cursor'):
+            self._ana_cursor = 0
+        while (self._ana_cursor + self._frame_window) <= target:
+            a0 = self._ana_cursor
+            a1 = a0 + self._frame_window
+            if not self._is_range_processed(a0, a1):
+                frame = self.audio[a0:a1]
+                try:
+                    self.ifc.audio_processor.process_audio_for_pitch_async(frame)
+                except Exception:
+                    pass
+                self._mark_processed(a0, a1)
+            self._ana_cursor += self._frame_hop
+
+
+class _LocalFilePanel(QDialog):
+    def __init__(self, ifc, controller: _LocalFileRealtimeController):
+        super().__init__(ifc)
+        self.ifc = ifc
+        self.ctrl = controller
+        self.setWindowTitle("本地音高检测 - 实时分析")
+        self.setModal(False)
+        self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        v = QVBoxLayout(self)
+        self.lbl_time = QLabel("00:00 / 00:00")
+        v.addWidget(self.lbl_time)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 1000)
+        v.addWidget(self.slider)
+        row = QHBoxLayout()
+        self.btn_play = QPushButton("播放")
+        self.btn_pause = QPushButton("暂停")
+        row.addWidget(self.btn_play)
+        row.addWidget(self.btn_pause)
+        v.addLayout(row)
+        self.btn_play.clicked.connect(self.ctrl.play)
+        self.btn_pause.clicked.connect(self.ctrl.pause)
+        self.slider.sliderPressed.connect(self._on_slider_pressed)
+        self.slider.sliderReleased.connect(self._on_slider_released)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        self._dragging = False
+        self.ctrl.tick.connect(self._on_tick)
+        self._update_labels(0.0, self.ctrl.total_s)
+
+    @staticmethod
+    def _fmt(sec: float) -> str:
+        s = max(0, int(sec))
+        return f"{s//60:02d}:{s%60:02d}"
+
+    def _update_labels(self, cur: float, tot: float):
+        try:
+            self.lbl_time.setText(f"{self._fmt(cur)} / {self._fmt(tot)}")
+            if not self._dragging and tot > 0:
+                val = int(round((cur / tot) * 1000))
+                self.slider.blockSignals(True)
+                self.slider.setValue(max(0, min(1000, val)))
+                self.slider.blockSignals(False)
+        except Exception:
+            pass
+
+    def _on_tick(self, cur_s: float):
+        self._update_labels(cur_s, self.ctrl.total_s)
+
+    def _on_slider_pressed(self):
+        self._dragging = True
+
+    def _on_slider_released(self):
+        self._dragging = False
+        self._apply_seek_from_slider()
+
+    def _on_slider_changed(self, _):
+        if self._dragging:
+            tot = max(1e-9, self.ctrl.total_s)
+            cur = (self.slider.value() / 1000.0) * tot
+            self._update_labels(cur, tot)
+
+    def _apply_seek_from_slider(self):
+        tot = max(1e-9, self.ctrl.total_s)
+        cur = (self.slider.value() / 1000.0) * tot
+        self.ctrl.seek_seconds(cur)
+
+    def closeEvent(self, e):
+        try:
+            self.ifc._exit_local_file_mode()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
+
+def _patch_method(name):
+    def deco(f):
+        setattr(IntegratedRecordingInterface, name, f)
+        return f
+    return deco
+
+@_patch_method('_enter_local_file_realtime_mode')
+def _ifc_enter_local_file_realtime_mode(self, file_path: str):
+    try:
+        if getattr(self, 'is_recording', False):
+            self.stop_recording()
+    except Exception:
+        pass
+    self._lfm_prev = {
+        'vis_max_history_time': getattr(self.visualizer, 'max_history_time', 300.0),
+        'vis_time_window': getattr(self.visualizer, 'time_window', 16.0),
+        'ap_is_recording': getattr(self.audio_processor, 'is_recording', False),
+        'ap_monitoring': getattr(self.audio_processor, 'is_global_monitoring_active', False),
+        'ap_monitoring_only': getattr(self.audio_processor, 'is_monitoring_only', False),
+    }
+    try:
+        self.audio_processor.is_recording = True
+        self.audio_processor.is_global_monitoring_active = False
+        self.audio_processor.is_monitoring_only = False
+    except Exception:
+        pass
+    ctrl = _LocalFileRealtimeController(self, file_path)
+    ctrl.start()
+    self._lfm_ctrl = ctrl
+    try:
+        self.visualizer.max_history_time = max(1.0, ctrl.total_s)
+        self.visualizer.time_window = max(1.0, ctrl.total_s)
+        if hasattr(self.visualizer, 'ax'):
+            try:
+                self.visualizer.ax.set_xlim(0.0, self.visualizer.time_window)
+            except Exception:
+                pass
+        if hasattr(self.visualizer, 'canvas'):
+            self.visualizer.canvas.draw_idle()
+    except Exception:
+        pass
+    panel = _LocalFilePanel(self, ctrl)
+    self._lfm_panel = panel
+    ctrl.pause()
+    panel.show()
+
+@_patch_method('_exit_local_file_mode')
+def _ifc_exit_local_file_mode(self):
+    try:
+        if hasattr(self, '_lfm_ctrl') and self._lfm_ctrl:
+            self._lfm_ctrl.stop()
+    except Exception:
+        pass
+    try:
+        if hasattr(self, '_lfm_panel') and self._lfm_panel:
+            try:
+                self._lfm_panel.hide()
+            except Exception:
+                pass
+            self._lfm_panel = None
+    except Exception:
+        pass
+    try:
+        prev = getattr(self, '_lfm_prev', {})
+        self.audio_processor.is_recording = bool(prev.get('ap_is_recording', False))
+        self.audio_processor.is_global_monitoring_active = bool(prev.get('ap_monitoring', False))
+        self.audio_processor.is_monitoring_only = bool(prev.get('ap_monitoring_only', False))
+    except Exception:
+        pass
+    try:
+        self.visualizer.clear_data()
+        prev = getattr(self, '_lfm_prev', {})
+        self.visualizer.max_history_time = float(prev.get('vis_max_history_time', 300.0))
+        self.visualizer.time_window = float(prev.get('vis_time_window', 16.0))
+        if hasattr(self.visualizer, 'ax'):
+            try:
+                self.visualizer.ax.set_xlim(0.0, self.visualizer.time_window)
+            except Exception:
+                pass
+        if hasattr(self.visualizer, 'canvas'):
+            self.visualizer.canvas.draw_idle()
+    except Exception:
+        pass
+    try:
+        self._lfm_ctrl = None
+        self._lfm_prev = None
+    except Exception:
+        pass
 
 
 class VolumeControlDialog(QDialog):
