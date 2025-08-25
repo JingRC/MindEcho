@@ -6,32 +6,6 @@ MindEcho 集成录音与实时音高分析界面
 import sys
 import os
 import time
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
-
-@dataclass
-class PitchFrame:
-    """Phase1: 统一的音高帧结构 (仍通过 to_dict 兼容旧UI)。"""
-    timestamp: float
-    f0_raw: float
-    f0_smooth: float
-    confidence: float
-    note_info: Optional[Dict[str, Any]]
-    has_pitch: bool
-    audio_rms: float
-    vibrato_info: Dict[str, Any]
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'timestamp': self.timestamp,
-            'frequency': self.f0_smooth,  # 旧字段名 frequency -> 平滑后的频率
-            'raw_frequency': self.f0_raw,
-            'confidence': self.confidence,
-            'note_info': self.note_info,
-            'has_pitch': self.has_pitch,
-            'audio_rms': self.audio_rms,
-            'vibrato_info': self.vibrato_info
-        }
 import threading
 import numpy as np
 from pathlib import Path
@@ -39,110 +13,64 @@ from collections import deque
 import sounddevice as sd
 import wave
 import json
-import queue  # 添加queue模块，用于异步音频处理
+import queue
 import psutil
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
 
-# HECATE G4 Pro 设备映射和修复
-class HecateDeviceMapper:
-    """HECATE设备修复映射器 - 基于测试结果的优化配置"""
-    
-    @staticmethod
-    def get_working_hecate_config():
-        """获取经过验证的HECATE工作配置"""
-        # 基于测试结果：设备33工作稳定，使用固定最优参数
-        return {
-            'device_id': 33,
-            'device_name': '麦克风 (2- HECATE G4 Pro)',
-            'samplerate': 192000,
-            'blocksize': 32,
-            'channels': 1,
-            'latency_ms': 0.17,
-            'driver_type': 'WASAPI',
-            'extra_settings': None,
-            'verified': True
-        }
-    
-    @staticmethod
-    def verify_hecate_available():
-        """验证HECATE设备是否可用"""
-        try:
-            devices = sd.query_devices()
-            
-            # 检查设备33是否存在且为HECATE
-            if len(devices) > 33:
-                device_33 = devices[33]
-                device_name = device_33.get('name', '')
-                
-                if 'HECATE' in device_name or 'G4 Pro' in device_name:
-                    return True, device_name
-            
-            # 查找其他HECATE设备
-            for i, device in enumerate(devices):
-                device_name = device.get('name', '')
-                if 'HECATE' in device_name or 'G4 Pro' in device_name:
-                    print(f"🔍 发现HECATE设备 {i}: {device_name}")
-                    return True, device_name
-            
-            return False, "未找到HECATE设备"
-            
-        except Exception as e:
-            return False, f"设备检查失败: {e}"
-    
-    @staticmethod
-    def find_optimal_hecate_device():
-        """查找最优HECATE设备配置（简化版，避免先前残余代码破坏结构）"""
-        try:
-            devices = sd.query_devices()
-            priority_devices = [33, 1, 13]
-            for device_id in priority_devices:
-                if device_id < len(devices):
-                    name = devices[device_id].get('name', '')
-                    if 'HECATE' in name or 'G4 Pro' in name:
-                        return {
-                            'device_id': device_id,
-                            'device_name': name,
-                            'samplerate': 192000 if device_id == 33 else 44100,
-                            'blocksize': 32,
-                            'channels': 1,
-                            'latency_ms': 0.17 if device_id == 33 else 1.0,
-                            'driver_type': 'WASAPI',
-                            'extra_settings': None,
-                            'verified': True
-                        }
-            return None
-        except Exception:
-            return None
+# 性能分析装饰器
+def profile(func):
+    """性能分析装饰器：测量函数执行时间"""
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        elapsed = (time.perf_counter() - start) * 1000
+        if elapsed > 5:
+            print(f"🔍 {func.__name__} 耗时: {elapsed:.3f}ms")
+        return result
+    return wrapper
 
-# 延迟测量器（恢复丢失的类）
+# 延迟测量工具类
 class LatencyMeasurer:
-    def __init__(self, window_size=200):
-        self.timestamps = deque(maxlen=window_size)
-
-    def add_sample(self, value_ms: float):
-        self.timestamps.append(value_ms)
-
+    """延迟测量与统计工具"""
+    def __init__(self, window_size=100):
+        self.timestamps = []
+        self.window_size = window_size
+        
+    def record_latency(self, input_time, current_time):
+        """记录单次延迟"""
+        latency = (current_time - input_time) * 1000
+        self.timestamps.append(latency)
+        if len(self.timestamps) > self.window_size:
+            self.timestamps.pop(0)
+    
     def get_stats(self):
+        """获取延迟统计信息"""
         if not self.timestamps:
             return None
-        arr = np.array(self.timestamps)
         return {
-            'avg': float(np.mean(arr)),
-            'max': float(np.max(arr)),
-            'min': float(np.min(arr)),
-            'std': float(np.std(arr)),
-            'count': int(len(arr))
+            'avg': np.mean(self.timestamps),
+            'max': np.max(self.timestamps),
+            'min': np.min(self.timestamps),
+            'std': np.std(self.timestamps),
+            'count': len(self.timestamps)
         }
+    
+    def print_stats(self):
+        """打印延迟统计"""
+        stats = self.get_stats()
+        if stats:
+            print(f"🎧 延迟统计: 平均{stats['avg']:.2f}ms, 最大{stats['max']:.2f}ms, 最小{stats['min']:.2f}ms, 标准差{stats['std']:.2f}ms (样本数:{stats['count']})")
 
+# 音频处理优化工具
 class AudioProcessor:
-    """精简音频处理器（与IntegratedAudioProcessor解耦）"""
-    def __init__(self, sample_rate=44100):
+    """高效音频处理器"""
+    def __init__(self, sample_rate=48000):
         self.sample_rate = sample_rate
-        self.alpha = 0.12  # 平滑系数
         self.smooth_state = 0.0
-
+        self.alpha = 0.1
+        
+    @profile
     def fast_smoothing(self, data):
+        """使用IIR滤波器实现低延迟平滑"""
         if len(data) == 0:
             return data
         smoothed = np.zeros_like(data, dtype=np.float32)
@@ -151,15 +79,19 @@ class AudioProcessor:
             smoothed[i] = self.alpha * data[i] + (1 - self.alpha) * smoothed[i-1]
         self.smooth_state = smoothed[-1]
         return smoothed
-
+    
+    @profile
     def compute_gain(self, audio_chunk):
+        """快速RMS计算与增益调整"""
         rms = np.sqrt(np.mean(np.square(audio_chunk)))
         target_rms = 0.12
         return np.clip(target_rms / (rms + 1e-6), 1.0, 2.5)
-
+    
+    @profile
     def optimized_audio_process(self, input_data, enable_smooth=True):
+        """优化的音频处理流水线（极简化版本，减少电流音）"""
         if len(input_data) == 0:
-            return np.zeros_like(input_data, dtype=np.float32)  # 处理空输入
+            return input_data.astype(np.float32)
         input_rms = np.sqrt(np.mean(np.square(input_data)))
         input_max = np.max(np.abs(input_data))
         if input_rms < 0.001 and input_max < 0.002:
@@ -185,7 +117,7 @@ def set_realtime_priority():
         if sys.platform == "win32":
             p.nice(psutil.HIGH_PRIORITY_CLASS)
         else:
-            p.nice(-10)  # Unix系统
+            p.nice(-10)
         print("🚀 已设置高优先级")
         return True
     except Exception as e:
@@ -203,8 +135,8 @@ try:
                                  QPushButton, QLabel, QSlider, QComboBox,
                                  QGroupBox, QProgressBar, QCheckBox, QSpinBox,
                                  QApplication, QMessageBox, QFrame, QGridLayout,
-                                 QScrollBar, QDialog, QMenu, QLineEdit, QFileDialog)
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QMetaObject, pyqtSlot, QSettings
+                                 QScrollBar, QDialog, QMenu, QFileDialog, QLineEdit)
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject
     from PyQt6.QtGui import QFont, QPalette, QColor
     PYQT_VERSION = 6
 except ImportError:
@@ -212,13 +144,13 @@ except ImportError:
         from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                      QPushButton, QLabel, QSlider, QComboBox,
                                      QGroupBox, QProgressBar, QCheckBox, QSpinBox,
-                                     QApplication, QMessageBox, QFrame, QLineEdit, QFileDialog)
-        from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings
+                                     QApplication, QMessageBox, QFrame, QFileDialog, QLineEdit)
+        from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject
         from PyQt5.QtGui import QFont, QPalette, QColor
         PYQT_VERSION = 5
     except ImportError:
         print("PyQt6/PyQt5 未安装")
-        exit(1)
+        raise
 
 # 导入分析模块
 try:
@@ -226,14 +158,6 @@ try:
     from src.analysis.pitch_detection import PitchDetector
 except ImportError as e:
     print(f"导入分析模块失败: {e}")
-
-# 统一音高检测服务（Phase1）
-try:
-    from src.audio_processing.pitch_service import PitchDetectionService
-    _PITCH_SERVICE_AVAILABLE = True
-except Exception as _e:
-    print(f"⚠️ PitchDetectionService 不可用: {_e}")
-    _PITCH_SERVICE_AVAILABLE = False
 
 # 导入PyQtGraph彩色渐变组件
 PYQTGRAPH_GRADIENT_AVAILABLE = False
@@ -261,6 +185,72 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from matplotlib import font_manager
 
+# 第三方或本地服务可选导入
+_PITCH_SERVICE_AVAILABLE = False
+try:
+    from src.audio_processing.pitch_service import PitchDetectionService
+    _PITCH_SERVICE_AVAILABLE = True
+except Exception as _e:
+    print(f"⚠️ PitchDetectionService 不可用: {_e}")
+
+# 可选导入：Hecate 设备映射器（若存在）
+try:
+    from hecate_device_id_fixer import HecateDeviceMapper
+except Exception:
+    try:
+        from hecate_main_program_patcher import HecateDeviceMapper
+    except Exception:
+        HecateDeviceMapper = None
+
+# 轻量 PitchFrame 结构（本地兼容封装）
+# 说明：外部可能存在不同签名的 PitchFrame，这里统一使用本地兼容类，
+# 接受 f0_raw/f0_smooth 等关键字并提供 to_dict()，避免关键字不匹配导致运行时异常。
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
+
+@dataclass
+class PitchFrame:
+    # 基本时间戳
+    timestamp: float
+    # 原始/平滑音高（Hz）
+    f0_raw: float = 0.0
+    f0_smooth: float = 0.0
+    # 置信度与附加信息
+    confidence: float = 0.0
+    note_info: Optional[Dict[str, Any]] = None
+    has_pitch: bool = False
+    audio_rms: float = 0.0
+    vibrato_info: Optional[Dict[str, Any]] = None
+    # 兼容历史字段：部分路径可能直接传入/读取 frequency
+    frequency: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        """统一导出为 UI/绘制使用的字典结构。
+        frequency 使用 f0_smooth（无则回退 frequency），并额外提供 raw_frequency 字段。
+        """
+        try:
+            freq = self.f0_smooth if (self.f0_smooth and self.f0_smooth > 0) else (self.frequency or 0.0)
+        except Exception:
+            freq = float(self.frequency or 0.0)
+        try:
+            raw = float(self.f0_raw or 0.0)
+        except Exception:
+            raw = 0.0
+        d = {
+            'timestamp': float(self.timestamp),
+            'frequency': float(freq),            # 平滑后频率（用于绘制）
+            'raw_frequency': float(raw),         # 原始频率（可选调试/对比）
+            'confidence': float(self.confidence or 0.0),
+            'note_info': self.note_info,
+            'has_pitch': bool(self.has_pitch and float(freq) > 0.0),
+            'audio_rms': float(self.audio_rms or 0.0),
+            'vibrato_info': self.vibrato_info or {'has_vibrato': False},
+            # 兼容保留字段
+            'f0_smooth': float(self.f0_smooth or 0.0),
+            'f0_raw': float(raw),
+        }
+        return d
+
 
 # 通用：延迟显示格式化（避免出现 "Nonems" 等）
 def _format_latency_ms(val, default_text: str = "未知") -> str:
@@ -268,7 +258,6 @@ def _format_latency_ms(val, default_text: str = "未知") -> str:
         if val is None:
             return default_text
         if isinstance(val, (int, float)):
-            # 处理 NaN/inf
             try:
                 import math
                 if not math.isfinite(float(val)):
@@ -285,8 +274,8 @@ def _format_latency_ms(val, default_text: str = "未知") -> str:
 
 
 class IntegratedAudioProcessor(QThread):
-    """集成音频处理线程 - 同时处理录音和音高分析"""
-    
+    # 集成音频处理线程 - 同时处理录音和音高分析
+
     # 信号定义
     pitch_detected = pyqtSignal(dict)
     audio_level_updated = pyqtSignal(float)
@@ -294,6 +283,8 @@ class IntegratedAudioProcessor(QThread):
     status_updated = pyqtSignal(str)
     recording_finished = pyqtSignal(str, dict)
     error_occurred = pyqtSignal(str)
+    # 回听播放完成信号
+    listenback_playback_finished = pyqtSignal()
     
     def __init__(self):
         super().__init__()
@@ -301,24 +292,27 @@ class IntegratedAudioProcessor(QThread):
         self.is_recording = False
         self.is_paused = False               # 是否处于暂停
         self._pause_started_at = None        # 暂停起始时间
-        # 暂停时长累计（如采用调整start_time方式可不使用）
-        self._total_paused_time = 0.0
+        self._total_paused_time = 0.0        # 暂停累计时长
 
+        # 提前初始化所有可能被早期路径引用的字段，避免 AttributeError
         self.should_save = False
         self.recording_filename = None
         self.is_audio_processing = False
         self.is_global_monitoring_active = False
         self.is_monitoring_only = False
-        # 可视化控制：录音分析时 True，纯监听 False
         self.enable_pitch_visualization = False
 
-        # 🔥 关键修复：初始化音频队列
-        self.audio_buffer_queue = queue.Queue(maxsize=100)  # 音频数据队列
-        self.processing_queue = queue.Queue(maxsize=50)     # 处理队列
-        self.audio_buffer = []
-        self.pitch_history = deque(maxlen=1000)  # 保存最近1000个音高点
+        # 实时统计：保存最近的音高点（用于绘制与分析）
+        self.pitch_history = deque(maxlen=1000)
 
-        print("🔥 关键修复：基础状态变量已初始化")
+        # 频率范围与算法阈值（供 PitchDetectionService 及其它模块使用）
+        self.min_frequency = 80.0
+        self.max_frequency = 1047.0
+        self.yin_threshold = 0.12
+
+        # 服务/处理器占位
+        self.noise_processor = None
+        self.pitch_service = None
 
         # 录音保存目录（可被主界面覆盖）
         try:
@@ -444,47 +438,56 @@ class IntegratedAudioProcessor(QThread):
         # 🎯 独立音频处理线程配置
         self.dedicated_audio_thread = None
         self.audio_queue = queue.Queue(maxsize=10)  # 小队列，减少延迟
+        # 音频数据处理队列（回调 -> 处理线程）
+        # 较大的缓冲上限以容忍瞬时抖动，但结合循环中的自适应清空避免积压
+        try:
+            self.audio_buffer_queue = queue.Queue(maxsize=256)
+        except Exception:
+            # 兜底：无上限队列（不推荐，但保证不崩）
+            from queue import Queue as _Q
+            self.audio_buffer_queue = _Q()
         self.processing_lock = threading.Lock()
 
         # 🔥 零拷贝内存管理
         self._init_memory_pool()
 
-        # 启动专用音频处理线程
-        self._start_dedicated_audio_thread()
+        # ================== 回听（Listenback）环形缓冲 & 播放 ==================
+        try:
+            from collections import deque as _dq_lb
+            # 使用无上限 deque，配合“时间裁剪”维持窗口；避免 maxlen=0 导致始终为空
+            self._listenback_chunks = _dq_lb()  # 无固定maxlen
+        except Exception:
+            self._listenback_chunks = []
+        self.listenback_window_sec = 300.0  # 至多保留最近5分钟回听数据
+        self._listenback_total_sec = 0.0
+        # 播放状态
+        self._lb_stream = None
+        self._lb_data = None
+        self._lb_pos = 0
+        self._lb_state = 'stopped'  # 'playing'|'paused'|'stopped'
 
-        # 音频数据存储
-        self.audio_stream = None
-
-        # 异步音频处理线程
-        self.audio_processing_thread = None
-
-        # 颤音检测相关
+        # ====== 其余核心初始化（之前因缩进错误而跑到方法定义后）======
+        # 颤音检测相关参数
         self.vibrato_detection_window = 60      # 颤音检测窗口
         self.vibrato_threshold = 2.0            # 颤音深度阈值(Hz)
 
-        # 🎯 可配置的频率范围设置
-        self.min_frequency = 80     # 最低检测频率（可通过界面调整）
-        self.max_frequency = 1047   # 最高检测频率（C6，可通过界面调整）
-
-        # 音高分析器 / 服务
+        # 音高分析器 / 服务占位（服务实例稍后按需创建）
         self.pitch_analyzer = None
         self.overlapping_analyzer = None
-        self.pitch_service = None
 
-        # 🔥 关键修复：降噪处理器初始化 - 设置为温和模式
+        # 降噪处理器（尽量初始化为轻度模式；若不可用则保留为 None）
         try:
             from src.audio_processing.noise_reduction import NoiseReductionProcessor
-            self.noise_processor = NoiseReductionProcessor(sample_rate=44100, frame_size=2048)
-            # 🔥 关键修复：设置降噪为温和模式，避免过度抑制歌声
+            self.noise_processor = NoiseReductionProcessor(sample_rate=int(self.sample_rate), frame_size=2048)
             if hasattr(self.noise_processor, 'set_noise_reduction_mode'):
-                self.noise_processor.set_noise_reduction_mode("轻度")  # 使用轻度降噪模式
+                self.noise_processor.set_noise_reduction_mode("轻度")
                 print("✅ IntegratedAudioProcessor: 降噪处理器设置为轻度模式")
             print("✅ IntegratedAudioProcessor: 降噪处理器初始化成功")
-        except ImportError as e:
+        except Exception as e:
             print(f"❌ IntegratedAudioProcessor: 降噪处理器初始化失败: {e}")
-            self.noise_processor = None
+            # 已有占位属性，保持为 None
 
-        # 🔥 初始化电流音检测器
+        # 电流音检测器
         self.electric_noise_detector = {
             'enabled': True,
             'threshold': 2.0,
@@ -493,33 +496,281 @@ class IntegratedAudioProcessor(QThread):
             'rms_threshold': 0.0008,
             'high_freq_ratio_threshold': 0.95
         }
-        print("✅ IntegratedAudioProcessor: 电流音检测器初始化完成")
 
-        # 🎤 优化的智能音量增强配置（大音量/高音优化）
+        # 智能音量增强配置（温和，避免失真）
         self.intelligent_volume_booster = {
             'enabled': True,
-            'base_gain': 1.0,           # 基础增益
-            'max_gain': 1.2,            # 温和的最大增益（1.6dB，避免失真）
-            'noise_gate_threshold': 0.002, # 合理的噪声门限
-            'auto_gain_speed': 0.015,   # 平衡的调整速度
-            'target_level': 0.18,       # 适中目标音量
-            'voice_freq_boost': 1.0,    # 关闭频段增强（避免失真）
-            'current_gain': 1.0,        # 当前增益
-            'rms_history': [],          # RMS历史（减少历史长度）
-            'gain_smoothing': 0.975,    # 高平滑系数（稳定性优先）
-            'gain_change_limit': 0.015, # 严格增益变化限制
-            'stability_buffer': 0.04,   # 适中稳定缓冲区
-            'manual_volume': 1.0,       # 🎚️ 手动音量控制
-            'manual_control_enabled': False,  # 🎚️ 手动控制默认禁用
-            'quality_priority': True,   # 🎵 音质优先模式
-            'gentle_enhancement': True, # 🎵 温和增强模式
-            'high_volume_fast_response': True, # 大音量快速响应
-            'bypass_on_transients': False,     # 🎯 关闭瞬态绕过（避免音质问题）
-            'optimize_for_vocals': True        # 🎵 针对人声优化
+            'base_gain': 1.0,
+            'max_gain': 1.2,
+            'noise_gate_threshold': 0.002,
+            'auto_gain_speed': 0.015,
+            'target_level': 0.18,
+            'voice_freq_boost': 1.0,
+            'current_gain': 1.0,
+            'rms_history': [],
+            'gain_smoothing': 0.975,
+            'gain_change_limit': 0.015,
+            'stability_buffer': 0.04,
+            'manual_volume': 1.0,
+            'manual_control_enabled': False,
+            'quality_priority': True,
+            'gentle_enhancement': True,
+            'high_volume_fast_response': True,
+            'bypass_on_transients': False,
+            'optimize_for_vocals': True
         }
 
+        # 其他流与线程占位
+        self.audio_stream = None
+        # 若存在专用音频处理线程启动函数，则启动
+        try:
+            if hasattr(self, '_start_dedicated_audio_thread'):
+                self._start_dedicated_audio_thread()
+        except Exception as _e:
+            print(f"⚠️ 专用音频线程启动失败: {_e}")
+
+    # ---- 回听缓冲维护 ----
+    def _append_listenback_packets(self, packets):
+        try:
+            sr = float(getattr(self, 'sample_rate', 48000))
+            now = time.time()
+            for pkt in packets:
+                ts_end = float(pkt.get('timestamp', now))
+                dat = pkt.get('data')
+                if dat is None:
+                    continue
+                try:
+                    dat = np.asarray(dat, dtype=np.float32)
+                except Exception:
+                    continue
+                dur = float(len(dat)) / max(1.0, sr)
+                ts_start = ts_end - dur
+                self._listenback_chunks.append((ts_start, ts_end, dat))
+                self._listenback_total_sec += dur
+            # 时间裁剪：移除超出窗口的数据
+            cutoff = now - float(self.listenback_window_sec)
+            while self._listenback_chunks:
+                s, e, d = self._listenback_chunks[0]
+                if e < cutoff:
+                    self._listenback_total_sec -= (e - s)
+                    try:
+                        self._listenback_chunks.popleft()
+                    except Exception:
+                        self._listenback_chunks = self._listenback_chunks[1:]
+                else:
+                    break
+        except Exception as e:
+            try:
+                print(f"⚠️ 回听缓冲追加失败: {e}")
+            except Exception:
+                pass
+
+    def get_audio_segment_by_abs(self, abs_start: float, abs_end: float) -> np.ndarray:
+        # 按绝对墙钟时间提取单声道音频段，返回 float32[-1,1]
+        try:
+            if abs_end <= abs_start:
+                return np.zeros(0, dtype=np.float32)
+            sr = float(getattr(self, 'sample_rate', 48000))
+            segs = []
+            for (s, e, dat) in list(self._listenback_chunks):
+                if e <= abs_start or s >= abs_end:
+                    continue
+                ov_s = max(abs_start, s)
+                ov_e = min(abs_end, e)
+                if ov_e <= ov_s:
+                    continue
+                start_idx = max(0, int(round((ov_s - s) * sr)))
+                end_idx = min(len(dat), int(round((ov_e - s) * sr)))
+                if end_idx > start_idx:
+                    segs.append(dat[start_idx:end_idx])
+            if not segs:
+                return np.zeros(0, dtype=np.float32)
+            try:
+                out = np.concatenate(segs).astype(np.float32, copy=False)
+            except Exception:
+                out = np.array(sum([list(seg) for seg in segs], []), dtype=np.float32)
+            # 安全限幅
+            try:
+                np.clip(out, -1.0, 1.0, out=out)
+            except Exception:
+                out = np.clip(out, -1.0, 1.0)
+            return out
+        except Exception:
+            return np.zeros(0, dtype=np.float32)
+
+    # ---- 回听播放控制 ----
+    def start_listenback_playback(self, abs_start: float, abs_end: float):
+        try:
+            data = self.get_audio_segment_by_abs(abs_start, abs_end)
+            if data.size == 0:
+                print("⚠️ 回听：无可用音频数据或超出缓冲范围")
+                return False
+            self._lb_data = data
+            self._lb_pos = 0
+            self._lb_state = 'playing'
+
+            def _cb(outdata, frames, time_info, status):
+                try:
+                    if self._lb_state != 'playing' or self._lb_data is None:
+                        outdata.fill(0)
+                        raise sd.CallbackStop()
+                    end = self._lb_pos + frames
+                    chunk = self._lb_data[self._lb_pos:end]
+                    n = len(chunk)
+                    if n < frames:
+                        # 填充剩余为0，并停止
+                        if n > 0:
+                            outdata[:n, 0] = chunk
+                            outdata[n:, 0] = 0
+                        else:
+                            outdata.fill(0)
+                        self._lb_pos = len(self._lb_data)
+                        raise sd.CallbackStop()
+                    else:
+                        outdata[:, 0] = chunk
+                        self._lb_pos = end
+                except sd.CallbackStop:
+                    raise
+                except Exception:
+                    try:
+                        outdata.fill(0)
+                    except Exception:
+                        pass
+                    raise sd.CallbackStop()
+
+            def _on_finished():
+                self._lb_state = 'stopped'
+                self._lb_stream = None
+                try:
+                    self.listenback_playback_finished.emit()
+                except Exception:
+                    pass
+
+            # 关闭旧流
+            try:
+                if self._lb_stream is not None:
+                    self._lb_stream.stop()
+                    self._lb_stream.close()
+            except Exception:
+                pass
+            self._lb_stream = sd.OutputStream(
+                samplerate=int(self.sample_rate),
+                channels=1,
+                dtype='float32',
+                callback=_cb,
+                finished_callback=_on_finished
+            )
+            self._lb_stream.start()
+            return True
+        except Exception as e:
+            print(f"❌ 回听播放失败: {e}")
+            try:
+                if self._lb_stream is not None:
+                    self._lb_stream.stop(); self._lb_stream.close()
+            except Exception:
+                pass
+            self._lb_stream = None
+            self._lb_state = 'stopped'
+            return False
+
+    def pause_listenback_playback(self):
+        try:
+            if self._lb_state == 'playing' and self._lb_stream is not None:
+                self._lb_state = 'paused'
+                try:
+                    self._lb_stream.stop(); self._lb_stream.close()
+                except Exception:
+                    pass
+                self._lb_stream = None
+                return True
+            return False
+        except Exception:
+            return False
+
+    def resume_listenback_playback(self):
+        """从暂停位置继续回听播放。"""
+        try:
+            # 需要已有数据与暂停状态
+            if getattr(self, '_lb_state', 'stopped') != 'paused':
+                return False
+            if getattr(self, '_lb_data', None) is None:
+                return False
+
+            def _cb(outdata, frames, time_info, status):
+                try:
+                    if self._lb_state != 'playing' or self._lb_data is None:
+                        outdata.fill(0)
+                        raise sd.CallbackStop()
+                    end = self._lb_pos + frames
+                    chunk = self._lb_data[self._lb_pos:end]
+                    n = len(chunk)
+                    if n < frames:
+                        if n > 0:
+                            outdata[:n, 0] = chunk
+                            outdata[n:, 0] = 0
+                        else:
+                            outdata.fill(0)
+                        self._lb_pos = len(self._lb_data)
+                        raise sd.CallbackStop()
+                    else:
+                        outdata[:, 0] = chunk
+                        self._lb_pos = end
+                except sd.CallbackStop:
+                    raise
+                except Exception:
+                    try:
+                        outdata.fill(0)
+                    except Exception:
+                        pass
+                    raise sd.CallbackStop()
+
+            def _on_finished():
+                self._lb_state = 'stopped'
+                self._lb_stream = None
+                try:
+                    self.listenback_playback_finished.emit()
+                except Exception:
+                    pass
+
+            # 启动新流，从 _lb_pos 继续
+            self._lb_state = 'playing'
+            self._lb_stream = sd.OutputStream(
+                samplerate=int(self.sample_rate),
+                channels=1,
+                dtype='float32',
+                callback=_cb,
+                finished_callback=_on_finished
+            )
+            self._lb_stream.start()
+            return True
+        except Exception:
+            # 恢复失败则回到停止状态
+            try:
+                if self._lb_stream is not None:
+                    self._lb_stream.stop(); self._lb_stream.close()
+            except Exception:
+                pass
+            self._lb_stream = None
+            self._lb_state = 'stopped'
+            return False
+
+    def stop_listenback_playback(self):
+        try:
+            self._lb_state = 'stopped'
+            if self._lb_stream is not None:
+                try:
+                    self._lb_stream.stop(); self._lb_stream.close()
+                except Exception:
+                    pass
+            self._lb_stream = None
+            self._lb_data = None
+            self._lb_pos = 0
+            return True
+        except Exception:
+            return False
+
     def set_save_base_dir(self, path: str):
-        """设置录音保存的基础目录（由主窗口调用）"""
+        # 设置录音保存的基础目录（由主窗口调用）
         try:
             p = Path(path)
             p.mkdir(parents=True, exist_ok=True)
@@ -572,7 +823,7 @@ class IntegratedAudioProcessor(QThread):
             print(f"⚠️ PitchDetectionService 初始化失败: {_e}")
     
     def _load_user_preferred_device(self):
-        """加载用户首选设备配置"""
+        # 加载用户首选设备配置
         try:
             import json
             import os
@@ -601,7 +852,7 @@ class IntegratedAudioProcessor(QThread):
             
         
     def diagnose_wasapi_issues(self):
-        """🔧 WASAPI问题诊断和系统优化"""
+        # WASAPI问题诊断和系统优化
         try:
             import sounddevice as sd
             print("🔍 开始WASAPI系统诊断...")
@@ -836,7 +1087,7 @@ class IntegratedAudioProcessor(QThread):
             traceback.print_exc()
     
     def _calculate_device_priority(self, device_info):
-        """计算设备优先级评分（用于智能设备选择）"""
+    # 计算设备优先级评分（用于智能设备选择）
         try:
             score = 0
             device_name = device_info.get('name', '').lower()
@@ -885,7 +1136,7 @@ class IntegratedAudioProcessor(QThread):
             return 0
     
     def _generate_smart_device_configs(self, device_id, max_channels, device_samplerate, host_api, callback):
-        """为设备生成智能配置序列（从最兼容到最高性能）"""
+    # 为设备生成智能配置序列（从最兼容到最高性能）
         try:
             configs = []
             
@@ -5436,6 +5687,11 @@ class IntegratedAudioProcessor(QThread):
                     for packet in audio_packets:
                         if packet['should_save']:
                             self.audio_buffer.extend(packet['data'])
+                    # 回听缓冲：总是记录（仅暂存，不等同保存）
+                    try:
+                        self._append_listenback_packets(audio_packets)
+                    except Exception:
+                        pass
 
                     # 累加帧缓冲
                     for packet in audio_packets:
@@ -8288,6 +8544,24 @@ class ECGStylePitchVisualizer(QWidget):
             self._last_grid_build_time = time.time()
         except Exception:
             self._last_grid_build_time = 0.0
+        # 统一初始化辅助线与回听UI状态
+        self._init_guides_and_listenback()
+
+    def _reset_display_diagnostics(self):
+        """重置显示相关诊断统计，避免历史数据污染新阶段均值。"""
+        self._diag_last_display_time = None
+        self._diag_display_intervals.clear()
+        self._diag_add_to_display_latencies.clear()
+        self._diag_pending_points = 0
+        # 也重置性能采样，防止停用后旧值残留
+        self._seg_timing_samples.clear()
+        self._draw_timing_samples.clear()
+        self._diag_last_perf_report = 0
+        self._last_log_times['display_diag'] = 0.0
+    # 强制下一次刷新不早返回
+    def _init_guides_and_listenback(self):
+        """初始化辅助线配置与回听（Listenback）UI 所需的全部属性。"""
+        # ================== 网格/标签重建节流 ==================
         self._grid_rebuild_interval = 1.2  # 网格/标签重建最小间隔（秒）
         self._grid_dirty = True            # 有变化时由其他路径置为 True
 
@@ -8308,20 +8582,569 @@ class ECGStylePitchVisualizer(QWidget):
         self.guide_dash_pattern = (6, 4) # 主虚线的破折间距（更轻快）
         self.last_active_pitch_y = None  # 记录最后一次有效音高（八度坐标）
 
-    def _reset_display_diagnostics(self):
-        """重置显示相关诊断统计，避免历史数据污染新阶段均值。"""
-        self._diag_last_display_time = None
-        self._diag_display_intervals.clear()
-        self._diag_add_to_display_latencies.clear()
-        self._diag_pending_points = 0
-        # 也重置性能采样，防止停用后旧值残留
-        self._seg_timing_samples.clear()
-        self._draw_timing_samples.clear()
-        self._diag_last_perf_report = 0
-        self._last_log_times['display_diag'] = 0.0
-        # 强制下一次刷新不早返回
-        if hasattr(self, '_last_update_state'):
-            self._last_update_state = (-1, (-1,-1), -999)
+        # ================== 回听（Listenback）UI 状态 ==================
+        self.listenback_enabled = False
+        self.selection_active = False
+        self.sel_start = 0.0
+        self.sel_end = 0.0
+        self._sel_line_left = None
+        self._sel_line_right = None
+        self._sel_tri_top_left = None
+        self._sel_tri_bot_left = None
+        self._sel_tri_top_right = None
+        self._sel_tri_bot_right = None
+        self._sel_play_icon = None
+        self._sel_pause_icon_left = None
+        self._sel_pause_icon_right = None
+        self._sel_stop_icon = None
+        self._listenback_hint_text = None
+        self._listenback_hint_timer = None
+        # 回听：可拖动播放头状态
+        self._dragging_playhead = False
+        self._sel_dragging_side = None
+        # 回听：用户触发的“暂停”标记（用于屏蔽暂停时误触发的完成回调）
+        self._lb_user_paused = False
+    
+
+    # ================== 回听：启用/禁用与UI搭建 ==================
+    def enable_listenback_mode(self, enabled: bool = True):
+        """启用/禁用回听选区模式：仅绘制与交互，暂不含音频回放。"""
+        try:
+            self.listenback_enabled = bool(enabled)
+            if self.listenback_enabled:
+                self._init_listenback_selection()
+                self.selection_active = True
+                # 刚启用时强制显示选区元素
+                try:
+                    self._ensure_listenback_patches()
+                    for art in [self._sel_line_left, self._sel_line_right,
+                                self._sel_tri_top_left, self._sel_tri_bot_left,
+                                self._sel_tri_top_right, self._sel_tri_bot_right,
+                                self._sel_play_icon]:
+                        if art is not None:
+                            art.set_visible(True)
+                    # 初始位置/形状刷新
+                    self.update_listenback_artists()
+                    # 图标命中区域缓存（数据坐标）
+                    self._pause_hit_boxes = None  # [(x0,x1,y0,y1), (x0,x1,y0,y1)]
+                    self._stop_hit_box = None     # (x0,x1,y0,y1)
+                    self._play_hit_box = None     # (x0,x1,y0,y1)
+                    # 初始化雾霾蓝播放头到左边线位置
+                    try:
+                        self._ensure_playhead()
+                        if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                            xL = float(self.sel_start)
+                            self._lb_playhead.set_xdata([xL, xL])
+                            # 覆盖可见性为显示
+                            self._lb_playhead.set_visible(True)
+                            try:
+                                self._lb_playhead.set_zorder(148)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    # 初启用视为未手动移动
+                    try:
+                        self._lb_user_moved_playhead = False
+                    except Exception:
+                        pass
+                    if hasattr(self, 'canvas'):
+                        self.canvas.draw_idle()
+                except Exception:
+                    pass
+            else:
+                self.selection_active = False
+            # 刷新一次
+            try:
+                self.update_listenback_artists()
+            except Exception:
+                pass
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception as e:
+            print(f"❌ 启用回听模式失败: {e}")
+
+    def _hide_listenback_hint(self):
+        try:
+            if self._listenback_hint_text is not None:
+                try:
+                    self._listenback_hint_text.remove()
+                except Exception:
+                    pass
+                self._listenback_hint_text = None
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _init_listenback_selection(self):
+        """在当前视窗内初始化5秒长度的选区，并确保绘制元素就绪。"""
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            x0, x1 = self.ax.get_xlim()
+            span = 5.0
+            # 计算基于“已有音频”的合理初始区间：优先贴近最新数据
+            ap = getattr(self, 'audio_processor', None)
+            sel_start = None
+            sel_end = None
+            try:
+                if ap is not None and hasattr(ap, '_listenback_chunks') and ap._listenback_chunks:
+                    # 取缓冲中最新包的结束时间（绝对）
+                    last_end_abs = float(ap._listenback_chunks[-1][1])
+                    # 需要 start_time 将绝对时间映射到可视化x轴
+                    if hasattr(self, 'start_time') and self.start_time is not None:
+                        last_end_rel = last_end_abs - float(self.start_time)
+                        sel_end = last_end_rel
+                        sel_start = max(sel_end - span, 0.0)
+            except Exception:
+                pass
+
+            if sel_start is None or sel_end is None:
+                # 回退：仍按当前可视窗口中部
+                if (x1 - x0) < span:
+                    # 扩展右边界以容纳初始跨度
+                    x1 = x0 + span
+                    try:
+                        self.ax.set_xlim(x0, x1)
+                    except Exception:
+                        pass
+                mid = (x0 + x1) * 0.5
+                sel_start = mid - span * 0.5
+                sel_end = mid + span * 0.5
+
+            self.sel_start = float(sel_start)
+            self.sel_end = float(sel_end)
+            # 创建或更新图元
+            self._ensure_listenback_patches()
+            self.update_listenback_artists()
+        except Exception as e:
+            print(f"⚠️ 初始化回听选区失败: {e}")
+
+    def _ensure_listenback_patches(self):
+        """确保选区相关的所有图元存在并已挂载到坐标轴。"""
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            import matplotlib.patches as mpatches
+            # 纵线样式（浅粉色，略透明）
+            sel_line_color = '#FFB6C1'   # LightPink 浅粉色
+            sel_line_alpha = 0.88        # 略透明
+            lw = 0.8                     # 0.8px 细线
+            # 读取当前坐标范围用于初始定位
+            try:
+                ymin, ymax = self.ax.get_ylim()
+            except Exception:
+                ymin, ymax = 0.0, 8.0
+            xL = float(getattr(self, 'sel_start', 0.0) or 0.0)
+            xR = float(getattr(self, 'sel_end', 0.0) or 0.0)
+            if xL > xR:
+                xL, xR = xR, xL
+                self.sel_start, self.sel_end = xL, xR
+            # 左/右纵线
+            if self._sel_line_left is None or getattr(self._sel_line_left, 'axes', None) is None:
+                self._sel_line_left = self.ax.axvline(x=xL, color=sel_line_color, linewidth=lw, alpha=sel_line_alpha, zorder=150)
+            try:
+                # 强制初始化位置与可见性（axvline 使用 y 轴为轴坐标 0..1）
+                self._sel_line_left.set_xdata([xL, xL])
+                self._sel_line_left.set_ydata([0.0, 1.0])
+                self._sel_line_left.set_visible(True)
+                self._sel_line_left.set_zorder(150)
+                try:
+                    self._sel_line_left.set_color(sel_line_color)
+                    self._sel_line_left.set_alpha(sel_line_alpha)
+                    self._sel_line_left.set_antialiased(True)
+                    self._sel_line_left.set_solid_capstyle('butt')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            if self._sel_line_right is None or getattr(self._sel_line_right, 'axes', None) is None:
+                self._sel_line_right = self.ax.axvline(x=xR, color=sel_line_color, linewidth=lw, alpha=sel_line_alpha, zorder=150)
+            try:
+                self._sel_line_right.set_xdata([xR, xR])
+                self._sel_line_right.set_ydata([0.0, 1.0])
+                self._sel_line_right.set_visible(True)
+                self._sel_line_right.set_zorder(150)
+                try:
+                    self._sel_line_right.set_color(sel_line_color)
+                    self._sel_line_right.set_alpha(sel_line_alpha)
+                    self._sel_line_right.set_antialiased(True)
+                    self._sel_line_right.set_solid_capstyle('butt')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # 顶/底三角（高级灰）
+            def _make_tri():
+                return mpatches.Polygon([[0,0],[0,0],[0,0]], closed=True, facecolor='#A0A0A0', edgecolor='none', alpha=0.95, zorder=151)
+            for name in ('_sel_tri_top_left','_sel_tri_bot_left','_sel_tri_top_right','_sel_tri_bot_right'):
+                if getattr(self, name) is None or getattr(getattr(self, name), 'axes', None) is None:
+                    tri = _make_tri()
+                    try:
+                        self.ax.add_patch(tri)
+                    except Exception:
+                        pass
+                    setattr(self, name, tri)
+            # 初始化三角坐标到左右线顶/底，确保立即可见
+            try:
+                tri_h = max(0.06, (ymax - ymin) * 0.04)
+                tri_w = tri_h * 0.7
+                def _tri_coords(cx, cy, up=True):
+                    if up:
+                        return [[cx - tri_w*0.5, cy - tri_h], [cx + tri_w*0.5, cy - tri_h], [cx, cy]]
+                    else:
+                        return [[cx - tri_w*0.5, cy + tri_h], [cx + tri_w*0.5, cy + tri_h], [cx, cy]]
+                self._sel_tri_top_left.set_xy(_tri_coords(xL, ymax, up=True))
+                self._sel_tri_bot_left.set_xy(_tri_coords(xL, ymin, up=False))
+                self._sel_tri_top_right.set_xy(_tri_coords(xR, ymax, up=True))
+                self._sel_tri_bot_right.set_xy(_tri_coords(xR, ymin, up=False))
+                for art in (self._sel_tri_top_left, self._sel_tri_bot_left, self._sel_tri_top_right, self._sel_tri_bot_right):
+                    art.set_visible(True)
+                    art.set_zorder(151)
+            except Exception:
+                pass
+            # 中间播放图标（透明绿色三角）
+            if self._sel_play_icon is None or getattr(self._sel_play_icon, 'axes', None) is None:
+                play_tri = mpatches.Polygon([[0,0],[0,0],[0,0]], closed=True, facecolor=(0.2,1.0,0.2,0.18), edgecolor='none', zorder=149)
+                try:
+                    self.ax.add_patch(play_tri)
+                except Exception:
+                    pass
+                self._sel_play_icon = play_tri
+            # 初始化播放三角的坐标与可见性
+            try:
+                cx = (xL + xR) * 0.5
+                cy = (ymin + ymax) * 0.5
+                px = max((xR - xL) * 0.045, 0.05)
+                tri_pts = [[cx - px*0.6, cy - px*0.9], [cx - px*0.6, cy + px*0.9], [cx + px*0.9, cy]]
+                self._sel_play_icon.set_xy(tri_pts)
+                # 未处于播放状态时可见
+                is_playing = bool(getattr(getattr(self, 'audio_processor', None), '_lb_state', '') == 'playing')
+                self._sel_play_icon.set_visible(bool(getattr(self, 'selection_active', False)) and (not is_playing))
+                self._sel_play_icon.set_zorder(149)
+            except Exception:
+                pass
+            # 暂停图标（两条浅白竖条）
+            if self._sel_pause_icon_left is None or getattr(self._sel_pause_icon_left, 'axes', None) is None:
+                try:
+                    from matplotlib.patches import Rectangle as _Rect
+                    self._sel_pause_icon_left = _Rect((0,0), 0.0, 0.0, facecolor=(1,1,1,0.22), edgecolor='none', zorder=149)
+                    self.ax.add_patch(self._sel_pause_icon_left)
+                except Exception:
+                    self._sel_pause_icon_left = mpatches.Polygon([[0,0],[0,0],[0,0],[0,0]], closed=True, facecolor=(1,1,1,0.22), edgecolor='none', zorder=149)
+                    self.ax.add_patch(self._sel_pause_icon_left)
+            if self._sel_pause_icon_right is None or getattr(self._sel_pause_icon_right, 'axes', None) is None:
+                try:
+                    from matplotlib.patches import Rectangle as _Rect
+                    self._sel_pause_icon_right = _Rect((0,0), 0.0, 0.0, facecolor=(1,1,1,0.22), edgecolor='none', zorder=149)
+                    self.ax.add_patch(self._sel_pause_icon_right)
+                except Exception:
+                    self._sel_pause_icon_right = mpatches.Polygon([[0,0],[0,0],[0,0],[0,0]], closed=True, facecolor=(1,1,1,0.22), edgecolor='none', zorder=149)
+                    self.ax.add_patch(self._sel_pause_icon_right)
+            # 结束图标（红色半透明按钮）
+            if self._sel_stop_icon is None or getattr(self._sel_stop_icon, 'axes', None) is None:
+                try:
+                    from matplotlib.patches import Rectangle as _Rect
+                    self._sel_stop_icon = _Rect((0,0), 0.0, 0.0, facecolor=(1.0,0.1,0.1,0.28), edgecolor='none', zorder=149)
+                    self.ax.add_patch(self._sel_stop_icon)
+                except Exception:
+                    self._sel_stop_icon = mpatches.Polygon([[0,0],[0,0],[0,0],[0,0]], closed=True, facecolor=(1.0,0.1,0.1,0.28), edgecolor='none', zorder=149)
+                    self.ax.add_patch(self._sel_stop_icon)
+            # 暂停图标初始隐藏（仅播放时可见）
+            try:
+                for art in (self._sel_pause_icon_left, self._sel_pause_icon_right):
+                    art.set_visible(False)
+                    art.set_zorder(149)
+            except Exception:
+                pass
+            try:
+                if self._sel_stop_icon is not None:
+                    self._sel_stop_icon.set_visible(False)
+                    self._sel_stop_icon.set_zorder(149)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def update_listenback_artists(self):
+        """根据当前状态与轴范围更新选区图元位置/可见性。"""
+        try:
+            if not self.listenback_enabled:
+                # 隐藏所有图元
+                for art in [self._sel_line_left, self._sel_line_right,
+                            self._sel_tri_top_left, self._sel_tri_bot_left,
+                            self._sel_tri_top_right, self._sel_tri_bot_right,
+                            self._sel_play_icon, self._sel_pause_icon_left, self._sel_pause_icon_right]:
+                    try:
+                        if art is not None:
+                            art.set_visible(False)
+                    except Exception:
+                        pass
+                try:
+                    if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                        self._lb_playhead.set_visible(False)
+                except Exception:
+                    pass
+                return
+            self._ensure_listenback_patches()
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            # 线位置
+            try:
+                ymin, ymax = self.ax.get_ylim()
+            except Exception:
+                ymin, ymax = 0.0, 8.0
+            xL = float(self.sel_start)
+            xR = float(self.sel_end)
+            if xL > xR:
+                xL, xR = xR, xL
+                self.sel_start, self.sel_end = xL, xR
+            # 更新纵线（播放中也保持可见用于标定范围）
+            try:
+                self._sel_line_left.set_xdata([xL, xL])
+                self._sel_line_left.set_ydata([0.0, 1.0])
+                self._sel_line_left.set_visible(True)
+                self._sel_line_left.set_zorder(150)
+            except Exception:
+                pass
+            try:
+                self._sel_line_right.set_xdata([xR, xR])
+                self._sel_line_right.set_ydata([0.0, 1.0])
+                self._sel_line_right.set_visible(True)
+                self._sel_line_right.set_zorder(150)
+            except Exception:
+                pass
+            # 顶/底三角：构建大小（随y范围比例）
+            tri_h = max(0.06, (ymax - ymin) * 0.04)
+            tri_w = tri_h * 0.7
+            def _tri_coords(cx, cy, up=True):
+                if up:
+                    return [[cx - tri_w*0.5, cy - tri_h], [cx + tri_w*0.5, cy - tri_h], [cx, cy]]
+                else:
+                    return [[cx - tri_w*0.5, cy + tri_h], [cx + tri_w*0.5, cy + tri_h], [cx, cy]]
+            try:
+                self._sel_tri_top_left.set_xy(_tri_coords(xL, ymax, up=True))
+                self._sel_tri_top_left.set_visible(True)
+                self._sel_tri_top_left.set_zorder(151)
+                self._sel_tri_bot_left.set_xy(_tri_coords(xL, ymin, up=False))
+                self._sel_tri_bot_left.set_visible(True)
+                self._sel_tri_bot_left.set_zorder(151)
+                self._sel_tri_top_right.set_xy(_tri_coords(xR, ymax, up=True))
+                self._sel_tri_top_right.set_visible(True)
+                self._sel_tri_top_right.set_zorder(151)
+                self._sel_tri_bot_right.set_xy(_tri_coords(xR, ymin, up=False))
+                self._sel_tri_bot_right.set_visible(True)
+                self._sel_tri_bot_right.set_zorder(151)
+            except Exception:
+                pass
+            # 播放状态
+            ap = getattr(self, 'audio_processor', None)
+            is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing')
+            # 确保播放头位置与可见性（始终可见，表示“唱到哪了/暂停到哪了”）
+            try:
+                self._ensure_playhead()
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    # 若播放中，根据计时器更新；否则保持当前位置
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                    self._lb_playhead.set_visible(True)
+                    self._lb_playhead.set_zorder(148)
+                    # 仅在完全停止状态下，且用户未移动过播放头时，才自动贴合左线
+                    ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
+                    if (
+                        ap_state == 'stopped'
+                        and not getattr(self, '_dragging_playhead', False)
+                        and getattr(self, '_lb_resume_abs_start', None) is None
+                    ):
+                        if not getattr(self, '_lb_user_moved_playhead', False):
+                            try:
+                                self._lb_playhead.set_xdata([xL, xL])
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            # 中间播放按钮（绿色透明三角），当未播放时显示（更大更醒目）
+            try:
+                cx = (xL + xR) * 0.5
+                cy = (ymin + ymax) * 0.5
+                # 播放图标再稍微变大一些
+                s_play = max((xR - xL) * 0.10, 0.09)
+                half = s_play * 0.5
+                # 指向右的三角，限制在正方形 [cx-half, cx+half] x [cy-half, cy+half] 内
+                tri_pts = [[cx - half*0.6, cy - half], [cx - half*0.6, cy + half], [cx + half, cy]]
+                self._sel_play_icon.set_xy(tri_pts)
+                # 正常显示：未播放时才显示.
+                vis_play = self.selection_active and (not is_playing)
+                self._sel_play_icon.set_visible(vis_play)
+                self._sel_play_icon.set_zorder(149)
+                # 更新播放按钮命中区域（正方形），否则清空，避免误触
+                self._play_hit_box = (cx - half, cx + half, cy - half, cy + half) if vis_play else None
+            except Exception:
+                try:
+                    self._play_hit_box = None
+                except Exception:
+                    pass
+            # 暂停图标（两条竖线）在播放时显示
+            try:
+                # 统一图标基准尺寸（更大）
+                s = max((xR - xL) * 0.10, 0.09)
+                half = s * 0.5
+                cx = (xL + xR) * 0.5
+                cy = (ymin + ymax) * 0.5
+                # 将暂停按钮组与结束按钮分开更多（再加大一点点间距）
+                pause_cx = cx - s * 0.70
+                stop_cx = cx + s * 0.95
+                # 暂停两条竖线：高度 = s，条宽 = s*0.25，条间距 = s*0.24（更粗更明显）
+                bar_h = half
+                bar_w = s * 0.25
+                inner_gap = s * 0.24
+                # 左条矩形左下角
+                left_x0 = pause_cx - inner_gap*0.5 - bar_w
+                left_y0 = cy - bar_h
+                right_x0 = pause_cx + inner_gap*0.5
+                right_y0 = cy - bar_h
+                # 左条
+                if hasattr(self._sel_pause_icon_left, 'set_width'):
+                    # Rectangle 风格
+                    self._sel_pause_icon_left.set_xy((left_x0, left_y0))
+                    self._sel_pause_icon_left.set_width(bar_w)
+                    self._sel_pause_icon_left.set_height(bar_h * 2)
+                else:
+                    # Polygon 风格
+                    self._sel_pause_icon_left.set_xy([[left_x0, left_y0], [left_x0+bar_w, left_y0], [left_x0+bar_w, left_y0+bar_h*2], [left_x0, left_y0+bar_h*2]])
+                # 右条
+                if hasattr(self._sel_pause_icon_right, 'set_width'):
+                    self._sel_pause_icon_right.set_xy((right_x0, right_y0))
+                    self._sel_pause_icon_right.set_width(bar_w)
+                    self._sel_pause_icon_right.set_height(bar_h * 2)
+                else:
+                    self._sel_pause_icon_right.set_xy([[right_x0, right_y0], [right_x0+bar_w, right_y0], [right_x0+bar_w, right_y0+bar_h*2], [right_x0, right_y0+bar_h*2]])
+                # 红色“结束”按钮：位于暂停条右侧，正方形（更大）
+                stop_size = s * 1.00
+                stop_x0 = stop_cx - stop_size * 0.5
+                stop_y0 = cy - stop_size * 0.5
+                if hasattr(self._sel_stop_icon, 'set_xy') and hasattr(self._sel_stop_icon, 'set_width'):
+                    # Rectangle 风格
+                    self._sel_stop_icon.set_xy((stop_x0, stop_y0))
+                    self._sel_stop_icon.set_width(stop_size)
+                    self._sel_stop_icon.set_height(stop_size)
+                else:
+                    self._sel_stop_icon.set_xy([[stop_x0, stop_y0], [stop_x0+stop_size, stop_y0], [stop_x0+stop_size, stop_y0+stop_size], [stop_x0, stop_y0+stop_size]])
+                # 可见性
+                for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                    art.set_visible(is_playing)
+                    art.set_zorder(149)
+                # 更新命中区域（数据坐标）：严格限定在各自“正方形”区域内
+                if is_playing:
+                    # 暂停：使用以 pause_cx, cy 为中心、边长 = s 的正方形命中框
+                    pause_size = s * 1.00
+                    pause_x0 = pause_cx - pause_size * 0.5
+                    pause_y0 = cy - pause_size * 0.5
+                    self._pause_hit_boxes = [
+                        (pause_x0, pause_x0 + pause_size, pause_y0, pause_y0 + pause_size)
+                    ]
+                    # 结束：保持正方形命中框
+                    self._stop_hit_box = (stop_x0, stop_x0+stop_size, stop_y0, stop_y0+stop_size)
+                else:
+                    # 非播放态，命中区域无效
+                    self._pause_hit_boxes = None
+                    self._stop_hit_box = None
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _handle_pause_click(self):
+        """处理点击暂停图标：暂停播放并恢复播放按钮显示。"""
+        ap = getattr(self, 'audio_processor', None)
+        try:
+            # 标记为“用户暂停”，用于抑制回放 finished 回调触发的复位逻辑
+            try:
+                self._lb_user_paused = True
+            except Exception:
+                pass
+            # 记录当前播放头对应的绝对时间，供恢复使用
+            try:
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None and hasattr(self, 'start_time') and self.start_time is not None:
+                    xd = self._lb_playhead.get_xdata()
+                    if xd is not None and len(xd) > 0:
+                        self._lb_resume_abs_start = float(self.start_time) + float(xd[0])
+            except Exception:
+                pass
+            if ap is not None:
+                ap.pause_listenback_playback()
+            # 停止播放头计时器但保留播放头可见（暂停即停在当前位置）
+            try:
+                self._stop_playhead_timer()
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    self._lb_playhead.set_visible(True)
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+            except Exception:
+                pass
+            self.selection_active = True
+            # 隐藏暂停/结束按钮，显示播放按钮
+            for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                try:
+                    if art is not None:
+                        art.set_visible(False)
+                except Exception:
+                    pass
+            try:
+                if self._sel_play_icon is not None:
+                    self._sel_play_icon.set_visible(True)
+            except Exception:
+                pass
+            # 暂停状态下，清空暂停/结束命中区域
+            try:
+                self._pause_hit_boxes = None
+                self._stop_hit_box = None
+            except Exception:
+                pass
+            self.update_listenback_artists()
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _handle_stop_click(self):
+        """处理点击结束图标：停止播放，回到左侧线位置，并显示播放按钮。"""
+        ap = getattr(self, 'audio_processor', None)
+        try:
+            if ap is not None:
+                ap.stop_listenback_playback()
+            # 重置播放头到左边线
+            try:
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    xL = float(getattr(self, 'sel_start', 0.0) or 0.0)
+                    self._lb_playhead.set_xdata([xL, xL])
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                    self._lb_playhead.set_visible(True)
+            except Exception:
+                pass
+            # 停止后清空恢复点，允许贴边策略重新生效
+            try:
+                self._lb_resume_abs_start = None
+                self._lb_user_moved_playhead = False
+            except Exception:
+                pass
+            self.selection_active = True
+            # 恢复播放按钮，隐藏暂停/结束
+            for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                try:
+                    if art is not None:
+                        art.set_visible(False)
+                except Exception:
+                    pass
+            try:
+                if self._sel_play_icon is not None:
+                    self._sel_play_icon.set_visible(True)
+            except Exception:
+                pass
+            self.update_listenback_artists()
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception:
+            pass
 
     def set_audio_processor(self, audio_processor):
         self.audio_processor = audio_processor
@@ -10204,6 +11027,12 @@ class ECGStylePitchVisualizer(QWidget):
 
         # 强制刷新画布以确保时间轴标签正确显示
         self.canvas.draw_idle()
+        # 回听图元随坐标变化同步更新
+        try:
+            if hasattr(self, 'update_listenback_artists'):
+                self.update_listenback_artists()
+        except Exception:
+            pass
 
     # ================= Y轴锁定控制 =================
     def lock_y_axis(self):
@@ -10226,7 +11055,80 @@ class ECGStylePitchVisualizer(QWidget):
         """鼠标按下事件"""
         if event.inaxes != self.ax:
             return
-        
+        # 回听：播放状态命中检测 + 选区拖拽/播放切换
+        try:
+            if getattr(self, 'listenback_enabled', False):
+                ap = getattr(self, 'audio_processor', None)
+                is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing')
+                # 播放中：优先检测暂停/结束按钮命中
+                if is_playing and event.xdata is not None and event.ydata is not None:
+                    x, y = float(event.xdata), float(event.ydata)
+                    # 命中暂停左右条
+                    try:
+                        if self._pause_hit_boxes:
+                            for (x0,x1,y0,y1) in self._pause_hit_boxes:
+                                if x0 <= x <= x1 and y0 <= y <= y1:
+                                    self._handle_pause_click()
+                                    return
+                    except Exception:
+                        pass
+                    # 命中结束按钮
+                    try:
+                        if self._stop_hit_box:
+                            x0,x1,y0,y1 = self._stop_hit_box
+                            if x0 <= x <= x1 and y0 <= y <= y1:
+                                self._handle_stop_click()
+                                return
+                    except Exception:
+                        pass
+                # 未播放时允许拖拽/触发播放
+                if getattr(self, 'selection_active', False):
+                    # 计算阈值：约6px对应的秒数
+                    try:
+                        px_w = float(self.ax.bbox.width)
+                        x0, x1 = self.ax.get_xlim()
+                        sec_per_px = max(1e-9, (x1 - x0) / max(1.0, px_w))
+                        thr = sec_per_px * 6.0
+                    except Exception:
+                        thr = 0.05
+                    x = event.xdata
+                    # 先检测左右边线把手，再检测播放头，避免播放头抢占左线
+                    if x is not None:
+                        try:
+                            dL = abs(x - float(self.sel_start))
+                            dR = abs(x - float(self.sel_end))
+                            if dL <= dR and dL <= thr:
+                                self._sel_dragging_side = 'left'
+                                return
+                            if dR < dL and dR <= thr:
+                                self._sel_dragging_side = 'right'
+                                return
+                        except Exception:
+                            pass
+                    # 播放头命中检测（次优先）
+                    try:
+                        if x is not None and hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                            phx_data = self._lb_playhead.get_xdata()
+                            phx = float(phx_data[0]) if phx_data is not None and len(phx_data) > 0 else float(self.sel_start)
+                            if abs(x - phx) <= thr:
+                                self._dragging_playhead = True
+                                self._lb_user_moved_playhead = True
+                                return
+                    except Exception:
+                        pass
+                    # 仅点击绿色播放按钮所在正方形命中区域才触发
+                    try:
+                        if x is not None and self._play_hit_box is not None and event.ydata is not None:
+                            x0,x1,y0,y1 = self._play_hit_box
+                            if x0 <= x <= x1 and y0 <= event.ydata <= y1:
+                                self._toggle_listenback_play_pause()
+                                return
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 否则进入原有平移拖拽
         self.dragging = True
         self.drag_start_pos = (event.x, event.y)
         self.drag_start_y_center = self.y_view_center
@@ -10234,11 +11136,87 @@ class ECGStylePitchVisualizer(QWidget):
     
     def on_mouse_release(self, event):
         """鼠标释放事件"""
+        # 回听选区拖拽结束
+        if getattr(self, '_sel_dragging_side', None) is not None:
+            self._sel_dragging_side = None
+            try:
+                self.update_listenback_artists()
+            except Exception:
+                pass
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+            return
+        # 回听播放头拖拽结束
+        if getattr(self, '_dragging_playhead', False):
+            self._dragging_playhead = False
+            # 保持已移动标记，不在此处清除
+            try:
+                self.update_listenback_artists()
+            except Exception:
+                pass
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+            return
         self.dragging = False
         self.drag_start_pos = None
     
     def on_mouse_move(self, event):
         """鼠标移动事件"""
+    # 回听：拖拽选区
+        if getattr(self, '_sel_dragging_side', None) is not None and event.inaxes == self.ax:
+            try:
+                x = event.xdata
+                if x is None:
+                    return
+                # 夹紧到当前可视范围
+                x0, x1 = self.ax.get_xlim()
+                x = max(x0, min(x1, x))
+                if self._sel_dragging_side == 'left':
+                    self.sel_start = min(x, self.sel_end)
+                    # 联动播放头：未播放时播放头起点跟随左边线
+                    try:
+                        ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
+                        if ap_state == 'stopped':
+                            self._ensure_playhead()
+                            if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                                self._lb_playhead.set_xdata([self.sel_start, self.sel_start])
+                                self._lb_playhead.set_ydata([0.0, 1.0])
+                                self._lb_playhead.set_visible(True)
+                                self._lb_playhead.set_zorder(148)
+                    except Exception:
+                        pass
+                elif self._sel_dragging_side == 'right':
+                    self.sel_end = max(x, self.sel_start)
+                self.update_listenback_artists()
+                if hasattr(self, 'canvas'):
+                    self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
+        # 回听：拖拽播放头
+        if getattr(self, '_dragging_playhead', False) and event.inaxes == self.ax:
+            try:
+                x = event.xdata
+                if x is None:
+                    return
+                # 限制在选区范围内
+                xL = float(self.sel_start)
+                xR = float(self.sel_end)
+                lo, hi = (xL, xR) if xL <= xR else (xR, xL)
+                x = min(max(x, lo), hi)
+                self._ensure_playhead()
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    self._lb_playhead.set_xdata([x, x])
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                    self._lb_playhead.set_visible(True)
+                    self._lb_playhead.set_zorder(148)
+                # 标记用户已手动移动播放头
+                self._lb_user_moved_playhead = True
+                if hasattr(self, 'canvas'):
+                    self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
         if not self.dragging or event.inaxes != self.ax:
             return
         
@@ -10281,6 +11259,11 @@ class ECGStylePitchVisualizer(QWidget):
             self.ax.set_xlim(x_min, x_max)
         except Exception:
             pass
+        # 同步回听图元
+        try:
+            self.update_listenback_artists()
+        except Exception:
+            pass
         # 录音中：轻量刷新批量细节点；停止后：空白区域快速路径，返回数据区再完整重绘
         if getattr(self, 'is_recording_active', False):
             self._refresh_batched_points_for_current_xlim()
@@ -10313,6 +11296,272 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 同步更新滚动条
         self.update_scrollbars()
+
+    # ================= 回听：播放/暂停 与 播放头 =================
+    def _toggle_listenback_play_pause(self):
+        try:
+            ap = getattr(self, 'audio_processor', None)
+            if ap is None:
+                return
+            now = time.time()
+            # 选区对应的绝对时间：基于可视化器 start_time
+            if not hasattr(self, 'start_time') or self.start_time is None:
+                return
+            abs_start = float(self.start_time) + float(self.sel_start)
+            abs_end = float(self.start_time) + float(self.sel_end)
+            state = getattr(ap, '_lb_state', 'stopped')
+            if state == 'playing':
+                # 使用统一的暂停处理，保证_resume点与_user_paused等状态正确
+                self._handle_pause_click()
+                return
+            if state == 'paused' or getattr(self, '_lb_user_paused', False):
+                # 从播放头位置继续
+                # 依据播放头当前x位置计算绝对起点
+                try:
+                    resume_abs_start = float(getattr(self, '_lb_resume_abs_start', None) or 0.0)
+                    if resume_abs_start <= 0.0:
+                        phx = None
+                        if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                            xd = self._lb_playhead.get_xdata()
+                            if xd is not None and len(xd) > 0:
+                                phx = float(xd[0])
+                        if phx is None:
+                            # 回退：根据 _lb_pos 估算
+                            played_sec = float(getattr(ap, '_lb_pos', 0)) / float(getattr(self, 'sample_rate', 48000))
+                            resume_abs_start = abs_start + played_sec
+                        else:
+                            resume_abs_start = float(self.start_time) + float(phx)
+                except Exception:
+                    resume_abs_start = abs_start
+                # 恢复播放：清除“用户暂停”标记
+                try:
+                    self._lb_user_paused = False
+                except Exception:
+                    pass
+                # 开始播放前清理保存的恢复点
+                try:
+                    self._lb_resume_abs_start = None
+                except Exception:
+                    pass
+                ok = ap.start_listenback_playback(resume_abs_start, abs_end)
+                if not ok:
+                    return
+                # 播放中隐藏选区，显示播放头；播放头时间从当前进度计算
+                self.selection_active = False
+                self._ensure_playhead()
+                try:
+                    self._start_playhead_timer(resume_abs_start, abs_end)
+                except Exception:
+                    self._start_playhead_timer(abs_start, abs_end)
+                try:
+                    # 显式切换可见性：隐藏播放按钮，显示暂停/结束
+                    if self._sel_play_icon is not None:
+                        self._sel_play_icon.set_visible(False)
+                    for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                        if art is not None:
+                            art.set_visible(True)
+                    self.update_listenback_artists()
+                except Exception:
+                    pass
+                self.canvas.draw_idle()
+                return
+            # 开始播放：若播放头在选区内，则从播放头位置开始
+            try:
+                phx = None
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    xd = self._lb_playhead.get_xdata()
+                    if xd is not None and len(xd) > 0:
+                        phx = float(xd[0])
+                if phx is not None:
+                    ph_abs = float(self.start_time) + float(phx)
+                    # 夹紧到 [abs_start, abs_end]
+                    abs_s = max(abs_start, min(ph_abs, abs_end - 1e-6))
+                else:
+                    abs_s = abs_start
+            except Exception:
+                abs_s = abs_start
+            # 开始播放：清除“用户暂停”标记
+            try:
+                self._lb_user_paused = False
+            except Exception:
+                pass
+            ok = ap.start_listenback_playback(abs_s, abs_end)
+            if not ok:
+                # 一次性自愈：若没有数据，尝试自动将选区对齐到最近5秒数据并重试
+                try:
+                    if hasattr(ap, '_listenback_chunks') and ap._listenback_chunks and hasattr(self, 'start_time') and self.start_time is not None:
+                        last_end_abs = float(ap._listenback_chunks[-1][1])
+                        span = max(1.0, min(10.0, float(self.sel_end - self.sel_start) or 5.0))
+                        new_abs_end = last_end_abs
+                        new_abs_start = new_abs_end - span
+                        # 更新本地选区（相对轴）
+                        self.sel_start = float(new_abs_start - float(self.start_time))
+                        self.sel_end = float(new_abs_end - float(self.start_time))
+                        self.update_listenback_artists()
+                        self.canvas.draw_idle()
+                        # 重试一次
+                        ok = ap.start_listenback_playback(new_abs_start, new_abs_end)
+                except Exception:
+                    pass
+            if not ok:
+                return
+            # 播放中隐藏选区，显示移动播放头
+            self.selection_active = False
+            self._ensure_playhead()
+            self._start_playhead_timer(abs_s, abs_end)
+            try:
+                if self._sel_play_icon is not None:
+                    self._sel_play_icon.set_visible(False)
+                for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                    if art is not None:
+                        art.set_visible(True)
+            except Exception:
+                pass
+            # 立即刷新一次UI，让选区线/把手隐藏、暂停与结束按钮出现
+            try:
+                self.update_listenback_artists()
+            except Exception:
+                pass
+            self.canvas.draw_idle()
+        except Exception as e:
+            try:
+                print(f"⚠️ 回听切换失败: {e}")
+            except Exception:
+                pass
+
+    def _ensure_playhead(self):
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            if not hasattr(self, '_lb_playhead') or self._lb_playhead is None:
+                # 雾霾蓝播放头（可拖动）
+                haze_blue = (0.49, 0.60, 0.67, 0.95)  # 近似雾霾蓝，稍不透明
+                self._lb_playhead = self.ax.axvline(x=self.sel_start, color=haze_blue, linewidth=1.6, zorder=148)
+                # 使用轴坐标 0..1 覆盖高度
+                try:
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                except Exception:
+                    pass
+            else:
+                try:
+                    # 确保样式一致
+                    haze_blue = (0.49, 0.60, 0.67, 0.95)
+                    self._lb_playhead.set_color(haze_blue)
+                    self._lb_playhead.set_linewidth(1.6)
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _start_playhead_timer(self, abs_start: float, abs_end: float):
+        try:
+            self._ensure_playhead()
+            # 记录区间绝对时间
+            self._lb_abs_start = float(abs_start)
+            self._lb_abs_end = float(abs_end)
+            # 记录实际启动的墙钟，用于相对推进播放头
+            self._lb_wall_start = time.time()
+            self._lb_play_abs_start = float(abs_start)
+            # 立刻把播放头设置到起点，避免第一帧“静止”错觉
+            try:
+                if hasattr(self, 'start_time') and self.start_time is not None and hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    x0 = float(self._lb_play_abs_start - float(self.start_time))
+                    self._lb_playhead.set_xdata([x0, x0])
+                    self._lb_playhead.set_visible(True)
+                    self._lb_playhead.set_zorder(148)
+            except Exception:
+                pass
+            # 计时器刷新播放头位置
+            if not hasattr(self, '_lb_timer') or self._lb_timer is None:
+                self._lb_timer = QTimer(self)
+                self._lb_timer.setTimerType(Qt.TimerType.PreciseTimer)
+                self._lb_timer.timeout.connect(self._on_playhead_tick)
+            self._lb_timer.start(16)
+            # 订阅处理器完成信号
+            try:
+                ap = getattr(self, 'audio_processor', None)
+                if ap is not None:
+                    try:
+                        ap.listenback_playback_finished.disconnect(self._on_playback_finished)
+                    except Exception:
+                        pass
+                    ap.listenback_playback_finished.connect(self._on_playback_finished)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _stop_playhead_timer(self):
+        try:
+            if hasattr(self, '_lb_timer') and self._lb_timer is not None:
+                self._lb_timer.stop()
+        except Exception:
+            pass
+
+    def _on_playhead_tick(self):
+        try:
+            # 根据墙钟相对增量推进（与回放绝对时间对齐）
+            if not hasattr(self, '_lb_abs_start') or not hasattr(self, '_lb_wall_start'):
+                return
+            # 将绝对时间映射到可视坐标（start_time参考）
+            if not hasattr(self, 'start_time') or self.start_time is None:
+                return
+            now = time.time()
+            # 以启动时刻为零点推进
+            cur_abs = float(self._lb_play_abs_start) + float(now - float(self._lb_wall_start))
+            # 限制在区间内
+            cur_abs = min(max(cur_abs, self._lb_abs_start), self._lb_abs_end)
+            x = float(cur_abs - float(self.start_time))
+            try:
+                self._lb_playhead.set_xdata([x, x])
+                self._lb_playhead.set_visible(True)
+                self._lb_playhead.set_zorder(148)
+            except Exception:
+                pass
+            self.canvas.draw_idle()
+            # 到达末尾则触发完成
+            if cur_abs >= self._lb_abs_end - 1e-3:
+                self._on_playback_finished()
+        except Exception:
+            pass
+
+    def _on_playback_finished(self):
+        try:
+            # 若是“用户暂停”导致的 finished 回调（关闭流触发），忽略复位逻辑
+            if getattr(self, '_lb_user_paused', False):
+                try:
+                    self._lb_user_paused = False
+                except Exception:
+                    pass
+                # 已在暂停处理里完成UI更新，这里只确保计时器停止
+                self._stop_playhead_timer()
+                return
+            self._stop_playhead_timer()
+            # 保留播放头可见，并将其复位到左边线
+            try:
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    xL = float(getattr(self, 'sel_start', 0.0) or 0.0)
+                    self._lb_playhead.set_xdata([xL, xL])
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                    self._lb_playhead.set_visible(True)
+                    try:
+                        self._lb_playhead.set_zorder(148)
+                    except Exception:
+                        pass
+                    # 自然结束后，允许后续自动贴边逻辑生效
+                    try:
+                        self._lb_resume_abs_start = None
+                        self._lb_user_moved_playhead = False
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            self.selection_active = True
+            self.update_listenback_artists()
+            self.canvas.draw_idle()
+        except Exception:
+            pass
     
     def on_mouse_scroll(self, event):
         """鼠标滚轮事件（上下移动音高视图）"""
@@ -13853,42 +15102,7 @@ class ECGStylePitchVisualizer(QWidget):
                 print(f"[PRESET INFO] {zoom_level}x -> {preset_info[zoom_level]}")
                 self._last_zoom_preset_logged = zoom_level
 
-    def reset_view(self):
-        """重置视图到初始观感（仅视图相关：时间偏移/缩放/Y中心），不改变其他设置。"""
-        try:
-            # 时间轴回到起点
-            self.time_offset = 0.0
-            # 清除平滑/历史渲染窗口缓存
-            if hasattr(self, '_smoothed_xlim'):
-                self._smoothed_xlim = None
-            if hasattr(self, '_last_render_window'):
-                try:
-                    delattr(self, '_last_render_window')
-                except Exception:
-                    pass
-            # 恢复Y轴中心
-            self.y_view_center = getattr(self, '_initial_y_center', 4.0)
-            # 恢复缩放
-            self.zoom_level = 1.0
-            if hasattr(self, 'zoom_slider'):
-                self.zoom_slider.blockSignals(True)
-                self.zoom_slider.setValue(10)
-                self.zoom_slider.blockSignals(False)
-            if hasattr(self, 'zoom_label'):
-                self.zoom_label.setText("1.0x")
-            # 刷新坐标与界面
-            self.update_axis_ranges()
-            try:
-                self.update_scrollbars()
-            except Exception:
-                pass
-            if hasattr(self, 'canvas'):
-                self.canvas.draw_idle()
-            if hasattr(self, 'update_status_display'):
-                self.update_status_display()
-            print("🔄 视图已重置（time_offset=0, zoom=1.0x, y_center 初始）")
-        except Exception as e:
-            print(f"⚠️ reset_view 失败: {e}")
+    
 
     def get_vertical_compression_factor(self, zoom_level: float) -> float:
         """(已废弃) 兼容旧代码的占位。现改用 compute_half_range。"""
@@ -14158,6 +15372,66 @@ class ECGStylePitchVisualizer(QWidget):
         # 更新状态显示
         self.update_status_display()
     
+    def reset_view(self):
+        """重置视图到默认状态（中心C4、缩放1.0x、时间偏移0、解锁Y轴）。"""
+        try:
+            # 解锁纵向中心（若曾锁定）
+            try:
+                self.freeze_y_center = False
+                self._locked_y_limits = None
+            except Exception:
+                pass
+
+            # 恢复中心与缩放
+            self.y_view_center = 4.0
+            self.zoom_level = 1.0
+            # 同步控件
+            if hasattr(self, 'zoom_slider'):
+                try:
+                    self.zoom_slider.blockSignals(True)
+                    self.zoom_slider.setValue(10)  # 1.0x -> 10
+                finally:
+                    try:
+                        self.zoom_slider.blockSignals(False)
+                    except Exception:
+                        pass
+            if hasattr(self, 'zoom_label'):
+                try:
+                    self.zoom_label.setText("1.0x")
+                except Exception:
+                    pass
+
+            # 时间轴复位与滚动恢复
+            self.time_offset = 0.0
+            self.auto_scroll_enabled = True
+            self._auto_scroll_started = False
+            self._smoothed_xlim = None
+
+            # 重新应用缩放配置（确保中心/滚动模式一致）
+            try:
+                self._apply_zoom_profile_center()
+            except Exception:
+                pass
+
+            # 刷新高亮与轴范围
+            try:
+                self.update_preset_button_highlight()
+            except Exception:
+                pass
+            self.update_axis_ranges()
+            try:
+                self.update_scrollbars()
+            except Exception:
+                pass
+            if hasattr(self, 'canvas'):
+                try:
+                    self.canvas.draw()
+                except Exception:
+                    pass
+            print("🔄 视图已重置为默认状态：中心C4、缩放1.0x、时间偏移0")
+        except Exception as e:
+            print(f"⚠️ reset_view 失败: {e}")
+
     def on_auto_follow_toggled(self, checked):
         """自动跟随切换"""
         self.auto_follow = checked
@@ -15566,6 +16840,19 @@ class IntegratedRecordingInterface(QMainWindow):
         self.pause_button.setEnabled(False)
         self.pause_button.clicked.connect(self.pause_recording)
         recording_layout.addWidget(self.pause_button)
+
+        # 回听按钮（Phase1：仅UI与选区交互，无音频回放）
+        self.listenback_button = QPushButton("回听")
+        self.listenback_button.setCheckable(True)
+        self.listenback_button.setToolTip("启用回听选区：拖动两条细线选择时间段")
+        def _toggle_listenback(checked: bool):
+            try:
+                if hasattr(self, 'visualizer') and self.visualizer is not None:
+                    self.visualizer.enable_listenback_mode(bool(checked))
+            except Exception as _e:
+                print(f"⚠️ 切换回听模式失败: {_e}")
+        self.listenback_button.toggled.connect(_toggle_listenback)
+        recording_layout.addWidget(self.listenback_button)
         
         recording_layout.addStretch()
         layout.addLayout(recording_layout)
