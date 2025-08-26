@@ -8357,6 +8357,9 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_data = deque(maxlen=max_data_points)
         self.confidence_data = deque(maxlen=max_data_points)
         self.note_data = deque(maxlen=max_data_points)
+        # 时间桶去重（按10ms归一），避免重复播放导致重复细节点
+        self._timebin_eps = 0.01
+        self._added_time_bins = set()
 
         # ================== 时间轴状态 ==================
         self.start_time = None
@@ -9165,6 +9168,14 @@ class ECGStylePitchVisualizer(QWidget):
             self.start_time = time.time()
 
         self.is_recording_active = True
+        # 新会话开始：重置已绘制覆盖区间，避免沿用旧的回听覆盖
+        try:
+            if hasattr(self, '_cov_reset'):
+                self._cov_reset()
+            if hasattr(self, '_added_time_bins'):
+                self._added_time_bins.clear()
+        except Exception:
+            pass
         # 开始新会话重置诊断
         if hasattr(self, '_reset_display_diagnostics'):
             self._reset_display_diagnostics()
@@ -9239,6 +9250,18 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_data.clear()
         self.confidence_data.clear()
         self.note_data.clear()
+        # 清理时间桶去重集合
+        try:
+            if hasattr(self, '_added_time_bins'):
+                self._added_time_bins.clear()
+        except Exception:
+            pass
+        # 同步清理已绘制覆盖区间
+        try:
+            if hasattr(self, '_cov_reset'):
+                self._cov_reset()
+        except Exception:
+            pass
         
         # 重置时间追踪变量
         self.start_time = None
@@ -11471,6 +11494,12 @@ class ECGStylePitchVisualizer(QWidget):
                     self._lb_playhead.set_xdata([x0, x0])
                     self._lb_playhead.set_visible(True)
                     self._lb_playhead.set_zorder(148)
+                    # 回听开始：标记起点覆盖（不干扰去重）
+                    try:
+                        if getattr(self, 'listenback_enabled', False) and getattr(self, 'selection_active', False) and not getattr(self, '_dragging_playhead', False):
+                            self._cov_add_point(x0)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # 计时器刷新播放头位置
@@ -11520,6 +11549,14 @@ class ECGStylePitchVisualizer(QWidget):
                 self._lb_playhead.set_zorder(148)
             except Exception:
                 pass
+            # 播放推进：按播放头位置标记覆盖（真实播放，且非拖动）
+            try:
+                if getattr(self, 'listenback_enabled', False) and getattr(self, 'selection_active', False) and not getattr(self, '_dragging_playhead', False):
+                    ap = getattr(self, 'audio_processor', None)
+                    if ap is None or getattr(ap, '_lb_state', '') == 'playing':
+                        self._cov_add_point(x)
+            except Exception:
+                pass
             self.canvas.draw_idle()
             # 到达末尾则触发完成
             if cur_abs >= self._lb_abs_end - 1e-3:
@@ -11556,6 +11593,15 @@ class ECGStylePitchVisualizer(QWidget):
                         self._lb_user_moved_playhead = False
                     except Exception:
                         pass
+            except Exception:
+                pass
+            # 播放完整区间后：将 [sel_start, sel_end] 并入覆盖，确保“全段已绘制”
+            try:
+                if getattr(self, 'listenback_enabled', False) and getattr(self, 'selection_active', False):
+                    s = float(getattr(self, 'sel_start', 0.0) or 0.0)
+                    e = float(getattr(self, 'sel_end', s))
+                    if e > s:
+                        self._cov_add_range(s, e)
             except Exception:
                 pass
             self.selection_active = True
@@ -11791,6 +11837,102 @@ class ECGStylePitchVisualizer(QWidget):
             self.h_scrollbar.setValue(scroll_value)
             self.h_scrollbar.blockSignals(False)
     
+    # --- 已绘制覆盖：工具 ---
+    def _cov_is_covered(self, t: float) -> bool:
+        try:
+            cov = getattr(self, '_drawn_coverage', None)
+            if not cov:
+                return False
+            tol = float(getattr(self, '_cov_merge_epsilon', 0.05))
+            # 线性扫描（区间数很小，且已合并）
+            for (s, e) in cov:
+                if t >= (s - tol) and t <= (e + tol):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _cov_add_point(self, t: float):
+        try:
+            if t is None:
+                return
+            if not hasattr(self, '_drawn_coverage') or self._drawn_coverage is None:
+                self._drawn_coverage = []
+            half = float(getattr(self, '_cov_point_half', 0.02))
+            s, e = max(0.0, float(t) - half), float(t) + half
+            tol = float(getattr(self, '_cov_merge_epsilon', 0.05))
+            cov = list(self._drawn_coverage)
+            new_s, new_e = s, e
+            merged = []
+            inserted = False
+            for (cs, ce) in cov:
+                # 若与新区间相交/相邻（含 tol），则合并
+                if not inserted and (new_s <= ce + tol) and (new_e >= cs - tol):
+                    new_s = min(new_s, cs)
+                    new_e = max(new_e, ce)
+                else:
+                    merged.append((cs, ce))
+            # 将合并后的新区间插入并按起点排序，然后再次线性合并，确保无重叠
+            merged.append((new_s, new_e))
+            merged.sort(key=lambda x: x[0])
+            out = []
+            for (cs, ce) in merged:
+                if not out:
+                    out.append((cs, ce))
+                else:
+                    ps, pe = out[-1]
+                    if cs <= pe + tol:
+                        out[-1] = (ps, max(pe, ce))
+                    else:
+                        out.append((cs, ce))
+            self._drawn_coverage = out
+        except Exception:
+            pass
+
+    def _cov_add_range(self, s: float, e: float):
+        """将一个时间区间 [s, e] 合并进已绘制覆盖中。"""
+        try:
+            if s is None or e is None:
+                return
+            a, b = float(min(s, e)), float(max(s, e))
+            if a == b:
+                # 退化为点
+                self._cov_add_point(a)
+                return
+            if not hasattr(self, '_drawn_coverage') or self._drawn_coverage is None:
+                self._drawn_coverage = []
+            tol = float(getattr(self, '_cov_merge_epsilon', 0.05))
+            cov = list(self._drawn_coverage)
+            merged = []
+            new_s, new_e = max(0.0, a), b
+            for (cs, ce) in cov:
+                if (new_s <= ce + tol) and (new_e >= cs - tol):
+                    new_s = min(new_s, cs)
+                    new_e = max(new_e, ce)
+                else:
+                    merged.append((cs, ce))
+            merged.append((new_s, new_e))
+            merged.sort(key=lambda x: x[0])
+            out = []
+            for (cs, ce) in merged:
+                if not out:
+                    out.append((cs, ce))
+                else:
+                    ps, pe = out[-1]
+                    if cs <= pe + tol:
+                        out[-1] = (ps, max(pe, ce))
+                    else:
+                        out.append((cs, ce))
+            self._drawn_coverage = out
+        except Exception:
+            pass
+
+    def _cov_reset(self):
+        try:
+            self._drawn_coverage = []
+        except Exception:
+            pass
+
     def add_pitch_data(self, pitch_data):
         """添加音高数据（支持历史数据存储和断续音调曲线）"""
         try:
@@ -11811,7 +11953,26 @@ class ECGStylePitchVisualizer(QWidget):
             # 总是更新当前全局时间，保持时间轴推进
             self.current_global_time = global_time
             
+            # 回听暂停拖动时：不绘制细节点（保持时间推进但不新增点）
+            try:
+                if getattr(self, 'selection_active', False) and getattr(self, '_dragging_playhead', False):
+                    # 仅更新时间轴状态，直接返回
+                    self.current_pitch_active = False
+                    return
+            except Exception:
+                pass
+
             if has_pitch and frequency > 0:
+                # 时间桶去重：将时间按10ms量化，避免重复播放造成重复节点
+                try:
+                    eps = float(getattr(self, '_timebin_eps', 0.01))
+                    b = int(round(float(global_time) / eps))
+                    if hasattr(self, '_added_time_bins'):
+                        if b in self._added_time_bins:
+                            self.last_pitch_time = time.time()
+                            return
+                except Exception:
+                    pass
                 # 若清除后尚未重建网格，先构建一次
                 if getattr(self, '_needs_grid_rebuild', False):
                     try:
@@ -11883,6 +12044,13 @@ class ECGStylePitchVisualizer(QWidget):
                 self.time_data.append(global_time)
                 self.confidence_data.append(confidence)
                 self.note_data.append(note_info)
+                # 记录时间桶避免重复；并标记覆盖区间（由“数据到达”驱动，避免竞态）
+                try:
+                    if hasattr(self, '_added_time_bins'):
+                        self._added_time_bins.add(int(round(float(global_time)/float(getattr(self,'_timebin_eps',0.01)))))
+                    self._cov_add_point(float(global_time))
+                except Exception:
+                    pass
                 # 维护尾部滑动窗口缓存（用于长时录制保持恒定复杂度）
                 try:
                     keep_s = float(getattr(self, 'time_window', 16.0)) + float(getattr(self, '_tail_buffer_sec', 0.25)) + float(getattr(self, '_tail_keep_extra_s', 2.5))
@@ -12747,6 +12915,14 @@ class ECGStylePitchVisualizer(QWidget):
         self.start_time = time.time()
         self.current_global_time = 0.0
         self.last_pitch_time = 0
+        # 新会话开始：重置已绘制覆盖区间，避免沿用旧回听覆盖
+        try:
+            if hasattr(self, '_cov_reset'):
+                self._cov_reset()
+            if hasattr(self, '_added_time_bins'):
+                self._added_time_bins.clear()
+        except Exception:
+            pass
         self.time_update_timer.start(self.time_update_interval)
         print("🕐 开始时间轴追踪（支持断续音调曲线）")
     
@@ -13188,9 +13364,21 @@ class ECGStylePitchVisualizer(QWidget):
                 # 提取有效数据
                 if data_len > 0 and valid_indices:
                     try:
-                        times = [_time_seq[i] for i in valid_indices]
-                        pitches = [self.pitch_data[i] for i in valid_indices]
-                        confidences = [self.confidence_data[i] for i in valid_indices]
+                        # 可选：仅显示“已覆盖回放”的点，满足“播放到哪画到哪、未播放不画”
+                        cov_mode = bool(getattr(self, 'listenback_draw_by_coverage', True))
+                        if cov_mode and getattr(self, 'selection_active', False):
+                            # 仅保留在覆盖区间内的点
+                            filt_idx = []
+                            for i in valid_indices:
+                                t = _time_seq[i]
+                                if self._cov_is_covered(t):
+                                    filt_idx.append(i)
+                            indices = filt_idx
+                        else:
+                            indices = valid_indices
+                        times = [_time_seq[i] for i in indices]
+                        pitches = [self.pitch_data[i] for i in indices]
+                        confidences = [self.confidence_data[i] for i in indices]
                     except TypeError as _idx_e:
                         # 捕获可能的 slice 索引异常，输出详细上下文
                         print(f"[INDEX_ERR] {type(_idx_e).__name__}: {_idx_e} valid_indices_sample={valid_indices[:10]} len_valid={len(valid_indices)} data_len={data_len}")
@@ -13282,15 +13470,26 @@ class ECGStylePitchVisualizer(QWidget):
                     current_segment_times = [times[0]]
                     current_segment_pitches = [pitches[0]]
                     for i in range(1, len(times)):
-                        time_gap = times[i] - times[i-1]
-                        if time_gap < 0.3:
-                            current_segment_times.append(times[i])
+                        t_prev = times[i-1]
+                        t_cur = times[i]
+                        time_gap = t_cur - t_prev
+                        # 硬断开：时间倒退（例如先播24-32，再补12-24），必须切断避免跨段连线
+                        if time_gap < 0:
+                            if len(current_segment_times) >= 1:
+                                segments.append((current_segment_times.copy(), current_segment_pitches.copy()))
+                            detected_gaps.append({'time_gap': time_gap, 'prev_time': t_prev, 'new_time': t_cur, 'type': 'backward'})
+                            current_segment_times = [t_cur]
+                            current_segment_pitches = [pitches[i]]
+                        # 正常前向小步进：继续当前段
+                        elif time_gap < 0.3:
+                            current_segment_times.append(t_cur)
                             current_segment_pitches.append(pitches[i])
+                        # 前向大间隔：分段
                         else:
                             if len(current_segment_times) >= 1:
                                 segments.append((current_segment_times.copy(), current_segment_pitches.copy()))
-                            detected_gaps.append({'time_gap': time_gap,'prev_time': times[i-1],'new_time': times[i]})
-                            current_segment_times = [times[i]]
+                            detected_gaps.append({'time_gap': time_gap, 'prev_time': t_prev, 'new_time': t_cur, 'type': 'forward'})
+                            current_segment_times = [t_cur]
                             current_segment_pitches = [pitches[i]]
                     if len(current_segment_times) >= 1:
                         segments.append((current_segment_times, current_segment_pitches))
@@ -16285,6 +16484,104 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception as e:
             print(f"❌ 延迟测试失败: {e}")
     
+    def optimize_buffer_settings(self):
+        """缓冲区优化：提供推荐的 blocksize 选项并在需要时重启监听使之生效。"""
+        try:
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox
+            from PyQt6.QtCore import Qt
+
+            main_window = self.get_main_window()
+            processor = getattr(main_window, 'audio_processor', None) if main_window else None
+            cfg = getattr(processor, '_selected_device_config', None) if processor else None
+
+            # 推断当前采样率与 blocksize
+            sr = 48000
+            cur_block = None
+            mode_hint = 'unknown'
+            try:
+                if cfg:
+                    sr = int(cfg.get('samplerate') or sr)
+                    cur_block = int(cfg.get('blocksize') or 0)
+                    name = str(cfg.get('name', '')).lower()
+                    mode_hint = str(cfg.get('mode', '') or ('asio' if 'asio' in name else 'wasapi' if 'wasapi' in name else 'unknown'))
+            except Exception:
+                pass
+            if cur_block is None or cur_block <= 0:
+                cur_block = int(getattr(self, 'chunk_size', 128))
+
+            # 依据模式给出建议
+            if 'asio' in mode_hint:
+                suggested = [32, 64, 128]
+            elif 'directsound' in mode_hint:
+                suggested = [128, 256, 512]
+            else:
+                # 默认按 WASAPI 偏低延迟处理
+                suggested = [64, 128, 256]
+            # 若当前值不在建议中，加入候选首位显示
+            if cur_block not in suggested:
+                suggested = [cur_block] + [v for v in suggested if v != cur_block]
+
+            # 构建对话框
+            dlg = QDialog(self)
+            dlg.setWindowTitle("⚡ 缓冲区优化")
+            dlg.setModal(True)
+            dlg.setStyleSheet("QDialog { background-color: #2b2b2b; color: white; }")
+            layout = QVBoxLayout(dlg)
+
+            desc = QLabel("为当前设备选择合适的缓冲区大小 (样本数)，数值越小延迟越低但更吃性能。")
+            desc.setWordWrap(True)
+            layout.addWidget(desc)
+
+            combo = QComboBox()
+            for v in suggested:
+                lat_ms = (float(v) / float(sr)) * 1000.0
+                combo.addItem(f"{v} 样本  (≈{lat_ms:.2f} ms @ {sr}Hz)", v)
+            # 预选当前值
+            try:
+                idx = next((i for i in range(combo.count()) if combo.itemData(i) == cur_block), 0)
+            except Exception:
+                idx = 0
+            combo.setCurrentIndex(idx)
+            layout.addWidget(combo)
+
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            layout.addWidget(btns)
+
+            def apply_and_close():
+                try:
+                    new_block = int(combo.currentData())
+                    if new_block <= 0:
+                        dlg.reject(); return
+                    old_block = cur_block
+                    # 应用到当前配置/运行态
+                    if cfg is not None:
+                        cfg['blocksize'] = new_block
+                    if hasattr(self, 'chunk_size'):
+                        self.chunk_size = new_block
+                    # 若正在监听，平滑重启
+                    restarted = False
+                    if main_window and hasattr(main_window, 'is_monitoring') and main_window.is_monitoring:
+                        try:
+                            print("🔄 监听重启以应用缓冲区...")
+                            main_window.stop_monitoring()
+                            restarted = bool(main_window.start_monitoring())
+                        except Exception as _re:
+                            print(f"⚠️ 重启监听失败: {_re}")
+                            restarted = False
+                    lat_ms = (float(new_block) / float(sr)) * 1000.0
+                    print(f"🔧 缓冲区设置: {old_block} → {new_block} 样本 (≈{lat_ms:.2f} ms @ {sr}Hz)  重启生效={'是' if restarted else '否'}")
+                except Exception as _e:
+                    print(f"❌ 应用缓冲区设置失败: {_e}")
+                dlg.accept()
+
+            btns.accepted.connect(apply_and_close)
+            btns.rejected.connect(dlg.reject)
+
+            dlg.resize(420, 150)
+            dlg.exec()
+        except Exception as e:
+            print(f"❌ 缓冲区优化失败: {e}")
+
     def save_preferred_device_config(self, config):
         """保存首选设备配置"""
         try:
@@ -18176,6 +18473,15 @@ class _LocalFileRealtimeController(QObject):
                 self.ifc.visualizer.start_time = time.time() - sec
         except Exception:
             pass
+        # 关键：倒退拖动时重置分析游标到当前位置附近，允许未处理区间被补全
+        try:
+            # 回退到当前位置或稍提前一窗，避免错过边界
+            self._ana_cursor = max(0, int(self.pos_samples) - int(getattr(self, '_frame_window', 2048) or 2048))
+        except Exception:
+            try:
+                self._ana_cursor = int(self.pos_samples)
+            except Exception:
+                pass
         self.tick.emit(sec)
 
     def get_pos_seconds(self) -> float:
@@ -18209,6 +18515,9 @@ class _LocalFileRealtimeController(QObject):
         target = min(cur + lead, len(self.audio))
         if not hasattr(self, '_ana_cursor'):
             self._ana_cursor = 0
+        # 若发生了倒退（target 落在 _ana_cursor 之前），回退游标以允许重新覆盖未处理区间
+        if self._ana_cursor > target:
+            self._ana_cursor = max(0, target - self._frame_window)
         while (self._ana_cursor + self._frame_window) <= target:
             a0 = self._ana_cursor
             a1 = a0 + self._frame_window

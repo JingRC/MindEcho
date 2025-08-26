@@ -38,6 +38,45 @@ class HecateDeviceMapper:
         
         print("🔧 HECATE设备映射器初始化")
         self._refresh_device_cache()
+
+    # ——— 兼容主程序接口（integrated_recording_interface 期望的方法） ———
+    def verify_hecate_available(self) -> bool:
+        """检查是否存在可用于监听的HECATE输入设备（兼容主程序调用）。"""
+        try:
+            self._refresh_device_cache()
+            for info in self.device_cache.values():
+                dev = info.get('device_info') or {}
+                if dev.get('max_input_channels', 0) > 0:
+                    # 至少有一个HECATE输入设备
+                    return True
+            return False
+        except Exception as e:
+            print(f"⚠️ verify_hecate_available 失败: {e}")
+            return False
+
+    def get_working_hecate_config(self) -> Optional[Dict]:
+        """返回一个经过快速验证可用的HECATE配置（兼容主程序调用）。
+        优先返回已缓存的 verified_config；否则调用自带搜索验证。
+        """
+        try:
+            # 优先使用近期已验证通过的配置
+            self._refresh_device_cache()
+            best = None
+            for dev_id, info in self.device_cache.items():
+                vc = info.get('verified_config')
+                if vc:
+                    # 简单打分：更小的 blocksize、更高的 samplerate 优先
+                    score = (vc.get('samplerate', 0), -vc.get('blocksize', 10**9))
+                    if (best is None) or (score > best[0]):
+                        best = (score, vc)
+            if best is not None:
+                return best[1]
+
+            # 无缓存则主动寻找可工作设备
+            return self.find_working_hecate_device()
+        except Exception as e:
+            print(f"⚠️ get_working_hecate_config 失败: {e}")
+            return None
     
     def _refresh_device_cache(self):
         """刷新设备缓存"""
