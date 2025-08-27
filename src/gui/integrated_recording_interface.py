@@ -18113,47 +18113,178 @@ class IntegratedRecordingInterface(QMainWindow):
                 print(f"[LocalPitch] _open_pure_vocal_mode_dialog error: {e}")
 
     def _open_pure_vocal_convert_dialog(self):
-        """纯人声转化子对话：选择源文件与输出目录（占位实现）。"""
+        """纯人声转化：选择输入文件与输出目录，支持默认目录与自命名，并执行人声/伴奏分离。"""
         try:
-            # 选择源文件
+            # 1) 准备默认输入/输出目录（持久化）
+            try:
+                settings = QSettings("MindEcho", "IntegratedRecorder")
+            except Exception:
+                settings = None
+            base_dir = Path(getattr(self, 'save_base_dir', Path.cwd()))
+            in_default = base_dir / "VocalConvertInput"
+            out_default = base_dir / "VocalConvertOutput"
+            try:
+                if settings:
+                    last_in = settings.value("vocal_convert_input_dir", str(in_default))
+                    last_out = settings.value("vocal_convert_output_dir", str(out_default))
+                    in_default = Path(str(last_in))
+                    out_default = Path(str(last_out))
+            except Exception:
+                pass
+            for p in (in_default, out_default):
+                try:
+                    Path(p).mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+
+            # 2) 选择源文件
             try:
                 if PYQT_VERSION == 6:
                     src_file, _ = QFileDialog.getOpenFileName(
-                        self, "选择需要转化的音频文件", str(self.save_base_dir),
+                        self, "选择需要转化的音频文件", str(in_default),
                         "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
                     )
                 else:
                     src_file, _ = QFileDialog.getOpenFileName(
-                        self, "选择需要转化的音频文件", str(self.save_base_dir),
+                        self, "选择需要转化的音频文件", str(in_default),
                         "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)"
                     )
             except Exception:
                 src_file = ""
-
             if not src_file:
                 return
 
-            # 选择输出目录
+            # 3) 选择输出目录
             try:
                 if PYQT_VERSION == 6:
-                    out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(self.save_base_dir))
+                    out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(out_default))
                 else:
-                    out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(self.save_base_dir))
+                    out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", str(out_default))
             except Exception:
                 out_dir = ""
-
             if not out_dir:
                 return
 
+            # 4) 自定义文件名对话框（人声/伴奏）
             try:
-                QMessageBox.information(self, "纯人声转化", "该功能将很快提供：会执行本地文件的纯人声转化与导出。")
+                src_stem = Path(src_file).stem
             except Exception:
-                print(f"[LocalPitch] convert placeholder: src={src_file}, out={out_dir}")
+                src_stem = "output"
+
+            name_dlg = QDialog(self)
+            name_dlg.setWindowTitle("设置导出文件名")
+            name_dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+            v = QVBoxLayout(name_dlg)
+            desc = QLabel("请选择分离算法，并设置输出文件名。\n提示：Demucs 质量更好（可用GPU），首次使用会下载模型；Spleeter 轻量快速但质量略逊。")
+            desc.setWordWrap(True)
+            v.addWidget(desc)
+            # 算法选择
+            algo_row = QHBoxLayout(); algo_row.addWidget(QLabel("分离算法:"))
+            algo_combo = QComboBox(); algo_combo.addItems([
+                "Demucs（推荐，支持GPU，质量较好）",
+                "Spleeter（轻量，速度快）"
+            ])
+            algo_row.addWidget(algo_combo); v.addLayout(algo_row)
+            v.addWidget(QLabel("输出文件名（无需扩展名）："))
+            row1 = QHBoxLayout(); row1.addWidget(QLabel("人声文件名:"))
+            vocal_edit = QLineEdit(f"{src_stem}_人声")
+            row1.addWidget(vocal_edit); v.addLayout(row1)
+            row2 = QHBoxLayout(); row2.addWidget(QLabel("伴奏文件名:"))
+            acc_edit = QLineEdit(f"{src_stem}_伴奏")
+            row2.addWidget(acc_edit); v.addLayout(row2)
+            row3 = QHBoxLayout()
+            btn_ok = QPushButton("开始转换")
+            btn_cancel = QPushButton("取消")
+            row3.addWidget(btn_ok); row3.addWidget(btn_cancel)
+            v.addLayout(row3)
+
+            def _on_ok():
+                name_dlg.accept()
+            btn_ok.clicked.connect(_on_ok)
+            btn_cancel.clicked.connect(name_dlg.reject)
+            if name_dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            vocals_name = (vocal_edit.text() or "人声").strip()
+            acc_name = (acc_edit.text() or "伴奏").strip()
+            algo_text = algo_combo.currentText()
+            algo_choice = 'demucs' if 'Demucs' in algo_text else 'spleeter'
+
+            # 5) 持久化最近目录
+            try:
+                if settings:
+                    settings.setValue("vocal_convert_input_dir", str(Path(src_file).parent))
+                    settings.setValue("vocal_convert_output_dir", str(out_dir))
+            except Exception:
+                pass
+
+            # 6) 启动转化流程
+            self._start_vocal_conversion(src_file, out_dir, vocals_name, acc_name, algo_choice)
         except Exception as e:
             try:
                 QMessageBox.warning(self, "纯人声转化", f"操作失败:\n{e}")
             except Exception:
                 print(f"[LocalPitch] _open_pure_vocal_convert_dialog error: {e}")
+
+    # —— 纯人声转化：启动工作线程与进度 UI ——
+    def _start_vocal_conversion(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str):
+        try:
+            prog = _OnePassProgressDialog(self, title="纯人声转化 - 处理进度")
+            prog.set_message("准备中…")
+            worker = _VocalSeparationWorker(src_file, out_dir, vocals_name, acc_name, algo_choice)
+
+            def _on_prog(p):
+                prog.set_progress(p)
+            def _on_msg(m):
+                prog.set_message(m)
+            def _on_ok(payload):
+                try:
+                    prog.set_progress(100)
+                    prog.set_message("完成")
+                    v_path = payload.get('vocals_path', '')
+                    a_path = payload.get('acc_path', '')
+                    try:
+                        QMessageBox.information(self, "纯人声转化", f"已完成\n人声: {v_path}\n伴奏: {a_path}")
+                    except Exception:
+                        print(f"[VocalConvert] done: vocals={v_path}, acc={a_path}")
+                finally:
+                    try:
+                        prog.accept()
+                    except Exception:
+                        pass
+            def _on_fail(err):
+                try:
+                    QMessageBox.critical(self, "纯人声转化", f"失败: {err}")
+                except Exception:
+                    print(f"[VocalConvert] failed: {err}")
+                try:
+                    prog.reject()
+                except Exception:
+                    pass
+            def _on_cancel():
+                try:
+                    worker.cancel()
+                except Exception:
+                    pass
+                try:
+                    prog.reject()
+                except Exception:
+                    pass
+
+            worker.progress.connect(_on_prog)
+            worker.message.connect(_on_msg)
+            worker.finished_ok.connect(_on_ok)
+            worker.failed.connect(_on_fail)
+            prog.btn_cancel.clicked.connect(_on_cancel)
+
+            worker.start()
+            prog.show(); prog.exec()
+        finally:
+            try:
+                if 'worker' in locals() and worker.isRunning():
+                    worker.cancel(); worker.wait(200)
+            except Exception:
+                pass
     
     def start_recording(self):
         """开始录音"""
@@ -19942,6 +20073,680 @@ class _OnePassPlaybackPanel(QDialog):
             pass
         super().closeEvent(e)
 
+
+# ========================= 人声/伴奏分离 Worker ========================= #
+class _VocalSeparationWorker(QThread):
+    progress = pyqtSignal(int)
+    message = pyqtSignal(str)
+    finished_ok = pyqtSignal(object)  # dict: vocals_path, acc_path
+    failed = pyqtSignal(str)
+
+    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs'):
+        super().__init__()
+        self.src_file = src_file
+        self.out_dir = out_dir
+        self.vocals_name = vocals_name
+        self.acc_name = acc_name
+        self.algo_choice = algo_choice or 'demucs'
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            self.message.emit("解析输入文件…")
+            import numpy as np
+            from pathlib import Path
+            # 解码
+            data, sr = self._decode(self.src_file)
+            # 统一转成兼容的临时 WAV（44100Hz 立体声、浮点），供 Demucs/Spleeter 使用，避免 OGG/OPUS 差异
+            tmp_in_wav = self._prepare_temp_wav(self.src_file, target_sr=44100)
+            if self._cancel:
+                return
+            # 输出结构：<out_dir>/人声 与 <out_dir>/伴奏
+            vocal_dir = Path(self.out_dir) / "人声"
+            acc_dir = Path(self.out_dir) / "伴奏"
+            vocal_dir.mkdir(parents=True, exist_ok=True)
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            # 路径（统一写 wav）
+            v_path = str((vocal_dir / f"{self._sanitize(self.vocals_name)}.wav").resolve())
+            a_path = str((acc_dir / f"{self._sanitize(self.acc_name)}.wav").resolve())
+
+            # 方案优先级（尊重用户选择）：
+            # - 若选 demucs：Demucs → Spleeter → 回退
+            # - 若选 spleeter：Spleeter → Demucs → 回退
+            self.progress.emit(5)
+            choices = ['demucs', 'spleeter'] if self.algo_choice == 'demucs' else ['spleeter', 'demucs']
+            for algo in choices:
+                if self._cancel:
+                    return
+                if algo == 'demucs':
+                    try:
+                        self.message.emit("尝试使用 Demucs 分离…\n提示：首次使用会自动下载模型，可能需要数分钟")
+                        self.progress.emit(10)
+                        if self._demucs_cli_separate_and_save(tmp_in_wav, v_path, a_path):
+                            self.progress.emit(100)
+                            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path})
+                            # 清理临时输入
+                            try:
+                                Path(tmp_in_wav).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            return
+                    except Exception:
+                        pass
+                elif algo == 'spleeter':
+                    try:
+                        from spleeter.separator import Separator  # type: ignore
+                        self.message.emit("使用 Spleeter 进行人声分离…")
+                        separator = Separator('spleeter:2stems')
+                        self._spleeter_separate_and_save(separator, tmp_in_wav, v_path, a_path)
+                        self.progress.emit(100)
+                        self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path})
+                        try:
+                            Path(tmp_in_wav).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        return
+                    except Exception:
+                        pass
+
+            if data.ndim == 2 and data.shape[1] == 2:
+                self.message.emit("执行中心通道提取…")
+                v, acc = self._center_extraction(data)
+            else:
+                self.message.emit("执行频域近似分离…")
+                v, acc = self._spectral_approx_mono(data)
+
+            if self._cancel:
+                return
+
+            # 保存
+            self.message.emit("保存文件…")
+            self._save_wav(v_path, v, sr)
+            self.progress.emit(85)
+            self._save_wav(a_path, acc, sr)
+            self.progress.emit(100)
+            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path})
+        except Exception as e:
+            self.failed.emit(str(e))
+        finally:
+            # 兜底清理临时输入文件
+            try:
+                from pathlib import Path as _P
+                if 'tmp_in_wav' in locals() and tmp_in_wav:
+                    _P(tmp_in_wav).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _sanitize(name: str) -> str:
+        try:
+            import re
+            s = (name or "output").strip()
+            s = re.sub(r"[<>:\"/\\|?*]", "_", s)
+            return s.strip(" .") or "output"
+        except Exception:
+            return name or "output"
+
+    def _decode(self, path: str):
+        """解码任意常见音频格式为 float32 [N, C]。
+        优先使用 soundfile；失败则回退 torchaudio、librosa/audioread；
+        如仍失败且本机有 ffmpeg，则临时转 WAV 再读。
+        """
+        import numpy as np
+        from pathlib import Path
+        # 1) 首选 soundfile（支持常见 WAV/FLAC/OGG Vorbis 等）
+        try:
+            import soundfile as sf  # type: ignore
+            data, sr = sf.read(path, always_2d=True)
+            return data.astype(np.float32), int(sr)
+        except Exception:
+            pass
+        # 2) torchaudio 回退
+        try:
+            import torchaudio  # type: ignore
+            wav, sr = torchaudio.load(path)  # [C, N], float32/float64
+            arr = wav.numpy()
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            data = arr.T.astype(np.float32)
+            return data, int(sr)
+        except Exception:
+            pass
+        # 3) librosa/audioread 回退
+        try:
+            import librosa  # type: ignore
+            y, sr = librosa.load(path, sr=None, mono=False)  # y: [N] 或 [C,N]
+            if y.ndim == 1:
+                data = y[:, None]
+            else:
+                data = y.T
+            return data.astype(np.float32), int(sr)
+        except Exception:
+            pass
+        # 4) ffmpeg 转 WAV（若可用）
+        try:
+            import shutil, subprocess, tempfile
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if ff:
+                tmpdir = Path(tempfile.mkdtemp(prefix='decode_ff_'))
+                wav_path = tmpdir / 'decoded.wav'
+                cmd = [ff, '-y', '-i', path, '-ac', '2', '-ar', '44100', '-f', 'wav', str(wav_path)]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    import soundfile as sf  # type: ignore
+                    data, sr = sf.read(str(wav_path), always_2d=True)
+                    return data.astype(np.float32), int(sr)
+                finally:
+                    try:
+                        for p in tmpdir.glob('*'):
+                            p.unlink(missing_ok=True)
+                        tmpdir.rmdir()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # 5) 最后退：wave 只支持 PCM WAV
+        try:
+            import wave
+            with wave.open(path, 'rb') as wf:
+                sr = wf.getframerate(); n = wf.getnframes(); ch = wf.getnchannels()
+                raw = wf.readframes(n)
+            arr = np.frombuffer(raw, dtype=np.int16)
+            if ch > 1:
+                arr = arr.reshape(-1, ch)
+            else:
+                arr = arr.reshape(-1, 1)
+            data = arr.astype(np.float32) / 32768.0
+            return data.astype(np.float32), int(sr)
+        except Exception as e:
+            raise RuntimeError(f"无法解码音频：{Path(path).name}。建议先转换为 WAV/FLAC，或安装 ffmpeg 后重试。\n原始错误: {e}")
+
+    def _save_wav(self, path: str, audio, sr: int):
+        import numpy as np
+        try:
+            import soundfile as sf
+            sf.write(path, audio.astype(np.float32), sr)
+        except Exception:
+            # wave 回退（PCM16）
+            import wave
+            x = np.clip(audio.astype(np.float32), -1.0, 1.0)
+            x16 = (x * 32767.0).astype(np.int16)
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1 if x16.ndim == 1 else x16.shape[1])
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(x16.tobytes())
+
+    def _spleeter_separate_and_save(self, separator, src_path: str, v_path: str, a_path: str):
+        # 使用 spleeter 2stems 模型（传入已构造的 separator 实例）
+        import soundfile as sf
+        import numpy as np
+        self.progress.emit(20)
+        self.message.emit("分离中（Spleeter）…")
+        # 使用 ndarray 路径，避免不同版本 API 差异
+        from spleeter.audio.adapter import AudioAdapter  # type: ignore
+        audio_loader = AudioAdapter.default()
+        data, sr = audio_loader.load(src_path, sample_rate=44100)
+        out = separator.separate(data)
+        vocals = out.get('vocals')
+        accomp = out.get('accompaniment')
+        if vocals is None or accomp is None:
+            raise RuntimeError('Spleeter 输出缺少声部')
+        # 保留立体声形态，避免过早下混为单声道导致立体声质感丢失
+        # 若返回为 (T,) 则升维为 (T,1)
+        if vocals.ndim == 1:
+            vocals = vocals[:, None]
+        if accomp.ndim == 1:
+            accomp = accomp[:, None]
+        # 轻量 Wiener 掩蔽后处理，降低串音
+        try:
+            mix = (vocals + accomp) * 0.5
+            rv, ra = self._refine_with_wiener(mix, vocals, accomp)
+            sf.write(v_path, rv.astype(np.float32), sr)
+            sf.write(a_path, ra.astype(np.float32), sr)
+        except Exception:
+            sf.write(v_path, vocals.astype(np.float32), sr)
+            sf.write(a_path, accomp.astype(np.float32), sr)
+
+    def _resample_to(self, data, sr: int, target_sr: int):
+        """将 data [N, C] 重采样到 target_sr。尽量使用高质量方法；无库时退化到线性插值。"""
+        import numpy as np
+        if sr == target_sr:
+            return data
+        y = data.astype(np.float32)
+        try:
+            import librosa  # type: ignore
+            # 逐通道重采样
+            chs = []
+            for c in range(y.shape[1]):
+                chs.append(librosa.resample(y[:, c], orig_sr=sr, target_sr=target_sr, res_type='kaiser_fast'))
+            # 对齐长度
+            L = min(len(ch) for ch in chs)
+            chs = [ch[:L] for ch in chs]
+            return np.stack(chs, axis=1)
+        except Exception:
+            pass
+        try:
+            from scipy.signal import resample_poly  # type: ignore
+            import math
+            g = math.gcd(sr, target_sr)
+            up, down = target_sr // g, sr // g
+            chs = []
+            for c in range(y.shape[1]):
+                chs.append(resample_poly(y[:, c], up, down))
+            L = min(len(ch) for ch in chs)
+            chs = [ch[:L] for ch in chs]
+            return np.stack(chs, axis=1)
+        except Exception:
+            pass
+        # 线性插值退化
+        N = y.shape[0]
+        t_old = np.linspace(0.0, 1.0, N, endpoint=False)
+        N_new = int(round(N * target_sr / float(sr)))
+        t_new = np.linspace(0.0, 1.0, N_new, endpoint=False)
+        chs = [np.interp(t_new, t_old, y[:, c]) for c in range(y.shape[1])]
+        return np.stack(chs, axis=1).astype(np.float32)
+
+    def _prepare_temp_wav(self, src_path: str, target_sr: int = 44100) -> str:
+        """将任意输入转为 44100Hz 立体声浮点 WAV，返回临时文件路径。"""
+        import numpy as np
+        import tempfile
+        from pathlib import Path
+        data, sr = self._decode(src_path)
+        # 保证立体声
+        if data.ndim == 1:
+            data = data[:, None]
+        if data.shape[1] == 1:
+            data = np.repeat(data, 2, axis=1)
+        # 重采样
+        y = self._resample_to(data, sr, target_sr)
+        # 归一化（保留动态，不削峰过度）
+        peak = float(np.max(np.abs(y)) + 1e-9)
+        if peak > 1.0:
+            y = y / peak * 0.99
+        # 写临时文件
+        tmp = Path(tempfile.mkstemp(prefix='input_norm_', suffix='.wav')[1])
+        try:
+            import soundfile as sf  # type: ignore
+            sf.write(str(tmp), y.astype(np.float32), target_sr)
+        except Exception:
+            # wave PCM16 退化
+            self._save_wav(str(tmp), y, target_sr)
+        return str(tmp)
+
+    def _demucs_cli_separate_and_save(self, src_path: str, v_path: str, a_path: str) -> bool:
+        """尝试调用本地 demucs CLI 进行分离；成功返回 True。"""
+        import os, shutil, subprocess, tempfile, time
+        from pathlib import Path
+        candidates = []
+        # 允许通过环境变量指向 demucs 可执行
+        env_path = os.environ.get('MIND_ECHO_DEMUCS')
+        if env_path:
+            candidates.append(env_path)
+        # 项目内 venv 常见位置（Windows）
+        try:
+            proj_root = Path(__file__).resolve().parents[2]
+            candidates.append(str(proj_root / '.venv_music_coach_env' / 'Scripts' / 'demucs.exe'))
+            candidates.append('demucs')  # PATH 中
+        except Exception:
+            candidates.append('demucs')
+
+        exe = None
+        use_module = False
+        for c in candidates:
+            if c and shutil.which(c):
+                exe = shutil.which(c)
+                break
+            # 明确文件路径也允许
+            if c and Path(c).exists():
+                exe = c
+                break
+        if not exe:
+            # 尝试用 python -m demucs 作为后备
+            try:
+                import sys
+                exe = sys.executable
+                use_module = True
+            except Exception:
+                return False
+
+        # 目标临时输出目录
+        tmp_out = Path(tempfile.mkdtemp(prefix='demucs_out_'))
+        # 选择设备：优先环境变量 MIND_ECHO_DEMUCS_DEVICE，其次自动检测 torch.cuda
+        device = os.environ.get('MIND_ECHO_DEMUCS_DEVICE')
+        if not device:
+            try:
+                import torch  # type: ignore
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            except Exception:
+                device = 'cpu'
+        # 优先较快模型，再到高质量（可通过 MIND_ECHO_DEMUCS_MODEL 覆盖）
+        env_model = os.environ.get('MIND_ECHO_DEMUCS_MODEL')
+        if env_model:
+            models = [env_model]
+        else:
+            # 偏向高质量模型优先（若本地无对应权重，Demucs 会自动下载）
+            models = ['htdemucs_ft', 'htdemucs', 'mdx_extra_q', 'mdx_extra', 'mdx', 'mdx_q']
+        # 并行 jobs（CPU 下可适度提高速度），默认 2，可通过环境变量覆盖
+        jobs = os.environ.get('MIND_ECHO_DEMUCS_JOBS', '2')
+        # 质量参数：overlap 与 shifts；若环境未指定，CUDA 下增大默认以提升质量
+        overlap = os.environ.get('MIND_ECHO_DEMUCS_OVERLAP') or ('0.5' if device == 'cuda' else '0.25')
+        shifts = os.environ.get('MIND_ECHO_DEMUCS_SHIFTS') or ('2' if device == 'cuda' else '1')
+        if use_module:
+            cmd_base = [exe, '-m', 'demucs', '-d', device, '--two-stems', 'vocals', '-o', str(tmp_out), '-j', jobs, '--overlap', overlap, '--shifts', shifts]
+        else:
+            cmd_base = [exe, '-d', device, '--two-stems', 'vocals', '-o', str(tmp_out), '-j', jobs, '--overlap', overlap, '--shifts', shifts]
+        for m in models:
+            cmd = cmd_base + ['-n', m, src_path]
+            try:
+                # 以流式方式运行，并按时间推进进度
+                start = time.time()
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                last_tick = start
+                # 10% -> 90% 线性推进
+                while True:
+                    line = proc.stdout.readline() if proc.stdout else ''
+                    now = time.time()
+                    if now - last_tick >= 2.0:
+                        last_tick = now
+                        elapsed = now - start
+                        est = min(90, 10 + int(elapsed * 4))  # ~20s 达到 90%
+                        try:
+                            self.progress.emit(est)
+                            self.message.emit(f"Demucs 处理中（{m}/{device}）… 已用 {int(elapsed)}s")
+                        except Exception:
+                            pass
+                    if line:
+                        # 可将关键信息写入日志（此处略）
+                        pass
+                    if proc.poll() is not None:
+                        break
+                if proc.returncode != 0:
+                    continue
+                # Demucs 输出目录结构：<tmp_out>/<model>/<basename>/ [vocals.wav, accompaniment.wav]
+                base = Path(src_path).stem
+                model_dir = tmp_out / m
+                # 找第一个包含 base 的子目录
+                cand_dirs = list(model_dir.glob(f"**/{base}"))
+                if not cand_dirs:
+                    # 有的版本会包含全文件名
+                    cand_dirs = list(model_dir.glob("**/*"))
+                found_v = None; found_a = None
+                for d in cand_dirs:
+                    # 兼容不同版本命名
+                    cand_v = [d / 'vocals.wav', d / 'vocals.flac']
+                    cand_a = [d / 'accompaniment.wav', d / 'accompaniment.flac', d / 'no_vocals.wav', d / 'no_vocals.flac', d / 'other.wav', d / 'instrumental.wav']
+                    v = next((p for p in cand_v if p.exists()), None)
+                    a = next((p for p in cand_a if p.exists()), None)
+                    if v and a and v.exists() and a.exists():
+                        found_v, found_a = v, a; break
+                if not (found_v and found_a):
+                    # 再全局搜一遍
+                    vs = list(model_dir.glob("**/vocals.*"))
+                    ac = list(model_dir.glob("**/(accompaniment|no_vocals|other|instrumental).*"))
+                    if vs and ac:
+                        found_v, found_a = vs[0], ac[0]
+                if found_v and found_a:
+                    # 读取并做 Wiener 后处理以降串音
+                    try:
+                        import soundfile as sf
+                        v_arr, v_sr = sf.read(str(found_v), always_2d=True)
+                        a_arr, a_sr = sf.read(str(found_a), always_2d=True)
+                        mix_arr, mix_sr = None, None
+                        try:
+                            mix_arr, mix_sr = sf.read(src_path, always_2d=True)
+                        except Exception:
+                            mix_arr, mix_sr = None, None
+                        if v_sr == a_sr:
+                            if mix_arr is None or mix_sr != v_sr:
+                                mix_arr = (v_arr + a_arr) * 0.5
+                                mix_sr = v_sr
+                            rv, ra = self._refine_with_wiener(mix_arr, v_arr, a_arr)
+                            # 简单质量门控，若不过关则尝试下一个模型
+                            try:
+                                if not self._quality_gate(mix_arr, rv, ra):
+                                    continue
+                            except Exception:
+                                pass
+                            sf.write(v_path, rv.astype('float32'), mix_sr)
+                            sf.write(a_path, ra.astype('float32'), mix_sr)
+                        else:
+                            shutil.copy2(str(found_v), v_path)
+                            shutil.copy2(str(found_a), a_path)
+                    except Exception:
+                        shutil.copy2(str(found_v), v_path)
+                        shutil.copy2(str(found_a), a_path)
+                    # 清理临时 demucs 输出
+                    try:
+                        import shutil as _sh
+                        _sh.rmtree(tmp_out, ignore_errors=True)
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                continue
+        # 清理临时 demucs 输出
+        try:
+            import shutil as _sh
+            _sh.rmtree(tmp_out, ignore_errors=True)
+        except Exception:
+            pass
+        return False
+
+    def _refine_with_wiener(self, mix, vocals, accomp, iterations: int = 3):
+        """高质量串音抑制（迭代 Wiener/软掩蔽 + 频带自适应 + 发声门控）。
+        - 保留与 mix 相同的声道形态（优先保持立体声）。
+        - 对无声区避免过度处理，降低“电话音/塑料感”。
+        """
+        import numpy as np
+        def ensure_2d(x):
+            arr = np.asarray(x, dtype=np.float32)
+            if arr.ndim == 1:
+                return arr[:, None]
+            return arr
+        X = ensure_2d(mix)
+        V0 = ensure_2d(vocals)
+        A0 = ensure_2d(accomp)
+        n, C = X.shape
+        win, hop = 4096, 1024  # 更长窗获得更细的频率分辨率
+        if n < win:
+            return V0[:n], A0[:n]
+        w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32) / (win - 1))
+        def stft_multi(x2d):
+            # x2d: [N, C] -> list of [F, B] per channel
+            Xcs = []
+            for c in range(x2d.shape[1]):
+                x = x2d[:, c]
+                frames = []
+                for i0 in range(0, len(x) - win + 1, hop):
+                    seg = x[i0:i0+win] * w
+                    frames.append(np.fft.rfft(seg))
+                Xcs.append(np.asarray(frames, dtype=np.complex64))
+            return Xcs
+        def istft_multi(Xcs):
+            outs = []
+            for Xc in Xcs:
+                L = (Xc.shape[0]-1)*hop + win
+                y = np.zeros(L, dtype=np.float32)
+                ww = np.zeros(L, dtype=np.float32)
+                for i, fr in enumerate(Xc):
+                    seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                    i0 = i*hop
+                    y[i0:i0+win] += seg * w
+                    ww[i0:i0+win] += w*w
+                ww[ww==0] = 1.0
+                outs.append((y/ww)[:n])
+            return np.stack(outs, axis=1)
+        # STFT（逐通道保持立体声信息）
+        Xs = stft_multi(X)
+        Vs = stft_multi(V0)
+        As = stft_multi(A0)
+        # 发声门控：根据初始人声能量估计，减少无声区的过处理
+        def voice_gate(v_time):
+            # 简单能量门控 + 平滑
+            e = v_time**2
+            win_s = max(1, n // 400)  # ~100 帧平滑
+            ker = np.ones(win_s, dtype=np.float32) / win_s
+            g = np.convolve(e.mean(axis=1), ker, mode='same')
+            thr = 0.001 * np.max(g + 1e-9)
+            return (g > thr).astype(np.float32)
+        gate = voice_gate(V0)
+        # 频率权重：更温和的高通/低通形状，减少高频刺耳与低频空洞
+        num_bins = Xs[0].shape[1]
+        f = np.linspace(0, 22050.0, num_bins)
+        hv = 0.7 + 0.3/(1.0 + np.exp(-(f - 150.0)/80.0))  # 人声低频不过度削弱
+        la = 0.8 + 0.2/(1.0 + np.exp((f - 7000.0)/1200.0)) # 伴奏高频适度保留亮度
+        p = 2.0
+        Yv = [Vc.copy() for Vc in Vs]
+        Ya = [Ac.copy() for Ac in As]
+        iters = max(2, int(iterations))
+        for _ in range(iters):
+            for c in range(C):
+                Xc = Xs[c]
+                Vc = Yv[c]
+                Ac = Ya[c]
+                magV = np.abs(Vc); magA = np.abs(Ac)
+                denom = (magV**p + magA**p + 1e-8)
+                maskV = (magV**p) / denom
+                maskA = (magA**p) / denom
+                # 频率着色
+                maskV *= hv
+                maskA *= la
+                # 时间门控：无声段对人声掩蔽减弱，避免把伴奏误吸进人声
+                # 将 gate 下采样至帧级
+                t_frames = Xc.shape[0]
+                g_frames = np.interp(np.linspace(0, n-1, t_frames), np.arange(n), gate)
+                g_frames = g_frames[:, None]
+                maskV = 0.5*maskV + 0.5*(maskV*g_frames)
+                maskA = 0.7*maskA + 0.3*(maskA*(1.0-g_frames))
+                Yv[c] = maskV * Xc
+                Ya[c] = maskA * Xc
+        Vh = istft_multi(Yv)
+        Ah = istft_multi(Ya)
+        # 能量一致性调整：避免过度衰减造成“电话音”
+        eps = 1e-8
+        mix_e = np.maximum(np.mean(X**2, axis=0), eps)
+        v_e = np.maximum(np.mean(Vh**2, axis=0), eps)
+        a_e = np.maximum(np.mean(Ah**2, axis=0), eps)
+        # 保持 V+A 与 mix 大致匹配
+        s = (mix_e / np.maximum(v_e + a_e, eps))
+        Vh *= s
+        Ah *= s
+        return Vh.astype(np.float32), Ah.astype(np.float32)
+
+    def _quality_gate(self, mix, vocals, accomp) -> bool:
+        """简易的分离质量门控：
+        - 与混音的相关系数过高视为未分离；
+        - 声部之间相关系数过高视为未分离。
+        """
+        import numpy as np
+        def m1(x):
+            x = np.asarray(x, dtype=np.float32)
+            if x.ndim == 2 and x.shape[1] > 1:
+                return x.mean(axis=1)
+            return x.reshape(-1)
+        xm = m1(mix); xv = m1(vocals); xa = m1(accomp)
+        def corr(a,b):
+            a = a - a.mean(); b = b - b.mean()
+            da = float(np.linalg.norm(a) + 1e-9); db = float(np.linalg.norm(b) + 1e-9)
+            return float(np.dot(a,b) / (da*db))
+        cv = abs(corr(xm, xv)); ca = abs(corr(xm, xa)); cva = abs(corr(xv, xa))
+        return (cv < 0.97) and (ca < 0.97) and (cva < 0.95)
+
+    def _ms_strong_separate(self, stereo, sr: int):
+        """增强型 M/S + 软掩蔽的回退分离（立体声输入）。"""
+        import numpy as np
+        L = stereo[:, 0].astype(np.float32)
+        R = stereo[:, 1].astype(np.float32)
+        win, hop = 4096, 1024
+        w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32) / (win - 1))
+        def stft(x):
+            frames = []
+            for i0 in range(0, len(x) - win + 1, hop):
+                frames.append(np.fft.rfft(x[i0:i0+win] * w))
+            return np.asarray(frames, dtype=np.complex64)
+        def istft(X):
+            Ls = (X.shape[0]-1) * hop + win
+            y = np.zeros(Ls, dtype=np.float32)
+            ww = np.zeros(Ls, dtype=np.float32)
+            for i, fr in enumerate(X):
+                seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                i0 = i * hop
+                y[i0:i0+win] += seg * w
+                ww[i0:i0+win] += w * w
+            ww[ww == 0] = 1.0
+            return y / ww
+        XL = stft(L); XR = stft(R)
+        M = 0.5 * (XL + XR)
+        S = 0.5 * (XL - XR)
+        magM = np.abs(M); magS = np.abs(S)
+        p = 2.0; eps = 1e-8
+        maskV = (magM**p) / (magM**p + magS**p + eps)
+        maskA = 1.0 - maskV
+        Yv = maskV * M
+        Ya = maskA * M + S
+        vL = istft(Yv)
+        vR = istft(Yv)
+        aL = istft(Ya)
+        aR = istft(Ya)
+        V = np.stack([vL, vR], axis=1)
+        A = np.stack([aL, aR], axis=1)
+        return V.astype(np.float32), A.astype(np.float32)
+
+    def _spectral_approx_mono(self, x):
+        import numpy as np
+        if x.ndim == 2:
+            x = x.mean(axis=1)
+        x = x.astype(np.float32)
+        n = len(x)
+        win = 2048
+        hop = 512
+        if n < win:
+            v = self._simple_bandpass(x)
+            a = x - 0.5 * v
+            return v.astype(np.float32), a.astype(np.float32)
+        # Hann 窗
+        w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32) / (win - 1))
+        num_bins = win // 2 + 1
+        # 采样率未知，取 44.1k 作为掩蔽构造
+        sr_guess = 44100.0
+        f = np.linspace(0, sr_guess / 2, num_bins)
+        mask_v = ((f >= 120) & (f <= 5000)).astype(np.float32)
+        mask_a = 1.0 - mask_v
+        y_v = np.zeros_like(x, dtype=np.float32)
+        y_a = np.zeros_like(x, dtype=np.float32)
+        for i0 in range(0, n - win + 1, hop):
+            if self._cancel:
+                break
+            seg = x[i0:i0 + win] * w
+            spec = np.fft.rfft(seg)
+            Sv = spec * mask_v
+            Sa = spec * mask_a
+            v_seg = np.fft.irfft(Sv, n=win).astype(np.float32)
+            a_seg = np.fft.irfft(Sa, n=win).astype(np.float32)
+            # overlap-add
+            y_v[i0:i0 + win] += v_seg * w
+            y_a[i0:i0 + win] += a_seg * w
+        return y_v, y_a
+
+    def _simple_bandpass(self, x):
+        import numpy as np
+        y = x.astype(np.float32).copy()
+        # 高通 ~120Hz（一阶）
+        a = 0.995
+        hp = np.zeros_like(y)
+        for i in range(1, len(y)):
+            hp[i] = a * (hp[i-1] + y[i] - y[i-1])
+        # 低通 ~5kHz（一阶）
+        b = 0.1
+        lp = np.zeros_like(hp)
+        lp[0] = hp[0]
+        for i in range(1, len(hp)):
+            lp[i] = lp[i-1] + b * (hp[i] - lp[i-1])
+        return lp.astype(np.float32)
 
 class VolumeControlDialog(QDialog):
     """音量调节对话框"""
