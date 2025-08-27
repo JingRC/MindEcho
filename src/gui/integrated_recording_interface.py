@@ -3746,19 +3746,45 @@ class IntegratedAudioProcessor(QThread):
                     
                     # 音频输出（仅在启用监听回传时）
                     if self.monitor_audio_passthrough:
+                        # 若首次启用KTV后进入回调，结合实际输出声道做一次自适应
+                        try:
+                            if bool(getattr(self, 'monitor_ktv_mode', False)) and not getattr(self, '_ktv_adapted_once', False):
+                                self._ktv_adapt_to_device(out_channels=outdata.shape[1] if len(outdata.shape) > 1 else 1)
+                                self._ktv_adapted_once = True
+                        except Exception:
+                            pass
                         # RAW直通：最小处理，仅保留安全头房+VRMS限幅
                         if getattr(self, 'monitor_raw_mode', False):
                             audio_out = raw_audio.copy()
                         else:
-                            # 仅对耳返音频在低RMS呼吸段进行轻量抑制，不影响 raw_audio 入队
-                            audio_out = self._apply_breath_noise_suppress(audio_data, key='hecate')
-                        # 安全头房 + VRMS限幅（无感）
-                        audio_out = self._apply_headroom_and_vrms(audio_out, key='hecate')
-                        if outdata.shape[1] == 1:
-                            outdata[:, 0] = audio_out  # 输出仍可用增强/平滑后的版本
+                            # 👉 默认（未开启KTV）走“纯净直通”：只做安全限幅，不做任何着色，保证原音质
+                            if not bool(getattr(self, 'monitor_ktv_mode', False)):
+                                audio_out = raw_audio.copy()
+                            else:
+                                # KTV隔离模式：使用原始raw_audio作为输入，绕过抑制/AGC/门限
+                                if bool(getattr(self, 'ktv_isolation', True)):
+                                    audio_src = raw_audio.copy()
+                                else:
+                                    # 仅在KTV且未隔离时，对耳返音频在低RMS呼吸段进行轻量抑制
+                                    audio_src = self._apply_breath_noise_suppress(audio_data, key='hecate')
+                                # 叠加KTV混响/回声
+                                audio_out = self._apply_ktv_effect(audio_src, key='hecate')
+                        # 若开启KTV且具备立体声输出，左右做轻微去相关
+                        if bool(getattr(self, 'monitor_ktv_mode', False)) and outdata.shape[1] > 1 and not getattr(self, 'monitor_raw_mode', False) and bool(getattr(self, 'ktv_stereo_widen', True)):
+                            # 仅应用一次KTV效果：以 KTV 前级源为输入，左右使用不同variant做扩散
+                            src = raw_audio.copy() if bool(getattr(self, 'ktv_isolation', True)) else audio_data
+                            l = self._apply_headroom_and_vrms(self._apply_ktv_effect(src, key='hecateL', stereo_variant=0), key='hecateL')
+                            r = self._apply_headroom_and_vrms(self._apply_ktv_effect(src, key='hecateR', stereo_variant=1), key='hecateR')
+                            outdata[:, 0] = l
+                            outdata[:, 1] = r
                         else:
-                            outdata[:, 0] = audio_out
-                            outdata[:, 1] = audio_out
+                            # 安全头房 + VRMS限幅（无感）
+                            audio_out = self._apply_headroom_and_vrms(audio_out, key='hecate')
+                            if outdata.shape[1] == 1:
+                                outdata[:, 0] = audio_out  # 输出仍可用增强/平滑后的版本
+                            else:
+                                outdata[:, 0] = audio_out
+                                outdata[:, 1] = audio_out
                     else:
                         outdata.fill(0)
                         
@@ -4678,11 +4704,36 @@ class IntegratedAudioProcessor(QThread):
                         
                         # �🎵 高品质音频输出（受监听回传开关控制）
                         if self.monitor_audio_passthrough:
+                            # 首次自适应（专业回调）
+                            try:
+                                if bool(getattr(self, 'monitor_ktv_mode', False)) and not getattr(self, '_ktv_adapted_once', False):
+                                    self._ktv_adapt_to_device(out_channels=outdata.shape[1] if len(outdata.shape) > 1 else 1)
+                                    self._ktv_adapted_once = True
+                            except Exception:
+                                pass
                             if getattr(self, 'monitor_raw_mode', False):
                                 audio_out = raw_audio.copy()
                             else:
-                                audio_out = self._apply_breath_noise_suppress(audio_data, key='pro')
-                            # 始终应用头房+VRMS限幅，避免削波且不失真
+                                # 未开KTV：纯净直通，保持原音质
+                                if not bool(getattr(self, 'monitor_ktv_mode', False)):
+                                    audio_out = raw_audio.copy()
+                                else:
+                                    # KTV链路
+                                    if bool(getattr(self, 'ktv_isolation', True)):
+                                        pre_fx = raw_audio.copy()
+                                    else:
+                                        pre_fx = self._apply_breath_noise_suppress(audio_data, key='pro')
+                                    if outdata.shape[1] > 1 and bool(getattr(self, 'ktv_stereo_widen', True)):
+                                        l = self._apply_ktv_effect(pre_fx, key='proL', stereo_variant=0)
+                                        r = self._apply_ktv_effect(pre_fx, key='proR', stereo_variant=1)
+                                        l = self._apply_headroom_and_vrms(l, key='proL')
+                                        r = self._apply_headroom_and_vrms(r, key='proR')
+                                        outdata[:, 0] = l
+                                        outdata[:, 1] = r
+                                        return
+                                    else:
+                                        audio_out = self._apply_ktv_effect(pre_fx, key='pro')
+                            # 安全头房+VRMS
                             audio_out = self._apply_headroom_and_vrms(audio_out, key='pro')
                             if outdata.shape[1] == 1:
                                 outdata[:, 0] = audio_out
@@ -7760,7 +7811,8 @@ class IntegratedAudioProcessor(QThread):
 
             # （可选）微型KTV氛围：三抽头短延迟（7/11/17ms），极轻混合，带来更“房间感”
             try:
-                ktv_enabled = bool(getattr(self, 'monitor_ktv_ambience', True))
+                # 若开启KTV模式，则跳过微型氛围，避免效果重复
+                ktv_enabled = bool(getattr(self, 'monitor_ktv_ambience', True)) and not bool(getattr(self, 'monitor_ktv_mode', False))
                 if ktv_enabled and len(y) >= 8:
                     sr = float(getattr(self, 'sample_rate', 48000.0))
                     ds = [int(0.007*sr), int(0.011*sr), int(0.017*sr)]
@@ -7862,9 +7914,10 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 pass
 
-            # 极低电平时对整体做一个极轻的扩展器（下倾），帮助“电流尾巴”更自然淡出
+            # 极低电平扩展器（下倾）：KTV模式下跳过，保留回声/混响尾音，不压掉“空旷感”
             try:
-                if rms < (thr_low * 0.85):
+                ktv_on = bool(getattr(self, 'monitor_ktv_mode', False))
+                if (not ktv_on) and rms < (thr_low * 0.85):
                     # 避免对纯正弦/很纯嗡嗡过度扩展
                     if not tonal_hum or zc > 0.10:
                         # downward expander: y *= expander_gain(rms)
@@ -7902,6 +7955,392 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             return audio_data
     
+    def _apply_ktv_effect(self, audio_data: np.ndarray, key: str = 'default', stereo_variant: int = 0) -> np.ndarray:
+        """KTV模式耳返特效（旗舰版）：预增益 + 早期反射(更密) + 晚期混响(梳状+全通+阻尼) + 反馈回声 + 轻调制 + 轻EQ + 动态ducking。
+        - stereo_variant: 0/1 轻度立体声扩散，选择不同延迟参数以去相关。
+        注：最终仍建议外层调用 _apply_headroom_and_vrms 做电平保护。
+        """
+        try:
+            if audio_data is None or len(audio_data) == 0:
+                return audio_data
+            x = audio_data.astype(np.float32, copy=False)
+            n = len(x)
+            sr = float(getattr(self, 'sample_rate', 48000.0))
+
+            # 可选参数
+            preset = str(getattr(self, 'ktv_preset', 'standard'))
+            wet_lvl = str(getattr(self, 'ktv_wet_level', 'mid'))
+            echo_emph = bool(getattr(self, 'ktv_echo_emphasis', False))
+            room_size = str(getattr(self, 'ktv_room_size', 'medium'))  # small/medium/large
+            predelay_opt = str(getattr(self, 'ktv_predelay', 'mid'))   # short/mid/long
+            echo_repeats = int(getattr(self, 'ktv_echo_repeats', 2))   # 0..3
+
+            # 1) 预增益（更响亮）：+5~+12 dB（极致模式更猛）
+            nat = float(getattr(self, 'natural_earback_strength', 0.6))
+            extreme = bool(getattr(self, 'ktv_extreme', False))
+            pre_gain_db = 5.0 + 5.0 * (1.0 - nat*0.6)
+            if extreme:
+                pre_gain_db += 2.0
+            if preset == 'light':
+                pre_gain_db -= 1.0
+            elif preset == 'hall':
+                pre_gain_db += 1.0
+            pre_gain = 10.0 ** (pre_gain_db / 20.0)
+            y = x * pre_gain
+
+            # 2) 早期反射（带预延时，增加空间“距离感”）
+            # 预延时 18–60ms（上限放宽到80ms以获得“远场感”），立体声variant做微差；预设微调
+            # 基础预延时
+            pre_ms = 0.028 + (0.005 if stereo_variant == 1 else 0.0)
+            if preset == 'light':
+                pre_ms = max(0.014, pre_ms - 0.006)
+            elif preset == 'hall':
+                pre_ms += 0.016
+            if extreme:
+                pre_ms += 0.012
+            # 用户预延时选项映射（叠加）
+            if predelay_opt == 'short':
+                pre_ms -= 0.006
+            elif predelay_opt == 'long':
+                pre_ms += 0.020
+            pre_ms = float(np.clip(pre_ms, 0.012, 0.080))
+            # 早期反射更密集，加入更多tap
+            er_ms = [0.008, 0.014, 0.021, 0.031, 0.042, 0.056]
+            er_gs = [0.28, 0.24, 0.20, 0.16, 0.13, 0.11] if extreme else [0.24, 0.20, 0.17, 0.14, 0.11, 0.09]
+            if preset == 'light':
+                er_gs = [g*0.8 for g in er_gs]
+            elif preset == 'hall':
+                er_gs = [min(1.0, g*1.2) for g in er_gs]
+            # 根据自然度缩放混响强度（更自然时减弱）— 降低衰减幅度，使KTV不容易被削弱
+            mix_scale = 0.95 - 0.25 * nat
+            if extreme:
+                mix_scale = min(1.10, mix_scale * 1.12)
+            mix_scale = 1.0 if mix_scale > 1.0 else (0.30 if mix_scale < 0.30 else mix_scale)
+
+            # 维护状态缓存以跨块延续
+            max_er = int((pre_ms + (max(er_ms) if er_ms else 0.0)) * sr)
+            if max_er < 1: max_er = 1
+            if not hasattr(self, '_ktv_fx_state'):
+                self._ktv_fx_state = {}
+            st_er = self._ktv_fx_state.get(f"{key}:er", np.zeros((max_er,), dtype=np.float32))
+            if st_er.shape[0] < max_er:
+                pad = np.zeros((max_er,), dtype=np.float32); pad[-st_er.shape[0]:] = st_er; st_er = pad
+
+            out = y.copy()
+            pre_n = int(pre_ms * sr)
+            for idx, (d_ms, g) in enumerate(zip(er_ms, er_gs)):
+                base_d = int(d_ms * sr)
+                d = base_d + (1 if (stereo_variant == 1 and idx % 2 == 0) else 0)
+                tot = pre_n + max(0, d)
+                if tot <= 0:
+                    continue
+                if n > tot:
+                    tap = np.concatenate([st_er[-tot:], y[:-tot]])
+                else:
+                    need = tot - n
+                    head = st_er[-min(tot, st_er.shape[0]):]
+                    if head.shape[0] < tot:
+                        head = np.pad(head, (tot - head.shape[0], 0))
+                    tap = head[-tot:]
+                # 轻低通模拟空气吸收
+                if len(tap) > 2:
+                    lp = tap.copy(); lp[1:] = 0.6*tap[1:] + 0.4*tap[:-1]
+                    tap = lp
+                out += (g * mix_scale) * (tap[:n] if len(tap) >= n else np.pad(tap, (0, n-len(tap))))
+
+            # 更新早期反射状态尾巴
+            self._ktv_fx_state[f"{key}:er"] = np.concatenate([st_er, y])[-max_er:].astype(np.float32, copy=False)
+
+            # 3) 晚期混响：并行梳状 + 串联全通（经典Schroeder近似，带高频阻尼与轻调制）
+            # T60 随自然度 & 预设 & 厅堂大小：0.6–4.0s；wet混合 0.40–0.75（极致）
+            T60 = 1.35 - 0.55 * nat
+            if preset == 'light':
+                T60 *= 0.78
+            elif preset == 'hall':
+                T60 *= 1.55
+            if extreme:
+                T60 *= 1.25
+            # 厅堂大小映射
+            if room_size == 'small':
+                T60 *= 0.88
+            elif room_size == 'large':
+                T60 *= 1.45
+            T60 = float(np.clip(T60, 0.6, 4.0))
+
+            wet = (0.55 - 0.06 * nat) if extreme else (0.42 - 0.10 * nat)
+            if wet_lvl == 'low':
+                wet *= 0.8
+            elif wet_lvl == 'high':
+                wet *= (1.45 if extreme else 1.30)
+            wet = float(np.clip(wet, 0.40 if extreme else 0.28, 0.75 if extreme else 0.60))
+
+            # comb delays（左右略微不同以扩散）
+            comb_ms_A = [0.031, 0.037, 0.043, 0.049, 0.056, 0.061] if extreme else [0.031, 0.037, 0.043, 0.049]
+            comb_ms_B = [0.029, 0.035, 0.041, 0.047, 0.054, 0.059] if extreme else [0.029, 0.035, 0.041, 0.047]
+            comb_ms = comb_ms_B if stereo_variant == 1 else comb_ms_A
+            # 全通链
+            ap_ms = ([0.0053, 0.0017, 0.0091, 0.0123] if extreme else [0.0053, 0.0017, 0.0091])  # 三级/四级扩散
+
+            # 预计算反馈系数 g = 10^(-3*D/(sr*T60))
+            def fb_for_delay(d_samps: int) -> float:
+                return float(10.0 ** (-(3.0 * d_samps) / max(1.0, sr * T60)))
+
+            # 状态初始化
+            if not hasattr(self, '_ktv_rev_state'):
+                self._ktv_rev_state = {}
+            # comb buffers
+            combs = []
+            for i, d_ms in enumerate(comb_ms):
+                d = max(1, int(d_ms * sr))
+                st_key = f"{key}:comb:{i}:{d}"
+                buf = self._ktv_rev_state.get(st_key)
+                if buf is None or buf.shape[0] != d:
+                    buf = np.zeros((d,), dtype=np.float32)
+                combs.append((st_key, buf, fb_for_delay(d)))
+
+            # allpass buffers
+            aps = []
+            for j, d_ms in enumerate(ap_ms):
+                d = max(1, int(d_ms * sr))
+                st_key = f"{key}:ap:{j}:{d}"
+                buf = self._ktv_rev_state.get(st_key)
+                if buf is None or buf.shape[0] != d:
+                    buf = np.zeros((d,), dtype=np.float32)
+                # allpass增益（轻扩散）
+                a = 0.6
+                aps.append((st_key, buf, a))
+
+            # 高频阻尼参数（空气吸收效果）：单极低通系数
+            hf_damp = 0.20 if extreme else 0.24  # 极致模式减少高频滚降，保留空气感
+            # 轻微调制参数（去金属感）
+            mod_depth = 0.0008 if extreme else 0.0006
+            mod_phase = float(getattr(self, f'_ktv_mod_phase_{key}', 0.0))
+
+            # 运行并行梳状滤波器
+            late = np.zeros((n,), dtype=np.float32)
+            for st_key, buf, g in combs:
+                d = buf.shape[0]
+                # 输出 = buf的尾巴 + 输入 + feedback*输出延迟
+                if n >= d:
+                    delayed = np.concatenate([buf, np.zeros((n-d,), dtype=np.float32)])
+                else:
+                    delayed = np.concatenate([buf[:n], np.zeros((0,), dtype=np.float32)])
+                v = delayed[:n] + y
+                # 高频阻尼（单极低通）
+                if len(v) > 2:
+                    v_lp = v.copy(); v_lp[1:] = (1.0 - hf_damp) * v[1:] + hf_damp * v[:-1]
+                    v = v_lp
+                # 写回buffer（简易FIR型反馈近似，块级更新）
+                new_tail = (delayed[-d:] * g + v[-d:]) if n >= d else (buf * g + v[-d:])
+                self._ktv_rev_state[st_key] = new_tail.astype(np.float32, copy=False)
+                late += v * (1.0/len(combs) if len(combs) > 0 else 0.25)
+
+            # 串联全通扩散
+            ap_out = late
+            for st_key, buf, a in aps:
+                d = buf.shape[0]
+                if n > d:
+                    delayed = np.concatenate([buf, ap_out[:-d]])
+                else:
+                    delayed = np.concatenate([buf[-d:-d+n], np.zeros((d-n,), dtype=np.float32)])
+                # y = -a*x + delayed + a*y_prev（块级近似）
+                y_ap = delayed - a * ap_out
+                # 更新状态为当前块尾
+                self._ktv_rev_state[st_key] = ap_out[-d:].astype(np.float32, copy=False)
+                ap_out = y_ap
+
+            # 轻微调制去“梳齿感”
+            if n > 8:
+                t = np.arange(n, dtype=np.float32)
+                # 慢速LFO ~ 0.5Hz，以样本为单位近似相位推进
+                lfo = 1.0 + mod_depth * np.sin(2*np.pi*(mod_phase + t / (sr*2.0)))
+                ap_out = ap_out * lfo.astype(np.float32)
+                mod_phase = (mod_phase + n / (sr*2.0)) % 1.0
+                setattr(self, f'_ktv_mod_phase_{key}', mod_phase)
+
+            # 4) 存在感 + 空气感 + 低频“质感”
+            if n >= 8:
+                mf = (0.12 if extreme else 0.10) * (1.0 - 0.3 * nat)
+                hf = (0.08 if extreme else 0.05) * (1.0 - 0.5 * nat)
+                mid = ap_out.copy(); mid[1:] = 0.5*ap_out[1:] + 0.5*ap_out[:-1]
+                air = ap_out - mid
+                ap_out = ap_out + mf*mid + hf*air
+                # 低频主体增强（~250Hz以下），增加“厚/震撼”
+                try:
+                    fc_b = 250.0
+                    alpha_b = float(np.exp(-2.0 * np.pi * fc_b / max(2000.0, sr)))
+                    if not hasattr(self, '_ktv_body_state'):
+                        self._ktv_body_state = {}
+                    prev_b = float(self._ktv_body_state.get(key, 0.0))
+                    ylpb = np.empty_like(ap_out)
+                    for i in range(n):
+                        prev_b = alpha_b * prev_b + (1.0 - alpha_b) * ap_out[i]
+                        ylpb[i] = prev_b
+                    body_gain = 0.20 if extreme else 0.10
+                    ap_out = ap_out + body_gain * ylpb
+                    self._ktv_body_state[key] = float(prev_b)
+                except Exception:
+                    pass
+
+            # 中距多路径反射簇（50/150/300ms）：加宽空间感（始终轻度添加）
+            try:
+                sr_f = sr
+                mpath_ms = [0.050, 0.150, 0.300]
+                mpath_gs = [0.48, 0.30, 0.22] if extreme else [0.40, 0.25, 0.18]
+                maxd = int(max(mpath_ms) * sr_f) if mpath_ms else 0
+                if maxd > 0 and len(ap_out) > 0:
+                    if not hasattr(self, '_ktv_mpath_state'):
+                        self._ktv_mpath_state = {}
+                    st_m = self._ktv_mpath_state.get(key, np.zeros((maxd,), dtype=np.float32))
+                    if st_m.shape[0] < maxd:
+                        tmp = np.zeros((maxd,), dtype=np.float32)
+                        tmp[-st_m.shape[0]:] = st_m
+                        st_m = tmp
+                    add_m = np.zeros_like(ap_out)
+                    for d_ms, gmp in zip(mpath_ms, mpath_gs):
+                        d = int(d_ms * sr_f)
+                        if d <= 0:
+                            continue
+                        if n > d:
+                            tap = np.concatenate([st_m[-d:], ap_out[:-d]])
+                        else:
+                            pad = d - n
+                            tap = np.concatenate([st_m[-d:-d+n], np.zeros((pad,), dtype=np.float32)])
+                        # 轻微高频滚降，防止刺耳
+                        if len(tap) > 1:
+                            tap[1:] = 0.7*tap[1:] + 0.3*tap[:-1]
+                        add_m += gmp * tap[:n]
+                    ap_out = ap_out + add_m
+                    self._ktv_mpath_state[key] = np.concatenate([st_m, ap_out])[-maxd:].astype(np.float32, copy=False)
+            except Exception:
+                pass
+
+            # 回声强调：更长的明显回声（≈300/450/600ms），匹配KTV感
+            if echo_emph:
+                base_delays = [0.300, 0.450]
+                if echo_repeats >= 1:
+                    base_delays += [0.600]
+                if echo_repeats >= 2:
+                    base_delays += [0.750]
+                if echo_repeats >= 3:
+                    base_delays += [0.900]
+                echo_ms = base_delays
+                # 递减增益（更明显的首回声），后续逐步减弱
+                echo_gs = [0.65, 0.50] + [max(0.22 if extreme else 0.20, (0.36 if extreme else 0.30) - (0.08 if extreme else 0.08)*i) for i in range(len(base_delays)-2)]
+                # 回声音量缩放
+                echo_level = str(getattr(self, 'ktv_echo_level', 'high'))
+                lvl_scale = (1.60 if extreme else 1.45) if echo_level == 'high' else (1.0 if echo_level == 'mid' else 0.8)
+                echo_gs = [min(1.0, g * lvl_scale) for g in echo_gs]
+                # 状态
+                if not hasattr(self, '_ktv_echo_state'):
+                    self._ktv_echo_state = {}
+                st_e = self._ktv_echo_state.get(key, np.zeros((int(max(echo_ms)*sr)+1,), dtype=np.float32))
+                out_echo = np.zeros((n,), dtype=np.float32)
+                # 反馈回声链（简单反馈回路 + 低通）
+                if not hasattr(self, '_ktv_echo_fb_state'):
+                    self._ktv_echo_fb_state = {}
+                for ems, eg in zip(echo_ms, echo_gs):
+                    d = max(1, int(ems * sr))
+                    fb_key = f"{key}:fb:{d}"
+                    fb_buf = self._ktv_echo_fb_state.get(fb_key, np.zeros((d,), dtype=np.float32))
+                    if n > d:
+                        delayed = np.concatenate([fb_buf, y[:-d]])
+                    else:
+                        delayed = np.concatenate([fb_buf[-d:-d+n], np.zeros((d-n,), dtype=np.float32)])
+                    if len(delayed) > 1:
+                        delayed[1:] = 0.7*delayed[1:] + 0.3*delayed[:-1]
+                    tap = eg * delayed[:n]
+                    out_echo += tap
+                    # 反馈系数：允许外部通过 self.ktv_echo_feedback 提升/降低（例如震撼测试用）
+                    fb_base = 0.36 if extreme else 0.30  # 极致版更持久
+                    try:
+                        fb = float(getattr(self, 'ktv_echo_feedback', fb_base))
+                    except Exception:
+                        fb = fb_base
+                    fb = float(np.clip(fb, 0.0, 0.85))
+                    new_tail = (delayed[-d:] * fb + y[-d:]) if n >= d else (fb_buf * fb + y[-d:])
+                    self._ktv_echo_fb_state[fb_key] = new_tail.astype(np.float32, copy=False)
+                ap_out = ap_out + out_echo
+                self._ktv_echo_state[key] = np.concatenate([st_e, y])[-st_e.shape[0]:].astype(np.float32, copy=False)
+
+            # 空灵感增强：对湿声做高频搁架式提升（>~3kHz ~1.6x），超轻实现
+            try:
+                fc = 3000.0  # 频率阈值
+                alpha = float(np.exp(-2.0 * np.pi * fc / max(2000.0, sr)))
+                if not hasattr(self, '_ktv_air_state'):
+                    self._ktv_air_state = {}
+                prev = float(self._ktv_air_state.get(key, 0.0))
+                ylp = np.empty_like(ap_out)
+                for i in range(n):
+                    prev = alpha * prev + (1.0 - alpha) * ap_out[i]
+                    ylp[i] = prev
+                high = ap_out - ylp
+                air_gain = 0.85 if extreme else 0.60  # 极致更空灵
+                ap_out = ap_out + air_gain * high
+                self._ktv_air_state[key] = float(prev)
+            except Exception:
+                pass
+
+            # 5) 动态ducking（可关闭）：人声强时稍降湿声，让主声更清晰；人声弱时抬升湿声强化空旷
+            enable_duck = bool(getattr(self, 'ktv_dynamic_ducking', True))
+            if enable_duck and n > 8:
+                rms_y = float(np.sqrt(np.mean(y*y)) + 1e-9)
+                rms_w = float(np.sqrt(np.mean(ap_out*ap_out)) + 1e-9)
+                voice_strong = rms_y > 0.10
+                # 降低duck深度，保留湿声存在
+                duck = 0.08 if voice_strong else 0.02
+                wet_dyn = max(0.0, min(1.0, wet * (1.0 - duck))) if voice_strong else min(1.0, wet * 1.10)
+            else:
+                wet_dyn = wet
+            wet_only = bool(getattr(self, 'ktv_wet_only', False))
+            if wet_only:
+                out = ap_out
+            else:
+                # 极致模式下，湿声占比更高，且轻微抑制干声以提升“空旷感”
+                if extreme:
+                    wet_mix = min(1.0, wet_dyn * 1.10)
+                    dry_mix = max(0.0, 1.0 - wet_mix) * 0.92
+                    out = dry_mix * y + wet_mix * ap_out
+                else:
+                    out = (1.0 - wet_dyn) * y + wet_dyn * ap_out
+
+            # 4.5) Haas 立体声扩展：对变体1（通常为右声道）做 9–15ms 级延迟，显著拓宽
+            if stereo_variant == 1 and n > 1:
+                try:
+                    if not hasattr(self, '_ktv_haas_state'):
+                        self._ktv_haas_state = {}
+                    d_haas = int(min(0.015, 0.010 + 0.002 * (1.0 - nat)) * sr)
+                    d_haas = max(1, d_haas)
+                    st_key_h = f"{key}:haas:{d_haas}"
+                    hbuf = self._ktv_haas_state.get(st_key_h, np.zeros((d_haas,), dtype=np.float32))
+                    if n > d_haas:
+                        out_del = np.concatenate([hbuf, out[:-d_haas]])
+                    else:
+                        out_del = np.concatenate([hbuf[-d_haas:-d_haas+n], np.zeros((d_haas-n,), dtype=np.float32)])
+                    self._ktv_haas_state[st_key_h] = out[-d_haas:].astype(np.float32, copy=False)
+                    out = out_del
+                except Exception:
+                    pass
+
+            # 6) 快速峰值保护 + 轻度化妆增益 + 极低电平下倾
+            peak = float(np.max(np.abs(out)) + 1e-12)
+            if peak > 0.985:
+                out *= (0.975/peak)
+            elif peak < 0.35:
+                # 轻度化妆增益，避免整体偏小导致“KTV不明显”
+                out *= 1.08
+            rms = float(np.sqrt(np.mean(out*out)) + 1e-12)
+            if rms < 0.012:
+                out *= 0.96
+
+            # 7) 输出增益（用户可配，默认 +3 dB），在外部头房/VRMS之前增加主观响度
+            gain_db = float(getattr(self, 'ktv_output_gain_db', 3.0))
+            out = out * float(10.0 ** (gain_db / 20.0))
+
+            return out.astype(np.float32, copy=False)
+        except Exception:
+            return audio_data
+
     # ========= 监听耳返安全输出：头房 + VRMS软限幅（无染色） ========= #
     def _apply_headroom_and_vrms(self, audio_data: np.ndarray, key: str = 'default') -> np.ndarray:
         """对耳返输出添加固定头房和慢速VRMS软限幅，避免削波又尽量不改变音色。
@@ -15975,6 +16414,120 @@ class ECGStylePitchVisualizer(QWidget):
             natural_action = context_menu.addAction("🌿 自然耳返强度…")
             natural_action.triggered.connect(self.show_natural_earback_dialog)
 
+            # 🎤 KTV模式（推荐：一开即空旷回声）
+            ktv_action = context_menu.addAction("🎤 KTV模式（推荐）")
+            ktv_action.setCheckable(True)
+            ktv_action.setChecked(bool(getattr(self, 'monitor_ktv_mode', False)))
+            def on_ktv_toggled(checked: bool):
+                try:
+                    self.monitor_ktv_mode = bool(checked)
+                    # 避免与微型KTV氛围叠加（KTV模式开启时关闭微型氛围）
+                    try:
+                        if checked:
+                            # 允许下一次回调按实际声道数做一次性自适应
+                            try:
+                                self._ktv_adapted_once = False
+                            except Exception:
+                                pass
+                            setattr(self, 'monitor_ktv_ambience', False)
+                            # 默认启用立体声扩散
+                            self.ktv_stereo_widen = True
+                            # 如RAW直通开启则关闭，避免KTV被绕过
+                            if bool(getattr(self, 'monitor_raw_mode', False)):
+                                self.monitor_raw_mode = False
+                            # 每次开启都应用强力预设，保证一开即明显
+                            self.ktv_isolation = True
+                            self.ktv_preset = 'hall'
+                            self.ktv_wet_level = 'high'
+                            self.ktv_room_size = 'large'
+                            self.ktv_predelay = 'long'
+                            self.ktv_echo_emphasis = True
+                            self.ktv_echo_repeats = 4
+                            self.ktv_echo_level = 'high'
+                            self.ktv_dynamic_ducking = False
+                            self.ktv_wet_only = False
+                            self.ktv_output_gain_db = 9.0
+                            # 极致增强：让效果一开就“很KTV”
+                            self.ktv_extreme = True
+                            # 结合当前设备做一次自适应
+                            try:
+                                self._ktv_adapt_to_device()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    state = "开" if checked else "关"
+                    self._log_rate_limit("ktv_mode_toggle", f"🎤 KTV模式: {state}", 0.6, 1)
+                except Exception:
+                    pass
+            ktv_action.toggled.connect(on_ktv_toggled)
+
+            # 🚀 KTV震撼测试（10秒强回声纯湿声）
+            shock_action = context_menu.addAction("🚀 KTV震撼测试（10秒纯湿声）")
+            def start_ktv_shock_test():
+                try:
+                    # 若未开启KTV则先开启
+                    if not bool(getattr(self, 'monitor_ktv_mode', False)):
+                        try:
+                            ktv_action.setChecked(True)
+                        except Exception:
+                            self.monitor_ktv_mode = True
+                    # 记录旧参数以便恢复
+                    self._ktv_prev_for_test = {
+                        'ktv_wet_only': bool(getattr(self, 'ktv_wet_only', False)),
+                        'ktv_echo_emphasis': bool(getattr(self, 'ktv_echo_emphasis', False)),
+                        'ktv_echo_repeats': int(getattr(self, 'ktv_echo_repeats', 2)),
+                        'ktv_echo_level': str(getattr(self, 'ktv_echo_level', 'mid')),
+                        'ktv_output_gain_db': float(getattr(self, 'ktv_output_gain_db', 3.0)),
+                        'ktv_echo_feedback': getattr(self, 'ktv_echo_feedback', None),
+                        'ktv_wet_level': str(getattr(self, 'ktv_wet_level', 'mid')),
+                        'ktv_extreme': bool(getattr(self, 'ktv_extreme', False)),
+                    }
+                    # 应用强力测试参数：纯湿声 + 强回声 + 更高增益
+                    self.ktv_wet_only = True
+                    self.ktv_echo_emphasis = True
+                    self.ktv_echo_repeats = 5
+                    self.ktv_echo_level = 'high'
+                    self.ktv_output_gain_db = 12.0
+                    self.ktv_wet_level = 'high'
+                    self.ktv_extreme = True
+                    # 提升回声反馈以获得“噗—噗—噗”明显衰减
+                    try:
+                        self.ktv_echo_feedback = 0.52
+                    except Exception:
+                        pass
+                    # 10秒后自动恢复
+                    from PyQt6.QtCore import QTimer
+                    def _revert_test():
+                        try:
+                            prev = getattr(self, '_ktv_prev_for_test', None)
+                            if prev is not None:
+                                self.ktv_wet_only = prev.get('ktv_wet_only', False)
+                                self.ktv_echo_emphasis = prev.get('ktv_echo_emphasis', False)
+                                self.ktv_echo_repeats = prev.get('ktv_echo_repeats', 2)
+                                self.ktv_echo_level = prev.get('ktv_echo_level', 'mid')
+                                self.ktv_output_gain_db = prev.get('ktv_output_gain_db', 3.0)
+                                if prev.get('ktv_wet_level') is not None:
+                                    self.ktv_wet_level = prev.get('ktv_wet_level')
+                                self.ktv_extreme = prev.get('ktv_extreme', self.ktv_extreme)
+                                # 回声反馈恢复（允许不存在时删除）
+                                if prev.get('ktv_echo_feedback', None) is None:
+                                    try:
+                                        delattr(self, 'ktv_echo_feedback')
+                                    except Exception:
+                                        pass
+                                else:
+                                    self.ktv_echo_feedback = prev.get('ktv_echo_feedback')
+                                self._ktv_prev_for_test = None
+                        except Exception:
+                            pass
+                        self._log_rate_limit('ktv_test', '🚀 KTV震撼测试结束，已恢复设置', 0.8, 1)
+                    QTimer.singleShot(10000, _revert_test)
+                    self._log_rate_limit('ktv_test', '🚀 已启用 KTV震撼测试：10秒纯湿声强回声', 0.8, 1)
+                except Exception as e:
+                    print(f"⚠️ 启用KTV震撼测试失败: {e}")
+            shock_action.triggered.connect(start_ktv_shock_test)
+
             # RAW直通（最小处理）开关（可勾选）
             raw_label = "🧪 RAW直通（最小处理）"
             raw_action = context_menu.addAction(raw_label)
@@ -16273,6 +16826,57 @@ class ECGStylePitchVisualizer(QWidget):
                 print("⚠️ 无法获取音频处理器引用")
         except Exception as e:
             print(f"❌ 切换到DirectSound模式失败: {e}")
+
+    # ===== KTV 自适应：按设备/通道/缓冲参数自动调强度与风格 ===== #
+    def _ktv_adapt_to_device(self, out_channels: int | None = None):
+        """根据当前设备配置/输出通道/缓冲等，自适应设置KTV的关键参数，确保一开即明显。
+        - out_channels: 回调中 outdata 的声道数；若未知，可传 None。
+        """
+        try:
+            main_window = self.get_main_window()
+            cfg = None
+            if main_window and hasattr(main_window, 'audio_processor'):
+                cfg = getattr(main_window.audio_processor, '_selected_device_config', None)
+
+            name = (cfg.get('name') if isinstance(cfg, dict) else None) or ''
+            sr = int(cfg.get('samplerate', getattr(self, 'sample_rate', 48000))) if isinstance(cfg, dict) else int(getattr(self, 'sample_rate', 48000))
+            bs = int(cfg.get('blocksize', 128)) if isinstance(cfg, dict) else 128
+            mode = str(cfg.get('mode', '')).lower() if isinstance(cfg, dict) else ''
+
+            # 粗略判断设备“保守/兼容度模式”与“高性能模式”
+            compat = ('directsound' in mode) or ('兼容' in name) or (bs >= 256) or (sr <= 44100)
+
+            # 判断输出是否单声道（无法扩散）
+            is_mono_out = (out_channels == 1)
+
+            # 基础强力预设（在 on_ktv_toggled 已经设置，这里进一步按设备微调）
+            self.ktv_isolation = True
+            self.ktv_preset = 'hall'
+            self.ktv_room_size = 'large'
+            self.ktv_predelay = 'long'
+            self.ktv_wet_level = 'high'
+            self.ktv_echo_emphasis = True
+            self.ktv_echo_repeats = 3
+            self.ktv_echo_level = 'high'
+            self.ktv_dynamic_ducking = False
+            self.ktv_wet_only = False
+            self.ktv_stereo_widen = not is_mono_out
+
+            # 输出增益：兼容模式/单声道适当更高
+            self.ktv_output_gain_db = 7.0 if (compat or is_mono_out) else 6.0
+
+            # 如果单声道，靠湿度/回声补偿空间感
+            if is_mono_out:
+                # 单声道下提高湿声存在感与回声可听度
+                self.ktv_wet_level = 'high'
+                self.ktv_echo_repeats = max(3, int(getattr(self, 'ktv_echo_repeats', 3)))
+                self.ktv_echo_level = 'high'
+
+            # 提示一次
+            sig = f"{name}|sr{sr}|bs{bs}|out{out_channels or 'N'}|compat{compat}"
+            self._log_rate_limit('ktv_adapt', f"🧠 KTV自适应: {sig}", 0.8, 1)
+        except Exception as e:
+            print(f"⚠️ KTV自适应失败: {e}")
     
     def show_audio_status(self):
         """显示实时音频状态"""
@@ -16377,6 +16981,22 @@ class ECGStylePitchVisualizer(QWidget):
                         # 性能统计
                         status_info += f"\n⚡ 性能统计:\n"
                         status_info += f"   处理线程: {'活跃' if hasattr(processor, 'is_audio_processing') and processor.is_audio_processing else '停止'}\n"
+
+                        # KTV 关键信息
+                        try:
+                            status_info += f"\n🎤 KTV状态:\n"
+                            status_info += f"   KTV模式: {'开启' if bool(getattr(self, 'monitor_ktv_mode', False)) else '关闭'}\n"
+                            status_info += f"   RAW直通: {'开启' if bool(getattr(self, 'monitor_raw_mode', False)) else '关闭'}\n"
+                            status_info += f"   立体声扩散: {'是' if bool(getattr(self, 'ktv_stereo_widen', True)) else '否'}\n"
+                            status_info += f"   仅湿声: {'是' if bool(getattr(self, 'ktv_wet_only', False)) else '否'}\n"
+                            status_info += f"   预设/房间/湿度: {getattr(self, 'ktv_preset', 'standard')}/{getattr(self, 'ktv_room_size', 'medium')}/{getattr(self, 'ktv_wet_level', 'mid')}\n"
+                            status_info += f"   回声: emph={bool(getattr(self, 'ktv_echo_emphasis', False))}, 重复={int(getattr(self, 'ktv_echo_repeats', 2))}, 级别={getattr(self, 'ktv_echo_level', 'mid')}\n"
+                            status_info += f"   极致模式: {'是' if bool(getattr(self, 'ktv_extreme', False)) else '否'}\n"
+                            status_info += f"   输出增益: {float(getattr(self, 'ktv_output_gain_db', 3.0)):.1f} dB\n"
+                            if hasattr(self, '_ktv_adapted_once'):
+                                status_info += f"   设备自适应已执行: {'是' if bool(getattr(self, '_ktv_adapted_once', False)) else '否'}\n"
+                        except Exception:
+                            pass
                         
                         status_text.setPlainText(status_info)
                     else:
