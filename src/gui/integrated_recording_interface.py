@@ -18094,6 +18094,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 if file_path:
                     dlg.accept()
                     try:
+                        # 启动离线一次性绘制流程
+                        if hasattr(self, '_start_offline_onepass'):
+                            return self._start_offline_onepass(file_path)
+                        # 回退：若未打补丁，提示占位
                         QMessageBox.information(self, "一次性绘制", "该功能将很快提供：会对整个文件进行分析并一次性绘制结果。")
                     except Exception:
                         print("[LocalPitch] one-pass placeholder invoked.")
@@ -19313,6 +19317,630 @@ def _ifc_exit_local_file_mode(self):
         self._lfm_prev = None
     except Exception:
         pass
+
+# ========================= 本地音高检测：纯人声·一次性绘制 实现 ========================= #
+class _OnePassPitchWorker(QThread):
+    progress = pyqtSignal(int)           # 0-100
+    message = pyqtSignal(str)
+    finished_ok = pyqtSignal(object)     # payload: dict with segments, duration
+    failed = pyqtSignal(str)
+    def __init__(self, ifc, file_path: str):
+        super().__init__(ifc)
+        self.ifc = ifc
+        self.file_path = file_path
+        self._cancel = False
+    def cancel(self):
+        self._cancel = True
+    def run(self):
+        try:
+            import numpy as np
+            from collections import deque
+            # 1) 解码与重采样
+            self.message.emit("正在解码音频…")
+            sr_target = int(getattr(self.ifc.audio_processor, 'sample_rate', 48000) or 48000)
+            data, sr = None, None
+            path = str(self.file_path)
+            try:
+                import soundfile as sf
+                data, sr = sf.read(path, always_2d=True)
+            except Exception:
+                try:
+                    import wave
+                    with wave.open(path, 'rb') as wf:
+                        sr = wf.getframerate()
+                        n = wf.getnframes()
+                        ch = wf.getnchannels()
+                        raw = wf.readframes(n)
+                    arr = np.frombuffer(raw, dtype=np.int16)
+                    if ch > 1:
+                        arr = arr.reshape(-1, ch).mean(axis=1)
+                    data = arr.astype(np.float32) / 32768.0
+                    data = data.reshape(-1, 1)
+                except Exception as e:
+                    raise RuntimeError(f"无法读取音频文件: {e}")
+            if data is None or sr is None:
+                raise RuntimeError("解码失败")
+            if self._cancel:
+                return
+            if data.ndim == 2 and data.shape[1] > 1:
+                data = data.mean(axis=1, dtype=np.float64)
+            else:
+                data = data.squeeze()
+            data = data.astype(np.float32)
+            # 重采样到处理器采样率
+            if int(sr) != int(sr_target):
+                data = _LocalFileRealtimeController._resample_linear(data, int(sr), int(sr_target))
+                sr = int(sr_target)
+            audio = np.ascontiguousarray(data.astype(np.float32))
+            total_s = float(len(audio)) / float(sr)
+            # 同步采样率到处理器，确保YIN范围正确
+            try:
+                self.ifc._apply_actual_input_samplerate(int(sr))
+            except Exception:
+                pass
+            # 2) 分帧YIN检测（或统一服务），构建时间/音高点
+            self.message.emit("正在分析音高…")
+            frame_window = int(getattr(self.ifc.audio_processor, '_frame_window', 2048) or 2048)
+            frame_hop = int(getattr(self.ifc.audio_processor, '_frame_hop', max(1, frame_window // 4)))
+            n = len(audio)
+            times = []
+            y_vals = []  # 连续八度值（与实时一致的Y坐标）
+            # 稳健音高：局部中值倍频纠正 + 半音级跳变限幅（贴近实时路径）
+            recent_hz = deque(maxlen=7)
+            last_stable_midi = None
+            # 与实时一致的阈值来源（如缺省则用合理默认）
+            try:
+                max_step_semi = float(getattr(self.ifc, '_max_step_semitones', 7.0))
+            except Exception:
+                max_step_semi = 7.0
+            try:
+                clamp_blend = float(getattr(self.ifc, '_clamp_blend_strength', 0.70))
+            except Exception:
+                clamp_blend = 0.70
+            try:
+                octave_lo, octave_hi = getattr(self.ifc, '_octave_adjust_range', (-2, 2))
+            except Exception:
+                octave_lo, octave_hi = (-2, 2)
+            # 性能：批量进度更新，目标 20s ~5s 内完成 -> 较大hop也可接受
+            # 这里保持和实时一致，若需提速可将 hop 放大至 window/2
+            use_service = bool(getattr(self.ifc, 'pitch_service', None)) and _PITCH_SERVICE_AVAILABLE
+            i = 0
+            last_prog = -1
+            while i + frame_window <= n:
+                if self._cancel:
+                    return
+                frame = audio[i:i+frame_window]
+                # 静音/弱声门限：过低RMS不计入，避免高次谐波假阳性
+                try:
+                    frame_rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+                except Exception:
+                    frame_rms = 0.0
+                if frame_rms < 0.0005:
+                    i += frame_hop
+                    # 保持 last_stable_midi 不被静音段污染
+                    continue
+                # 检测
+                if use_service:
+                    try:
+                        f0 = float(self.ifc.pitch_service.detect_pitch(frame, sr) or 0.0)
+                    except Exception:
+                        f0 = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
+                else:
+                    f0 = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
+                t = (i + frame_window * 0.5) / float(sr)
+                if f0 > 0:
+                    # 倍频纠正：以局部中值为参考，在 [octave_lo..octave_hi] 八度中选择最接近者
+                    ref = None
+                    try:
+                        if len(recent_hz) >= 3:
+                            ref = float(np.median(np.asarray(recent_hz, dtype=float)))
+                    except Exception:
+                        ref = None
+                    f_adj = f0
+                    if ref and ref > 0:
+                        best = f0
+                        best_err = abs(np.log2(max(f0, 1e-9) / ref))
+                        eps_tie = 0.08  # 略增强“偏低八度”偏置
+                        for k in range(int(octave_lo), int(octave_hi) + 1):
+                            if k == 0:
+                                continue
+                            f_try = f0 * (2.0 ** k)
+                            err = abs(np.log2(max(f_try, 1e-9) / ref))
+                            if (err + eps_tie) < best_err or (abs(err - best_err) <= eps_tie and f_try < best):
+                                best_err = err
+                                best = f_try
+                        f_adj = best
+                    recent_hz.append(f_adj)
+                    # 转 MIDI
+                    midi = 69 + 12 * np.log2(max(f_adj, 1e-9) / 440.0)
+                    # 跳变限幅（相邻帧）
+                    if last_stable_midi is not None:
+                        delta = midi - last_stable_midi
+                        if abs(delta) > max_step_semi:
+                            clamped = last_stable_midi + np.sign(delta) * max_step_semi
+                            midi = clamp_blend * clamped + (1.0 - clamp_blend) * midi
+                    last_stable_midi = midi
+                    # 同步到处理器，激活 detect_pitch_simple_yin 内的谐波守护逻辑
+                    try:
+                        self.ifc.audio_processor._last_stable_freq = float(f_adj)
+                        self.ifc.audio_processor._last_stable_conf = 0.6
+                    except Exception:
+                        pass
+                    # 转换至Y坐标（连续八度）
+                    y = midi / 12.0 - 1.0
+                    times.append(float(t))
+                    y_vals.append(float(y))
+                # 进度
+                prog = int((i + frame_window) * 100 / max(1, n))
+                if prog != last_prog and prog % 2 == 0:
+                    last_prog = prog
+                    self.progress.emit(prog)
+                i += frame_hop
+            # 3) 将连续音高点分段（静音/断裂处断开）
+            segments = []
+            # 轻量去尖刺：3点中值滤波（仅作用于已采样点，不改变趋势），贴近实时观感
+            if len(y_vals) >= 3:
+                try:
+                    import numpy as _np
+                    y_arr = _np.asarray(y_vals, dtype=_np.float32)
+                    y_med = y_arr.copy()
+                    # 中值核 [1,1,1]
+                    y_med[1:-1] = _np.median(_np.vstack([y_arr[:-2], y_arr[1:-1], y_arr[2:]]), axis=0)
+                    y_vals = y_med.tolist()
+                except Exception:
+                    pass
+            if times:
+                seg_t, seg_p = [times[0]], [y_vals[0]]
+                for k in range(1, len(times)):
+                    dt = times[k] - times[k-1]
+                    # 超过阈值或大跳变则断段
+                    if dt > 0.15 or abs((y_vals[k]-y_vals[k-1])*12.0) > 12.0:
+                        if len(seg_t) >= 1:
+                            segments.append((seg_t, seg_p))
+                        seg_t, seg_p = [times[k]], [y_vals[k]]
+                    else:
+                        seg_t.append(times[k])
+                        seg_p.append(y_vals[k])
+                if len(seg_t) >= 1:
+                    segments.append((seg_t, seg_p))
+            # 4) 段内八度稳定：以段内中值为锚，按12半音倍数对齐，修正整段偏高/偏低
+            if segments:
+                try:
+                    import numpy as _np
+                    stabilized = []
+                    for (st, sp) in segments:
+                        if not sp:
+                            stabilized.append((st, sp))
+                            continue
+                        midi_arr = _np.asarray([(y+1.0)*12.0 for y in sp], dtype=_np.float32)
+                        med = float(_np.median(midi_arr))
+                        adj = []
+                        for v in midi_arr:
+                            best_v = v; best_e = abs(v - med)
+                            for kk in (-24, -12, 12, 24):
+                                vv = v + kk
+                                ee = abs(vv - med)
+                                if ee < best_e or (abs(ee - best_e) <= 0.4 and vv < best_v):
+                                    best_e = ee; best_v = vv
+                            adj.append(best_v)
+                        # 段内本地窗口八度微调（5点邻域与中位数对齐）
+                        if len(adj) >= 5:
+                            adj_arr = _np.asarray(adj, dtype=_np.float32)
+                            adj_ref = adj_arr.copy()
+                            win = 2
+                            for j in range(len(adj_arr)):
+                                l = max(0, j - win); r = min(len(adj_arr)-1, j + win)
+                                if r - l >= 2:
+                                    local = adj_arr[l:r+1]
+                                    lmed = float(_np.median(local))
+                                    v = adj_arr[j]
+                                    # 若与局部中位差>8半音，尝试±12纠正（优先更低）
+                                    if abs(v - lmed) > 8.0:
+                                        cand = [v-12.0, v, v+12.0]
+                                        errs = [abs(c - lmed) for c in cand]
+                                        bi = int(_np.argmin(_np.asarray(errs)))
+                                        # 同误差时偏低
+                                        if bi == 2 and abs(errs[2]-errs[0]) <= 0.4:
+                                            bi = 0
+                                        adj_ref[j] = cand[bi]
+                            adj = adj_ref.tolist()
+                        # 轻量平滑：5点均值
+                        if len(adj) >= 5:
+                            ker = _np.ones(5, dtype=_np.float32)/5.0
+                            pad = _np.pad(_np.asarray(adj, dtype=_np.float32), (2,2), mode='edge')
+                            adj = _np.convolve(pad, ker, mode='valid').tolist()
+                        sp_new = [(vv/12.0) - 1.0 for vv in adj]
+                        stabilized.append((st, sp_new))
+                    segments = stabilized
+                except Exception:
+                    pass
+
+            # 5) 对不稳定段做细化重算（更小hop），仅对跳变过多的长段执行
+            if segments:
+                try:
+                    import numpy as _np
+                    refined_segments = []
+                    # 阈值：段内大跳比例>5%或大跳次数>=6且段点数>=30
+                    for (st, sp) in segments:
+                        if not sp or len(sp) < 30:
+                            refined_segments.append((st, sp)); continue
+                        jumps = 0
+                        for j in range(1, len(sp)):
+                            if abs((sp[j]-sp[j-1])*12.0) > 10.0:
+                                jumps += 1
+                        if jumps < 6 or (jumps/len(sp)) <= 0.05:
+                            refined_segments.append((st, sp)); continue
+                        # 细化：时间范围
+                        t0, t1 = float(st[0]), float(st[-1])
+                        i0 = int(max(0, _np.floor(t0 * sr)))
+                        i1 = int(min(len(audio), _np.ceil(t1 * sr)))
+                        if (i1 - i0) < (frame_window * 2):
+                            refined_segments.append((st, sp)); continue
+                        # 更小hop
+                        ref_hop = max(1, frame_window // 6)
+                        # 以段中值初始化参考
+                        med_midi = float(_np.median(_np.asarray([(y+1.0)*12.0 for y in sp], dtype=_np.float32)))
+                        ref_f = 440.0 * (2.0 ** ((med_midi - 69.0)/12.0))
+                        recent2 = deque(maxlen=7)
+                        for _ in range(3): recent2.append(ref_f)
+                        last_midi2 = med_midi
+                        tt, yy = [], []
+                        k = i0
+                        self.message.emit("正在细化不稳定片段…")
+                        while k + frame_window <= i1:
+                            fr = audio[k:k+frame_window]
+                            # 静音跳过
+                            try:
+                                fr_rms = float(_np.sqrt(_np.mean(fr.astype(_np.float64)**2)))
+                            except Exception:
+                                fr_rms = 0.0
+                            if fr_rms < 0.0005:
+                                k += ref_hop; continue
+                            # 检测
+                            if use_service:
+                                try:
+                                    f0r = float(self.ifc.pitch_service.detect_pitch(fr, sr) or 0.0)
+                                except Exception:
+                                    f0r = float(self.ifc.audio_processor.detect_pitch_simple_yin(fr) or 0.0)
+                            else:
+                                f0r = float(self.ifc.audio_processor.detect_pitch_simple_yin(fr) or 0.0)
+                            if f0r > 0:
+                                # 局部倍频纠正
+                                ref = float(_np.median(_np.asarray(recent2, dtype=float))) if len(recent2) else f0r
+                                best = f0r; best_err = abs(_np.log2(max(f0r,1e-9)/ref)); eps2=0.08
+                                for kk in range(int(octave_lo), int(octave_hi)+1):
+                                    if kk==0: continue
+                                    ft = f0r*(2.0**kk); er = abs(_np.log2(max(ft,1e-9)/ref))
+                                    if (er + eps2) < best_err or (abs(er-best_err)<=eps2 and ft < best):
+                                        best_err = er; best = ft
+                                f0r = best
+                                recent2.append(f0r)
+                                mm = 69 + 12*_np.log2(max(f0r,1e-9)/440.0)
+                                # 跳变限幅
+                                if last_midi2 is not None:
+                                    de = mm - last_midi2
+                                    if abs(de) > max_step_semi:
+                                        cl = last_midi2 + _np.sign(de)*max_step_semi
+                                        mm = clamp_blend*cl + (1.0-clamp_blend)*mm
+                                last_midi2 = mm
+                                yy.append(mm/12.0 - 1.0)
+                                tt.append((k + frame_window*0.5)/float(sr))
+                            k += ref_hop
+                        if len(yy) >= 8:
+                            # 细化后再轻平滑
+                            if len(yy) >= 5:
+                                ker = _np.ones(5, dtype=_np.float32)/5.0
+                                pad = _np.pad(_np.asarray(yy, dtype=_np.float32), (2,2), mode='edge')
+                                yy = _np.convolve(pad, ker, mode='valid').tolist()
+                            refined_segments.append((tt, yy))
+                        else:
+                            refined_segments.append((st, sp))
+                    segments = refined_segments
+                except Exception:
+                    pass
+            self.progress.emit(100)
+            self.finished_ok.emit({'segments': segments, 'duration': total_s})
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class _OnePassProgressDialog(QDialog):
+    def __init__(self, ifc, title="一次性绘制"):
+        super().__init__(ifc)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        v = QVBoxLayout(self)
+        self.lbl = QLabel("准备中…")
+        v.addWidget(self.lbl)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        v.addWidget(self.bar)
+        row = QHBoxLayout()
+        self.btn_cancel = QPushButton("取消")
+        row.addWidget(self.btn_cancel)
+        v.addLayout(row)
+
+    def set_message(self, text: str):
+        try:
+            self.lbl.setText(text)
+        except Exception:
+            pass
+    def set_progress(self, val: int):
+        try:
+            self.bar.setValue(int(max(0, min(100, val))))
+        except Exception:
+            pass
+
+
+def _build_segments_from_times_pitch(times, y_vals):
+    """将时间/八度y序列进行稳健分段，返回[(t_list, y_list), ...]"""
+    segments = []
+    if not times:
+        return segments
+    seg_t, seg_y = [times[0]], [y_vals[0]]
+    for i in range(1, len(times)):
+        dt = times[i] - times[i-1]
+        if dt > 0.15 or abs((y_vals[i] - y_vals[i-1]) * 12.0) > 12.0:
+            if seg_t:
+                segments.append((seg_t, seg_y))
+            seg_t, seg_y = [times[i]], [y_vals[i]]
+        else:
+            seg_t.append(times[i])
+            seg_y.append(y_vals[i])
+    if seg_t:
+        segments.append((seg_t, seg_y))
+    return segments
+
+
+def _apply_full_duration_axis(visualizer, duration: float):
+    try:
+        visualizer.max_history_time = max(1.0, float(duration))
+        visualizer.time_window = max(1.0, float(duration))
+        if hasattr(visualizer, 'ax'):
+            try:
+                visualizer.ax.set_xlim(0.0, visualizer.time_window)
+            except Exception:
+                pass
+        if hasattr(visualizer, 'canvas'):
+            visualizer.canvas.draw_idle()
+    except Exception:
+        pass
+
+
+@_patch_method('_start_offline_onepass')
+def _ifc_start_offline_onepass(self, file_path: str):
+    # 停止正在进行的录音/监听，避免线程干扰
+    try:
+        if getattr(self, 'is_recording', False):
+            self.stop_recording()
+    except Exception:
+        pass
+    try:
+        self.audio_processor.is_recording = False
+        self.audio_processor.is_global_monitoring_active = False
+        self.audio_processor.is_monitoring_only = False
+    except Exception:
+        pass
+    # 清理并准备全时轴
+    try:
+        self.visualizer.clear_data()
+    except Exception:
+        pass
+    # 进度对话框
+    prog = _OnePassProgressDialog(self, title="一次性绘制 - 本地音高解析")
+    worker = _OnePassPitchWorker(self, file_path)
+
+    def _on_prog(p):
+        prog.set_progress(p)
+    def _on_msg(m):
+        prog.set_message(m)
+    def _on_ok(payload):
+        try:
+            prog.set_message("绘制中…")
+            prog.set_progress(100)
+            segs = payload.get('segments', [])
+            dur = float(payload.get('duration', 0.0) or 0.0)
+            # 设置时间轴为完整音频时长
+            _apply_full_duration_axis(self.visualizer, dur)
+            # 一次性绘制分段曲线
+            self.visualizer.draw_segmented_pitch_line(segs)
+            # 创建回放控制（一次性绘制后的浏览与试听）
+            try:
+                # 保存音频缓存以便回放
+                self._onepass_playback = _OnePassPlaybackController(self, file_path)
+                self._onepass_playback.decode_if_needed()
+                self._onepass_panel = _OnePassPlaybackPanel(self, self._onepass_playback, total_s=dur)
+                self._onepass_panel.show()
+            except Exception as _pp_e:
+                print(f"[OnePass] 回放面板创建失败: {_pp_e}")
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "一次性绘制", f"绘制失败: {e}")
+            except Exception:
+                print(f"[OnePass] 绘制失败: {e}")
+        finally:
+            try:
+                prog.accept()
+            except Exception:
+                pass
+    def _on_fail(err):
+        try:
+            QMessageBox.critical(self, "一次性绘制", f"分析失败: {err}")
+        except Exception:
+            print(f"[OnePass] 失败: {err}")
+        try:
+            prog.reject()
+        except Exception:
+            pass
+    def _on_cancel():
+        try:
+            worker.cancel()
+        except Exception:
+            pass
+        try:
+            prog.reject()
+        except Exception:
+            pass
+
+    worker.progress.connect(_on_prog)
+    worker.message.connect(_on_msg)
+    worker.finished_ok.connect(_on_ok)
+    worker.failed.connect(_on_fail)
+    prog.btn_cancel.clicked.connect(_on_cancel)
+    # 启动
+    try:
+        worker.start()
+        prog.show()
+        prog.exec()
+    finally:
+        try:
+            if worker.isRunning():
+                worker.cancel()
+                worker.wait(200)
+        except Exception:
+            pass
+
+
+class _OnePassPlaybackController(QObject):
+    tick = pyqtSignal(float)  # 播放头位置(秒)
+    def __init__(self, ifc, file_path: str):
+        super().__init__(ifc)
+        self.ifc = ifc
+        self.file_path = file_path
+        self.sr = int(getattr(ifc.audio_processor, 'sample_rate', 48000) or 48000)
+        self.audio = None
+        self.total_s = 0.0
+        self.pos = 0
+        self.playing = False
+        self._stream = None
+        self._ui_timer = None
+    def decode_if_needed(self):
+        if self.audio is not None:
+            return
+        import numpy as np
+        try:
+            import soundfile as sf
+            data, sr = sf.read(self.file_path, always_2d=True)
+        except Exception:
+            try:
+                import wave
+                with wave.open(self.file_path, 'rb') as wf:
+                    sr = wf.getframerate(); n = wf.getnframes(); ch = wf.getnchannels(); raw = wf.readframes(n)
+                arr = np.frombuffer(raw, dtype=np.int16)
+                if ch > 1:
+                    arr = arr.reshape(-1, ch).mean(axis=1)
+                data = arr.astype(np.float32)/32768.0
+                data = data.reshape(-1, 1)
+            except Exception as e:
+                raise RuntimeError(f"无法读取音频文件: {e}")
+        if data.ndim == 2 and data.shape[1] > 1:
+            data = data.mean(axis=1)
+        else:
+            data = data.squeeze()
+        data = data.astype(np.float32)
+        if int(sr) != int(self.sr):
+            data = _LocalFileRealtimeController._resample_linear(data, int(sr), int(self.sr))
+        self.audio = np.ascontiguousarray(data.astype(np.float32))
+        self.total_s = float(len(self.audio))/float(self.sr)
+    def play(self):
+        if self.audio is None:
+            self.decode_if_needed()
+        import sounddevice as sd
+        if self._stream is None:
+            self._stream = sd.OutputStream(samplerate=self.sr, channels=1, dtype='float32', callback=self._sd_cb)
+            self._stream.start()
+        self.playing = True
+        if self._ui_timer is None:
+            self._ui_timer = QTimer(self)
+            self._ui_timer.setTimerType(Qt.TimerType.PreciseTimer)
+            self._ui_timer.timeout.connect(self._on_ui)
+            self._ui_timer.start(30)
+    def pause(self):
+        self.playing = False
+    def stop(self):
+        self.playing = False
+        self.pos = 0
+        self.tick.emit(0.0)
+    def seek(self, sec: float):
+        sec = max(0.0, min(float(sec), self.total_s))
+        self.pos = int(round(sec * self.sr))
+        self.tick.emit(sec)
+    def _sd_cb(self, outdata, frames, time_info, status):
+        import numpy as np
+        if self.audio is None or not self.playing:
+            outdata[:] = 0
+            return
+        i0 = self.pos; i1 = min(i0+frames, len(self.audio))
+        chunk = self.audio[i0:i1]
+        if chunk.shape[0] < frames:
+            pad = np.zeros((frames - chunk.shape[0],), dtype=np.float32)
+            chunk = np.concatenate([chunk, pad])
+        outdata[:,0] = chunk
+        self.pos = min(self.pos + frames, len(self.audio))
+    def _on_ui(self):
+        self.tick.emit(float(self.pos)/float(self.sr))
+
+
+class _OnePassPlaybackPanel(QDialog):
+    def __init__(self, ifc, ctrl: _OnePassPlaybackController, total_s: float):
+        super().__init__(ifc)
+        self.ifc = ifc
+        self.ctrl = ctrl
+        self.setWindowTitle("一次性绘制 - 回放控制")
+        self.setModal(False)
+        self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        v = QVBoxLayout(self)
+        self.lbl = QLabel("00:00 / 00:00")
+        v.addWidget(self.lbl)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 1000)
+        v.addWidget(self.slider)
+        row = QHBoxLayout()
+        self.btn_play = QPushButton("播放")
+        self.btn_pause = QPushButton("暂停")
+        self.btn_stop = QPushButton("停止")
+        row.addWidget(self.btn_play); row.addWidget(self.btn_pause); row.addWidget(self.btn_stop)
+        v.addLayout(row)
+        self.btn_play.clicked.connect(self.ctrl.play)
+        self.btn_pause.clicked.connect(self.ctrl.pause)
+        self.btn_stop.clicked.connect(self.ctrl.stop)
+        self.slider.sliderPressed.connect(self._on_press)
+        self.slider.sliderReleased.connect(self._on_release)
+        self.slider.valueChanged.connect(self._on_change)
+        self._dragging = False
+        self._total_s = float(total_s)
+        self.ctrl.tick.connect(self._on_tick)
+        self._update_lbl(0.0)
+    @staticmethod
+    def _fmt(s):
+        s = int(max(0, s)); return f"{s//60:02d}:{s%60:02d}"
+    def _on_tick(self, cur_s: float):
+        if not self._dragging:
+            self._update_lbl(cur_s)
+            if self._total_s > 0:
+                v = int(round(cur_s / self._total_s * 1000))
+                self.slider.blockSignals(True); self.slider.setValue(max(0, min(1000, v))); self.slider.blockSignals(False)
+    def _on_press(self):
+        self._dragging = True
+    def _on_release(self):
+        self._dragging = False
+        self._apply_seek()
+    def _on_change(self, _):
+        if self._dragging:
+            v = self.slider.value(); cur = (v/1000.0) * max(1e-9, self._total_s)
+            self._update_lbl(cur)
+    def _apply_seek(self):
+        v = self.slider.value(); cur = (v/1000.0) * max(1e-9, self._total_s)
+        self.ctrl.seek(cur)
+    def _update_lbl(self, cur):
+        self.lbl.setText(f"{self._fmt(cur)} / {self._fmt(self._total_s)}")
+    def closeEvent(self, e):
+        try:
+            self.ctrl.pause()
+        except Exception:
+            pass
+        super().closeEvent(e)
 
 
 class VolumeControlDialog(QDialog):
