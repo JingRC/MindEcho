@@ -18177,6 +18177,49 @@ class IntegratedRecordingInterface(QMainWindow):
                 "Spleeter（轻量，速度快）"
             ])
             algo_row.addWidget(algo_combo); v.addLayout(algo_row)
+            # Demucs 模型选择与简介（仅在选择 Demucs 时显示）
+            demucs_model_row = QHBoxLayout()
+            demucs_model_label = QLabel("Demucs 模型:")
+            demucs_model_row.addWidget(demucs_model_label)
+            demucs_model_combo = QComboBox()
+            demucs_model_combo.addItems([
+                "htdemucs_ft", "htdemucs", "mdx_extra_q", "mdx_extra", "mdx", "mdx_q"
+            ])
+            demucs_model_row.addWidget(demucs_model_combo)
+            v.addLayout(demucs_model_row)
+            # Demucs 质量/速度预设
+            demucs_preset_row = QHBoxLayout()
+            demucs_preset_label = QLabel("Demucs 预设:")
+            demucs_preset_row.addWidget(demucs_preset_label)
+            demucs_preset_combo = QComboBox()
+            demucs_preset_combo.addItems(["速度优先", "标准", "高质量"])
+            try:
+                demucs_preset_combo.setCurrentIndex(1)
+            except Exception:
+                pass
+            demucs_preset_row.addWidget(demucs_preset_combo)
+            v.addLayout(demucs_preset_row)
+            demucs_tip = QLabel("")
+            demucs_tip.setWordWrap(True)
+            demucs_tip.setStyleSheet("color:#aaaaaa;")
+            v.addWidget(demucs_tip)
+            # 简介映射
+            _demucs_desc = {
+                "htdemucs_ft": "Hybrid Transformer Demucs（微调版）：音质最佳，更耗显存/时间。",
+                "htdemucs": "Hybrid Transformer Demucs：高质量，较 ft 略轻。",
+                "mdx_extra_q": "MDX Extra（量化）：更小更快，音质略降。",
+                "mdx_extra": "MDX Extra：质量/速度折中，人声鲁棒性佳。",
+                "mdx": "MDX 基线：轻量、兼容性好。",
+                "mdx_q": "MDX 量化：更轻更快，音质进一步让步。",
+            }
+            def _update_demucs_tip():
+                try:
+                    name = demucs_model_combo.currentText()
+                    demucs_tip.setText(f"说明：{_demucs_desc.get(name, '')}")
+                except Exception:
+                    pass
+            demucs_model_combo.currentIndexChanged.connect(lambda _i: _update_demucs_tip())
+            _update_demucs_tip()
             # 检测 Spleeter 可用性（本地或外部桥接）
             try:
                 import sys, importlib, os
@@ -18274,9 +18317,23 @@ class IntegratedRecordingInterface(QMainWindow):
                     elif idx == 1:
                         # 选择 Spleeter 时清空提示（交互更干净）
                         note_lbl.setText("")
+                    # 切换 Demucs 模型/预设控件可见性
+                    show_demucs = (idx == 0)
+                    for w in (demucs_model_label, demucs_model_combo, demucs_tip, demucs_preset_label, demucs_preset_combo):
+                        try:
+                            w.setVisible(show_demucs)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             algo_combo.currentIndexChanged.connect(_on_algo_changed)
+            # 初始可见性
+            try:
+                _show_dm = (algo_combo.currentIndex() == 0)
+                for w in (demucs_model_label, demucs_model_combo, demucs_tip, demucs_preset_label, demucs_preset_combo):
+                    w.setVisible(_show_dm)
+            except Exception:
+                pass
 
             # 导出格式选择
             fmt_row = QHBoxLayout(); fmt_row.addWidget(QLabel("导出格式:"))
@@ -18341,6 +18398,18 @@ class IntegratedRecordingInterface(QMainWindow):
             acc_name = (acc_edit.text() or "伴奏").strip()
             algo_text = algo_combo.currentText()
             algo_choice = 'demucs' if 'Demucs' in algo_text else 'spleeter'
+            selected_demucs_model = demucs_model_combo.currentText() if algo_choice == 'demucs' else None
+            # 预设: fast/standard/quality
+            if algo_choice == 'demucs':
+                preset_txt = (demucs_preset_combo.currentText() or "标准").strip()
+                if preset_txt.startswith("速度"):
+                    selected_demucs_preset = 'fast'
+                elif preset_txt.startswith("高质"):
+                    selected_demucs_preset = 'quality'
+                else:
+                    selected_demucs_preset = 'standard'
+            else:
+                selected_demucs_preset = None
             stems_text = stems_combo.currentText()
             if stems_text.startswith('4'):
                 stems = 4
@@ -18390,7 +18459,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
 
             # 6) 启动转化流程
-            self._start_vocal_conversion(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name)
+            self._start_vocal_conversion(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, demucs_model=selected_demucs_model, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name, demucs_preset=selected_demucs_preset)
         except Exception as e:
             try:
                 QMessageBox.warning(self, "纯人声转化", f"操作失败:\n{e}")
@@ -18398,11 +18467,11 @@ class IntegratedRecordingInterface(QMainWindow):
                 print(f"[LocalPitch] _open_pure_vocal_convert_dialog error: {e}")
 
     # —— 纯人声转化：启动工作线程与进度 UI ——
-    def _start_vocal_conversion(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str, export_format: str, stems: int = 2, *, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None):
+    def _start_vocal_conversion(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str, export_format: str, stems: int = 2, *, demucs_model: str | None = None, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None, demucs_preset: str | None = None):
         try:
             prog = _OnePassProgressDialog(self, title="纯人声转化 - 处理进度")
             prog.set_message("准备中…")
-            worker = _VocalSeparationWorker(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name)
+            worker = _VocalSeparationWorker(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, demucs_model=demucs_model, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name, demucs_preset=demucs_preset)
 
             def _on_prog(p):
                 prog.set_progress(p)
@@ -20253,7 +20322,7 @@ class _VocalSeparationWorker(QThread):
     finished_ok = pyqtSignal(object)  # dict: vocals_path, acc_path
     failed = pyqtSignal(str)
 
-    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs', export_format: str = 'flac', stems: int = 2, *, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None):
+    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs', export_format: str = 'flac', stems: int = 2, *, demucs_model: str | None = None, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None, demucs_preset: str | None = None):
         super().__init__()
         self.src_file = src_file
         self.out_dir = out_dir
@@ -20261,8 +20330,9 @@ class _VocalSeparationWorker(QThread):
         self.acc_name = acc_name
         self.algo_choice = algo_choice or 'demucs'
         self.export_format = (export_format or 'flac').lower()
+        self.demucs_model = (demucs_model or '').strip() or None
         try:
-            self.stems = int(stems) if stems in (2,4,5) else 2
+            self.stems = int(stems) if stems in (2, 4, 5) else 2
         except Exception:
             self.stems = 2
         # 自定义多声部文件名（可选）
@@ -20272,6 +20342,7 @@ class _VocalSeparationWorker(QThread):
         self.other_name = other_name
         self._cancel = False
         self._used_engine = None  # 实际使用的引擎：'demucs' 或 'spleeter'
+        self.demucs_preset = (demucs_preset or 'standard').strip().lower()
 
     def cancel(self):
         self._cancel = True
@@ -20343,10 +20414,28 @@ class _VocalSeparationWorker(QThread):
             piano_path = str((piano_dir / f"{piano_base}{ext}").resolve()) if piano_base else None
 
             # 方案优先级（尊重用户选择）：
-            # - 若选 demucs：Demucs → Spleeter → 回退
-            # - 若选 spleeter：Spleeter → Demucs → 回退
+            # - 若选 demucs 且 2 声部：
+            #     · 若指定了 Demucs 模型：仅 Demucs（不回退到 Spleeter）
+            #     · 未指定模型：Demucs → Spleeter
+            # - 若选 demucs 但为 4/5 声部：直接使用 Spleeter（Demucs 仅支持 2 声部）
+            # - 若选 spleeter：Spleeter → Demucs（但若用户明确选 Spleeter，则失败时不回退到 Demucs）
             self.progress.emit(5)
-            choices = ['demucs', 'spleeter'] if self.algo_choice == 'demucs' else ['spleeter', 'demucs']
+            if self.algo_choice == 'demucs':
+                if self.stems != 2:
+                    # Demucs 不支持多声部，直接使用 Spleeter
+                    choices = ['spleeter']
+                    try:
+                        self.message.emit("已选择 Demucs，但 Demucs 仅支持 2 声部；已自动使用 Spleeter 处理多声部。")
+                    except Exception:
+                        pass
+                else:
+                    # 2 声部：若用户显式指定了 Demucs 模型，则只尝试 Demucs，不回退到 Spleeter
+                    if (self.demucs_model or '').strip():
+                        choices = ['demucs']
+                    else:
+                        choices = ['demucs', 'spleeter']
+            else:
+                choices = ['spleeter', 'demucs']
             try:
                 self.message.emit(f"已选择引擎: {('Demucs' if self.algo_choice=='demucs' else 'Spleeter')}，尝试顺序: {', '.join([('Demucs' if a=='demucs' else 'Spleeter') for a in choices])}")
             except Exception:
@@ -20358,7 +20447,8 @@ class _VocalSeparationWorker(QThread):
                     try:
                         self.message.emit("尝试使用 Demucs 分离…\n提示：首次使用会自动下载模型，可能需要数分钟")
                         self.progress.emit(10)
-                        if self._demucs_cli_separate_and_save(tmp_in_wav, v_path, a_path):
+                        ok = self._demucs_cli_separate_and_save(tmp_in_wav, v_path, a_path, preferred_model=self.demucs_model)
+                        if ok:
                             self._used_engine = 'demucs'
                             self.progress.emit(100)
                             self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': 'Demucs'})
@@ -20368,11 +20458,81 @@ class _VocalSeparationWorker(QThread):
                             except Exception:
                                 pass
                             return
+                        # 未成功产出
+                        if (self.demucs_model or '').strip():
+                            # 用户显式指定模型：记录失败详情，并终止（不回退）
+                            detail = ''
+                            try:
+                                info = getattr(self, '_last_demucs_info', None)
+                                if isinstance(info, dict):
+                                    if info.get('no_exe'):
+                                        detail = '（未找到 demucs 可执行或未安装）'
+                                    elif info.get('gate_rejected'):
+                                        detail = '（质量门控未通过）'
+                                    elif info.get('no_outputs'):
+                                        detail = '（未找到 Demucs 输出文件）'
+                            except Exception:
+                                pass
+                            try:
+                                # 将失败详情落地到 .demucs.fail.json 便于排查
+                                import json as _json
+                                fail_meta = getattr(self, '_last_demucs_info', None)
+                                if isinstance(fail_meta, dict):
+                                    fail_meta = dict(fail_meta)
+                                    fail_meta['engine'] = 'Demucs'
+                                    fail_meta['model'] = self.demucs_model
+                                    fail_meta['ok'] = False
+                                    with open(v_path + '.demucs.fail.json', 'w', encoding='utf-8') as f:
+                                        _json.dump(fail_meta, f, ensure_ascii=False, indent=2)
+                                    # 额外：保存命令复现与日志尾部
+                                    try:
+                                        if fail_meta.get('cmd'):
+                                            with open(v_path + '.demucs.run.cmd.txt', 'w', encoding='utf-8') as f:
+                                                f.write(' '.join(str(t) for t in fail_meta['cmd']))
+                                        if fail_meta.get('log_tail'):
+                                            with open(v_path + '.demucs.stdout.tail.txt', 'w', encoding='utf-8') as f:
+                                                f.write('\n'.join(fail_meta['log_tail']))
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            # 终止（不回退）
+                            raise RuntimeError(f"Demucs 未产生有效输出（模型: {self.demucs_model}）{detail}")
                     except Exception as e:
                         try:
-                            self.message.emit(f"Demucs 分离失败/不可用，原因：{e}。将尝试 Spleeter…")
+                            # 若用户明确指定了 Demucs 模型，则不回退到 Spleeter
+                            if (self.demucs_model or '').strip():
+                                try:
+                                    import json as _json
+                                    fail_meta = getattr(self, '_last_demucs_info', None)
+                                    if isinstance(fail_meta, dict):
+                                        fail_meta = dict(fail_meta)
+                                        fail_meta['engine'] = 'Demucs'
+                                        fail_meta['model'] = self.demucs_model
+                                        fail_meta['ok'] = False
+                                        with open(v_path + '.demucs.fail.json', 'w', encoding='utf-8') as f:
+                                            _json.dump(fail_meta, f, ensure_ascii=False, indent=2)
+                                        # 额外：保存命令复现与日志尾部
+                                        try:
+                                            if fail_meta.get('cmd'):
+                                                with open(v_path + '.demucs.run.cmd.txt', 'w', encoding='utf-8') as f:
+                                                    f.write(' '.join(str(t) for t in fail_meta['cmd']))
+                                            if fail_meta.get('log_tail'):
+                                                with open(v_path + '.demucs.stdout.tail.txt', 'w', encoding='utf-8') as f:
+                                                    f.write('\n'.join(fail_meta['log_tail']))
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
+                                # 终止（不回退）
+                                self.message.emit(f"Demucs 分离失败（模型: {self.demucs_model}），原因：{e}。已终止（不回退到 Spleeter）。")
+                                raise
+                            else:
+                                self.message.emit(f"Demucs 分离失败/不可用，原因：{e}。将尝试 Spleeter…")
                         except Exception:
-                            pass
+                            # 若上面 raise 未被捕获，将在最外层处理
+                            if (self.demucs_model or '').strip():
+                                raise
                 elif algo == 'spleeter':
                     try:
                         # 优先尝试本环境直连
@@ -21529,10 +21689,26 @@ class _VocalSeparationWorker(QThread):
             self._save_wav(str(tmp), y, target_sr)
         return str(tmp)
 
-    def _demucs_cli_separate_and_save(self, src_path: str, v_path: str, a_path: str) -> bool:
+    def _demucs_cli_separate_and_save(self, src_path: str, v_path: str, a_path: str, preferred_model: str | None = None) -> bool:
         """尝试调用本地 demucs CLI 进行分离；成功返回 True。"""
         import os, shutil, subprocess, tempfile, time
         from pathlib import Path
+        # 记录本次 Demucs 调用的关键信息，供失败时诊断
+        try:
+            self._last_demucs_info = {
+                'ok': False,
+                'no_exe': False,
+                'use_module': False,
+                'device': None,
+                'models': None,
+                'model_try': None,
+                'cmd': None,
+                'returncode': None,
+                'no_outputs': False,
+                'gate_rejected': False,
+            }
+        except Exception:
+            pass
         candidates = []
         # 允许通过环境变量指向 demucs 可执行
         env_path = os.environ.get('MIND_ECHO_DEMUCS')
@@ -21563,6 +21739,12 @@ class _VocalSeparationWorker(QThread):
                 exe = sys.executable
                 use_module = True
             except Exception:
+                try:
+                    # 记录找不到可执行文件
+                    if hasattr(self, '_last_demucs_info'):
+                        self._last_demucs_info['no_exe'] = True
+                except Exception:
+                    pass
                 return False
 
         # 目标临时输出目录
@@ -21575,80 +21757,191 @@ class _VocalSeparationWorker(QThread):
                 device = 'cuda' if torch.cuda.is_available() else 'cpu'
             except Exception:
                 device = 'cpu'
-        # 优先较快模型，再到高质量（可通过 MIND_ECHO_DEMUCS_MODEL 覆盖）
+        try:
+            if hasattr(self, '_last_demucs_info'):
+                self._last_demucs_info['device'] = device
+        except Exception:
+            pass
+        # 优先使用 UI 指定模型；否则使用环境变量 MIND_ECHO_DEMUCS_MODEL；最后使用内置优先级列表
         env_model = os.environ.get('MIND_ECHO_DEMUCS_MODEL')
-        if env_model:
+        if preferred_model:
+            models = [preferred_model]
+        elif env_model:
             models = [env_model]
         else:
             # 偏向高质量模型优先（若本地无对应权重，Demucs 会自动下载）
             models = ['htdemucs_ft', 'htdemucs', 'mdx_extra_q', 'mdx_extra', 'mdx', 'mdx_q']
+        try:
+            if hasattr(self, '_last_demucs_info'):
+                self._last_demucs_info['models'] = list(models)
+                self._last_demucs_info['use_module'] = bool(use_module)
+        except Exception:
+            pass
         # 并行 jobs（CPU 下可适度提高速度），默认 2，可通过环境变量覆盖
-        jobs = os.environ.get('MIND_ECHO_DEMUCS_JOBS', '2')
+        jobs0 = os.environ.get('MIND_ECHO_DEMUCS_JOBS', '2')
         # 质量参数：overlap 与 shifts；若环境未指定，CUDA 下增大默认以提升质量
-        overlap = os.environ.get('MIND_ECHO_DEMUCS_OVERLAP') or ('0.5' if device == 'cuda' else '0.25')
-        shifts = os.environ.get('MIND_ECHO_DEMUCS_SHIFTS') or ('2' if device == 'cuda' else '1')
-        if use_module:
-            cmd_base = [exe, '-m', 'demucs', '-d', device, '--two-stems', 'vocals', '-o', str(tmp_out), '-j', jobs, '--overlap', overlap, '--shifts', shifts]
+        overlap0 = os.environ.get('MIND_ECHO_DEMUCS_OVERLAP') or ('0.5' if device == 'cuda' else '0.25')
+        shifts0 = os.environ.get('MIND_ECHO_DEMUCS_SHIFTS') or ('2' if device == 'cuda' else '1')
+        # 分段长度（可缓解显存/内存压力，也影响速度/质量权衡），不设置则使用 Demucs 默认
+        segment0 = os.environ.get('MIND_ECHO_DEMUCS_SEGMENT')  # 例如: '8'
+
+        # 应用 UI 预设（若提供），优先级高于默认，但低于显式环境变量
+        try:
+            preset = getattr(self, 'demucs_preset', 'standard')
+        except Exception:
+            preset = 'standard'
+        # 仅当对应环境变量未显式提供时按预设覆盖
+        if os.environ.get('MIND_ECHO_DEMUCS_OVERLAP') is None or os.environ.get('MIND_ECHO_DEMUCS_SHIFTS') is None or os.environ.get('MIND_ECHO_DEMUCS_SEGMENT') is None:
+            if preset == 'fast':
+                # 更快：减小 overlap/shifts，增加 segment（更小片段）
+                overlap0 = os.environ.get('MIND_ECHO_DEMUCS_OVERLAP') or '0.15'
+                shifts0 = os.environ.get('MIND_ECHO_DEMUCS_SHIFTS') or '1'
+                segment0 = os.environ.get('MIND_ECHO_DEMUCS_SEGMENT') or '8'
+                jobs0 = os.environ.get('MIND_ECHO_DEMUCS_JOBS', jobs0)
+            elif preset == 'quality':
+                # 更高质量：更大 overlap/shifts
+                overlap0 = os.environ.get('MIND_ECHO_DEMUCS_OVERLAP') or ('0.75' if device == 'cuda' else '0.5')
+                shifts0 = os.environ.get('MIND_ECHO_DEMUCS_SHIFTS') or ('4' if device == 'cuda' else '2')
+                segment0 = os.environ.get('MIND_ECHO_DEMUCS_SEGMENT') or None
+            else:
+                # 标准：保留上面的默认
+                pass
+        try:
+            if hasattr(self, '_last_demucs_info'):
+                self._last_demucs_info['preset'] = preset
+        except Exception:
+            pass
+
+        # 构造同一引擎内的降级重试策略（不回退到 Spleeter）
+        profiles = [
+            {'device': device, 'jobs': jobs0, 'overlap': overlap0, 'shifts': shifts0},
+        ]
+        if device == 'cuda':
+            # 降低显存占用的 CUDA 配置
+            profiles.append({'device': 'cuda', 'jobs': '1', 'overlap': '0.25', 'shifts': '1'})
+            # 最稳妥的 CPU 配置
+            profiles.append({'device': 'cpu', 'jobs': '1', 'overlap': '0.25', 'shifts': '1'})
         else:
-            cmd_base = [exe, '-d', device, '--two-stems', 'vocals', '-o', str(tmp_out), '-j', jobs, '--overlap', overlap, '--shifts', shifts]
-        for m in models:
-            cmd = cmd_base + ['-n', m, src_path]
-            try:
-                # 以流式方式运行，并按时间推进进度
-                start = time.time()
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                last_tick = start
-                # 10% -> 90% 线性推进
-                while True:
-                    line = proc.stdout.readline() if proc.stdout else ''
-                    now = time.time()
-                    if now - last_tick >= 2.0:
-                        last_tick = now
-                        elapsed = now - start
-                        est = min(90, 10 + int(elapsed * 4))  # ~20s 达到 90%
+            # 初始即 CPU：追加一个更稳妥的 CPU 安全重试（降低并行度，限制底层线程）
+            profiles.append({'device': 'cpu', 'jobs': '1', 'overlap': overlap0, 'shifts': shifts0})
+
+        try:
+            if hasattr(self, '_last_demucs_info'):
+                self._last_demucs_info['profiles_planned'] = profiles
+        except Exception:
+            pass
+
+        for prof in profiles:
+            # 每个配置下尝试模型列表（通常只有一个首选模型）
+            if use_module:
+                cmd_base = [exe, '-m', 'demucs', '-d', prof['device'], '--two-stems', 'vocals', '-o', str(tmp_out), '-j', prof['jobs'], '--overlap', prof['overlap'], '--shifts', prof['shifts']]
+            else:
+                cmd_base = [exe, '-d', prof['device'], '--two-stems', 'vocals', '-o', str(tmp_out), '-j', prof['jobs'], '--overlap', prof['overlap'], '--shifts', prof['shifts']]
+            # 可选 --segment 参数
+            if segment0:
+                cmd_base += ['--segment', str(segment0)]
+            for m in models:
+                cmd = cmd_base + ['-n', m, src_path]
+                try:
+                    if hasattr(self, '_last_demucs_info'):
+                        self._last_demucs_info['model_try'] = m
+                        self._last_demucs_info['cmd'] = cmd
+                        self._last_demucs_info['device'] = prof['device']
+                        self._last_demucs_info['params'] = {'jobs': prof['jobs'], 'overlap': prof['overlap'], 'shifts': prof['shifts'], 'segment': segment0}
+                except Exception:
+                    pass
+                try:
+                    # 以流式方式运行，并按时间推进进度
+                    start = time.time()
+                    # 针对 CPU 情况限制底层线程，减少原生库崩溃概率（如 0xC0000005）
+                    import os as _os
+                    _env = _os.environ.copy()
+                    if prof['device'] == 'cpu':
+                        _env.setdefault('OMP_NUM_THREADS', '1')
+                        _env.setdefault('MKL_NUM_THREADS', '1')
+                        _env.setdefault('OPENBLAS_NUM_THREADS', '1')
+                        _env.setdefault('NUMEXPR_NUM_THREADS', '1')
+                    else:
+                        # 可选：透传 CUDA 内存缓存控制，缓解 OOM（仅在用户显式开启时）
+                        if _os.environ.get('MIND_ECHO_PYTORCH_NO_CUDA_MEMORY_CACHING', '0').lower() in ('1', 'true', 'yes'):
+                            _env['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=_env)
+                    log_lines = []
+                    last_tick = start
+                    # 10% -> 90% 线性推进
+                    while True:
+                        line = proc.stdout.readline() if proc.stdout else ''
+                        now = time.time()
+                        if now - last_tick >= 2.0:
+                            last_tick = now
+                            elapsed = now - start
+                            est = min(90, 10 + int(elapsed * 4))  # ~20s 达到 90%
+                            try:
+                                self.progress.emit(est)
+                                self.message.emit(f"使用 Demucs 处理中（模型: {m} / 设备: {prof['device']}）… 已用 {int(elapsed)}s")
+                            except Exception:
+                                pass
+                        if line:
+                            try:
+                                log_lines.append(line.rstrip())
+                                if len(log_lines) > 400:
+                                    log_lines = log_lines[-400:]
+                            except Exception:
+                                pass
+                        if proc.poll() is not None:
+                            break
+                    if proc.returncode != 0:
                         try:
-                            self.progress.emit(est)
-                            # 更清晰的进度提示，避免与 Spleeter 选择混淆
-                            self.message.emit(f"使用 Demucs 处理中（模型: {m} / 设备: {device}）… 已用 {int(elapsed)}s")
+                            if hasattr(self, '_last_demucs_info'):
+                                self._last_demucs_info['returncode'] = proc.returncode
+                                tail = log_lines[-50:] if log_lines else None
+                                self._last_demucs_info['log_tail'] = tail
+                                # 粗略标注 OOM/模型不存在
+                                tail_txt = '\n'.join(tail or [])
+                                low = tail_txt.lower()
+                                if 'out of memory' in low or 'cuda out of memory' in low:
+                                    self._last_demucs_info['oom'] = True
+                                if 'unknown model' in low or 'not found' in low and 'model' in low:
+                                    self._last_demucs_info['model_not_found'] = True
                         except Exception:
                             pass
-                    if line:
-                        # 可将关键信息写入日志（此处略）
-                        pass
-                    if proc.poll() is not None:
-                        break
-                if proc.returncode != 0:
-                    continue
-                # Demucs 输出目录结构：<tmp_out>/<model>/<basename>/ [vocals.wav, accompaniment.wav]
-                base = Path(src_path).stem
-                model_dir = tmp_out / m
-                # 找第一个包含 base 的子目录
-                cand_dirs = list(model_dir.glob(f"**/{base}"))
-                if not cand_dirs:
-                    # 有的版本会包含全文件名
-                    cand_dirs = list(model_dir.glob("**/*"))
-                found_v = None; found_a = None
-                for d in cand_dirs:
-                    # 兼容不同版本命名
-                    cand_v = [d / 'vocals.wav', d / 'vocals.flac']
-                    cand_a = [
-                        d / 'accompaniment.wav', d / 'accompaniment.flac',
-                        d / 'no_vocals.wav', d / 'no_vocals.flac',
-                        d / 'other.wav', d / 'other.flac',
-                        d / 'instrumental.wav', d / 'instrumental.flac'
-                    ]
-                    v = next((p for p in cand_v if p.exists()), None)
-                    a = next((p for p in cand_a if p.exists()), None)
-                    if v and a and v.exists() and a.exists():
-                        found_v, found_a = v, a; break
-                if not (found_v and found_a):
-                    # 再全局搜一遍
-                    vs = list(model_dir.glob("**/vocals.*"))
-                    ac = list(model_dir.glob("**/(accompaniment|no_vocals|other|instrumental).*"))
-                    if vs and ac:
-                        found_v, found_a = vs[0], ac[0]
-                if found_v and found_a:
-                    # 读取并做 Wiener 后处理以降串音
+                        continue
+                    # Demucs 输出目录结构：<tmp_out>/<model>/<basename>/ [vocals.wav, accompaniment.wav]
+                    base = Path(src_path).stem
+                    model_dir = tmp_out / m
+                    cand_dirs = list(model_dir.glob(f"**/{base}"))
+                    if not cand_dirs:
+                        cand_dirs = list(model_dir.glob("**/*"))
+                    found_v = None; found_a = None
+                    for d in cand_dirs:
+                        cand_v = [d / 'vocals.wav', d / 'vocals.flac']
+                        cand_a = [
+                            d / 'accompaniment.wav', d / 'accompaniment.flac',
+                            d / 'no_vocals.wav', d / 'no_vocals.flac',
+                            d / 'other.wav', d / 'other.flac',
+                            d / 'instrumental.wav', d / 'instrumental.flac'
+                        ]
+                        v = next((p for p in cand_v if p.exists()), None)
+                        a = next((p for p in cand_a if p.exists()), None)
+                        if v and a and v.exists() and a.exists():
+                            found_v, found_a = v, a; break
+                    if not (found_v and found_a):
+                        vs = list(model_dir.glob("**/vocals.wav")) + list(model_dir.glob("**/vocals.flac"))
+                        ac = []
+                        for _nm in ("accompaniment", "no_vocals", "other", "instrumental"):
+                            ac += list(model_dir.glob(f"**/{_nm}.wav"))
+                            ac += list(model_dir.glob(f"**/{_nm}.flac"))
+                        if vs and ac:
+                            found_v, found_a = vs[0], ac[0]
+                    if not (found_v and found_a):
+                        try:
+                            if hasattr(self, '_last_demucs_info'):
+                                self._last_demucs_info['no_outputs'] = True
+                                self._last_demucs_info['log_tail'] = log_lines[-50:] if log_lines else None
+                        except Exception:
+                            pass
+                        continue
+                    # 读取并做 Wiener 后处理
                     try:
                         import soundfile as sf
                         v_arr, v_sr = sf.read(str(found_v), always_2d=True)
@@ -21663,10 +21956,23 @@ class _VocalSeparationWorker(QThread):
                                 mix_arr = (v_arr + a_arr) * 0.5
                                 mix_sr = v_sr
                             rv, ra = self._refine_with_wiener(mix_arr, v_arr, a_arr)
-                            # 简单质量门控，若不过关则尝试下一个模型
                             try:
-                                if not self._quality_gate(mix_arr, rv, ra):
+                                gate_ok = True
+                                if not preferred_model:
+                                    gate_ok = self._quality_gate(mix_arr, rv, ra)
+                                if not gate_ok:
+                                    try:
+                                        if hasattr(self, '_last_demucs_info'):
+                                            self._last_demucs_info['gate_rejected'] = True
+                                    except Exception:
+                                        pass
                                     continue
+                                else:
+                                    try:
+                                        if hasattr(self, '_last_demucs_info') and preferred_model:
+                                            self._last_demucs_info['gate_bypassed_due_to_user_preference'] = True
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
                             try:
@@ -21675,9 +21981,29 @@ class _VocalSeparationWorker(QThread):
                             except Exception:
                                 import soundfile as _sf
                                 _sf.write(v_path, rv.astype('float32'), mix_sr)
-                                _sf.write(a_path, ra.astype('float32'), mix_sr)
+                            try:
+                                import json as _json
+                                meta = {
+                                    'ok': True,
+                                    'engine': 'Demucs',
+                                    'model': m,
+                                    'device': prof['device'],
+                                    'jobs': prof['jobs'],
+                                    'overlap': prof['overlap'],
+                                    'shifts': prof['shifts'],
+                                    'segment': segment0
+                                }
+                                with open(v_path + '.demucs.meta.json', 'w', encoding='utf-8') as f:
+                                    _json.dump(meta, f, ensure_ascii=False, indent=2)
+                            except Exception:
+                                pass
+                            try:
+                                import soundfile as _sf, os as _os
+                                if not _os.path.isfile(a_path):
+                                    _sf.write(a_path, ra.astype('float32'), mix_sr)
+                            except Exception:
+                                pass
                         else:
-                            # 采样率不同，直接重新编码为目标格式
                             try:
                                 self._save_with_format(v_path, v_arr, v_sr)
                                 self._save_with_format(a_path, a_arr, a_sr)
@@ -21685,22 +22011,26 @@ class _VocalSeparationWorker(QThread):
                                 shutil.copy2(str(found_v), v_path)
                                 shutil.copy2(str(found_a), a_path)
                     except Exception:
-                        # 回退复制原文件（如用户选择 OGG/WAV 但此处失败，复制能保证产出）
                         shutil.copy2(str(found_v), v_path)
                         shutil.copy2(str(found_a), a_path)
-                    # 清理临时 demucs 输出
                     try:
                         import shutil as _sh
                         _sh.rmtree(tmp_out, ignore_errors=True)
                     except Exception:
                         pass
                     return True
-            except Exception:
-                continue
+                except Exception:
+                    continue
         # 清理临时 demucs 输出
         try:
             import shutil as _sh
             _sh.rmtree(tmp_out, ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            # 最终失败，保留最近一次尝试信息
+            if hasattr(self, '_last_demucs_info'):
+                self._last_demucs_info['ok'] = False
         except Exception:
             pass
         return False
@@ -22511,6 +22841,33 @@ class _VocalSeparationWorker(QThread):
         cv = abs(corr(xm, xv)); ca = abs(corr(xm, xa)); cva = abs(corr(xv, xa))
         # 略收紧阈值，提升“未分离”检测灵敏度
         return (cv < 0.965) and (ca < 0.965) and (cva < 0.94)
+
+    def _center_extraction(self, stereo):
+        """中心通道提取（简单 M/S 掩蔽）：
+        - 优先调用增强型 M/S 方法；
+        - 失败时退化为时域 Mid/Side 简易分离。
+        """
+        try:
+            # _ms_strong_separate 的实现未使用 sr，这里固定 44100 传入
+            return self._ms_strong_separate(stereo, 44100)
+        except Exception:
+            import numpy as np
+            x = stereo.astype(np.float32)
+            if x.ndim != 2 or x.shape[1] < 2:
+                # 降级到单声道近似
+                v, a = self._spectral_approx_mono(x)
+                return v, a
+            L = x[:, 0]; R = x[:, 1]
+            M = 0.5 * (L + R); S = 0.5 * (L - R)
+            # 直接将 M 视为人声、M+S 视为伴奏的粗略近似
+            V = np.stack([M, M], axis=1)
+            A = np.stack([M + S, M - S], axis=1)
+            # 峰值保护
+            peak = float(np.max(np.abs(np.concatenate([V, A], axis=1))) + 1e-9)
+            if peak > 1.0:
+                V = V / peak * 0.99
+                A = A / peak * 0.99
+            return V.astype(np.float32), A.astype(np.float32)
 
     def _ms_strong_separate(self, stereo, sr: int):
         """增强型 M/S + 软掩蔽的回退分离（立体声输入）。"""
