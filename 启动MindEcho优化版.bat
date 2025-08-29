@@ -9,6 +9,13 @@ echo    192000Hz / 32样本 / 0.17ms超低延迟
 echo =========================================================
 echo.
 
+REM 内置 ffmpeg：若存在 tools\ffmpeg\bin\ffmpeg.exe 则临时注入 PATH（仅对本进程有效）
+set "FF_BIN=%~dp0tools\ffmpeg\bin"
+if exist "%FF_BIN%\ffmpeg.exe" (
+    set "PATH=%FF_BIN%;%PATH%"
+    echo ✅ 已启用内置 ffmpeg: %FF_BIN%\ffmpeg.exe
+)
+
 REM 检查Python环境
 python --version >nul 2>&1
 if errorlevel 1 (

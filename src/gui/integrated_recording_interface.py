@@ -153,19 +153,11 @@ except ImportError:
     raise
 
 
-# 导入分析模块
-try:
-    from src.analysis.overlapping_frame_analyzer import OverlappingFrameAnalyzer
-    from src.analysis.pitch_detection import PitchDetector
-except ImportError as e:
-    print(f"导入分析模块失败: {e}")
-
-# 导入PyQtGraph彩色渐变组件
+            # 导入PyQtGraph彩色渐变组件
 PYQTGRAPH_GRADIENT_AVAILABLE = False
 try:
     from src.gui.pyqtgraph_gradient_widget import PyQtGraphColorGradientWidget
     PYQTGRAPH_GRADIENT_AVAILABLE = True
-    print("✅ PyQtGraph彩色渐变组件可用")
 except ImportError as e:
     print(f"⚠️ PyQtGraph彩色渐变组件不可用: {e}")
     print("将使用Matplotlib备用渐变方案")
@@ -18185,6 +18177,128 @@ class IntegratedRecordingInterface(QMainWindow):
                 "Spleeter（轻量，速度快）"
             ])
             algo_row.addWidget(algo_combo); v.addLayout(algo_row)
+            # 检测 Spleeter 可用性（本地或外部桥接）
+            try:
+                import sys, importlib, os
+                from pathlib import Path as _Path
+                from PyQt5.QtCore import Qt  # type: ignore
+                # 本地可用：Python<=3.10 且已安装 spleeter
+                local_py_ok = (sys.version_info[0] == 3 and sys.version_info[1] <= 10)
+                local_ok = False
+                if local_py_ok:
+                    try:
+                        importlib.import_module('spleeter')
+                        local_ok = True
+                    except Exception:
+                        local_ok = False
+                # 外部桥接：优先 MIND_ECHO_SPLEETER_PY，其次自动探测仓库内 venv
+                bridge_py_env = os.environ.get('MIND_ECHO_SPLEETER_PY')
+                bridge_py = bridge_py_env
+                if not bridge_py or not os.path.isfile(bridge_py):
+                    try:
+                        repo_tools = _Path(__file__).resolve().parent.parent.parent / 'tools'
+                        for rel in [
+                            '.venv_spleeter310/Scripts/python.exe',
+                            '.venv_spleeter39/Scripts/python.exe',
+                        ]:
+                            cand = repo_tools / rel
+                            if cand.exists():
+                                bridge_py = str(cand)
+                                break
+                    except Exception:
+                        pass
+                bridge_ok = bool(bridge_py and os.path.isfile(bridge_py))
+                if bridge_ok and (not bridge_py_env):
+                    # 写入当前进程环境，便于后续桥接调用
+                    os.environ['MIND_ECHO_SPLEETER_PY'] = bridge_py
+
+                if local_ok:
+                    tip = QLabel("已检测到：当前环境可直接使用 Spleeter。")
+                    tip.setStyleSheet("color:#7CFC00;")  # 亮绿
+                    tip.setWordWrap(True)
+                    v.addWidget(tip)
+                elif bridge_ok:
+                    tip = QLabel("已检测到：本环境不支持 Spleeter，但发现外部 Spleeter 环境，将通过桥接使用（无需切换主环境）。")
+                    tip.setStyleSheet("color:#ffcc00;")
+                    tip.setWordWrap(True)
+                    v.addWidget(tip)
+                else:
+                    warn = QLabel("提示：当前环境不支持 Spleeter（建议使用 Python 3.8–3.10 并安装 spleeter，或配置 MIND_ECHO_SPLEETER_PY）。已默认使用 Demucs。")
+                    warn.setStyleSheet("color:#ffcc00;")
+                    warn.setWordWrap(True)
+                    v.addWidget(warn)
+                    try:
+                        algo_combo.setCurrentIndex(0)  # 默认 Demucs
+                        # 禁用 Spleeter 选项，避免误选
+                        m = algo_combo.model(); idx = m.index(1, 0)
+                        m.setData(idx, 0, Qt.ItemDataRole.EnabledRole)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # 分离声部数选择
+            stems_row = QHBoxLayout(); stems_row.addWidget(QLabel("分离声部:"))
+            stems_combo = QComboBox(); stems_combo.addItems([
+                "2 声部（人声/伴奏）",
+                "4 声部（人声/鼓/贝斯/其他）",
+                "5 声部（人声/鼓/贝斯/钢琴/其他）",
+            ])
+            try:
+                stems_combo.setCurrentIndex(0)
+            except Exception:
+                pass
+            stems_row.addWidget(stems_combo); v.addLayout(stems_row)
+            # 算法/声部联动提示
+            note_lbl = QLabel("")
+            note_lbl.setWordWrap(True)
+            note_lbl.setStyleSheet("color:#ffcc00;")
+            v.addWidget(note_lbl)
+            # 当选择 4/5 声部时，如当前为 Demucs，则自动切换到 Spleeter
+            def _on_stems_changed(idx: int):
+                try:
+                    if idx in (1, 2) and algo_combo.currentIndex() == 0:  # 选了 4/5 且算法=Demucs
+                        algo_combo.setCurrentIndex(1)  # 切到 Spleeter
+                        note_lbl.setText("提示：Demucs 仅支持 2 声部，已根据您的 4/5 声部选择自动切换为 Spleeter。")
+                    elif idx == 0:
+                        # 恢复选择 2 声部时清空提示
+                        note_lbl.setText("")
+                except Exception:
+                    pass
+            stems_combo.currentIndexChanged.connect(_on_stems_changed)
+            # 当切回 Demucs 时，若当前声部为 4/5，则强制改为 2 声部
+            def _on_algo_changed(idx: int):
+                try:
+                    if idx == 0 and stems_combo.currentIndex() != 0:  # Demucs + 非2声部
+                        stems_combo.setCurrentIndex(0)
+                        note_lbl.setText("提示：Demucs 仅支持 2 声部（已自动改为 2）。如需 4/5 声部，请选择 Spleeter。")
+                    elif idx == 1:
+                        # 选择 Spleeter 时清空提示（交互更干净）
+                        note_lbl.setText("")
+                except Exception:
+                    pass
+            algo_combo.currentIndexChanged.connect(_on_algo_changed)
+
+            # 导出格式选择
+            fmt_row = QHBoxLayout(); fmt_row.addWidget(QLabel("导出格式:"))
+            fmt_combo = QComboBox(); fmt_combo.addItems([
+                "原始 WAV（无压缩，体积最大，兼容性最佳）",
+                "FLAC 无损压缩（推荐，体积≈30%~70%）",
+                "OGG 有损高压缩（体积≈5%~15%，适合分享）",
+                "MP3（有损，高兼容；建议VBR品质2）",
+                "M4A AAC（有损，移动端/苹果友好）",
+                "OPUS（有损，高压缩/高音质）",
+                "M4A ALAC（无损，苹果无损）",
+                "AIFF（无压缩/PCM，专业音频）",
+                "WavPack（无损压缩，.wv）"
+            ])
+            try:
+                fmt_combo.setCurrentIndex(1)  # 默认选择 FLAC
+            except Exception:
+                pass
+            fmt_row.addWidget(fmt_combo); v.addLayout(fmt_row)
+            fmt_tip = QLabel("说明：\n- WAV 无压缩，体积最大；\n- FLAC/M4A ALAC 为无损压缩（推荐 FLAC，苹果生态可选 ALAC）；\n- OGG/MP3/AAC/OPUS 为有损压缩（OPUS/MP3 兼顾音质与体积，AAC 移动端友好）。")
+            fmt_tip.setWordWrap(True)
+            v.addWidget(fmt_tip)
             v.addWidget(QLabel("输出文件名（无需扩展名）："))
             row1 = QHBoxLayout(); row1.addWidget(QLabel("人声文件名:"))
             vocal_edit = QLineEdit(f"{src_stem}_人声")
@@ -18192,6 +18306,24 @@ class IntegratedRecordingInterface(QMainWindow):
             row2 = QHBoxLayout(); row2.addWidget(QLabel("伴奏文件名:"))
             acc_edit = QLineEdit(f"{src_stem}_伴奏")
             row2.addWidget(acc_edit); v.addLayout(row2)
+            # —— 多声部（4/5）额外文件名 ——
+            row_dr = QHBoxLayout(); lbl_dr = QLabel("鼓 文件名:"); dr_edit = QLineEdit(f"{src_stem}_鼓"); row_dr.addWidget(lbl_dr); row_dr.addWidget(dr_edit); v.addLayout(row_dr)
+            row_bs = QHBoxLayout(); lbl_bs = QLabel("贝斯 文件名:"); bs_edit = QLineEdit(f"{src_stem}_贝斯"); row_bs.addWidget(lbl_bs); row_bs.addWidget(bs_edit); v.addLayout(row_bs)
+            row_ot = QHBoxLayout(); lbl_ot = QLabel("其他 文件名:"); ot_edit = QLineEdit(f"{src_stem}_其他"); row_ot.addWidget(lbl_ot); row_ot.addWidget(ot_edit); v.addLayout(row_ot)
+            row_pi = QHBoxLayout(); lbl_pi = QLabel("钢琴 文件名:"); pi_edit = QLineEdit(f"{src_stem}_钢琴"); row_pi.addWidget(lbl_pi); row_pi.addWidget(pi_edit); v.addLayout(row_pi)
+            # 默认隐藏，按声部选择联动显示
+            def _toggle_multistem_name_rows(idx: int):
+                try:
+                    show4 = (idx in (1, 2))
+                    show5 = (idx == 2)
+                    for w in (lbl_dr, dr_edit): w.setVisible(show4)
+                    for w in (lbl_bs, bs_edit): w.setVisible(show4)
+                    for w in (lbl_ot, ot_edit): w.setVisible(show4)
+                    for w in (lbl_pi, pi_edit): w.setVisible(show5)
+                except Exception:
+                    pass
+            _toggle_multistem_name_rows(stems_combo.currentIndex())
+            stems_combo.currentIndexChanged.connect(_toggle_multistem_name_rows)
             row3 = QHBoxLayout()
             btn_ok = QPushButton("开始转换")
             btn_cancel = QPushButton("取消")
@@ -18209,6 +18341,45 @@ class IntegratedRecordingInterface(QMainWindow):
             acc_name = (acc_edit.text() or "伴奏").strip()
             algo_text = algo_combo.currentText()
             algo_choice = 'demucs' if 'Demucs' in algo_text else 'spleeter'
+            stems_text = stems_combo.currentText()
+            if stems_text.startswith('4'):
+                stems = 4
+            elif stems_text.startswith('5'):
+                stems = 5
+            else:
+                stems = 2
+            # 若选择 Demucs，则强制 2 声部
+            if algo_choice == 'demucs':
+                stems = 2
+            # 读取多声部自定义名称
+            drums_name = bass_name = other_name = piano_name = None
+            if stems in (4, 5):
+                drums_name = (dr_edit.text() or f"{src_stem}_鼓").strip()
+                bass_name = (bs_edit.text() or f"{src_stem}_贝斯").strip()
+                other_name = (ot_edit.text() or f"{src_stem}_其他").strip()
+                if stems == 5:
+                    piano_name = (pi_edit.text() or f"{src_stem}_钢琴").strip()
+            fmt_text = fmt_combo.currentText()
+            if fmt_text.startswith("原始 WAV"):
+                export_format = 'wav'
+            elif fmt_text.startswith("FLAC"):
+                export_format = 'flac'
+            elif fmt_text.startswith("OGG"):
+                export_format = 'ogg'
+            elif fmt_text.startswith("MP3"):
+                export_format = 'mp3'
+            elif fmt_text.startswith("M4A AAC"):
+                export_format = 'm4a'
+            elif fmt_text.startswith("OPUS"):
+                export_format = 'opus'
+            elif fmt_text.startswith("M4A ALAC"):
+                export_format = 'alac'
+            elif fmt_text.startswith("AIFF"):
+                export_format = 'aiff'
+            elif fmt_text.startswith("WavPack"):
+                export_format = 'wv'
+            else:
+                export_format = 'flac'
 
             # 5) 持久化最近目录
             try:
@@ -18219,7 +18390,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
 
             # 6) 启动转化流程
-            self._start_vocal_conversion(src_file, out_dir, vocals_name, acc_name, algo_choice)
+            self._start_vocal_conversion(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name)
         except Exception as e:
             try:
                 QMessageBox.warning(self, "纯人声转化", f"操作失败:\n{e}")
@@ -18227,11 +18398,11 @@ class IntegratedRecordingInterface(QMainWindow):
                 print(f"[LocalPitch] _open_pure_vocal_convert_dialog error: {e}")
 
     # —— 纯人声转化：启动工作线程与进度 UI ——
-    def _start_vocal_conversion(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str):
+    def _start_vocal_conversion(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str, export_format: str, stems: int = 2, *, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None):
         try:
             prog = _OnePassProgressDialog(self, title="纯人声转化 - 处理进度")
             prog.set_message("准备中…")
-            worker = _VocalSeparationWorker(src_file, out_dir, vocals_name, acc_name, algo_choice)
+            worker = _VocalSeparationWorker(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name)
 
             def _on_prog(p):
                 prog.set_progress(p)
@@ -18243,10 +18414,11 @@ class IntegratedRecordingInterface(QMainWindow):
                     prog.set_message("完成")
                     v_path = payload.get('vocals_path', '')
                     a_path = payload.get('acc_path', '')
+                    engine = payload.get('engine', '未知')
                     try:
-                        QMessageBox.information(self, "纯人声转化", f"已完成\n人声: {v_path}\n伴奏: {a_path}")
+                        QMessageBox.information(self, "纯人声转化", f"已完成\n引擎: {engine}\n人声: {v_path}\n伴奏: {a_path}")
                     except Exception:
-                        print(f"[VocalConvert] done: vocals={v_path}, acc={a_path}")
+                        print(f"[VocalConvert] done: engine={engine}, vocals={v_path}, acc={a_path}")
                 finally:
                     try:
                         prog.accept()
@@ -20081,14 +20253,25 @@ class _VocalSeparationWorker(QThread):
     finished_ok = pyqtSignal(object)  # dict: vocals_path, acc_path
     failed = pyqtSignal(str)
 
-    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs'):
+    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs', export_format: str = 'flac', stems: int = 2, *, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None):
         super().__init__()
         self.src_file = src_file
         self.out_dir = out_dir
         self.vocals_name = vocals_name
         self.acc_name = acc_name
         self.algo_choice = algo_choice or 'demucs'
+        self.export_format = (export_format or 'flac').lower()
+        try:
+            self.stems = int(stems) if stems in (2,4,5) else 2
+        except Exception:
+            self.stems = 2
+        # 自定义多声部文件名（可选）
+        self.drums_name = drums_name
+        self.bass_name = bass_name
+        self.piano_name = piano_name
+        self.other_name = other_name
         self._cancel = False
+        self._used_engine = None  # 实际使用的引擎：'demucs' 或 'spleeter'
 
     def cancel(self):
         self._cancel = True
@@ -20104,20 +20287,70 @@ class _VocalSeparationWorker(QThread):
             tmp_in_wav = self._prepare_temp_wav(self.src_file, target_sr=44100)
             if self._cancel:
                 return
-            # 输出结构：<out_dir>/人声 与 <out_dir>/伴奏
+            # 输出结构：基础中文分类文件夹
             vocal_dir = Path(self.out_dir) / "人声"
             acc_dir = Path(self.out_dir) / "伴奏"
-            vocal_dir.mkdir(parents=True, exist_ok=True)
-            acc_dir.mkdir(parents=True, exist_ok=True)
-            # 路径（统一写 wav）
-            v_path = str((vocal_dir / f"{self._sanitize(self.vocals_name)}.wav").resolve())
-            a_path = str((acc_dir / f"{self._sanitize(self.acc_name)}.wav").resolve())
+            drums_dir = Path(self.out_dir) / "鼓"
+            bass_dir = Path(self.out_dir) / "贝斯"
+            other_dir = Path(self.out_dir) / "其他"
+            piano_dir = Path(self.out_dir) / "钢琴"
+            for d in (vocal_dir, acc_dir, drums_dir, bass_dir, other_dir, piano_dir):
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+            # 路径后缀
+            # 扩展名映射
+            if self.export_format == 'wav':
+                ext = '.wav'
+            elif self.export_format == 'ogg':
+                ext = '.ogg'
+            elif self.export_format == 'mp3':
+                ext = '.mp3'
+            elif self.export_format in ('m4a','aac'):
+                ext = '.m4a'
+            elif self.export_format == 'opus':
+                ext = '.opus'
+            elif self.export_format == 'alac':
+                ext = '.m4a'
+            elif self.export_format == 'aiff':
+                ext = '.aiff'
+            elif self.export_format == 'wv':
+                ext = '.wv'
+            else:
+                ext = '.flac'
+            v_path = str((vocal_dir / f"{self._sanitize(self.vocals_name)}{ext}").resolve())
+            a_path = str((acc_dir / f"{self._sanitize(self.acc_name)}{ext}").resolve())
+            # 多声部文件名：若提供自定义名称则用之，否则回退为“源前缀_中文名”
+            try:
+                src_stem = Path(self.src_file).stem
+            except Exception:
+                src_stem = "output"
+            # 计算每个声部的基础文件名（不含后缀）
+            def _name_or_default(given: str | None, fallback_cn: str) -> str:
+                nm = (given or '').strip()
+                if not nm:
+                    nm = f"{self._sanitize(src_stem)}_{fallback_cn}"
+                return self._sanitize(nm)
+            drums_base = _name_or_default(self.drums_name, '鼓') if self.stems in (4,5) else None
+            bass_base = _name_or_default(self.bass_name, '贝斯') if self.stems in (4,5) else None
+            other_base = _name_or_default(self.other_name, '其他') if self.stems in (4,5) else None
+            piano_base = _name_or_default(self.piano_name, '钢琴') if self.stems == 5 else None
+
+            drums_path = str((drums_dir / f"{drums_base}{ext}").resolve()) if drums_base else None
+            bass_path = str((bass_dir / f"{bass_base}{ext}").resolve()) if bass_base else None
+            other_path = str((other_dir / f"{other_base}{ext}").resolve()) if other_base else None
+            piano_path = str((piano_dir / f"{piano_base}{ext}").resolve()) if piano_base else None
 
             # 方案优先级（尊重用户选择）：
             # - 若选 demucs：Demucs → Spleeter → 回退
             # - 若选 spleeter：Spleeter → Demucs → 回退
             self.progress.emit(5)
             choices = ['demucs', 'spleeter'] if self.algo_choice == 'demucs' else ['spleeter', 'demucs']
+            try:
+                self.message.emit(f"已选择引擎: {('Demucs' if self.algo_choice=='demucs' else 'Spleeter')}，尝试顺序: {', '.join([('Demucs' if a=='demucs' else 'Spleeter') for a in choices])}")
+            except Exception:
+                pass
             for algo in choices:
                 if self._cancel:
                     return
@@ -20126,31 +20359,95 @@ class _VocalSeparationWorker(QThread):
                         self.message.emit("尝试使用 Demucs 分离…\n提示：首次使用会自动下载模型，可能需要数分钟")
                         self.progress.emit(10)
                         if self._demucs_cli_separate_and_save(tmp_in_wav, v_path, a_path):
+                            self._used_engine = 'demucs'
                             self.progress.emit(100)
-                            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path})
+                            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': 'Demucs'})
                             # 清理临时输入
                             try:
                                 Path(tmp_in_wav).unlink(missing_ok=True)
                             except Exception:
                                 pass
                             return
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        try:
+                            self.message.emit(f"Demucs 分离失败/不可用，原因：{e}。将尝试 Spleeter…")
+                        except Exception:
+                            pass
                 elif algo == 'spleeter':
                     try:
-                        from spleeter.separator import Separator  # type: ignore
-                        self.message.emit("使用 Spleeter 进行人声分离…")
-                        separator = Separator('spleeter:2stems')
-                        self._spleeter_separate_and_save(separator, tmp_in_wav, v_path, a_path)
+                        # 优先尝试本环境直连
+                        try:
+                            import spleeter  # type: ignore
+                            from spleeter.separator import Separator  # type: ignore
+                            ver = getattr(spleeter, '__version__', None)
+                            try:
+                                self._local_spleeter_version = ver
+                            except Exception:
+                                pass
+                            self.message.emit(f"使用 Spleeter 进行人声分离… (本地版本: {ver or 'unknown'})")
+                            # 根据选择的声部数构建分离器
+                            cfg = f"spleeter:{self.stems}stems"
+                            try:
+                                separator = Separator(cfg, MWF=True)
+                            except Exception:
+                                separator = Separator(cfg)
+                            if self.stems == 2:
+                                self._spleeter_separate_and_save(separator, tmp_in_wav, v_path, a_path)
+                            else:
+                                self._spleeter_multistem_and_save(separator, tmp_in_wav, v_path, a_path, drums_path, bass_path, piano_path, other_path)
+                        except Exception as e_imp:
+                            # 若本环境不可用，尝试外部桥接（无需切换主环境）
+                            if not self._auto_bridge_spleeter(tmp_in_wav, v_path, a_path, reason=str(e_imp), stems=self.stems, drums_path=drums_path, bass_path=bass_path, piano_path=piano_path, other_path=other_path):
+                                detail = ''
+                                try:
+                                    info = getattr(self, '_last_bridge_info', None)
+                                    if isinstance(info, dict) and not info.get('ok'):
+                                        detail = f"；外部桥接失败：{info.get('error','unknown')}"
+                                except Exception:
+                                    pass
+                                raise RuntimeError(f"Spleeter 在本环境不可用，且未检测到可用外部环境。原始原因：{e_imp}{detail}")
+                        self._used_engine = 'spleeter'
                         self.progress.emit(100)
-                        self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path})
+                        # 落地 meta.json 供核验
+                        try:
+                            import json as _json
+                            meta_path = v_path + '.spleeter.meta.json'
+                            if hasattr(self, '_last_bridge_info') and isinstance(self._last_bridge_info, dict):
+                                meta = dict(self._last_bridge_info)
+                                meta['engine'] = 'Spleeter-Bridge'
+                                meta['stems'] = self.stems
+                                with open(meta_path, 'w', encoding='utf-8') as f:
+                                    _json.dump(meta, f, ensure_ascii=False, indent=2)
+                            elif getattr(self, '_local_spleeter_version', None):
+                                meta = {
+                                    'ok': True,
+                                    'engine': 'Spleeter-Local',
+                                    'spleeter_version': getattr(self, '_local_spleeter_version', None),
+                                    'stems': self.stems
+                                }
+                                with open(meta_path, 'w', encoding='utf-8') as f:
+                                    _json.dump(meta, f, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
+                        self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': 'Spleeter'})
                         try:
                             Path(tmp_in_wav).unlink(missing_ok=True)
                         except Exception:
                             pass
                         return
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        try:
+                            # 若用户明确选择了 Spleeter，则不再自动回退到 Demucs，直接失败以避免造成“选择Spleeter但显示Demucs处理中”的混淆
+                            if self.algo_choice == 'spleeter':
+                                self.message.emit(f"Spleeter 分离失败/不可用，原因：{e}。已终止（未回退到 Demucs）。")
+                                raise
+                            else:
+                                # 仅当用户最初选择的是 Demucs 时，才作为回退尝试 Demucs
+                                self.message.emit(f"Spleeter 分离失败/不可用，原因：{e}。将尝试 Demucs…")
+                        except Exception:
+                            # 保底继续抛出
+                            if self.algo_choice == 'spleeter':
+                                raise
 
             if data.ndim == 2 and data.shape[1] == 2:
                 self.message.emit("执行中心通道提取…")
@@ -20163,12 +20460,25 @@ class _VocalSeparationWorker(QThread):
                 return
 
             # 保存
-            self.message.emit("保存文件…")
-            self._save_wav(v_path, v, sr)
+            # 保存
+            if self.export_format == 'wav':
+                self.message.emit("保存文件（WAV 原始）…")
+                self._save_wav(v_path, v, sr)
+            elif self.export_format == 'ogg':
+                self.message.emit("保存文件（OGG 高压缩）…")
+                self._save_ogg(v_path, v, sr)
+            else:
+                self.message.emit("保存文件（FLAC 无损压缩）…")
+                self._save_lossless(v_path, v, sr)
             self.progress.emit(85)
-            self._save_wav(a_path, acc, sr)
+            if self.export_format == 'wav':
+                self._save_wav(a_path, acc, sr)
+            elif self.export_format == 'ogg':
+                self._save_ogg(a_path, acc, sr)
+            else:
+                self._save_lossless(a_path, acc, sr)
             self.progress.emit(100)
-            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path})
+            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': (self._used_engine or 'DSP Fallback')})
         except Exception as e:
             self.failed.emit(str(e))
         finally:
@@ -20189,6 +20499,330 @@ class _VocalSeparationWorker(QThread):
             return s.strip(" .") or "output"
         except Exception:
             return name or "output"
+
+    # —— 外部桥接 Spleeter ——
+    def _auto_bridge_spleeter(self, tmp_in_wav: str, v_path: str, a_path: str, reason: str = "", stems: int = 2, drums_path: str | None = None, bass_path: str | None = None, piano_path: str | None = None, other_path: str | None = None) -> bool:
+        """尝试在未安装 spleeter 的主环境下，通过以下顺序桥接运行：
+    1) 显式 Python：环境变量 MIND_ECHO_SPLEETER_PY 指向的 python.exe
+    2) Conda 环境：优先 env 名称 ['spleeter39','spleeter310','spleeter','mindecho-spleeter-39','mindecho-spleeter-310']
+    3) Windows 启动器：py -3.10 / py -3.9
+        成功返回 True，否则 False。
+        """
+        try:
+            from pathlib import Path
+            import subprocess, json, shutil, os
+            bridge = str((Path(__file__).resolve().parent.parent.parent / 'tools' / 'spleeter_bridge.py'))
+            debug_msgs = []
+            # 统一模型目录探测：优先环境变量，其次仓库内 pretrained_models（离线）
+            model_dir = os.environ.get('SPLEETER_MODEL_PATH') or os.environ.get('SPLEETER_DATA_PATH')
+            if not model_dir:
+                try:
+                    repo_models = Path(__file__).resolve().parent.parent.parent / 'pretrained_models'
+                    if (repo_models / '2stems').exists() or (repo_models / '4stems').exists() or (repo_models / '5stems').exists():
+                        model_dir = str(repo_models)
+                except Exception:
+                    model_dir = None
+
+            # 1) 显式 Python 路径
+            try:
+                bridge_py = os.environ.get('MIND_ECHO_SPLEETER_PY')
+                if bridge_py and os.path.isfile(bridge_py):
+                    self.message.emit("使用外部 Spleeter 环境进行分离（bridge: MIND_ECHO_SPLEETER_PY）…")
+                    cmd = [bridge_py, bridge, '--input', tmp_in_wav, '--vocals', v_path, '--acc', a_path, '--sr', '44100', '--stems', str(stems)]
+                    if stems in (4,5):
+                        if drums_path: cmd += ['--drums', drums_path]
+                        if bass_path: cmd += ['--bass', bass_path]
+                        if other_path: cmd += ['--other', other_path]
+                        if stems == 5 and piano_path: cmd += ['--piano', piano_path]
+                    if model_dir:
+                        cmd += ['--model_dir', model_dir]
+                    try:
+                        debug_msgs.append("CMD#ENV: " + ' '.join(cmd))
+                    except Exception:
+                        pass
+                    return self._run_bridge_with_cmd(cmd)
+            except Exception:
+                pass
+
+            # 1a) 直接尝试常见 Python 解释器路径（无需环境变量/conda）
+            try:
+                for cand in self._direct_python_candidates():
+                    if os.path.isfile(cand):
+                        self.message.emit(f"尝试通过直接 Python 解释器桥接 Spleeter：{cand} …")
+                        cmd = [cand, bridge, '--input', tmp_in_wav, '--vocals', v_path, '--acc', a_path, '--sr', '44100', '--stems', str(stems)]
+                        if stems in (4,5):
+                            if drums_path: cmd += ['--drums', drums_path]
+                            if bass_path: cmd += ['--bass', bass_path]
+                            if other_path: cmd += ['--other', other_path]
+                            if stems == 5 and piano_path: cmd += ['--piano', piano_path]
+                        if model_dir:
+                            cmd += ['--model_dir', model_dir]
+                        try:
+                            debug_msgs.append("CMD#DIRECT: " + ' '.join(cmd))
+                        except Exception:
+                            pass
+                        if self._run_bridge_with_cmd(cmd):
+                            return True
+            except Exception:
+                pass
+
+            # 2) conda run -n <env> python
+            try:
+                conda_exe = shutil.which('conda') or shutil.which('conda.exe') or self._guess_conda_exe()
+                if conda_exe:
+                    candidates = ['spleeter39','spleeter310', 'spleeter', 'mindecho-spleeter-39','mindecho-spleeter-310']
+                    for env in candidates:
+                        self.message.emit(f"尝试通过 Conda 环境 {env} 桥接 Spleeter…")
+                        cmd = [conda_exe, 'run', '-n', env, 'python', bridge, '--input', tmp_in_wav, '--vocals', v_path, '--acc', a_path, '--sr', '44100', '--stems', str(stems)]
+                        if stems in (4,5):
+                            if drums_path: cmd += ['--drums', drums_path]
+                            if bass_path: cmd += ['--bass', bass_path]
+                            if other_path: cmd += ['--other', other_path]
+                            if stems == 5 and piano_path: cmd += ['--piano', piano_path]
+                        if model_dir:
+                            cmd += ['--model_dir', model_dir]
+                        try:
+                            debug_msgs.append(f"CMD#CONDA[{env}]: " + ' '.join(cmd))
+                        except Exception:
+                            pass
+                        if self._run_bridge_with_cmd(cmd):
+                            return True
+                else:
+                    debug_msgs.append("Conda not found")
+            except Exception:
+                pass
+
+            # 3) Windows 启动器 py -3.10 / -3.9
+            try:
+                py_exe = shutil.which('py') or shutil.which('py.exe')
+                if py_exe:
+                    for v in ['-3.10','-3.9']:
+                        self.message.emit(f"尝试通过 Windows 启动器 py {v} 桥接 Spleeter…")
+                        cmd = [py_exe, v, bridge, '--input', tmp_in_wav, '--vocals', v_path, '--acc', a_path, '--sr', '44100', '--stems', str(stems)]
+                        if stems in (4,5):
+                            if drums_path: cmd += ['--drums', drums_path]
+                            if bass_path: cmd += ['--bass', bass_path]
+                            if other_path: cmd += ['--other', other_path]
+                            if stems == 5 and piano_path: cmd += ['--piano', piano_path]
+                        if model_dir:
+                            cmd += ['--model_dir', model_dir]
+                        try:
+                            debug_msgs.append(f"CMD#PY[{v}]: " + ' '.join(cmd))
+                        except Exception:
+                            pass
+                        if self._run_bridge_with_cmd(cmd):
+                            return True
+                else:
+                    debug_msgs.append("Windows launcher py not found")
+            except Exception:
+                pass
+
+            # 失败：统一提示 + 最近尝试的命令打印
+            self.message.emit("未检测到可用的外部 Spleeter 环境（可设置 MIND_ECHO_SPLEETER_PY、或使用 tools\\.venv_spleeter310、或创建 conda env: spleeter310）。")
+            try:
+                if debug_msgs:
+                    for line in debug_msgs[-8:]:
+                        self.message.emit(line)
+            except Exception:
+                pass
+            return False
+        except Exception:
+            return False
+
+    def _run_bridge_with_cmd(self, cmd: list) -> bool:
+        """运行桥接命令，解析 JSON 输出，成功返回 True。"""
+        try:
+            import subprocess, json, os
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            raw = ((proc.stdout or '') + '\n' + (proc.stderr or '')).strip()
+            # 提取最后一个完整 JSON 对象（逐行优先，其次花括号配对）
+            info = None
+            try:
+                lines = [ln.strip() for ln in raw.splitlines() if ln.strip().startswith('{') and ln.strip().endswith('}')]
+                for ln in reversed(lines):
+                    try:
+                        obj = json.loads(ln)
+                        # 以包含 ok / error 字段的顶层对象为优先
+                        if isinstance(obj, dict) and ('ok' in obj or 'error' in obj or 'spleeter_version' in obj):
+                            info = obj
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                info = None
+            if not info:
+                # 退化：用花括号深度匹配提取最后一个可能的 JSON
+                try:
+                    depth = 0
+                    buf = []
+                    last = None
+                    for ch in raw:
+                        if ch == '{':
+                            if depth == 0:
+                                buf = []
+                            buf.append(ch)
+                            depth += 1
+                        elif ch == '}':
+                            if depth > 0:
+                                buf.append(ch)
+                                depth -= 1
+                                if depth == 0:
+                                    try:
+                                        last = json.loads(''.join(buf))
+                                    except Exception:
+                                        pass
+                            else:
+                                # 非法的右括号，忽略
+                                pass
+                        else:
+                            if depth > 0:
+                                buf.append(ch)
+                    if isinstance(last, dict):
+                        info = last
+                except Exception:
+                    info = None
+            if not info:
+                head = raw[:500]
+                tail = raw[-500:]
+                info = {'ok': False, 'error': f'bridge raw head: {head} | tail: {tail}'}
+            # 缓存最后一次桥接信息
+            try:
+                self._last_bridge_info = info
+            except Exception:
+                pass
+            # 报告桥接解析到的版本与解释器信息
+            try:
+                if info.get('ok'):
+                    ver = info.get('spleeter_version')
+                    py = info.get('python')
+                    self.message.emit(f"外部 Spleeter 已启用 (版本: {ver or 'unknown'}, Python: {py or 'unknown'})")
+            except Exception:
+                pass
+            if not info.get('ok'):
+                self.message.emit(f"外部 Spleeter 失败：{info.get('error','unknown')}")
+                return False
+            # 额外校验：输出文件已生成且非空
+            try:
+                v_out = None; a_out = None
+                # 可选多声部输出
+                drums_out = bass_out = piano_out = other_out = None
+                for i, tok in enumerate(cmd):
+                    if tok == '--vocals' and i+1 < len(cmd):
+                        v_out = cmd[i+1]
+                    if tok == '--acc' and i+1 < len(cmd):
+                        a_out = cmd[i+1]
+                    if tok == '--drums' and i+1 < len(cmd):
+                        drums_out = cmd[i+1]
+                    if tok == '--bass' and i+1 < len(cmd):
+                        bass_out = cmd[i+1]
+                    if tok == '--piano' and i+1 < len(cmd):
+                        piano_out = cmd[i+1]
+                    if tok == '--other' and i+1 < len(cmd):
+                        other_out = cmd[i+1]
+                def _ok(p):
+                    try:
+                        return bool(p and os.path.isfile(p) and os.path.getsize(p) > 0)
+                    except Exception:
+                        return False
+                if not _ok(v_out) or not _ok(a_out):
+                    self.message.emit("外部 Spleeter 报告成功但未找到有效输出文件，视为失败")
+                    return False
+                # 多声部不强制校验，但若给了路径且为空则提示
+                for lab, pth in [('鼓', drums_out), ('贝斯', bass_out), ('钢琴', piano_out), ('其他', other_out)]:
+                    if pth and not _ok(pth):
+                        try:
+                            self.message.emit(f"提示：{lab} 输出文件未生成或为空（忽略）")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            try:
+                self.message.emit(f"桥接命令执行失败：{e}")
+            except Exception:
+                pass
+            return False
+
+    def _direct_python_candidates(self) -> list:
+        """返回常见外部 Python 解释器候选列表。"""
+        try:
+            import os
+            from pathlib import Path
+            cands = []
+            # 仓库内本地 venv（优先尝试）
+            try:
+                repo_tools = Path(__file__).resolve().parent.parent.parent / 'tools'
+                for rel in [
+                    '.venv_spleeter310/Scripts/python.exe',
+                    '.venv_spleeter39/Scripts/python.exe',
+                ]:
+                    p = repo_tools / rel
+                    cands.append(str(p))
+            except Exception:
+                pass
+            # 基于常见 Anaconda 安装路径
+            bases = [
+                Path('C:/Users') / os.environ.get('USERNAME', 'admin') / 'anaconda3',
+                Path('C:/ProgramData/anaconda3'),
+                Path.home() / 'anaconda3',
+                Path.home() / 'miniconda3',
+            ]
+            env_names = ['spleeter39', 'spleeter310', 'spleeter']
+            for b in bases:
+                for env in env_names:
+                    p = b / 'envs' / env / 'python.exe'
+                    cands.append(str(p))
+            # 若通过 _guess_conda_exe 能定位到 conda，推断其根目录
+            try:
+                conda_exe = self._guess_conda_exe()
+                if conda_exe:
+                    ce = Path(conda_exe)
+                    root = ce.parent.parent  # .../anaconda3
+                    for env in env_names:
+                        cands.append(str(root / 'envs' / env / 'python.exe'))
+            except Exception:
+                pass
+            # 去重
+            seen = set()
+            uniq = []
+            for c in cands:
+                if c not in seen:
+                    uniq.append(c)
+                    seen.add(c)
+            return uniq
+        except Exception:
+            return []
+
+    def _guess_conda_exe(self) -> str:
+        """尽力推测 conda 可执行文件的路径（即便不在 PATH）。"""
+        try:
+            import os
+            from pathlib import Path
+            # 1) CONDA_EXE 环境变量（最可靠）
+            conda_exe = os.environ.get('CONDA_EXE')
+            if conda_exe and Path(conda_exe).is_file():
+                return conda_exe
+            # 2) CONDA_PREFIX -> 上级目录 Scripts/conda.exe 或 condabin/conda.bat
+            conda_prefix = os.environ.get('CONDA_PREFIX')
+            if conda_prefix:
+                p = Path(conda_prefix)
+                for cand in [p.parent / 'Scripts' / 'conda.exe', p.parent / 'condabin' / 'conda.bat']:
+                    if cand.exists():
+                        return str(cand)
+            # 3) 常见安装位置
+            home = Path.home()
+            common = [
+                home / 'anaconda3' / 'Scripts' / 'conda.exe',
+                Path('C:/ProgramData/anaconda3/Scripts/conda.exe'),
+                home / 'miniconda3' / 'Scripts' / 'conda.exe',
+            ]
+            for cand in common:
+                if cand.exists():
+                    return str(cand)
+        except Exception:
+            pass
+        return ''
 
     def _decode(self, path: str):
         """解码任意常见音频格式为 float32 [N, C]。
@@ -20280,13 +20914,313 @@ class _VocalSeparationWorker(QThread):
                 wf.setframerate(sr)
                 wf.writeframes(x16.tobytes())
 
-    def _spleeter_separate_and_save(self, separator, src_path: str, v_path: str, a_path: str):
-        # 使用 spleeter 2stems 模型（传入已构造的 separator 实例）
-        import soundfile as sf
+    def _save_ogg(self, path: str, audio, sr: int):
+        """保存为 OGG Vorbis（高压缩）。优先使用 soundfile，其次尝试 ffmpeg 转码。"""
         import numpy as np
-        self.progress.emit(20)
-        self.message.emit("分离中（Spleeter）…")
-        # 使用 ndarray 路径，避免不同版本 API 差异
+        x = audio.astype(np.float32)
+        try:
+            import soundfile as sf
+            # 指定格式与压缩等级（q=5 约128-160kbps；可调整）
+            sf.write(path, x, sr, format='OGG', subtype='VORBIS')
+            return
+        except Exception:
+            pass
+        # 回退：ffmpeg
+        try:
+            import shutil, subprocess, tempfile
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if not ff:
+                raise RuntimeError('缺少 soundfile 或 ffmpeg，无法导出 OGG')
+            import soundfile as sf
+            import os
+            tmp_wav = tempfile.mkstemp(prefix='tmp_ogg_', suffix='.wav')[1]
+            try:
+                sf.write(tmp_wav, x, sr)
+            except Exception:
+                self._save_wav(tmp_wav, x, sr)
+            cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'libvorbis', '-qscale:a', '5', path]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+        except Exception as e:
+            # 最后退：写 WAV
+            self._save_wav(path if path.lower().endswith('.wav') else (path + '.wav'), x, sr)
+
+    def _save_with_format(self, path: str, audio, sr: int):
+        fmt = (self.export_format or 'flac').lower()
+        if fmt == 'wav':
+            self._save_wav(path, audio, sr)
+        elif fmt == 'ogg':
+            self._save_ogg(path, audio, sr)
+        elif fmt == 'mp3':
+            self._save_mp3(path, audio, sr)
+        elif fmt in ('m4a','aac'):
+            self._save_m4a_aac(path, audio, sr)
+        elif fmt == 'opus':
+            self._save_opus(path, audio, sr)
+        elif fmt == 'alac':
+            self._save_alac(path, audio, sr)
+        elif fmt == 'aiff':
+            self._save_aiff(path, audio, sr)
+        elif fmt == 'wv':
+            self._save_wavpack(path, audio, sr)
+        else:
+            self._save_lossless(path, audio, sr)
+
+    def _mirror_vocals_to_pure(self, vocals_path: str):
+        """将已保存的人声文件复制到“纯人声”分类文件夹（同名）。"""
+        try:
+            import os, shutil
+            from pathlib import Path
+            if not vocals_path or not os.path.isfile(vocals_path):
+                return
+            pure_dir = Path(self.out_dir) / "纯人声"
+            pure_dir.mkdir(parents=True, exist_ok=True)
+            dst = pure_dir / Path(vocals_path).name
+            # 若目标存在则覆盖
+            shutil.copy2(vocals_path, str(dst))
+        except Exception:
+            pass
+
+    def _save_mp3(self, path: str, audio, sr: int):
+        """保存为 MP3（优先 ffmpeg: libmp3lame；VBR q=2）。"""
+        import numpy as np
+        x = audio.astype(np.float32)
+        try:
+            import shutil, subprocess, tempfile, soundfile as sf
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if not ff:
+                raise RuntimeError('ffmpeg not found')
+            fd, tmp_wav = tempfile.mkstemp(prefix='tmp_mp3_', suffix='.wav')
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                sf.write(tmp_wav, x, sr)
+            except Exception:
+                self._save_wav(tmp_wav, x, sr)
+            cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'libmp3lame', '-q:a', '2', path]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+            return
+        except Exception:
+            # 回退：WAV（更名为 .wav）
+            try:
+                self.message.emit('未检测到 ffmpeg 或编码失败，已回退保存为 WAV')
+            except Exception:
+                pass
+            import os as _os
+            base, _ = _os.path.splitext(path)
+            self._save_wav(base + '.wav', x, sr)
+
+    def _save_m4a_aac(self, path: str, audio, sr: int):
+        """保存为 M4A AAC（优先 ffmpeg aac VBR q=2）。"""
+        import numpy as np
+        x = audio.astype(np.float32)
+        try:
+            import shutil, subprocess, tempfile, soundfile as sf, os
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if not ff:
+                raise RuntimeError('ffmpeg not found')
+            fd, tmp_wav = tempfile.mkstemp(prefix='tmp_m4a_', suffix='.wav')
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                sf.write(tmp_wav, x, sr)
+            except Exception:
+                self._save_wav(tmp_wav, x, sr)
+            # 使用内置 aac 编码器（或自动选择可用编码器）
+            cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'aac', '-q:a', '2', path]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+            return
+        except Exception:
+            try:
+                self.message.emit('未检测到 ffmpeg 或编码失败，已回退保存为 WAV')
+            except Exception:
+                pass
+            import os as _os
+            base, _ = _os.path.splitext(path)
+            self._save_wav(base + '.wav', x, sr)
+
+    def _save_opus(self, path: str, audio, sr: int):
+        """保存为 OPUS（libopus，适合高压缩）。"""
+        import numpy as np
+        x = audio.astype(np.float32)
+        try:
+            import shutil, subprocess, tempfile, soundfile as sf, os
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if not ff:
+                raise RuntimeError('ffmpeg not found')
+            fd, tmp_wav = tempfile.mkstemp(prefix='tmp_opus_', suffix='.wav')
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                sf.write(tmp_wav, x, sr)
+            except Exception:
+                self._save_wav(tmp_wav, x, sr)
+            cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'libopus', '-b:a', '160k', path]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+            return
+        except Exception:
+            try:
+                self.message.emit('未检测到 ffmpeg 或编码失败，已回退保存为 WAV')
+            except Exception:
+                pass
+            import os as _os
+            base, _ = _os.path.splitext(path)
+            self._save_wav(base + '.wav', x, sr)
+
+    def _save_alac(self, path: str, audio, sr: int):
+        """保存为 M4A ALAC（Apple 无损）。"""
+        import numpy as np
+        x = audio.astype(np.float32)
+        try:
+            import shutil, subprocess, tempfile, soundfile as sf, os
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if not ff:
+                raise RuntimeError('ffmpeg not found')
+            fd, tmp_wav = tempfile.mkstemp(prefix='tmp_alac_', suffix='.wav')
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                sf.write(tmp_wav, x, sr)
+            except Exception:
+                self._save_wav(tmp_wav, x, sr)
+            cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'alac', path]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+            return
+        except Exception:
+            try:
+                self.message.emit('未检测到 ffmpeg 或编码失败，已回退保存为 FLAC')
+            except Exception:
+                pass
+            self._save_lossless(path, x, sr)
+
+    def _save_aiff(self, path: str, audio, sr: int):
+        """保存为 AIFF（PCM）。"""
+        import numpy as np
+        x = audio.astype(np.float32)
+        try:
+            import soundfile as sf
+            sf.write(path, x, sr, format='AIFF', subtype='PCM_16')
+            return
+        except Exception:
+            try:
+                self.message.emit('AIFF 写入失败，已回退保存为 WAV')
+            except Exception:
+                pass
+            import os as _os
+            base, _ = _os.path.splitext(path)
+            self._save_wav(base + '.wav', x, sr)
+
+    def _save_wavpack(self, path: str, audio, sr: int):
+        """保存为 WavPack（无损，.wv）。"""
+        import numpy as np
+        x = audio.astype(np.float32)
+        try:
+            import shutil, subprocess, tempfile, soundfile as sf, os
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if not ff:
+                raise RuntimeError('ffmpeg not found')
+            fd, tmp_wav = tempfile.mkstemp(prefix='tmp_wv_', suffix='.wav')
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                sf.write(tmp_wav, x, sr)
+            except Exception:
+                self._save_wav(tmp_wav, x, sr)
+            cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'wavpack', path]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+            return
+        except Exception:
+            try:
+                self.message.emit('未检测到 ffmpeg 或编码失败，已回退保存为 FLAC')
+            except Exception:
+                pass
+            self._save_lossless(path, x, sr)
+
+    def _save_lossless(self, path: str, audio, sr: int):
+        """首选保存为 FLAC（无损压缩）。
+        优先使用 ffmpeg 的 flac -compression_level 8 获得更高压缩率；
+        若无 ffmpeg，则使用 soundfile 写 FLAC(PCM_16)；若仍失败，回退 WAV。
+        """
+        import numpy as np
+        import os, shutil, tempfile, subprocess
+        x = audio.astype(np.float32)
+        # 优先 ffmpeg（Windows 上更稳定且压缩率高）
+        try:
+            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            if ff:
+                import soundfile as sf
+                tmp_wav = tempfile.mkstemp(prefix='tmp_flac_', suffix='.wav')[1]
+                try:
+                    sf.write(tmp_wav, x, sr)
+                except Exception:
+                    self._save_wav(tmp_wav, x, sr)
+                # -compression_level 8: 最高压缩；-ar/-ac 保持参数
+                cmd = [ff, '-y', '-i', tmp_wav, '-c:a', 'flac', '-compression_level', '8', path]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    os.remove(tmp_wav)
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+        # 次选：soundfile 直接写 FLAC PCM_16
+        try:
+            import soundfile as sf
+            sf.write(path, x, sr, format='FLAC', subtype='PCM_16')
+            return
+        except Exception:
+            pass
+        # 最后回退 WAV（保持可用性）
+        if not path.lower().endswith('.wav'):
+            path = path + '.wav'
+        self._save_wav(path, x, sr)
+
+    def _spleeter_separate_and_save(self, separator, src_path: str, v_path: str, a_path: str):
+        """使用 Spleeter 2-stems 进行分离，并做“标准”质量微调与门控回退。"""
+        import numpy as np
+        import soundfile as sf
+        # 进度与提示
+        try:
+            self.progress.emit(20)
+            self.message.emit("分离中（Spleeter）…")
+        except Exception:
+            pass
+
+        # 解码并分离
         from spleeter.audio.adapter import AudioAdapter  # type: ignore
         audio_loader = AudioAdapter.default()
         data, sr = audio_loader.load(src_path, sample_rate=44100)
@@ -20295,21 +21229,239 @@ class _VocalSeparationWorker(QThread):
         accomp = out.get('accompaniment')
         if vocals is None or accomp is None:
             raise RuntimeError('Spleeter 输出缺少声部')
-        # 保留立体声形态，避免过早下混为单声道导致立体声质感丢失
-        # 若返回为 (T,) 则升维为 (T,1)
+        # 统一为二维（T,C）
         if vocals.ndim == 1:
             vocals = vocals[:, None]
         if accomp.ndim == 1:
             accomp = accomp[:, None]
-        # 轻量 Wiener 掩蔽后处理，降低串音
+
+        # 后处理 refine + 能量一致性
         try:
-            mix = (vocals + accomp) * 0.5
-            rv, ra = self._refine_with_wiener(mix, vocals, accomp)
-            sf.write(v_path, rv.astype(np.float32), sr)
-            sf.write(a_path, ra.astype(np.float32), sr)
+            mix = data if data.ndim == 2 else data[:, None]
+            # 提升迭代强度以更强抑制串音
+            rv, ra = self._refine_with_wiener(mix, vocals, accomp, iterations=6)
+            # 一致性：伴奏与 mix - vocals 融合（略下调系数）
+            try:
+                ra2 = mix - rv
+                lam = 0.62
+                ra = (lam * ra) + ((1.0 - lam) * ra2)
+                peak = float(np.max(np.abs(np.concatenate([rv, ra], axis=1))) + 1e-9)
+                if peak > 1.0:
+                    rv = rv / peak * 0.99
+                    ra = ra / peak * 0.99
+            except Exception:
+                pass
+
+            # 质量门控失败则触发一次增强回退
+            try:
+                if not self._quality_gate(mix, rv, ra):
+                    try:
+                        self.message.emit("分离质量偏低，启动增强回退…")
+                    except Exception:
+                        pass
+                    if mix.ndim == 2 and mix.shape[1] >= 2:
+                        mv, ma = self._ms_strong_separate(mix.astype(np.float32), sr)
+                    else:
+                        mv, ma = self._spectral_approx_mono(mix)
+                    rv2, ra2 = self._refine_with_wiener(mix, mv, ma, iterations=4)
+                    try:
+                        ra2b = mix - rv2
+                        lam2 = 0.60
+                        ra2 = (lam2 * ra2) + ((1.0 - lam2) * ra2b)
+                    except Exception:
+                        pass
+                    if self._quality_gate(mix, rv2, ra2):
+                        rv, ra = rv2, ra2
+            except Exception:
+                pass
+
+            # 进一步增强：中心声像 + 谐波掩蔽后处理（只在改善质量时采用）
+            try:
+                rv_e, ra_e = self._enhance_center_harmonic(mix, rv, ra, sr)
+                # 仅在门控通过且较原始更优时采用
+                def _score(xm, xv, xa):
+                    import numpy as _np
+                    def m1(x):
+                        x = _np.asarray(x, dtype=_np.float32)
+                        if x.ndim == 2 and x.shape[1] > 1:
+                            return x.mean(axis=1)
+                        return x.reshape(-1)
+                    xm = m1(xm); xv = m1(xv); xa = m1(xa)
+                    def corr(a,b):
+                        a = a - a.mean(); b = b - b.mean()
+                        da = float(_np.linalg.norm(a) + 1e-9); db = float(_np.linalg.norm(b) + 1e-9)
+                        return float(_np.dot(a,b) / (da*db))
+                    cv = abs(corr(xm, xv)); ca = abs(corr(xm, xa)); cva = abs(corr(xv, xa))
+                    return 0.5*(cv+ca) + 0.5*cva
+                s0 = _score(mix, rv, ra)
+                s1 = _score(mix, rv_e, ra_e)
+                if self._quality_gate(mix, rv_e, ra_e) and (s1 < s0 - 0.01):
+                    rv, ra = rv_e, ra_e
+            except Exception:
+                pass
+
+            # 保存
+            try:
+                # 额外一步：M/S 引导的掩蔽增强 + 混合一致性投影（参考 Demucs 思路）
+                try:
+                    rv_ms, ra_ms = self._ms_guided_mask_boost(mix, rv, ra, sr)
+                    # 混合一致性：将残差优先归入伴奏，保护人声
+                    rv_ms, ra_ms = self._mixture_consistency_project(mix, rv_ms, ra_ms, mode='acc')
+                    # 仅在质量更好时采用
+                    if self._quality_gate(mix, rv_ms, ra_ms):
+                        rv, ra = rv_ms, ra_ms
+                except Exception:
+                    pass
+                # 立体声多通道 Wiener 细化（MWF）：在中心-侧信息与当前掩蔽基础上，进一步压低串音
+                try:
+                    if mix.ndim == 2 and mix.shape[1] >= 2:
+                        rv_mwf, ra_mwf = self._stereo_mwf_refine(mix, rv, ra, sr)
+                        # 采用条件：门控通过且人声/伴奏互相关下降
+                        def _score_pair(xm, xv, xa):
+                            import numpy as _np
+                            def m1(x):
+                                x = _np.asarray(x, dtype=_np.float32)
+                                if x.ndim == 2 and x.shape[1] > 1:
+                                    return x.mean(axis=1)
+                                return x.reshape(-1)
+                            xm = m1(xm); xv = m1(xv); xa = m1(xa)
+                            a = xv - xv.mean(); b = xa - xa.mean()
+                            da = float(_np.linalg.norm(a) + 1e-9); db = float(_np.linalg.norm(b) + 1e-9)
+                            return float(abs(_np.dot(a,b)) / (da*db))
+                        c0 = _score_pair(mix, rv, ra)
+                        c1 = _score_pair(mix, rv_mwf, ra_mwf)
+                        if self._quality_gate(mix, rv_mwf, ra_mwf) and (c1 < c0 - 0.01):
+                            rv, ra = rv_mwf, ra_mwf
+                except Exception:
+                    pass
+                # 交叉去串音（Debleed）：在 STFT 中自适应估计泄漏比例并消除
+                try:
+                    rv_db, ra_db = self._debleed_cross_cancel(mix, rv, ra, sr)
+                    # 采用条件：门控通过且互相关再下降
+                    def _score_pair2(xm, xv, xa):
+                        import numpy as _np
+                        def m1(x):
+                            x = _np.asarray(x, dtype=_np.float32)
+                            if x.ndim == 2 and x.shape[1] > 1:
+                                return x.mean(axis=1)
+                            return x.reshape(-1)
+                        xm = m1(xm); xv = m1(xv); xa = m1(xa)
+                        a = xv - xv.mean(); b = xa - xa.mean()
+                        da = float(_np.linalg.norm(a) + 1e-9); db = float(_np.linalg.norm(b) + 1e-9)
+                        return float(abs(_np.dot(a,b)) / (da*db))
+                    c_prev = _score_pair2(mix, rv, ra)
+                    c_new = _score_pair2(mix, rv_db, ra_db)
+                    if self._quality_gate(mix, rv_db, ra_db) and (c_new < c_prev - 0.008):
+                        rv, ra = rv_db, ra_db
+                except Exception:
+                    pass
+                # 人声打击乐抑制（温和）：减少 vocal 里的鼓镲残留
+                try:
+                    rv_ps = self._suppress_percussive_in_vocals(rv, sr)
+                    if self._quality_gate(mix, rv_ps, ra):
+                        rv = rv_ps
+                except Exception:
+                    pass
+                # 最终掩蔽锐化 + 一致性投影：进一步降低互串并恢复混合一致性
+                try:
+                    rv_fs, ra_fs = self._final_mask_sharpen(mix, rv, ra, sr)
+                    # 采用条件：门控通过且互相关下降
+                    def _score_pair3(xm, xv, xa):
+                        import numpy as _np
+                        def m1(x):
+                            x = _np.asarray(x, dtype=_np.float32)
+                            if x.ndim == 2 and x.shape[1] > 1:
+                                return x.mean(axis=1)
+                            return x.reshape(-1)
+                        xm = m1(xm); xv = m1(xv); xa = m1(xa)
+                        a = xv - xv.mean(); b = xa - xa.mean()
+                        da = float(_np.linalg.norm(a) + 1e-9); db = float(_np.linalg.norm(b) + 1e-9)
+                        return float(abs(_np.dot(a,b)) / (da*db))
+                    c_prev2 = _score_pair3(mix, rv, ra)
+                    c_new2 = _score_pair3(mix, rv_fs, ra_fs)
+                    if self._quality_gate(mix, rv_fs, ra_fs) and (c_new2 < c_prev2 - 0.008):
+                        rv, ra = rv_fs, ra_fs
+                    # 最后一轮一致性
+                    rv, ra = self._mixture_consistency_project(mix, rv, ra, mode='acc')
+                except Exception:
+                    pass
+                self._save_with_format(v_path, rv, sr)
+                try:
+                    self._mirror_vocals_to_pure(v_path)
+                except Exception:
+                    pass
+                self._save_with_format(a_path, ra, sr)
+            except Exception:
+                sf.write(v_path, rv.astype(np.float32), sr)
+                sf.write(a_path, ra.astype(np.float32), sr)
         except Exception:
-            sf.write(v_path, vocals.astype(np.float32), sr)
-            sf.write(a_path, accomp.astype(np.float32), sr)
+            # refine 失败则直接落盘原始输出
+            try:
+                self._save_with_format(v_path, vocals, sr)
+                try:
+                    self._mirror_vocals_to_pure(v_path)
+                except Exception:
+                    pass
+                self._save_with_format(a_path, accomp, sr)
+            except Exception:
+                sf.write(v_path, vocals.astype(np.float32), sr)
+                sf.write(a_path, accomp.astype(np.float32), sr)
+
+    def _spleeter_multistem_and_save(self, separator, src_path: str, v_path: str, a_path: str, drums_path: str | None, bass_path: str | None, piano_path: str | None, other_path: str | None):
+        """使用 Spleeter 4/5-stems，分别保存中文分类，并合成伴奏轨。"""
+        import numpy as np
+        import soundfile as sf
+        try:
+            self.progress.emit(20)
+            self.message.emit("分离中（Spleeter 多声部）…")
+        except Exception:
+            pass
+        from spleeter.audio.adapter import AudioAdapter  # type: ignore
+        audio_loader = AudioAdapter.default()
+        data, sr = audio_loader.load(src_path, sample_rate=44100)
+        out = separator.separate(data)
+        voc = out.get('vocals')
+        if voc is None:
+            raise RuntimeError('Spleeter 输出缺少 vocals')
+        if voc.ndim == 1:
+            voc = voc[:, None]
+        # 写人声
+        self._save_with_format(v_path, voc, sr)
+        try:
+            self._mirror_vocals_to_pure(v_path)
+        except Exception:
+            pass
+        # 其余声部
+        drums = out.get('drums')
+        bass = out.get('bass')
+        other = out.get('other')
+        piano = out.get('piano') if self.stems == 5 else None
+        if drums is not None and drums_path:
+            self._save_with_format(drums_path, drums, sr)
+        if bass is not None and bass_path:
+            self._save_with_format(bass_path, bass, sr)
+        if other is not None and other_path:
+            self._save_with_format(other_path, other, sr)
+        if piano is not None and piano_path:
+            self._save_with_format(piano_path, piano, sr)
+        # 合成伴奏：非人声部分求和
+        try:
+            parts = []
+            for p in (drums, bass, other, (piano if self.stems == 5 else None)):
+                if p is not None:
+                    parts.append(np.asarray(p, dtype=np.float32))
+            if parts:
+                acc = sum(parts)
+                self._save_with_format(a_path, acc, sr)
+            else:
+                # 回退：伴奏为混音 - 人声
+                mix = data if data.ndim == 2 else data[:, None]
+                acc = mix - voc
+                self._save_with_format(a_path, acc, sr)
+        except Exception:
+            mix = data if data.ndim == 2 else data[:, None]
+            acc = mix - voc
+            self._save_with_format(a_path, acc, sr)
 
     def _resample_to(self, data, sr: int, target_sr: int):
         """将 data [N, C] 重采样到 target_sr。尽量使用高质量方法；无库时退化到线性插值。"""
@@ -20456,7 +21608,8 @@ class _VocalSeparationWorker(QThread):
                         est = min(90, 10 + int(elapsed * 4))  # ~20s 达到 90%
                         try:
                             self.progress.emit(est)
-                            self.message.emit(f"Demucs 处理中（{m}/{device}）… 已用 {int(elapsed)}s")
+                            # 更清晰的进度提示，避免与 Spleeter 选择混淆
+                            self.message.emit(f"使用 Demucs 处理中（模型: {m} / 设备: {device}）… 已用 {int(elapsed)}s")
                         except Exception:
                             pass
                     if line:
@@ -20478,7 +21631,12 @@ class _VocalSeparationWorker(QThread):
                 for d in cand_dirs:
                     # 兼容不同版本命名
                     cand_v = [d / 'vocals.wav', d / 'vocals.flac']
-                    cand_a = [d / 'accompaniment.wav', d / 'accompaniment.flac', d / 'no_vocals.wav', d / 'no_vocals.flac', d / 'other.wav', d / 'instrumental.wav']
+                    cand_a = [
+                        d / 'accompaniment.wav', d / 'accompaniment.flac',
+                        d / 'no_vocals.wav', d / 'no_vocals.flac',
+                        d / 'other.wav', d / 'other.flac',
+                        d / 'instrumental.wav', d / 'instrumental.flac'
+                    ]
                     v = next((p for p in cand_v if p.exists()), None)
                     a = next((p for p in cand_a if p.exists()), None)
                     if v and a and v.exists() and a.exists():
@@ -20511,12 +21669,23 @@ class _VocalSeparationWorker(QThread):
                                     continue
                             except Exception:
                                 pass
-                            sf.write(v_path, rv.astype('float32'), mix_sr)
-                            sf.write(a_path, ra.astype('float32'), mix_sr)
+                            try:
+                                self._save_with_format(v_path, rv, mix_sr)
+                                self._save_with_format(a_path, ra, mix_sr)
+                            except Exception:
+                                import soundfile as _sf
+                                _sf.write(v_path, rv.astype('float32'), mix_sr)
+                                _sf.write(a_path, ra.astype('float32'), mix_sr)
                         else:
-                            shutil.copy2(str(found_v), v_path)
-                            shutil.copy2(str(found_a), a_path)
+                            # 采样率不同，直接重新编码为目标格式
+                            try:
+                                self._save_with_format(v_path, v_arr, v_sr)
+                                self._save_with_format(a_path, a_arr, a_sr)
+                            except Exception:
+                                shutil.copy2(str(found_v), v_path)
+                                shutil.copy2(str(found_a), a_path)
                     except Exception:
+                        # 回退复制原文件（如用户选择 OGG/WAV 但此处失败，复制能保证产出）
                         shutil.copy2(str(found_v), v_path)
                         shutil.copy2(str(found_a), a_path)
                     # 清理临时 demucs 输出
@@ -20536,11 +21705,8 @@ class _VocalSeparationWorker(QThread):
             pass
         return False
 
-    def _refine_with_wiener(self, mix, vocals, accomp, iterations: int = 3):
-        """高质量串音抑制（迭代 Wiener/软掩蔽 + 频带自适应 + 发声门控）。
-        - 保留与 mix 相同的声道形态（优先保持立体声）。
-        - 对无声区避免过度处理，降低“电话音/塑料感”。
-        """
+    def _refine_with_wiener(self, mix, vocals, accomp, iterations: int = 4):
+        """高质量串音抑制 + 频带自适应 + 主唱锚定 + 高音救援（标准强度）。"""
         import numpy as np
         def ensure_2d(x):
             arr = np.asarray(x, dtype=np.float32)
@@ -20551,12 +21717,11 @@ class _VocalSeparationWorker(QThread):
         V0 = ensure_2d(vocals)
         A0 = ensure_2d(accomp)
         n, C = X.shape
-        win, hop = 4096, 1024  # 更长窗获得更细的频率分辨率
+        win, hop = 4096, 1024
         if n < win:
             return V0[:n], A0[:n]
         w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32) / (win - 1))
         def stft_multi(x2d):
-            # x2d: [N, C] -> list of [F, B] per channel
             Xcs = []
             for c in range(x2d.shape[1]):
                 x = x2d[:, c]
@@ -20580,26 +21745,169 @@ class _VocalSeparationWorker(QThread):
                 ww[ww==0] = 1.0
                 outs.append((y/ww)[:n])
             return np.stack(outs, axis=1)
-        # STFT（逐通道保持立体声信息）
         Xs = stft_multi(X)
         Vs = stft_multi(V0)
         As = stft_multi(A0)
-        # 发声门控：根据初始人声能量估计，减少无声区的过处理
-        def voice_gate(v_time):
-            # 简单能量门控 + 平滑
-            e = v_time**2
-            win_s = max(1, n // 400)  # ~100 帧平滑
-            ker = np.ones(win_s, dtype=np.float32) / win_s
-            g = np.convolve(e.mean(axis=1), ker, mode='same')
-            thr = 0.001 * np.max(g + 1e-9)
-            return (g > thr).astype(np.float32)
-        gate = voice_gate(V0)
-        # 频率权重：更温和的高通/低通形状，减少高频刺耳与低频空洞
+        def soft_gate_from_features(V_init, X_ref):
+            import numpy as _np
+            e = (V_init**2).mean(axis=1)
+            win_s = max(3, int(round(len(e) * 0.002)))
+            ker = _np.ones(win_s, dtype=_np.float32) / max(1, win_s)
+            e_s = _np.convolve(e, ker, mode='same')
+            q60 = float(_np.quantile(e_s, 0.60)) if e_s.size > 0 else 0.0
+            base = (e_s - (0.25 * q60)) / (q60 + 1e-8)
+            base = _np.clip(base, 0.0, 1.0)
+            Xc0 = X_ref[0]
+            mag = _np.abs(Xc0)
+            F = mag.shape[1]
+            freqs = _np.linspace(0.0, 22050.0, F)
+            mid_band = (freqs >= 300.0) & (freqs <= 3500.0)
+            low_band = (freqs < 180.0)
+            hi_band = (freqs > 9000.0)
+            m_mid = (mag[:, mid_band] + 1e-8)
+            m_low = (mag[:, low_band] + 1e-8)
+            m_hi  = (mag[:, hi_band] + 1e-8)
+            ener_mid = _np.mean(m_mid, axis=1)
+            ener_low = _np.mean(m_low, axis=1)
+            ener_hi  = _np.mean(m_hi,  axis=1)
+            ratio_mid = ener_mid / (0.5*ener_low + 0.5*ener_hi + 1e-8)
+            peak = _np.max(m_mid, axis=1)
+            mean = _np.mean(m_mid, axis=1) + 1e-8
+            peaky = _np.clip((peak / mean - 1.0) / 4.0, 0.0, 1.0)
+            r_norm = _np.tanh(0.6 * ratio_mid)
+            tonal = _np.clip(0.6 * r_norm + 0.4 * peaky, 0.0, 1.0)
+            g = _np.maximum(base, tonal)
+            ker2 = _np.ones(5, dtype=_np.float32) / 5.0
+            g = _np.convolve(g, ker2, mode='same')
+            for _ in range(2):
+                g = _np.maximum(g, _np.r_[g[0], g[:-1]])
+                g = _np.maximum(g, _np.r_[g[1:], g[-1]])
+            return _np.clip(0.2 + 0.8 * g, 0.0, 1.0).astype(_np.float32)
+        gate = soft_gate_from_features(V0, Xs)
         num_bins = Xs[0].shape[1]
         f = np.linspace(0, 22050.0, num_bins)
-        hv = 0.7 + 0.3/(1.0 + np.exp(-(f - 150.0)/80.0))  # 人声低频不过度削弱
-        la = 0.8 + 0.2/(1.0 + np.exp((f - 7000.0)/1200.0)) # 伴奏高频适度保留亮度
+        hv = 0.72 + 0.28/(1.0 + np.exp(-(f - 180.0)/120.0))
+        la = 0.82 + 0.18/(1.0 + np.exp((f - 6500.0)/1400.0))
         p = 2.0
+        lead_w_frames = None
+        lead_harm_mask = None
+        try:
+            T = Xs[0].shape[0]
+            center_ratio = np.ones((T,), dtype=np.float32)
+            if C == 2:
+                XL = Xs[0]; XR = Xs[1]
+                M = 0.5 * (XL + XR); S = 0.5 * (XL - XR)
+                magM = np.abs(M).mean(axis=1)
+                magS = np.abs(S).mean(axis=1)
+                center_ratio = (magM + 1e-8) / (magM + magS + 1e-8)
+            sr_est = 44100
+            try:
+                sr_est = int(round((n * 1024) / max(1, (Xs[0].shape[0]-1)))) if Xs and Xs[0].shape[0] > 1 else 44100
+            except Exception:
+                sr_est = 44100
+            mag_ref = np.abs(Xs[0]) if C == 1 else np.abs(0.5*(Xs[0] + Xs[1]))
+            use_mel = False
+            lead_prior_f = None
+            lead_sim_frames = None
+            anchor_c0 = None
+            try:
+                import librosa  # type: ignore
+                import numpy as _np
+                n_fft = 4096; n_mels = 32
+                mel = librosa.filters.mel(sr=sr_est, n_fft=n_fft, n_mels=n_mels, fmin=80, fmax=8000)
+                Fm = mag_ref.shape[1]
+                if mel.shape[1] != Fm:
+                    mel = _np.interp(_np.linspace(0, mel.shape[1]-1, Fm), _np.arange(mel.shape[1]), mel)
+                P = (mag_ref**2)
+                melE = P @ mel.T
+                melE = _np.log1p(melE / (melE.mean(axis=1, keepdims=True)+1e-8))
+                t_idx = _np.arange(T)
+                front = (t_idx <= int(0.3*T))
+                g_T = _np.interp(_np.linspace(0, n-1, T), _np.arange(n), gate).astype(_np.float32)
+                e_mix = (mag_ref.mean(axis=1) + 1e-8)
+                e_norm = e_mix / float(_np.median(e_mix) + 1e-8)
+                inv_e = 1.0 / (1.0 + e_norm)
+                score = g_T * (0.5 + 0.5*center_ratio) * (0.6*front + 0.4) * (0.7 + 0.3*inv_e)
+                K = max(8, int(0.05*T))
+                topk = _np.argsort(score)[-K:]
+                anchor = melE[topk].mean(axis=0)
+                spec_anchor = (P[topk].mean(axis=0) + 1e-8)
+                kerL = _np.ones(9, dtype=_np.float32)/9.0
+                spec_smooth = _np.convolve(spec_anchor, kerL, mode='same')
+                spec_norm = spec_smooth / (float(spec_smooth.mean()) + 1e-8)
+                lead_prior_f = _np.clip(spec_norm, 0.9, 1.1).astype(_np.float32)
+                anchor_c0 = float((_np.arange(Fm, dtype=_np.float32) @ spec_anchor) / (spec_anchor.sum() + 1e-8))
+                def cos_sim(a,b):
+                    an = a / (float(_np.linalg.norm(a))+1e-8)
+                    bn = b / (float(_np.linalg.norm(b))+1e-8)
+                    return float(_np.dot(an,bn))
+                sims = _np.array([cos_sim(melE[i], anchor) for i in range(T)], dtype=_np.float32)
+                sims = _np.clip(sims, 0.0, 1.0)
+                lead_w_frames = 0.6*sims + 0.4*center_ratio
+                lead_w_frames = _np.clip(lead_w_frames, 0.0, 1.0).astype(_np.float32)
+                lead_sim_frames = sims.astype(_np.float32)
+                use_mel = True
+            except Exception:
+                pass
+            if not use_mel:
+                import numpy as _np
+                num = (mag_ref * f[None,:]).sum(axis=1)
+                den = (mag_ref.sum(axis=1) + 1e-8)
+                centroid = num / den
+                t_idx = _np.arange(T)
+                g_T = _np.interp(_np.linspace(0, n-1, T), _np.arange(n), gate).astype(_np.float32)
+                front = (t_idx <= int(0.3*T))
+                e_mix = (mag_ref.mean(axis=1) + 1e-8)
+                e_norm = e_mix / float(_np.median(e_mix) + 1e-8)
+                inv_e = 1.0 / (1.0 + e_norm)
+                score = g_T * (0.5 + 0.5*center_ratio) * (0.6*front + 0.4) * (0.7 + 0.3*inv_e)
+                K = max(8, int(0.05*T))
+                topk = _np.argsort(score)[-K:]
+                c0 = float(centroid[topk].mean())
+                sims = _np.exp(-_np.abs(centroid - c0) / 500.0)
+                sims = _np.clip(sims.astype(_np.float32), 0.0, 1.0)
+                lead_w_frames = (0.6*sims + 0.4*center_ratio).astype(_np.float32)
+                lead_sim_frames = sims.astype(_np.float32)
+                anchor_c0 = float(c0)
+            ker = np.ones(5, dtype=np.float32)/5.0
+            lead_w_frames = np.convolve(lead_w_frames, ker, mode='same').astype(np.float32)
+            try:
+                self._lead_prior_f_cached = lead_prior_f
+                self._lead_sim_frames_cached = lead_sim_frames
+                self._anchor_c0_cached = anchor_c0
+            except Exception:
+                pass
+            try:
+                import librosa  # type: ignore
+                import numpy as _np
+                v_mono0 = V0.mean(axis=1)
+                win_len = 4096; hop_len = 1024
+                sr_est2 = 44100
+                f0g, vfg, vpg = librosa.pyin(v_mono0, fmin=librosa.note_to_hz('C3'), fmax=librosa.note_to_hz('C6'), sr=sr_est2, frame_length=win_len, hop_length=hop_len)
+                f0g = _np.nan_to_num(f0g, nan=0.0).astype(_np.float32)
+                vpg = (vpg.astype(_np.float32) if vpg is not None else _np.ones_like(f0g))
+                Tstft = Xs[0].shape[0]; Tf0 = len(f0g); Tm = min(Tstft, Tf0)
+                lead_harm_mask = _np.zeros((Tstft, num_bins), dtype=_np.float32)
+                for ti in range(Tm):
+                    f0_t = float(f0g[ti])
+                    if f0_t <= 0:
+                        continue
+                    cr = float(center_ratio[ti]) if len(center_ratio) == Tstft else 1.0
+                    cred = max(0.0, min(1.0, 0.5*vpg[ti] + 0.5*cr))
+                    if cred < 0.5:
+                        continue
+                    for h in range(1, 7):
+                        fh = f0_t * h
+                        if fh >= 22050.0:
+                            break
+                        idx = int(_np.argmin(_np.abs(f - fh)))
+                        bw = max(1, int(0.015 * (fh/22050.0) * num_bins))
+                        i0 = max(0, idx-bw); i1 = min(num_bins, idx+bw+1)
+                        lead_harm_mask[ti, i0:i1] = _np.maximum(lead_harm_mask[ti, i0:i1], cred)
+            except Exception:
+                lead_harm_mask = None
+        except Exception:
+            lead_w_frames = None
         Yv = [Vc.copy() for Vc in Vs]
         Ya = [Ac.copy() for Ac in As]
         iters = max(2, int(iterations))
@@ -20609,33 +21917,580 @@ class _VocalSeparationWorker(QThread):
                 Vc = Yv[c]
                 Ac = Ya[c]
                 magV = np.abs(Vc); magA = np.abs(Ac)
-                denom = (magV**p + magA**p + 1e-8)
-                maskV = (magV**p) / denom
-                maskA = (magA**p) / denom
-                # 频率着色
+                t_frames = Xc.shape[0]
+                lw = np.zeros((t_frames, 1), dtype=np.float32)
+                if lead_w_frames is not None:
+                    lw = np.interp(np.arange(t_frames), np.linspace(0, t_frames-1, len(lead_w_frames)), lead_w_frames)[:, None]
+                p_frame = np.clip(p - 0.8*lw, 1.2, p)
+                denom = (magV**p_frame + magA**p_frame + 1e-8)
+                maskV = (magV**p_frame) / denom
+                maskA = (magA**p_frame) / denom
                 maskV *= hv
                 maskA *= la
-                # 时间门控：无声段对人声掩蔽减弱，避免把伴奏误吸进人声
-                # 将 gate 下采样至帧级
-                t_frames = Xc.shape[0]
                 g_frames = np.interp(np.linspace(0, n-1, t_frames), np.arange(n), gate)
                 g_frames = g_frames[:, None]
-                maskV = 0.5*maskV + 0.5*(maskV*g_frames)
-                maskA = 0.7*maskA + 0.3*(maskA*(1.0-g_frames))
+                maskV = np.maximum(0.12, 0.6*maskV + 0.4*(maskV*g_frames))
+                maskA = np.maximum(0.05, 0.8*maskA + 0.2*(maskA*(1.0-g_frames)))
+                if lead_w_frames is not None:
+                    lw = np.interp(np.arange(t_frames), np.linspace(0, t_frames-1, len(lead_w_frames)), lead_w_frames)
+                    lw = lw[:, None]
+                    maskV *= (1.0 + 0.32*lw)
+                    maskA *= (1.0 - 0.15*lw)
+                    try:
+                        prior_f = getattr(self, '_lead_prior_f_cached', None)
+                        if prior_f is not None and len(prior_f) == Xc.shape[1]:
+                            pf = 1.0 + 0.10 * (prior_f - 1.0)
+                            maskV *= (1.0 + lw * (pf - 1.0))
+                    except Exception:
+                        pass
+                    eV = np.maximum(magV.mean(axis=1, keepdims=True), 1e-8)
+                    eA = np.maximum(magA.mean(axis=1, keepdims=True), 1e-8)
+                    low_snr = (eV / (eA + 1e-8)) < 0.7
+                    need = (lw > 0.6) & low_snr
+                    if np.any(need):
+                        gV = 0.80
+                        gA = 1.12
+                        mV = np.power(maskV, gV)
+                        mA = np.power(maskA, gA)
+                        ssum = np.maximum(mV + mA, 1e-8)
+                        maskV = mV / ssum
+                        maskA = mA / ssum
+                    mid2 = (f >= 400.0) & (f <= 3000.0)
+                    maskA[:, mid2] *= (1.0 - 0.10*lw)
+                try:
+                    if C == 2:
+                        XL = Xs[0]; XR = Xs[1]
+                        M = 0.5 * (XL + XR); S = 0.5 * (XL - XR)
+                        magM = np.abs(M).mean(axis=1)
+                        magS = np.abs(S).mean(axis=1)
+                        cdom = (magM + 1e-8) / (magM + magS + 1e-8)
+                        cw = np.interp(np.arange(t_frames), np.linspace(0, t_frames-1, len(cdom)), cdom)[:, None]
+                        mid_band2 = (f >= 350.0) & (f <= 2800.0)
+                        maskA[:, mid_band2] *= (1.0 - 0.12*cw)
+                except Exception:
+                    pass
+                if lead_harm_mask is not None:
+                    lm = lead_harm_mask[:t_frames, :]
+                    maskV = np.maximum(maskV, 0.25*lm)
+                    maskV *= (1.0 + 0.26*lm)
+                    maskA = np.minimum(maskA, 1.0 - 0.65*lm)
+                    maskA *= (1.0 - 0.18*lm)
+                mid_hi = (f >= 400.0) & (f <= 1500.0)
+                boost = (g_frames * 0.30)
+                maskV[:, mid_hi] = maskV[:, mid_hi] * (1.0 + boost)
+                mid_guard = (f >= 450.0) & (f <= 2200.0)
+                v_floor = np.clip(0.30 + 0.38*lw, 0.0, 0.68)
+                maskV[:, mid_guard] = np.maximum(maskV[:, mid_guard], v_floor)
+                try:
+                    lead_sim = getattr(self, '_lead_sim_frames_cached', None)
+                    if lead_sim is not None and len(lead_sim) > 0:
+                        sim = np.interp(np.arange(t_frames), np.linspace(0, t_frames-1, len(lead_sim)), lead_sim)[:, None]
+                        xm = np.abs(Xc).mean(axis=1, keepdims=True)
+                        xm_n = xm / (np.median(xm) + 1e-8)
+                        suspect = (sim < 0.35) & (xm_n > 1.3)
+                        if np.any(suspect):
+                            maskA[suspect.repeat(Xc.shape[1], axis=1)] *= 0.92
+                except Exception:
+                    pass
+                # 掩蔽正交化：减少重叠区从而降低互串
+                try:
+                    ov = np.minimum(maskV, maskA)
+                    lw_s = lw if 'lw' in locals() and isinstance(lw, np.ndarray) else np.zeros((t_frames,1), dtype=np.float32)
+                    alpha = 0.6*np.clip(lw_s, 0.0, 1.0) + 0.2  # 0.2~0.8
+                    maskV = np.maximum(0.0, maskV - alpha*ov)
+                    maskA = np.maximum(0.0, maskA - (1.0-alpha)*ov)
+                except Exception:
+                    pass
+                ssum = np.maximum(maskV + maskA, 1e-8)
+                maskV = maskV / ssum
+                maskA = maskA / ssum
+                maskV = np.clip(maskV, 0.0, 1.0)
+                maskA = np.clip(maskA, 0.0, 1.0)
                 Yv[c] = maskV * Xc
                 Ya[c] = maskA * Xc
         Vh = istft_multi(Yv)
         Ah = istft_multi(Ya)
-        # 能量一致性调整：避免过度衰减造成“电话音”
         eps = 1e-8
         mix_e = np.maximum(np.mean(X**2, axis=0), eps)
         v_e = np.maximum(np.mean(Vh**2, axis=0), eps)
         a_e = np.maximum(np.mean(Ah**2, axis=0), eps)
-        # 保持 V+A 与 mix 大致匹配
         s = (mix_e / np.maximum(v_e + a_e, eps))
         Vh *= s
         Ah *= s
+        try:
+            import librosa  # type: ignore
+            import numpy as _np
+            sr_local = 44100
+            try:
+                sr_local = int(round((n * 1024) / max(1, (Xs[0].shape[0]-1)))) if Xs and Xs[0].shape[0] > 1 else 44100
+            except Exception:
+                sr_local = 44100
+            win_len = 4096; hop_len = 1024
+            v_mono = Vh.mean(axis=1) if Vh.ndim == 2 else Vh
+            f0, voiced_flag, voiced_prob = librosa.pyin(v_mono, fmin=librosa.note_to_hz('C4'), fmax=librosa.note_to_hz('C6'), sr=sr_local, frame_length=win_len, hop_length=hop_len)
+            f0 = _np.nan_to_num(f0, nan=0.0).astype(_np.float32)
+            vf = (voiced_flag.astype(_np.bool_) if voiced_flag is not None else (f0 > 0))
+            vp = (voiced_prob.astype(_np.float32) if voiced_prob is not None else _np.ones_like(f0))
+            hi = (f0 >= 380.0) & (vp >= 0.6) & vf
+            try:
+                from scipy.signal import medfilt  # type: ignore
+                f0s = medfilt(f0, kernel_size=5)
+            except Exception:
+                ksz = 5
+                ker = _np.ones(ksz, dtype=_np.float32)/ksz
+                f0s = _np.convolve(f0, ker, mode='same')
+            df = _np.diff(f0s, prepend=f0s[:1])
+            pos = df >= -3.0
+            W = 6
+            pos_rate = _np.convolve(pos.astype(_np.float32), _np.ones(W, dtype=_np.float32)/W, mode='same')
+            rising = (pos_rate >= 0.66)
+            target_frames = _np.where(hi & rising)[0]
+            if target_frames.size > 0:
+                def stft(x):
+                    w2 = 0.5 - 0.5 * _np.cos(2 * _np.pi * _np.arange(win_len, dtype=_np.float32)/(win_len-1))
+                    frames = []
+                    for i0 in range(0, len(x)-win_len+1, hop_len):
+                        frames.append(_np.fft.rfft(x[i0:i0+win_len]*w2))
+                    return _np.asarray(frames, dtype=_np.complex64)
+                def istft(Xr):
+                    Ls = (Xr.shape[0]-1) * hop_len + win_len
+                    w2 = 0.5 - 0.5 * _np.cos(2 * _np.pi * _np.arange(win_len, dtype=_np.float32)/(win_len-1))
+                    y = _np.zeros(Ls, dtype=_np.float32)
+                    ww = _np.zeros(Ls, dtype=_np.float32)
+                    for i, fr in enumerate(Xr):
+                        seg = _np.fft.irfft(fr, n=win_len).astype(_np.float32)
+                        i0 = i * hop_len
+                        y[i0:i0+win_len] += seg * w2
+                        ww[i0:i0+win_len] += w2*w2
+                    ww[ww == 0] = 1.0
+                    return y/ww
+                if Vh.ndim == 1:
+                    Vh_chs = [Vh]; Ah_chs = [Ah]
+                else:
+                    Vh_chs = [Vh[:,0], Vh[:,1]]; Ah_chs = [Ah[:,0], Ah[:,1]]
+                num_bins2 = win_len//2 + 1
+                faxis = _np.linspace(0.0, sr_local/2.0, num_bins2)
+                max_h = 7
+                bw_ratio = 0.035
+                for ch in range(len(Vh_chs)):
+                    Sv = stft(Vh_chs[ch]); Sa = stft(Ah_chs[ch])
+                    Tt = Sv.shape[0]
+                    for ti in target_frames:
+                        if ti < 0 or ti >= Tt:
+                            continue
+                        f0_t = float(f0[ti])
+                        if f0_t <= 0:
+                            continue
+                        for h in range(1, max_h+1):
+                            fh = f0_t * h
+                            if fh >= sr_local/2.0:
+                                break
+                            idx = int(_np.argmin(_np.abs(faxis - fh)))
+                            bw = max(1, int(bw_ratio * fh / (sr_local/2.0) * num_bins2))
+                            i0 = max(0, idx-bw); i1 = min(num_bins2, idx+bw+1)
+                            Sv[ti, i0:i1] *= 1.50
+                            Sa[ti, i0:i1] *= 0.78
+                    Vh_chs[ch] = istft(Sv)
+                    Ah_chs[ch] = istft(Sa)
+                if Vh.ndim == 1:
+                    Vh = Vh_chs[0]; Ah = Ah_chs[0]
+                else:
+                    Vh = _np.stack([Vh_chs[0], Vh_chs[1]], axis=1)
+                    Ah = _np.stack([Ah_chs[0], Ah_chs[1]], axis=1)
+        except Exception:
+            pass
+        try:
+            import numpy as _np
+            y_mix = X.mean(axis=1) if X.ndim == 2 else X.reshape(-1)
+            y_v = Vh.mean(axis=1) if Vh.ndim == 2 else Vh.reshape(-1)
+            win2 = 2048; hop2 = 512
+            def stft_m(x):
+                w2 = 0.5 - 0.5 * _np.cos(2 * _np.pi * _np.arange(win2, dtype=_np.float32)/(win2-1))
+                frames = []
+                for i0 in range(0, len(x)-win2+1, hop2):
+                    frames.append(_np.fft.rfft(x[i0:i0+win2]*w2))
+                return _np.asarray(frames, dtype=_np.complex64)
+            def istft_m(Xm):
+                Ls = (Xm.shape[0]-1)*hop2 + win2
+                w2 = 0.5 - 0.5 * _np.cos(2 * _np.pi * _np.arange(win2, dtype=_np.float32)/(win2-1))
+                y = _np.zeros(Ls, dtype=_np.float32)
+                ww = _np.zeros(Ls, dtype=_np.float32)
+                for i, fr in enumerate(Xm):
+                    seg = _np.fft.irfft(fr, n=win2).astype(_np.float32)
+                    i0 = i*hop2
+                    y[i0:i0+win2] += seg * w2
+                    ww[i0:i0+win2] += w2*w2
+                ww[ww==0] = 1.0
+                return y/ww
+            Sm = stft_m(y_mix); Sv = stft_m(y_v)
+            fa = _np.linspace(0.0, 22050.0, Sm.shape[1])
+            band = (fa >= 400.0) & (fa <= 2000.0)
+            Tm = Sm.shape[0]
+            magB = _np.abs(Sm[:, band]) + 1e-8
+            peak = magB.max(axis=1); meanB = magB.mean(axis=1)
+            tonal = _np.clip((peak/meanB - 1.0)/3.0, 0.0, 1.0)
+            ener_ratio = meanB / (_np.abs(Sm).mean(axis=1) + 1e-8)
+            mscore = 0.6*tonal + 0.4*_np.tanh(2.0*ener_ratio)
+            v_ener = _np.abs(Sv).mean(axis=1)
+            low_v = v_ener < (_np.percentile(v_ener, 45.0) + 1e-8)
+            need = (mscore > 0.55) & low_v
+            if need.any():
+                Sa = stft_m( (Ah.mean(axis=1) if Ah.ndim==2 else Ah.reshape(-1)) )
+                for t in _np.where(need)[0]:
+                    band_mag = _np.abs(Sa[t, band])
+                    if band_mag.size == 0:
+                        continue
+                    idx_rel = int(_np.argmax(band_mag))
+                    idxs = _np.where(band)[0]
+                    idx = idxs[idx_rel]
+                    try:
+                        c0 = float(getattr(self, '_anchor_c0_cached', None) or 0.0)
+                        if c0 > 0 and abs(idx - c0) > 0.15 * Sv.shape[1]:
+                            continue
+                    except Exception:
+                        pass
+                    bw = max(1, int(0.02 * idx))
+                    i0 = max(0, idx-bw); i1 = min(Sv.shape[1], idx+bw+1)
+                    gain = 0.10 + 0.08*float(mscore[t])
+                    Sv[t, i0:i1] += gain * Sa[t, i0:i1]
+                y_rec = istft_m(Sv)
+                if Vh.ndim == 2:
+                    ratio = y_rec[:Vh.shape[0]] / (y_v[:len(y_rec)] + 1e-8)
+                    ratio = _np.clip(ratio, 0.8, 1.35).astype(_np.float32)
+                    Vh = (Vh.T * ratio[:Vh.shape[0]]).T.astype(_np.float32)
+                else:
+                    Vh = y_rec[:Vh.shape[0]].astype(_np.float32)
+        except Exception:
+            pass
         return Vh.astype(np.float32), Ah.astype(np.float32)
+
+    def _enhance_center_harmonic(self, mix, v_est, a_est, sr: int):
+        """中心声像 + 谐波掩蔽增强：
+        - 立体声下利用 M/S 的中心主导性作为人声先验；
+        - 基于 v_est 的 F0 追踪构造谐波掩蔽，结合中心先验生成最终人声掩蔽；
+        - 叠加 HPSS 的打击乐抑制：将打击乐更多分配到伴奏，减弱人声中的鼓/镲。
+        返回改进的人声/伴奏估计（若失败则返回原值）。
+        """
+        import numpy as np
+        X = mix if mix.ndim == 2 else mix[:, None]
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        A = a_est if a_est.ndim == 2 else a_est[:, None]
+        n = X.shape[0]
+        C = X.shape[1]
+        if n < 4096:
+            return V, A
+        win, hop = 4096, 1024
+        w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32) / (win - 1))
+        def stft(x):
+            frames = []
+            for i0 in range(0, len(x) - win + 1, hop):
+                frames.append(np.fft.rfft(x[i0:i0+win] * w))
+            return np.asarray(frames, dtype=np.complex64)
+        def istft(Xc):
+            L = (Xc.shape[0]-1) * hop + win
+            y = np.zeros(L, dtype=np.float32)
+            ww = np.zeros(L, dtype=np.float32)
+            for i, fr in enumerate(Xc):
+                seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                i0 = i * hop
+                y[i0:i0+win] += seg * w
+                ww[i0:i0+win] += w*w
+            ww[ww == 0] = 1.0
+            return y/ww
+        # 立体声中心主导性
+        try:
+            if C >= 2:
+                XL = stft(X[:,0]); XR = stft(X[:,1])
+                M = 0.5 * (XL + XR); S = 0.5 * (XL - XR)
+                magM = np.abs(M); magS = np.abs(S)
+                center = (magM + 1e-6) / (magM + magS + 1e-6)
+            else:
+                Xm = stft(X[:,0])
+                center = np.ones_like(np.abs(Xm), dtype=np.float32)
+        except Exception:
+            Xm = stft(X[:,0])
+            center = np.ones_like(np.abs(Xm), dtype=np.float32)
+        # 谐波掩蔽（基于当前人声估计做 F0 追踪）
+        harm = None
+        try:
+            import librosa  # type: ignore
+            v_m = V.mean(axis=1)
+            f0, vf, vp = librosa.pyin(v_m, fmin=librosa.note_to_hz('C3'), fmax=librosa.note_to_hz('C6'), sr=sr, frame_length=win, hop_length=hop)
+            import numpy as _np
+            f0 = _np.nan_to_num(f0, nan=0.0).astype(_np.float32)
+            Xm0 = stft(X.mean(axis=1))
+            T, F = Xm0.shape
+            faxis = _np.linspace(0.0, sr/2.0, F)
+            harm = _np.zeros((T, F), dtype=_np.float32)
+            for ti in range(T):
+                f0_t = float(f0[ti])
+                if f0_t <= 0:
+                    continue
+                for h in range(1, 7):
+                    fh = f0_t * h
+                    if fh >= sr/2.0:
+                        break
+                    idx = int(_np.argmin(_np.abs(faxis - fh)))
+                    bw = max(1, int(0.03 * fh / (sr/2.0) * F))
+                    i0 = max(0, idx-bw); i1 = min(F, idx+bw+1)
+                    harm[ti, i0:i1] = _np.maximum(harm[ti, i0:i1], 1.0)
+        except Exception:
+            pass
+        # 组合掩蔽
+        try:
+            Xm0 = stft(X.mean(axis=1))
+            magX = np.abs(Xm0)
+            T, F = magX.shape
+            cent = center
+            if cent.shape != magX.shape:
+                # 对齐到 (T,F)
+                Tm, Fm = cent.shape
+                import numpy as _np
+                t_idx = _np.linspace(0, Tm-1, T)
+                f_idx = _np.linspace(0, Fm-1, F)
+                cent = _np.interp(t_idx, _np.arange(Tm), cent.mean(axis=1))[:, None] * _np.ones((1, F), dtype=_np.float32)
+            hv = harm if harm is not None else np.zeros_like(cent, dtype=np.float32)
+            mv = 0.65*cent + 0.35*hv
+            # 归一并设置地板
+            mv = (mv - mv.min()) / (mv.max() - mv.min() + 1e-8)
+            mv = 0.12 + 0.88*mv
+            # 相位重构
+            Sv = mv * Xm0
+            Sa = (1.0 - mv) * Xm0
+            v_mono = istft(Sv)
+            a_mono = istft(Sa)
+            v_mono = v_mono[:n]
+            a_mono = a_mono[:n]
+            # 将单通道增强映射回各通道（按原估计的相对能量分配）
+            if C >= 2:
+                v_ratio = np.maximum(V.mean(axis=1), 1e-8)
+                a_ratio = np.maximum(A.mean(axis=1), 1e-8)
+                vr = v_mono / v_ratio
+                ar = a_mono / a_ratio
+                Vr = (V.T * np.clip(vr, 0.6, 1.5)[:V.shape[0]]).T.astype(np.float32)
+                Ar = (A.T * np.clip(ar, 0.6, 1.5)[:A.shape[0]]).T.astype(np.float32)
+            else:
+                Vr = v_mono[:, None].astype(np.float32)
+                Ar = a_mono[:, None].astype(np.float32)
+        except Exception:
+            return V, A
+        # HPSS 打击乐抑制
+        try:
+            import librosa
+            y = X.mean(axis=1)
+            H, P = librosa.decompose.hpss(librosa.stft(y, n_fft=2048, hop_length=512))
+            y_h = librosa.istft(H, hop_length=512).astype(np.float32)
+            y_p = librosa.istft(P, hop_length=512).astype(np.float32)
+            y_h = y_h[:n]; y_p = y_p[:n]
+            # 将打击乐更多分配到伴奏，减少人声中的鼓镲
+            if Vr.ndim == 2:
+                Vr = (Vr.T * (1.0 - 0.15*(y_p[:Vr.shape[0]]/ (np.max(np.abs(y_p))+1e-9))[:, None])).T.astype(np.float32)
+                Ar = (Ar.T * (1.0 + 0.15*(y_p[:Ar.shape[0]]/ (np.max(np.abs(y_p))+1e-9))[:, None])).T.astype(np.float32)
+        except Exception:
+            pass
+        # 与原估计做温和融合
+        lam = 0.70
+        Vn = lam*Vr + (1.0-lam)*V
+        An = lam*Ar + (1.0-lam)*A
+        # 峰值保护
+        peak = float(np.max(np.abs(np.concatenate([Vn, An], axis=1))) + 1e-9)
+        if peak > 1.0:
+            Vn = Vn / peak * 0.99
+            An = An / peak * 0.99
+        return Vn.astype(np.float32), An.astype(np.float32)
+
+    def _ms_guided_mask_boost(self, mix, v_est, a_est, sr: int):
+        """基于 M/S 中心主导性的轻量级掩蔽增强，参考 Demucs 对中/侧能量的利用。
+        不改变相位，只在 STFT 中重算掩蔽并回放。
+        """
+        import numpy as np
+        X = mix if mix.ndim == 2 else mix[:, None]
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        A = a_est if a_est.ndim == 2 else a_est[:, None]
+        n = X.shape[0]
+        if n < 4096:
+            return V, A
+        win, hop = 4096, 1024
+        w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32) / (win - 1))
+        def stft(x):
+            frames = []
+            for i0 in range(0, len(x) - win + 1, hop):
+                frames.append(np.fft.rfft(x[i0:i0+win] * w))
+            return np.asarray(frames, dtype=np.complex64)
+        def istft(Xc):
+            L = (Xc.shape[0]-1) * hop + win
+            y = np.zeros(L, dtype=np.float32)
+            ww = np.zeros(L, dtype=np.float32)
+            for i, fr in enumerate(Xc):
+                seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                i0 = i * hop
+                y[i0:i0+win] += seg * w
+                ww[i0:i0+win] += w*w
+            ww[ww == 0] = 1.0
+            return y/ww
+        # 使用混音的中/侧掩蔽作为人声先验
+        if X.shape[1] >= 2:
+            XL = stft(X[:,0]); XR = stft(X[:,1])
+            M = 0.5 * (XL + XR); S = 0.5 * (XL - XR)
+            magM = np.abs(M); magS = np.abs(S)
+            center = (magM + 1e-6) / (magM + magS + 1e-6)
+        else:
+            Xm = stft(X[:,0])
+            center = np.ones_like(np.abs(Xm), dtype=np.float32)
+            XL = XR = None
+        # 初始掩蔽来自当前估计
+        Xm0 = stft(X.mean(axis=1))
+        V0 = stft(V.mean(axis=1))
+        A0 = stft(A.mean(axis=1))
+        magV = np.abs(V0); magA = np.abs(A0)
+        eps = 1e-8
+        maskV = magV / np.maximum(magV + magA, eps)
+        # 根据中心主导轻度强化人声掩蔽
+        maskV = np.clip(maskV * (0.9 + 0.3*center), 0.0, 1.0)
+        # 归一化并回放
+        Sv = maskV * Xm0
+        Sa = (1.0 - maskV) * Xm0
+        v_mono = istft(Sv)[:n]
+        a_mono = istft(Sa)[:n]
+        # 回映射到多通道
+        if X.shape[1] >= 2:
+            # 保留原估计的左右相对比例
+            vL = (V[:,0] / (V.mean(axis=1) + eps)) * v_mono
+            vR = (V[:,1] / (V.mean(axis=1) + eps)) * v_mono
+            aL = (A[:,0] / (A.mean(axis=1) + eps)) * a_mono
+            aR = (A[:,1] / (A.mean(axis=1) + eps)) * a_mono
+            Vn = np.stack([vL, vR], axis=1).astype(np.float32)
+            An = np.stack([aL, aR], axis=1).astype(np.float32)
+        else:
+            Vn = v_mono[:, None].astype(np.float32)
+            An = a_mono[:, None].astype(np.float32)
+        # 峰值保护
+        peak = float(np.max(np.abs(np.concatenate([Vn, An], axis=1))) + 1e-9)
+        if peak > 1.0:
+            Vn = Vn / peak * 0.99
+            An = An / peak * 0.99
+        return Vn, An
+
+    def _mixture_consistency_project(self, mix, v_est, a_est, mode: str = 'acc'):
+        """混合一致性投影：确保 v + a 恢复混音。
+        mode='acc' 时将残差全部归入伴奏，优先保护人声；'both' 则对半分配残差。
+        """
+        import numpy as np
+        X = mix if mix.ndim == 2 else mix[:, None]
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        A = a_est if a_est.ndim == 2 else a_est[:, None]
+        R = X - (V + A)
+        if mode == 'both':
+            Vn = V + 0.5*R
+            An = A + 0.5*R
+        else:
+            Vn = V
+            An = A + R
+        # 峰值保护
+        peak = float(np.max(np.abs(np.concatenate([Vn, An], axis=1))) + 1e-9)
+        if peak > 1.0:
+            Vn = Vn / peak * 0.99
+            An = An / peak * 0.99
+        return Vn.astype(np.float32), An.astype(np.float32)
+
+    def _stereo_mwf_refine(self, mix, v_est, a_est, sr: int):
+        """立体声多通道 Wiener 细化（轻量级）：
+        - 输入：mix, v_est, a_est [N,2]
+        - 思路：在 STFT 上估计每个频点的通道协方差 R_x、源功率谱 P_v/P_a，构造多通道 Wiener 滤波器，
+                强化中心(人声)与侧向(伴奏)分配，减少串音。
+        - 输出：细化后的 v_est, a_est
+        """
+        import numpy as np
+        X = mix if mix.ndim == 2 else mix[:, None]
+        if X.shape[1] < 2:
+            return v_est, a_est
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        A = a_est if a_est.ndim == 2 else a_est[:, None]
+        n = X.shape[0]
+        win, hop = 4096, 1024
+        w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win, dtype=np.float32)/(win-1))
+        def stft2(x):
+            frames = []
+            for i0 in range(0, len(x)-win+1, hop):
+                frames.append(np.fft.rfft(x[i0:i0+win]*w))
+            return np.asarray(frames, dtype=np.complex64)
+        def istft2(Xc):
+            L = (Xc.shape[0]-1)*hop + win
+            y = np.zeros(L, dtype=np.float32)
+            ww = np.zeros(L, dtype=np.float32)
+            for i, fr in enumerate(Xc):
+                seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                i0 = i*hop
+                y[i0:i0+win] += seg*w
+                ww[i0:i0+win] += w*w
+            ww[ww==0] = 1.0
+            return y/ww
+        XL = stft2(X[:,0]); XR = stft2(X[:,1])
+        VL = stft2(V[:,0]); VR = stft2(V[:,1]) if V.shape[1] > 1 else stft2(V[:,0])
+        AL = stft2(A[:,0]); AR = stft2(A[:,1]) if A.shape[1] > 1 else stft2(A[:,0])
+        T, F = XL.shape
+        # 估计源功率谱
+        Pv = 0.5*(np.abs(VL)**2 + np.abs(VR)**2)
+        Pa = 0.5*(np.abs(AL)**2 + np.abs(AR)**2)
+        # 估计通道间相关（简单相干性估计）
+        eps = 1e-8
+        Xc = np.stack([XL, XR], axis=-1)  # [T,F,2]
+        # 预分配输出
+        YvL = np.zeros_like(XL); YvR = np.zeros_like(XR)
+        YaL = np.zeros_like(XL); YaR = np.zeros_like(XR)
+        # 频点循环（逐帧向量化，平衡性能与精度）
+        for f in range(F):
+            # 通道协方差 R_x(t) ~ x x^H，时间上取平滑均值
+            xLf = Xc[:, f, 0]; xRf = Xc[:, f, 1]
+            # 简化：仅估计对角占优与轻度互相关
+            rxLL = (np.abs(xLf)**2 + eps)
+            rxRR = (np.abs(xRf)**2 + eps)
+            rxLR = (xLf * np.conj(xRf))
+            # 平滑
+            ker = np.ones(5, dtype=np.float32)/5.0
+            def smooth(a):
+                import numpy as _np
+                real = _np.convolve(a.real, ker, mode='same')
+                imag = _np.convolve(a.imag, ker, mode='same')
+                return real + 1j*imag
+            rxLLs = smooth(rxLL)
+            rxRRs = smooth(rxRR)
+            rxLRs = smooth(rxLR)
+            # 构造 2x2 R_x，近似稳定化
+            # 多通道 Wiener 滤波器 H_v = R_v R_x^{-1}
+            # 用 Pv 近似 R_v = Pv * I；同理 R_a = Pa * I
+            for t in range(T):
+                Rx = np.array([[rxLLs[t].real, rxLRs[t]], [np.conj(rxLRs[t]), rxRRs[t].real]], dtype=np.complex64)
+                # 稳定化与对角加载
+                tr = float(Rx[0,0].real + Rx[1,1].real)
+                Rx = Rx + (1e-4 * tr + 1e-6) * np.eye(2, dtype=np.complex64)
+                try:
+                    Rx_inv = np.linalg.inv(Rx)
+                except Exception:
+                    continue
+                Rv = Pv[t, f] * np.eye(2, dtype=np.complex64)
+                Ra = Pa[t, f] * np.eye(2, dtype=np.complex64)
+                Hv = Rv @ Rx_inv
+                Ha = Ra @ Rx_inv
+                xvec = np.array([XL[t, f], XR[t, f]], dtype=np.complex64)
+                yv = Hv @ xvec
+                ya = Ha @ xvec
+                # 归一化使 yv+ya ≈ x，避免能量漂移
+                denom = np.abs(yv + ya).mean() + eps
+                scale = (np.abs(xvec).mean() + eps) / denom
+                yv *= scale; ya *= scale
+                YvL[t, f] = yv[0]; YvR[t, f] = yv[1]
+                YaL[t, f] = ya[0]; YaR[t, f] = ya[1]
+        vL = istft2(YvL)[:n]; vR = istft2(YvR)[:n]
+        aL = istft2(YaL)[:n]; aR = istft2(YaR)[:n]
+        Vn = np.stack([vL, vR], axis=1).astype(np.float32)
+        An = np.stack([aL, aR], axis=1).astype(np.float32)
+        # 峰值保护
+        peak = float(np.max(np.abs(np.concatenate([Vn, An], axis=1))) + 1e-9)
+        if peak > 1.0:
+            Vn = Vn / peak * 0.99
+            An = An / peak * 0.99
+        return Vn, An
 
     def _quality_gate(self, mix, vocals, accomp) -> bool:
         """简易的分离质量门控：
@@ -20654,7 +22509,8 @@ class _VocalSeparationWorker(QThread):
             da = float(np.linalg.norm(a) + 1e-9); db = float(np.linalg.norm(b) + 1e-9)
             return float(np.dot(a,b) / (da*db))
         cv = abs(corr(xm, xv)); ca = abs(corr(xm, xa)); cva = abs(corr(xv, xa))
-        return (cv < 0.97) and (ca < 0.97) and (cva < 0.95)
+        # 略收紧阈值，提升“未分离”检测灵敏度
+        return (cv < 0.965) and (ca < 0.965) and (cva < 0.94)
 
     def _ms_strong_separate(self, stereo, sr: int):
         """增强型 M/S + 软掩蔽的回退分离（立体声输入）。"""
@@ -20747,6 +22603,171 @@ class _VocalSeparationWorker(QThread):
         for i in range(1, len(hp)):
             lp[i] = lp[i-1] + b * (hp[i] - lp[i-1])
         return lp.astype(np.float32)
+
+    def _suppress_percussive_in_vocals(self, v_est, sr: int):
+        """用 HPSS 温和抑制人声里的打击乐残留。"""
+        import numpy as np
+        try:
+            import librosa
+        except Exception:
+            return v_est
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        y = V.mean(axis=1)
+        S = librosa.stft(y, n_fft=2048, hop_length=512)
+        H, P = librosa.decompose.hpss(S)
+        # 降低打击乐约 8%~15%
+        P2 = P * 0.85
+        Y = H + P2
+        y2 = librosa.istft(Y, hop_length=512).astype(np.float32)
+        y2 = y2[:V.shape[0]]
+        if V.shape[1] >= 2:
+            ratio = y2 / (y + 1e-8)
+            ratio = np.clip(ratio, 0.85, 1.10).astype(np.float32)
+            Vr = (V.T * ratio[:V.shape[0]]).T.astype(np.float32)
+        else:
+            Vr = y2[:, None].astype(np.float32)
+        return Vr
+
+    def _final_mask_sharpen(self, mix, v_est, a_est, sr: int):
+        """最终掩蔽锐化 + 一致性：
+        - 以混音为参考计算软掩蔽；
+        - 加强人声掩蔽地板与中频强化；
+        - 返回锐化后的 (v, a)。
+        """
+        import numpy as np
+        X = mix if mix.ndim == 2 else mix[:, None]
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        A = a_est if a_est.ndim == 2 else a_est[:, None]
+        n = X.shape[0]
+        win, hop = 2048, 512
+        w = 0.5 - 0.5*np.cos(2*np.pi*np.arange(win, dtype=np.float32)/(win-1))
+        def stft(x):
+            frames = []
+            for i0 in range(0, len(x)-win+1, hop):
+                frames.append(np.fft.rfft(x[i0:i0+win]*w))
+            return np.asarray(frames, dtype=np.complex64)
+        def istft(Xc):
+            L = (Xc.shape[0]-1)*hop + win
+            y = np.zeros(L, dtype=np.float32)
+            ww = np.zeros(L, dtype=np.float32)
+            for i, fr in enumerate(Xc):
+                seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                i0 = i*hop
+                y[i0:i0+win] += seg*w
+                ww[i0:i0+win] += w*w
+            ww[ww==0] = 1.0
+            return y/ww
+        Xm = stft(X.mean(axis=1))
+        Vm = stft(V.mean(axis=1))
+        Am = stft(A.mean(axis=1))
+        magV = np.abs(Vm); magA = np.abs(Am); magX = np.abs(Xm)
+        eps = 1e-8
+        maskV = magV / np.maximum(magV + magA, eps)
+        # 强化中频与地板
+        F = Xm.shape[1]
+        faxis = np.linspace(0.0, sr/2.0, F)
+        mid = (faxis >= 450) & (faxis <= 2500)
+        floor = 0.25
+        maskV[:, mid] = np.maximum(maskV[:, mid], floor)
+        maskV = np.clip(0.92*maskV + 0.08*(magX/(magX.max(axis=1, keepdims=True)+eps)), 0.0, 1.0)
+        # 回放
+        Sv = maskV * Xm
+        Sa = (1.0 - maskV) * Xm
+        v_m = istft(Sv)[:n]
+        a_m = istft(Sa)[:n]
+        if V.shape[1] >= 2:
+            vr = v_m / (V.mean(axis=1) + 1e-8)
+            ar = a_m / (A.mean(axis=1) + 1e-8)
+            Vr = (V.T * np.clip(vr, 0.8, 1.25)[:V.shape[0]]).T.astype(np.float32)
+            Ar = (A.T * np.clip(ar, 0.8, 1.25)[:A.shape[0]]).T.astype(np.float32)
+        else:
+            Vr = v_m[:, None].astype(np.float32)
+            Ar = a_m[:, None].astype(np.float32)
+        # 峰值保护
+        peak = float(np.max(np.abs(np.concatenate([Vr, Ar], axis=1))) + 1e-9)
+        if peak > 1.0:
+            Vr = Vr / peak * 0.99
+            Ar = Ar / peak * 0.99
+        return Vr, Ar
+
+    def _debleed_cross_cancel(self, mix, v_est, a_est, sr: int):
+        """交叉去串音（Debleed）：
+        - 思路：在 STFT 中估计 V->A 与 A->V 的泄漏比例（复权系数），对每个时间-频率单元做部分相位对齐后相减；
+        - 使用鲁棒夹紧与平滑，避免过度抵消导致伪影；
+        - 结束后执行混合一致性投影与峰值保护。
+        """
+        import numpy as np
+        X = mix if mix.ndim == 2 else mix[:, None]
+        V = v_est if v_est.ndim == 2 else v_est[:, None]
+        A = a_est if a_est.ndim == 2 else a_est[:, None]
+        n = X.shape[0]
+        win, hop = 2048, 512
+        w = 0.5 - 0.5*np.cos(2*np.pi*np.arange(win, dtype=np.float32)/(win-1))
+        def stft(x):
+            frames = []
+            for i0 in range(0, len(x)-win+1, hop):
+                frames.append(np.fft.rfft(x[i0:i0+win]*w))
+            return np.asarray(frames, dtype=np.complex64)
+        def istft(Xc):
+            L = (Xc.shape[0]-1)*hop + win
+            y = np.zeros(L, dtype=np.float32)
+            ww = np.zeros(L, dtype=np.float32)
+            for i, fr in enumerate(Xc):
+                seg = np.fft.irfft(fr, n=win).astype(np.float32)
+                i0 = i*hop
+                y[i0:i0+win] += seg*w
+                ww[i0:i0+win] += w*w
+            ww[ww==0] = 1.0
+            return y/ww
+        # 使用单声道聚合进行泄漏估计，避免通道不一致带来的漂移
+        Xm = stft(X.mean(axis=1))
+        Vm = stft(V.mean(axis=1))
+        Am = stft(A.mean(axis=1))
+        eps = 1e-8
+        T, F = Xm.shape
+        # 估计复比例（泄漏系数），限制幅度上限，避免过度抵消
+        alpha_va = (np.conj(Am) * Vm) / (np.abs(Am)**2 + eps)  # V 从 A 泄漏到 V 的系数估计
+        alpha_av = (np.conj(Vm) * Am) / (np.abs(Vm)**2 + eps)  # A 从 V 泄漏到 A 的系数估计
+        # 夹紧幅度（频率依赖，可稍微放宽中频）
+        faxis = np.linspace(0.0, sr/2.0, F)
+        clamp_v = 0.25 + 0.10*( (faxis >= 300) & (faxis <= 2500) )  # 中频更易互串
+        clamp_a = 0.20 + 0.08*( (faxis >= 300) & (faxis <= 2500) )
+        alpha_va = alpha_va * (np.minimum(1.0, clamp_v[None, :]/(np.abs(alpha_va)+eps)))
+        alpha_av = alpha_av * (np.minimum(1.0, clamp_a[None, :]/(np.abs(alpha_av)+eps)))
+        # 平滑泄漏系数（时间上）
+        try:
+            ker = np.ones(5, dtype=np.float32)/5.0
+            def smooth_time(M):
+                import numpy as _np
+                real = _np.apply_along_axis(lambda r: _np.convolve(r, ker, mode='same'), 0, M.real)
+                imag = _np.apply_along_axis(lambda r: _np.convolve(r, ker, mode='same'), 0, M.imag)
+                return real + 1j*imag
+            alpha_va = smooth_time(alpha_va)
+            alpha_av = smooth_time(alpha_av)
+        except Exception:
+            pass
+        # 执行交叉消除（只做部分抵消，留 40% 安全边界）
+        Vm2 = Vm - 0.60 * (alpha_va * Am)
+        Am2 = Am - 0.60 * (alpha_av * Vm)
+        # 回放并映射回多通道（按原估计左右比例）
+        v_mono = istft(Vm2)[:n]
+        a_mono = istft(Am2)[:n]
+        if X.shape[1] >= 2:
+            v_ratio = np.maximum(V.mean(axis=1), 1e-8)
+            a_ratio = np.maximum(A.mean(axis=1), 1e-8)
+            vr = v_mono / v_ratio; ar = a_mono / a_ratio
+            Vr = (V.T * np.clip(vr, 0.7, 1.3)[:V.shape[0]]).T.astype(np.float32)
+            Ar = (A.T * np.clip(ar, 0.7, 1.3)[:A.shape[0]]).T.astype(np.float32)
+        else:
+            Vr = v_mono[:, None].astype(np.float32)
+            Ar = a_mono[:, None].astype(np.float32)
+        # 混合一致性与峰值保护
+        Vr, Ar = self._mixture_consistency_project(X, Vr, Ar, mode='acc')
+        peak = float(np.max(np.abs(np.concatenate([Vr, Ar], axis=1))) + 1e-9)
+        if peak > 1.0:
+            Vr = Vr / peak * 0.99
+            Ar = Ar / peak * 0.99
+        return Vr.astype(np.float32), Ar.astype(np.float32)
 
 class VolumeControlDialog(QDialog):
     """音量调节对话框"""
