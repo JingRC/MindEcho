@@ -11,6 +11,13 @@ env/
 tools/.venv*/
 tools/.venv_spleeter310/
 
+# Large assets (keep out of Git; use Releases or local-only)
+pretrained_models/**
+tools/ffmpeg/bin/ffmpeg.exe
+tools/ffmpeg/bin/ffprobe.exe
+*.tar.gz
+*.data-00000-of-00001
+
 # Build/Dist
 build/
 dist/
