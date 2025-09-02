@@ -19482,7 +19482,7 @@ class IntegratedRecordingInterface(QMainWindow):
             'rms_threshold': 0.0008,
             'high_freq_ratio_threshold': 0.95
         }
-        
+
         # 🔥 增强型检测器初始化变量
         self.advanced_detector = None
         self.precision_processor = None
@@ -19492,6 +19492,13 @@ class IntegratedRecordingInterface(QMainWindow):
         self.detection_stats = {'total': 0, 'detected': 0, 'vocal_protected': 0}
         self.latency_timestamps = []
         self.frame_counter = 0
+        # UI绘制节流与平滑缓存（仅影响可视化，不影响分析）
+        self._vis_last_draw_wall = 0.0
+        # 高性能默认 ~55FPS；必要时由性能管理器覆盖
+        self._vis_min_interval_sec = 0.018
+        # 最近频率历史（用于可视化平滑）；只存少量点，避免开销
+        self._plot_freq_history = []  # list[float]
+        self._plot_freq_alpha = 0.35  # EMA回退系数
         
         # 🚀 零延迟优化组件
         self.audio_processing_thread = None
@@ -21770,8 +21777,54 @@ class IntegratedRecordingInterface(QMainWindow):
             )
             
             if should_show_pitch_line:
-                # 录音分析模式：显示音调线
-                self.visualizer.add_pitch_data(pitch_data)
+                # 绘制节流：限制最短重绘间隔，降低Matplotlib重绘负载
+                now_wall = time.time()
+                if (now_wall - getattr(self, '_vis_last_draw_wall', 0.0)) < getattr(self, '_vis_min_interval_sec', 0.018):
+                    # 仍更新文本/统计，但跳过绘制，平衡CPU与流畅度
+                    pass
+                else:
+                    data_for_draw = pitch_data
+                    # 可选：使用SciPy作轻量平滑以减少细抖动（仅影响显示）
+                    try:
+                        f = float(pitch_data.get('frequency', 0.0))
+                    except Exception:
+                        f = 0.0
+                    if f > 0:
+                        try:
+                            # 维护少量历史
+                            self._plot_freq_history.append(f)
+                            if len(self._plot_freq_history) > 33:
+                                # 限制长度，避免不必要内存与计算
+                                self._plot_freq_history = self._plot_freq_history[-33:]
+                            f_smooth = None
+                            # SciPy Savitzky-Golay（7~11点小窗，二次多项式）
+                            if len(self._plot_freq_history) >= 9:
+                                try:
+                                    from scipy.signal import savgol_filter
+                                    # 窗口长度须为奇数且<=长度
+                                    win = 9 if len(self._plot_freq_history) >= 9 else (len(self._plot_freq_history) // 2 * 2 + 1)
+                                    win = max(5, min(win, len(self._plot_freq_history) if len(self._plot_freq_history) % 2 == 1 else len(self._plot_freq_history) - 1))
+                                    poly = 2
+                                    sm = savgol_filter(self._plot_freq_history, window_length=win, polyorder=poly, mode='interp')
+                                    f_smooth = float(sm[-1])
+                                except Exception:
+                                    f_smooth = None
+                            # 回退：EMA
+                            if f_smooth is None:
+                                if hasattr(self, '_plot_freq_prev'):
+                                    f_smooth = self._plot_freq_alpha * f + (1.0 - self._plot_freq_alpha) * float(getattr(self, '_plot_freq_prev', f))
+                                else:
+                                    f_smooth = f
+                            self._plot_freq_prev = float(f_smooth)
+                            # 用于绘制的频率替换为平滑值（不影响其他逻辑）
+                            data_for_draw = dict(pitch_data)
+                            data_for_draw['frequency'] = float(f_smooth)
+                        except Exception:
+                            # 平滑失败时直接使用原值
+                            data_for_draw = pitch_data
+                    # 录音分析模式：显示音调线
+                    self.visualizer.add_pitch_data(data_for_draw)
+                    self._vis_last_draw_wall = now_wall
             else:
                 # 纯监听模式：跳过音调线绘制
                 if getattr(self, '_pitch_precision_debug_counter', 0) <= 5:
