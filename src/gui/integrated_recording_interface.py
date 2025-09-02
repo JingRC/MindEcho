@@ -21531,6 +21531,21 @@ class _OnePassPitchWorker(QThread):
             self.message.emit("正在分析音高…")
             frame_window = int(getattr(self.ifc.audio_processor, '_frame_window', 2048) or 2048)
             frame_hop = int(getattr(self.ifc.audio_processor, '_frame_hop', max(1, frame_window // 4)))
+            # 离线高精度：允许更长窗口、更小步长（默认 4096/÷8），可通过 _onepass_frame_window 与 _onepass_hop_div 调整
+            try:
+                offline_fw = int(getattr(self.ifc, '_onepass_frame_window', 4096) or 4096)
+            except Exception:
+                offline_fw = 4096
+            try:
+                offline_hop_div = int(getattr(self.ifc, '_onepass_hop_div', 8) or 8)
+            except Exception:
+                offline_hop_div = 8
+            # 使用更保守的窗口与步长以换取稳定性
+            if offline_fw > 0:
+                frame_window = max(int(frame_window), int(offline_fw))
+                frame_window = int(max(512, min(16384, frame_window)))
+            if offline_hop_div > 0:
+                frame_hop = int(max(1, frame_window // int(offline_hop_div)))
             n = len(audio)
             times = []
             y_vals = []  # 连续八度值（与实时一致的Y坐标）
@@ -21725,8 +21740,12 @@ class _OnePassPitchWorker(QThread):
                         i1 = int(min(len(audio), _np.ceil(t1 * sr)))
                         if (i1 - i0) < (frame_window * 2):
                             refined_segments.append((st, sp)); continue
-                        # 更小hop
-                        ref_hop = max(1, frame_window // 6)
+                        # 更小hop（离线更细：默认 ÷10，可通过 _onepass_refine_hop_div 调整）
+                        try:
+                            refine_div = int(getattr(self.ifc, '_onepass_refine_hop_div', 10) or 10)
+                        except Exception:
+                            refine_div = 10
+                        ref_hop = max(1, frame_window // max(2, refine_div))
                         # 以段中值初始化参考
                         med_midi = float(_np.median(_np.asarray([(y+1.0)*12.0 for y in sp], dtype=_np.float32)))
                         ref_f = 440.0 * (2.0 ** ((med_midi - 69.0)/12.0))
@@ -22042,6 +22061,11 @@ def _ifc_start_offline_onepass(self, file_path: str):
     except Exception:
         pass
     # 进度对话框
+    # 标记一次性绘制模式开启（用于回放时避免清空既有绘制）
+    try:
+        self._in_onepass_mode = True
+    except Exception:
+        pass
     prog = _OnePassProgressDialog(self, title="一次性绘制 - 本地音高解析")
     worker = _OnePassPitchWorker(self, file_path)
 
@@ -22183,8 +22207,10 @@ class _OnePassPlaybackController(QObject):
         # 同步可视化器
         try:
             if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
+                # 一次性绘制模式下：避免 notify_seek 引起的清空，保留已绘制分段/白点
                 try:
-                    self.ifc.visualizer.notify_seek(sec)
+                    if not getattr(self.ifc, '_in_onepass_mode', False):
+                        self.ifc.visualizer.notify_seek(sec)
                 except Exception:
                     pass
                 self.ifc.visualizer.follow_playback_time(sec)
@@ -22270,11 +22296,7 @@ class _OnePassPlaybackPanel(QDialog):
         # 同步可视化器（拖动时也更新一次，保持辅助线就位）
         try:
             if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
-                # 通知发生了 seek，强制下一帧重绘
-                try:
-                    self.ifc.visualizer.notify_seek(cur)
-                except Exception:
-                    pass
+                # 一次性绘制模式下：不触发 notify_seek，避免清空既有曲线
                 self.ifc.visualizer.follow_playback_time(cur)
                 # 立即触发一次显示更新，尽快让线段现身
                 try:
@@ -22375,6 +22397,11 @@ def _ifc_exit_onepass_mode(self):
     # 4) 清理保存的进入前快照
     try:
         self._op_prev = None
+    except Exception:
+        pass
+    # 5) 退出一次性绘制模式标记
+    try:
+        self._in_onepass_mode = False
     except Exception:
         pass
 
