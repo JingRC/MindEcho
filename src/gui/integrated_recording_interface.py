@@ -526,6 +526,7 @@ class IntegratedAudioProcessor(QThread):
             sr = float(getattr(self, 'sample_rate', 48000))
             now = time.time()
             for pkt in packets:
+
                 ts_end = float(pkt.get('timestamp', now))
                 dat = pkt.get('data')
                 if dat is None:
@@ -5640,6 +5641,57 @@ class IntegratedAudioProcessor(QThread):
         while self.is_audio_processing:
             start_time = time.time()
             loop_counter += 1
+            # —— 优先处理：即使在暂停状态下也允许环境噪声采集推进 ——
+            try:
+                if getattr(self, 'is_paused', False):
+                    st = getattr(self, '_env_capture_status', None)
+                    req = getattr(self, '_env_capture_request', None)
+                    if st and isinstance(st, dict) and st.get('active') and isinstance(req, dict):
+                        # 从队列拿少量包以推进采集进度
+                        paused_packets = []
+                        try:
+                            max_batch = 48
+                            while not self.audio_buffer_queue.empty() and len(paused_packets) < max_batch:
+                                paused_packets.append(self.audio_buffer_queue.get_nowait())
+                        except queue.Empty:
+                            pass
+                        if paused_packets:
+                            # 初始化采集缓冲
+                            if self._env_capture_accum is None:
+                                self._env_capture_accum = np.zeros(0, dtype=np.float32)
+                                dur = float(req.get('duration', 5.0) or 5.0)
+                                self._env_capture_target_samples = max(1, int(dur * float(getattr(self, 'sample_rate', 48000))))
+                                self._env_capture_started_at = time.time()
+                            try:
+                                chunks = [np.asarray(pkt.get('data'), dtype=np.float32).flatten() for pkt in paused_packets if pkt.get('data') is not None]
+                                if chunks:
+                                    add = np.concatenate(chunks)
+                                    self._env_capture_accum = np.concatenate((self._env_capture_accum, add))
+                            except Exception:
+                                pass
+                            cur = int(self._env_capture_accum.size)
+                            prog = min(1.0, cur / max(1, self._env_capture_target_samples))
+                            try:
+                                self._env_capture_status['progress'] = float(prog)
+                            except Exception:
+                                pass
+                            if cur >= self._env_capture_target_samples:
+                                try:
+                                    profile = self._build_env_noise_profile(self._env_capture_accum[:self._env_capture_target_samples])
+                                    self._env_noise_profile = profile
+                                    self._prepare_env_notches(profile)
+                                    self._env_capture_status = {'active': False, 'done': True, 'peaks': (profile.get('peaks') or [])}
+                                except Exception as ee:
+                                    self._env_capture_status = {'active': False, 'done': False, 'error': str(ee)}
+                                self._env_capture_request = None
+                                self._env_capture_accum = None
+                                self._env_capture_target_samples = 0
+                                self._env_capture_started_at = 0.0
+                        # 暂停状态下，本轮无需进一步处理
+                        time.sleep(min(0.02, 1.0 / max(60.0, float(getattr(self, '_analysis_target_hz', 60.0)))))
+                        continue
+            except Exception:
+                pass
             # 周期性刷新目标检测频率（响应模式切换）
             if loop_counter % 200 == 0:
                 try:
@@ -5703,6 +5755,49 @@ class IntegratedAudioProcessor(QThread):
                     if getattr(self, 'debug_flags', {}).get('queue_log', False):
                         self._log_rate_limit('queue_ok', f"✅ 获取{got_packets}包 共{total_samples}样本", interval=1.0, burst=2)
             
+            # —— 环境噪声采集：在处理循环中累计原始数据 ——
+            try:
+                st = getattr(self, '_env_capture_status', None)
+                req = getattr(self, '_env_capture_request', None)
+                if st and isinstance(st, dict) and st.get('active') and isinstance(req, dict) and audio_packets:
+                    # 初始化采集缓冲
+                    if self._env_capture_accum is None:
+                        self._env_capture_accum = np.zeros(0, dtype=np.float32)
+                        dur = float(req.get('duration', 5.0) or 5.0)
+                        self._env_capture_target_samples = max(1, int(dur * float(getattr(self, 'sample_rate', 48000))))
+                        self._env_capture_started_at = time.time()
+                    # 追加本轮数据（原始，不加处理）
+                    try:
+                        chunks = [np.asarray(pkt.get('data'), dtype=np.float32).flatten() for pkt in audio_packets if pkt.get('data') is not None]
+                        if chunks:
+                            add = np.concatenate(chunks)
+                            self._env_capture_accum = np.concatenate((self._env_capture_accum, add))
+                    except Exception:
+                        pass
+                    # 更新进度
+                    cur = int(self._env_capture_accum.size)
+                    prog = min(1.0, cur / max(1, self._env_capture_target_samples))
+                    try:
+                        self._env_capture_status['progress'] = float(prog)
+                    except Exception:
+                        pass
+                    # 完成时分析并构建陷波器
+                    if cur >= self._env_capture_target_samples:
+                        try:
+                            profile = self._build_env_noise_profile(self._env_capture_accum[:self._env_capture_target_samples])
+                            self._env_noise_profile = profile
+                            self._prepare_env_notches(profile)
+                            self._env_capture_status = {'active': False, 'done': True, 'peaks': (profile.get('peaks') or [])}
+                        except Exception as ee:
+                            self._env_capture_status = {'active': False, 'done': False, 'error': str(ee)}
+                        # 清理临时缓冲
+                        self._env_capture_request = None
+                        self._env_capture_accum = None
+                        self._env_capture_target_samples = 0
+                        self._env_capture_started_at = 0.0
+            except Exception:
+                pass
+
             # 首次获取到数据时的调试信息
             if audio_packets and loop_counter <= 10:
                 if getattr(self, 'debug_flags', {}).get('queue_log', False):
@@ -5876,6 +5971,44 @@ class IntegratedAudioProcessor(QThread):
                     processed_audio = self.noise_processor.process_audio(audio_data)
                 except Exception:
                     processed_audio = audio_data
+
+            # —— 环境定向陷波（仅在录音分析且启用时；结合性能模式做节流）——
+            try:
+                if bool(getattr(self, 'is_recording', False)) and bool(getattr(self, '_env_noise_enable', False)):
+                    # 缺少配置直接跳过
+                    if isinstance(getattr(self, '_env_notch_coeffs', None), list) and self._env_notch_coeffs:
+                        # 性能模式：Quiet=高质量(每帧)，Balanced=轻节流，High=默认关闭
+                        apply_every = 1
+                        max_apply = True
+                        try:
+                            from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                            _pm = get_performance_manager()
+                            _mode = _pm.get_current_mode() if _pm else PerformanceMode.BALANCED
+                        except Exception:
+                            _mode = None
+
+                        if _mode is not None:
+                            if _mode == PerformanceMode.QUIET:
+                                apply_every = 1      # 每帧
+                            elif _mode == PerformanceMode.BALANCED:
+                                apply_every = 3      # 每3帧一次
+                            else:  # HIGH_PERFORMANCE 或其他
+                                apply_every = 0      # 关闭（追求极致流畅）
+
+                        # 初始化计数器
+                        if not hasattr(self, '_env_notch_frame_counter'):
+                            self._env_notch_frame_counter = 0
+                        self._env_notch_frame_counter += 1
+
+                        should_apply = (apply_every == 1) or (apply_every > 1 and (self._env_notch_frame_counter % apply_every == 0))
+                        # 静音/极低电平时不做无谓处理
+                        if original_rms < 0.0012:
+                            should_apply = False
+
+                        if should_apply and apply_every != 0:
+                            processed_audio = self._apply_env_notches(np.asarray(processed_audio, dtype=np.float32, copy=False))
+            except Exception:
+                pass
             
             # ========= 呼吸/静音判定 (避免假高频 2500Hz) ========= #
             if not hasattr(self, '_last_valid_pitch_time'):
@@ -6323,6 +6456,276 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 pass
     
+    # ========= 环境噪声：采集→建模→陷波设计/应用 ========= #
+    def _build_env_noise_profile(self, audio: np.ndarray) -> dict:
+        """根据采集的静默环境音构建噪声频谱画像，返回 {'peaks': [f0,...], 'psd': (freqs, power)}。
+        - 使用 Welch PSD 估计
+        - 在 40~1200Hz 内寻找 1~3 个显著峰（风扇/嗡鸣常见在 50/60Hz 及其倍频）
+        """
+        try:
+            x = np.asarray(audio, dtype=np.float32)
+            if x.size < 128:
+                return {'peaks': [], 'psd': (np.array([]), np.array([]))}
+            # 轻度去DC
+            x = x - float(np.mean(x))
+            # Welch PSD
+            try:
+                from scipy.signal import welch
+                fs = float(getattr(self, 'sample_rate', 48000))
+                nperseg = min(8192, max(1024, 1 << int(np.floor(np.log2(x.size//4 + 1)))))
+                f, Pxx = welch(x, fs=fs, nperseg=nperseg, noverlap=nperseg//2, scaling='spectrum')
+            except Exception:
+                # 回退：简单FFT功率谱
+                fs = float(getattr(self, 'sample_rate', 48000))
+                n = int(1 << int(np.floor(np.log2(max(256, x.size)))))
+                win = np.hanning(n)
+                xx = x[:n] * win
+                spec = np.fft.rfft(xx)
+                Pxx = (np.abs(spec) ** 2) / np.sum(win**2)
+                f = np.fft.rfftfreq(n, 1.0/fs)
+            # 搜索区间
+            lo, hi = 40.0, 1200.0
+            m = (f >= lo) & (f <= hi)
+            if not np.any(m):
+                return {'peaks': [], 'psd': (f, Pxx)}
+            ff = f[m]
+            pp = Pxx[m]
+            # 平滑和阈值
+            try:
+                from scipy.ndimage import uniform_filter1d
+                baseline = uniform_filter1d(pp, size=max(3, len(pp)//64))
+            except Exception:
+                # 简单移动平均
+                k = max(3, len(pp)//64)
+                kernel = np.ones(k)/k
+                baseline = np.convolve(pp, kernel, mode='same')
+            resid = pp - baseline
+            # 峰值检测
+            try:
+                from scipy.signal import find_peaks
+                pk_idx, _ = find_peaks(resid, height=max(1e-12, np.percentile(resid, 92)))
+            except Exception:
+                # 回退：取若干最大值
+                pk_idx = np.argsort(resid)[-5:]
+            peak_freqs = [float(ff[i]) for i in pk_idx]
+            peak_powers = [float(resid[i]) for i in pk_idx]
+            # 选择最多3个，按功率排序，并且合并近邻(±3%)
+            if peak_freqs:
+                pairs = sorted(zip(peak_freqs, peak_powers), key=lambda t: t[1], reverse=True)
+                selected = []
+                for f0, pw in pairs:
+                    if not selected:
+                        selected.append(f0)
+                    else:
+                        if all(abs(f0 - s) > s * 0.03 for s in selected):
+                            selected.append(f0)
+                    if len(selected) >= 3:
+                        break
+                peak_freqs = selected
+            return {'peaks': peak_freqs, 'psd': (f, Pxx)}
+        except Exception:
+            return {'peaks': [], 'psd': (np.array([]), np.array([]))}
+
+    def _design_notch(self, f0: float, Q: float = 20.0) -> tuple:
+        """设计双二阶陷波器（Direct Form I系数返回）。返回 (b0,b1,b2,a1,a2)。
+        参考标准二阶陷波：H(z) = (1 - 2cos(w0)z^-1 + z^-2) / (1 - 2r cos(w0) z^-1 + r^2 z^-2)
+        其中 r = 1 - w0/(2Q) 的近似（小w0时成立）。
+        """
+        try:
+            fs = float(getattr(self, 'sample_rate', 48000))
+            if f0 <= 0 or f0 >= fs/2 - 10:
+                return None
+            w0 = 2.0 * np.pi * (f0 / fs)
+            # 稳健 r 估计，限制范围避免不稳定
+            r = 1.0 - (w0 / (2.0 * max(5.0, float(Q))))
+            r = min(0.9995, max(0.90, r))
+            c = np.cos(w0)
+            b0, b1, b2 = 1.0, -2.0 * c, 1.0
+            a0, a1, a2 = 1.0, -2.0 * r * c, r * r
+            # 规格化到a0=1
+            b0 /= a0; b1 /= a0; b2 /= a0
+            a1 /= a0; a2 /= a0
+            return (b0, b1, b2, a1, a2)
+        except Exception:
+            return None
+
+    def _prepare_env_notches(self, profile: dict):
+        """根据噪声画像准备一组陷波滤波器。"""
+        try:
+            peaks = list(profile.get('peaks') or [])
+            if not peaks:
+                # 宽带轻抑制：不构建陷波
+                self._env_notch_coeffs = []
+                self._env_notch_states = []
+                # 同时清空加速路径资源
+                try:
+                    self._env_notch_sos = None
+                    self._env_notch_sos_state = None
+                    # 同步清空峰值与FFT掩膜缓存
+                    self._env_peak_list = []
+                    self._env_fft_mask_cache = {}
+                except Exception:
+                    pass
+                return
+            coeffs = []
+            for f0 in peaks[:3]:
+                # 对非常低频(<=60Hz)加宽Q，倍频适中
+                Q = 12.0 if f0 <= 70 else (18.0 if f0 <= 150 else 24.0)
+                c = self._design_notch(float(f0), Q=Q)
+                if c:
+                    coeffs.append({'b': (c[0], c[1], c[2]), 'a': (c[3], c[4]), 'f0': float(f0), 'Q': float(Q)})
+            self._env_notch_coeffs = coeffs
+            self._env_notch_states = [{'x1': 0.0, 'x2': 0.0, 'y1': 0.0, 'y2': 0.0} for _ in coeffs]
+            # 记录峰值列表并清理FFT掩膜缓存
+            try:
+                self._env_peak_list = [float(cf['f0']) for cf in coeffs]
+            except Exception:
+                self._env_peak_list = []
+            try:
+                self._env_fft_mask_cache = {}
+            except Exception:
+                pass
+            # 准备 SciPy 加速（若可用）：将 biquad 转为 SOS 并初始化状态
+            try:
+                import numpy as _np  # noqa: F401
+                from scipy.signal import sosfilt_zi  # noqa: F401
+                sos = []
+                for cf in coeffs:
+                    b0, b1, b2 = cf['b']
+                    a1, a2 = cf['a']
+                    sos.append([float(b0), float(b1), float(b2), 1.0, float(a1), float(a2)])
+                if sos:
+                    # 使用 float32 路径进一步降低CPU
+                    self._env_notch_sos = np.asarray(sos, dtype=np.float32)
+                    # 使用零初始状态，避免额外计算；形状 (n_sections, 2)
+                    self._env_notch_sos_state = np.zeros((len(sos), 2), dtype=np.float32)
+                else:
+                    self._env_notch_sos = None
+                    self._env_notch_sos_state = None
+            except Exception:
+                # 无 SciPy 或构建失败，保持为 None，走纯 Python 路径
+                try:
+                    self._env_notch_sos = None
+                    self._env_notch_sos_state = None
+                except Exception:
+                    pass
+        except Exception:
+            self._env_notch_coeffs = []
+            self._env_notch_states = []
+            try:
+                self._env_notch_sos = None
+                self._env_notch_sos_state = None
+                self._env_peak_list = []
+                self._env_fft_mask_cache = {}
+            except Exception:
+                pass
+
+    def _apply_env_notches(self, x: np.ndarray) -> np.ndarray:
+        """对一段音频应用预先准备的陷波器组（就地/复制安全）。"""
+        try:
+            # 优先尝试高速 FFT 掩膜路径（无需 SciPy）
+            try:
+                peaks = getattr(self, '_env_peak_list', None)
+                if peaks:
+                    N = int(len(x))
+                    if N > 0:
+                        mask_cache = getattr(self, '_env_fft_mask_cache', None)
+                        if mask_cache is None:
+                            self._env_fft_mask_cache = {}
+                            mask_cache = self._env_fft_mask_cache
+                        mask = mask_cache.get(N)
+                        if mask is None:
+                            mask = self._build_env_fft_mask(N, peaks)
+                            mask_cache[N] = mask
+                        y = np.asarray(x, dtype=np.float32, copy=False)
+                        Y = np.fft.rfft(y)
+                        # 实数掩膜广播乘法（降低峰值频带能量）
+                        Y *= mask
+                        y_out = np.fft.irfft(Y, n=N).astype(np.float32, copy=False)
+                        return y_out
+            except Exception:
+                # 掩膜路径异常则继续尝试 SciPy 路径
+                pass
+            # 优先使用 SciPy 加速路径
+            sos = getattr(self, '_env_notch_sos', None)
+            z = getattr(self, '_env_notch_sos_state', None)
+            if sos is not None and z is not None:
+                try:
+                    from scipy.signal import sosfilt
+                    y_in = np.asarray(x, dtype=np.float32, copy=False)
+                    y_out, zf = sosfilt(sos, y_in, zi=z)
+                    # 持久化状态以便连续音频块
+                    self._env_notch_sos_state = zf
+                    return np.asarray(y_out, dtype=np.float32, copy=False)
+                except Exception:
+                    # 失败则回退到纯 Python
+                    pass
+
+            # 纯 Python 路径（Direct Form I），与历史实现保持一致
+            coeffs = getattr(self, '_env_notch_coeffs', None)
+            states = getattr(self, '_env_notch_states', None)
+            if not coeffs or states is None or len(coeffs) != len(states):
+                return x
+            y = np.asarray(x, dtype=np.float32)
+            for i, cf in enumerate(coeffs):
+                b0, b1, b2 = cf['b']
+                a1, a2 = cf['a']
+                st = states[i]
+                # Direct Form I
+                x1 = float(st.get('x1', 0.0)); x2 = float(st.get('x2', 0.0))
+                y1 = float(st.get('y1', 0.0)); y2 = float(st.get('y2', 0.0))
+                # 向量化不稳定时保守逐样实现
+                for n in range(len(y)):
+                    xn = float(y[n])
+                    yn = b0 * xn + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                    y2 = y1; y1 = yn
+                    x2 = x1; x1 = xn
+                    y[n] = yn
+                states[i] = {'x1': x1, 'x2': x2, 'y1': y1, 'y2': y2}
+            return y
+        except Exception:
+            return x
+
+    def _build_env_fft_mask(self, N, peaks):
+        """为 rFFT 生成抑制掩膜：对峰值附近若干bin施加幅度衰减。
+        - 掩膜长度 = N//2+1，实数float32（可与复数频谱广播）
+        - 带宽基于近似Q：bw≈f0/Q，默认Q=18，且最小5Hz
+        """
+        try:
+            fs = float(getattr(self, 'sample_rate', 48000.0))
+            if fs <= 0:
+                fs = 48000.0
+            k_len = N // 2 + 1
+            mask = np.ones(k_len, dtype=np.float32)
+            # 读取各峰值的Q
+            q_map = {}
+            try:
+                coeffs = getattr(self, '_env_notch_coeffs', [])
+                for cf in coeffs:
+                    q_map[float(cf.get('f0', 0.0))] = float(cf.get('Q', 18.0))
+            except Exception:
+                pass
+            atten = 0.1  # 10% 余量，强抑制
+            for f0 in peaks:
+                try:
+                    f0f = float(f0)
+                    if f0f <= 0:
+                        continue
+                    Q = float(q_map.get(f0f, 18.0))
+                    bw_hz = max(f0f / max(Q, 1.0), 5.0)
+                    half_bins = int(np.ceil((bw_hz / 2.0) * N / fs))
+                    half_bins = max(1, min(half_bins, k_len - 1))
+                    k0 = int(round(f0f * N / fs))
+                    if 0 <= k0 < k_len:
+                        k1 = max(0, k0 - half_bins)
+                        k2 = min(k_len - 1, k0 + half_bins)
+                        mask[k1:k2 + 1] *= atten
+                except Exception:
+                    continue
+            return mask
+        except Exception:
+            return np.ones(N // 2 + 1, dtype=np.float32)
+
     # ========= 辅助：频域与谐波精修（避免弱基频的低八度误判） ========= #
     def _get_fft_for_refine(self, audio: np.ndarray):
         """计算用于谐波精修的FFT频谱，返回 (freqs, magnitude)。"""
@@ -12846,6 +13249,7 @@ class ECGStylePitchVisualizer(QWidget):
             timestamp = pitch_data.get('timestamp', time.time())
             note_info = pitch_data.get('note_info', {})
             has_pitch = pitch_data.get('has_pitch', frequency > 0)
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
             
             # 计算全局时间（从开始到现在的总时间）- 修复NoneType错误
             if not hasattr(self, 'start_time') or self.start_time is None:
@@ -12867,6 +13271,108 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
 
             if has_pitch and frequency > 0:
+                # —— 静音/噪声门控（普通模式，带起止“缓冲区”裁剪）——
+                try:
+                    skip_gate = bool(pitch_data.get('_skip_gate', False))
+                except Exception:
+                    skip_gate = False
+                try:
+                    try:
+                        _mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
+                    except Exception:
+                        _mode = "普通模式"
+                    if _mode == "普通模式" and not skip_gate:
+                        # 初始化门控/缓冲状态
+                        if not hasattr(self, '_voice_gate_state'):
+                            self._voice_gate_state = 'silent'  # 'silent' | 'voiced'
+                            self._gate_consec_voiced = 0
+                            self._gate_consec_silent = 0
+                        if not hasattr(self, '_vg_onset_buf'):
+                            self._vg_onset_buf = []  # list of dicts (buffered frames before进入voiced)
+                        if not hasattr(self, '_vg_tail_buf'):
+                            self._vg_tail_buf = []   # list of dicts (buffered frames pending退出voiced)
+                        # 阈值（可配置）
+                        rms_enter = float(getattr(self, '_noise_gate_rms_enter', 0.0020))
+                        rms_exit = float(getattr(self, '_noise_gate_rms_exit', 0.0010))
+                        conf_hi = float(getattr(self, '_noise_gate_conf_high', 0.65))
+                        conf_lo = float(getattr(self, '_noise_gate_conf_low', 0.45))
+                        need_voiced_consec = int(getattr(self, '_noise_gate_min_consecutive_voiced', 3))
+                        need_silent_consec = int(getattr(self, '_noise_gate_min_consecutive_silent', 3))
+                        onset_hold = float(getattr(self, '_noise_gate_onset_hold_s', 0.18))
+                        tail_hold = float(getattr(self, '_noise_gate_tail_hold_s', 0.18))
+                        # 判定本帧是否“可视为有声/无声”
+                        voiced_like = (audio_rms >= rms_enter) or (confidence >= conf_hi)
+                        silent_like = (audio_rms <= rms_exit) and (confidence <= conf_lo)
+                        state = getattr(self, '_voice_gate_state', 'silent')
+                        # 将当前帧封装（供缓冲/回放）
+                        cur_pkt = {
+                            'frequency': frequency,
+                            'confidence': confidence,
+                            'timestamp': timestamp,
+                            'note_info': note_info,
+                            'has_pitch': True,
+                            'audio_rms': audio_rms,
+                            '_skip_gate': True  # 回放时跳过门控
+                        }
+                        if state == 'silent':
+                            # onset 缓冲：仅当连续达标且达到最小时长才真正进入 voiced 并一次性回放缓冲帧
+                            if voiced_like:
+                                self._gate_consec_voiced = int(getattr(self, '_gate_consec_voiced', 0)) + 1
+                                self._vg_onset_buf.append(cur_pkt)
+                            else:
+                                self._gate_consec_voiced = 0
+                                self._vg_onset_buf.clear()
+                            # 检查触发进入
+                            buf_dur = (self._vg_onset_buf[-1]['timestamp'] - self._vg_onset_buf[0]['timestamp']) if self._vg_onset_buf else 0.0
+                            if (self._gate_consec_voiced >= max(1, need_voiced_consec)) and (buf_dur >= onset_hold):
+                                self._voice_gate_state = 'voiced'
+                                self._gate_consec_silent = 0
+                                # 回放onset缓冲（含当前帧）
+                                try:
+                                    for pkt in self._vg_onset_buf:
+                                        self.add_pitch_data(pkt)
+                                finally:
+                                    self._vg_onset_buf.clear()
+                                return
+                            # 尚未进入：不提交当前帧
+                            self.current_pitch_active = False
+                            try: self.update_guides()
+                            except Exception: pass
+                            return
+                        else:
+                            # 已在 voiced：开始检测退出静音的“尾部缓冲”
+                            if silent_like:
+                                self._gate_consec_silent = int(getattr(self, '_gate_consec_silent', 0)) + 1
+                                self._vg_tail_buf.append(cur_pkt)
+                                buf_dur = (self._vg_tail_buf[-1]['timestamp'] - self._vg_tail_buf[0]['timestamp']) if self._vg_tail_buf else 0.0
+                                if (self._gate_consec_silent >= max(1, need_silent_consec)) and (buf_dur >= tail_hold):
+                                    # 确认退出：丢弃尾部缓冲并转 silent
+                                    self._voice_gate_state = 'silent'
+                                    self._gate_consec_voiced = 0
+                                    self._vg_onset_buf.clear()
+                                    self._vg_tail_buf.clear()
+                                    self.current_pitch_active = False
+                                    try: self.update_guides()
+                                    except Exception: pass
+                                    return
+                                # 仍在观察：暂不提交（避免尾部多余0.2s）
+                                self.current_pitch_active = False
+                                try: self.update_guides()
+                                except Exception: pass
+                                return
+                            else:
+                                # 仍然是 voiced：若曾经进入尾部观察，则把缓存回放并清空
+                                if self._vg_tail_buf:
+                                    try:
+                                        for pkt in self._vg_tail_buf:
+                                            self.add_pitch_data(pkt)
+                                    finally:
+                                        self._vg_tail_buf.clear()
+                                # 继续向下进入常规提交流程（提交当前帧）
+                                pass
+                except Exception:
+                    # 门控异常时，继续原有流程，确保鲁棒
+                    pass
                 # 若该时间点已在已绘制覆盖区间内，直接跳过追加，避免重复绘制
                 try:
                     if hasattr(self, '_drawn_coverage') and self._drawn_coverage:
@@ -13879,6 +14385,11 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             t_start = time.time()
             now = t_start
+            # 提前初始化 force_redraw，避免在轻量帧条件判断处尚未赋值导致的 UnboundLocalError
+            try:
+                force_redraw = bool(getattr(self, '_force_redraw_on_next_update', False))
+            except Exception:
+                force_redraw = False
             # 帧调试标志（集中初始化，供后续使用）
             frame_trace = bool(getattr(self, 'debug_flags', {}).get('frame_trace', False))
             perf_verbose = bool(getattr(self, 'debug_flags', {}).get('perf_verbose', False))
@@ -19314,6 +19825,459 @@ class IntegratedRecordingInterface(QMainWindow):
 
         v.addWidget(group)
 
+        # 环境噪声采集（仅应用于“录音分析”的音高检测）
+        env_group = QGroupBox("环境噪声采集（录音分析专用）")
+        env_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
+        eg = QVBoxLayout(env_group)
+        eg.addWidget(QLabel("说明：点击开始后请保持安静约5秒，程序将采集当前环境噪声（如风扇/嗡鸣）并用于录音分析阶段的有针对性降噪。"))
+        row_env = QHBoxLayout()
+        start_btn = QPushButton("开始采集环境音(5s)")
+        status_lbl = QLabel("未采集")
+        status_lbl.setStyleSheet("color:#aaaaaa;")
+        enable_chk = QCheckBox("录音分析时启用环境噪声抑制")
+        # 初始化勾选状态
+        try:
+            enable_chk.setChecked(bool(getattr(self.audio_processor, '_env_noise_enable', False)))
+        except Exception:
+            enable_chk.setChecked(False)
+        def _toggle_env_enable(checked: bool):
+            try:
+                setattr(self.audio_processor, '_env_noise_enable', bool(checked))
+            except Exception:
+                pass
+        enable_chk.toggled.connect(_toggle_env_enable)
+        clear_btn = QPushButton("清除配置")
+        row_env.addWidget(start_btn)
+        row_env.addWidget(clear_btn)
+        row_env.addStretch()
+        row_env.addWidget(enable_chk)
+        eg.addLayout(row_env)
+        eg.addWidget(status_lbl)
+        v.addWidget(env_group)
+
+        # 采集逻辑：通过音频处理线程累计帧并计算噪声谱/峰，异步轮询状态
+        _poll_timer = QTimer(dlg)
+        _poll_timer.setInterval(120)
+        def _poll_env_status():
+            try:
+                st = getattr(self.audio_processor, '_env_capture_status', None) or {}
+                if st.get('active'):
+                    prog = float(st.get('progress', 0.0))*100.0
+                    status_lbl.setText(f"正在采集… {prog:.0f}%，请保持安静")
+                    # 直采模式：达到目标后在此处收尾（停止流并构建谱与陷波）
+                    try:
+                        ap = self.audio_processor
+                        if bool(getattr(ap, '_env_direct_mode', False)) and bool(getattr(ap, '_env_direct_done', False)):
+                            # 停止临时流
+                            if getattr(ap, '_env_temp_stream', None) is not None:
+                                try:
+                                    ap._env_temp_stream.stop(); ap._env_temp_stream.close()
+                                except Exception:
+                                    pass
+                                setattr(ap, '_env_temp_stream', None)
+                            # 构建谱与陷波
+                            try:
+                                target = int(getattr(ap, '_env_capture_target_samples', 0) or 0)
+                                buf = getattr(ap, '_env_capture_accum', None)
+                                if isinstance(buf, np.ndarray) and target > 0 and buf.size >= target:
+                                    profile = ap._build_env_noise_profile(buf[:target])
+                                    ap._env_noise_profile = profile
+                                    ap._prepare_env_notches(profile)
+                                    setattr(self.audio_processor, '_env_capture_status', {'active': False, 'done': True, 'peaks': (profile.get('peaks') or [])})
+                                else:
+                                    setattr(self.audio_processor, '_env_capture_status', {'active': False, 'done': False, 'error': 'no_data'})
+                            except Exception as _final_e:
+                                setattr(self.audio_processor, '_env_capture_status', {'active': False, 'done': False, 'error': str(_final_e)})
+                            # 清理直采缓冲与标志
+                            try:
+                                ap._env_direct_done = False
+                                ap._env_direct_mode = False
+                                ap._env_capture_accum = None
+                                ap._env_capture_target_samples = 0
+                                ap._env_capture_started_at = 0.0
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    # 若启动后短时间进度仍很低，尝试自动补建临时输入流（有些场景存在仅播放流）
+                    try:
+                        ap = self.audio_processor
+                        req = getattr(ap, '_env_capture_request', {}) or {}
+                        started = float(req.get('start') or 0.0)
+                        low_prog = float(st.get('progress', 0.0)) < 0.05
+                        need_fallback = (started > 0 and (time.time() - started) > 1.0 and low_prog and getattr(ap, '_env_temp_stream', None) is None)
+                        if need_fallback:
+                            # 构建最优WASAPI输入流作为补救
+                            import numpy as _np
+                            import sounddevice as sd
+                            # 最小化重复启动
+                            if not hasattr(ap, '_callback_min_enqueue_samples') or int(getattr(ap, '_callback_min_enqueue_samples', 0)) <= 0:
+                                try:
+                                    ap._callback_min_enqueue_samples = max(128, int(getattr(ap, 'chunk_size', 256)) // 2)
+                                except Exception:
+                                    ap._callback_min_enqueue_samples = 128
+                            if not hasattr(ap, '_env_enqueue_accum'):
+                                ap._env_enqueue_accum = _np.empty(0, dtype=_np.float32)
+
+                            def _env_cb(indata, frames, time_info, status):
+                                try:
+                                    if ap.channels == 1 and indata.shape[1] > 1:
+                                        raw = _np.mean(indata, axis=1)
+                                    else:
+                                        raw = indata[:, 0] if len(indata.shape) > 1 else indata
+                                    try:
+                                        raw = _np.clip(raw, -1.0, 1.0)
+                                    except Exception:
+                                        pass
+                                    if ap._env_enqueue_accum.size == 0:
+                                        ap._env_enqueue_accum = raw.astype(_np.float32, copy=True)
+                                    else:
+                                        ap._env_enqueue_accum = _np.concatenate((ap._env_enqueue_accum, raw.astype(_np.float32, copy=False)))
+                                    min_samples = int(getattr(ap, '_callback_min_enqueue_samples', 128))
+                                    while ap._env_enqueue_accum.size >= min_samples:
+                                        packet = ap._env_enqueue_accum[:min_samples]
+                                        ap._env_enqueue_accum = ap._env_enqueue_accum[min_samples:]
+                                        try:
+                                            if not ap.audio_buffer_queue.full():
+                                                ap.audio_buffer_queue.put_nowait({'data': packet.copy(), 'timestamp': time.time(), 'should_save': False})
+                                            else:
+                                                ap.audio_buffer_queue.get_nowait()
+                                                ap.audio_buffer_queue.put_nowait({'data': packet.copy(), 'timestamp': time.time(), 'should_save': False})
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
+
+                            # 优先用已测最优WASAPI参数
+                            stream_started = False
+                            try:
+                                cfgs = ap._get_optimal_wasapi_configs()
+                            except Exception:
+                                cfgs = []
+                            for cfg in cfgs:
+                                try:
+                                    params = {
+                                        'channels': int(getattr(ap, 'channels', 1) or 1),
+                                        'samplerate': int(cfg.get('samplerate', getattr(ap, 'sample_rate', 48000)) or 48000),
+                                        'blocksize': int(cfg.get('blocksize', getattr(ap, 'chunk_size', 256)) or 256),
+                                        'callback': _env_cb,
+                                        'dtype': _np.float32,
+                                        'device': cfg.get('device')
+                                    }
+                                    if cfg.get('settings'):
+                                        params['extra_settings'] = cfg['settings']
+                                    ap._env_temp_stream = sd.InputStream(**params)
+                                    ap._env_temp_stream.start()
+                                    stream_started = True
+                                    try:
+                                        ap._apply_actual_input_samplerate(int(params['samplerate']))
+                                    except Exception:
+                                        pass
+                                    break
+                                except Exception:
+                                    continue
+                            if not stream_started:
+                                # 最后一层回退：默认设备
+                                try:
+                                    params = {
+                                        'channels': int(getattr(ap, 'channels', 1) or 1),
+                                        'samplerate': int(getattr(ap, 'sample_rate', 48000) or 48000),
+                                        'blocksize': int(getattr(ap, 'chunk_size', 256) or 256),
+                                        'callback': _env_cb,
+                                        'dtype': _np.float32,
+                                    }
+                                    ap._env_temp_stream = sd.InputStream(**params)
+                                    ap._env_temp_stream.start()
+                                    try:
+                                        ap._apply_actual_input_samplerate(int(params['samplerate']))
+                                    except Exception:
+                                        pass
+                                except Exception as _e2:
+                                    print(f"⚠️ 环境噪声采集回退输入流仍失败: {_e2}")
+                    except Exception:
+                        pass
+                    # 超时保护：若超过5秒仍无进展，提示并清理
+                    try:
+                        req = getattr(self.audio_processor, '_env_capture_request', {}) or {}
+                        started = float(req.get('start') or 0.0)
+                        if started > 0 and (time.time() - started) > 5.0 and float(st.get('progress', 0.0)) < 0.05:
+                            status_lbl.setText("采集超时：未检测到输入，请开启监听或检查麦克风权限")
+                            # 主动结束采集
+                            setattr(self.audio_processor, '_env_capture_status', {'active': False, 'done': False, 'error': 'timeout'})
+                    except Exception:
+                        pass
+                elif st.get('done'):
+                    peaks = st.get('peaks', []) or getattr(self.audio_processor, '_env_noise_profile', {}).get('peaks', [])
+                    if peaks:
+                        status_lbl.setText("采集完成：检测到峰值频率 " + ", ".join(f"{p:.0f}Hz" for p in peaks[:4]))
+                    else:
+                        status_lbl.setText("采集完成：未检测到显著峰值，已应用宽带抑制")
+                    enable_chk.setChecked(True)
+                    _poll_timer.stop()
+                    start_btn.setEnabled(True)
+                    # 采集结束：清理临时流与自动线程
+                    try:
+                        ap = self.audio_processor
+                        if getattr(ap, '_env_temp_stream', None) is not None:
+                            try:
+                                ap._env_temp_stream.stop(); ap._env_temp_stream.close()
+                            except Exception:
+                                pass
+                            setattr(ap, '_env_temp_stream', None)
+                        if bool(getattr(ap, '_env_auto_started_processing', False)):
+                            ap.stop_audio_processing_thread()
+                            setattr(ap, '_env_auto_started_processing', False)
+                        setattr(ap, '_env_auto_started_stream', False)
+                    except Exception:
+                        pass
+                elif st.get('error'):
+                    status_lbl.setText("采集失败：" + str(st.get('error')))
+                    _poll_timer.stop()
+                    start_btn.setEnabled(True)
+                    # 失败同样进行清理
+                    try:
+                        ap = self.audio_processor
+                        if getattr(ap, '_env_temp_stream', None) is not None:
+                            try:
+                                ap._env_temp_stream.stop(); ap._env_temp_stream.close()
+                            except Exception:
+                                pass
+                            setattr(ap, '_env_temp_stream', None)
+                        if bool(getattr(ap, '_env_auto_started_processing', False)):
+                            ap.stop_audio_processing_thread()
+                            setattr(ap, '_env_auto_started_processing', False)
+                        setattr(ap, '_env_auto_started_stream', False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        def _start_env_capture():
+            try:
+                # 重置状态并发起请求
+                setattr(self.audio_processor, '_env_capture_status', {'active': True, 'progress': 0.0, 'done': False})
+                setattr(self.audio_processor, '_env_capture_request', {
+                    'duration': 5.0,
+                    'frames': [],
+                    'start': time.time(),
+                })
+                status_lbl.setText("正在采集… 0% ，请保持安静，不要说话")
+                start_btn.setEnabled(False)
+
+                # 若当前没有任何输入流在推送数据，则临时启动一个简化输入流用于采集
+                ap = self.audio_processor
+                # 启动直采模式（优先）：直接在输入回调里累计音频并更新进度
+                try:
+                    import numpy as _np
+                    import sounddevice as sd
+                    ap._env_direct_mode = True
+                    ap._env_direct_done = False
+                    ap._env_capture_accum = _np.zeros(0, dtype=_np.float32)
+                    dur = float(5.0)
+                    ap._env_capture_target_samples = max(1, int(dur * float(getattr(ap, 'sample_rate', 48000))))
+                    ap._env_capture_started_at = time.time()
+
+                    def _env_direct_cb(indata, frames, time_info, status):
+                        try:
+                            if ap.channels == 1 and indata.shape[1] > 1:
+                                raw = _np.mean(indata, axis=1)
+                            else:
+                                raw = indata[:, 0] if len(indata.shape) > 1 else indata
+                            try:
+                                raw = _np.clip(raw, -1.0, 1.0).astype(_np.float32, copy=False)
+                            except Exception:
+                                raw = raw.astype(_np.float32, copy=False)
+                            # 直接累计到直采缓冲
+                            if ap._env_capture_accum.size == 0:
+                                ap._env_capture_accum = raw.copy()
+                            else:
+                                ap._env_capture_accum = _np.concatenate((ap._env_capture_accum, raw))
+                            cur = int(ap._env_capture_accum.size)
+                            tgt = int(ap._env_capture_target_samples)
+                            prog = min(1.0, cur / max(1, tgt))
+                            try:
+                                st_local = getattr(ap, '_env_capture_status', None)
+                                if isinstance(st_local, dict) and st_local.get('active'):
+                                    st_local['progress'] = float(prog)
+                            except Exception:
+                                pass
+                            if cur >= tgt:
+                                ap._env_direct_done = True
+                        except Exception:
+                            pass
+
+                    # 尝试用最优WASAPI配置创建直采流，失败则默认设备
+                    stream_ok = False
+                    try:
+                        cfgs = ap._get_optimal_wasapi_configs()
+                    except Exception:
+                        cfgs = []
+                    for cfg in cfgs:
+                        try:
+                            params = {
+                                'channels': int(getattr(ap, 'channels', 1) or 1),
+                                'samplerate': int(cfg.get('samplerate', getattr(ap, 'sample_rate', 48000)) or 48000),
+                                'blocksize': int(cfg.get('blocksize', getattr(ap, 'chunk_size', 256)) or 256),
+                                'callback': _env_direct_cb,
+                                'dtype': _np.float32,
+                                'device': cfg.get('device')
+                            }
+                            if cfg.get('settings'):
+                                params['extra_settings'] = cfg['settings']
+                            ap._env_temp_stream = sd.InputStream(**params)
+                            ap._env_temp_stream.start()
+                            stream_ok = True
+                            break
+                        except Exception:
+                            continue
+                    if not stream_ok:
+                        params = {
+                            'channels': int(getattr(ap, 'channels', 1) or 1),
+                            'samplerate': int(getattr(ap, 'sample_rate', 48000) or 48000),
+                            'blocksize': int(getattr(ap, 'chunk_size', 256) or 256),
+                            'callback': _env_direct_cb,
+                            'dtype': _np.float32,
+                        }
+                        ap._env_temp_stream = sd.InputStream(**params)
+                        ap._env_temp_stream.start()
+                except Exception as _direct_e:
+                    print(f"⚠️ 直采模式启动失败，将回退到队列模式: {_direct_e}")
+                try:
+                    has_active_stream = bool(getattr(ap, 'is_global_monitoring_active', False)) or \
+                                        (getattr(ap, 'active_audio_stream', None) is not None) or \
+                                        (getattr(ap, 'audio_stream', None) is not None) or \
+                                        (getattr(ap, 'monitoring_stream', None) is not None) or \
+                                        (getattr(ap, '_env_temp_stream', None) is not None)
+                except Exception:
+                    has_active_stream = False
+
+                # 记录是否由本次采集自动启动处理线程/流，便于完成后自动清理
+                try:
+                    setattr(ap, '_env_auto_started_processing', False)
+                    setattr(ap, '_env_auto_started_stream', False)
+                except Exception:
+                    pass
+
+                # 队列模式仅在未启用直采时需要处理线程
+                try:
+                    if not bool(getattr(ap, '_env_direct_mode', False)):
+                        if not getattr(ap, 'is_audio_processing', False):
+                            ap.start_audio_processing_thread()
+                            setattr(ap, '_env_auto_started_processing', True)
+                except Exception:
+                    pass
+
+                if not has_active_stream and (not bool(getattr(ap, '_env_direct_mode', False))):
+                    try:
+                        import numpy as _np
+                        import sounddevice as sd
+
+                        # 设置入队阈值（保守默认）
+                        try:
+                            if not hasattr(ap, '_callback_min_enqueue_samples') or int(getattr(ap, '_callback_min_enqueue_samples', 0)) <= 0:
+                                ap._callback_min_enqueue_samples = max(128, int(getattr(ap, 'chunk_size', 256)) // 2)
+                        except Exception:
+                            ap._callback_min_enqueue_samples = 128
+                        # 初始化临时累积缓冲
+                        try:
+                            ap._enqueue_accum = _np.empty(0, dtype=_np.float32)
+                        except Exception:
+                            pass
+
+                        def _env_capture_callback(indata, frames, time_info, status):
+                            try:
+                                # 取单声道、裁剪幅度
+                                if ap.channels == 1 and indata.shape[1] > 1:
+                                    raw = _np.mean(indata, axis=1)
+                                else:
+                                    raw = indata[:, 0] if len(indata.shape) > 1 else indata
+                                try:
+                                    raw = _np.clip(raw, -1.0, 1.0)
+                                except Exception:
+                                    pass
+
+                                # 合批入队（与监听/录音一致的轻量逻辑）
+                                if ap._enqueue_accum.size == 0:
+                                    ap._enqueue_accum = raw.astype(_np.float32, copy=True)
+                                else:
+                                    ap._enqueue_accum = _np.concatenate((ap._enqueue_accum, raw.astype(_np.float32, copy=False)))
+
+                                min_samples = int(getattr(ap, '_callback_min_enqueue_samples', 128))
+                                while ap._enqueue_accum.size >= min_samples:
+                                    packet = ap._enqueue_accum[:min_samples]
+                                    ap._enqueue_accum = ap._enqueue_accum[min_samples:]
+                                    try:
+                                        if not ap.audio_buffer_queue.full():
+                                            ap.audio_buffer_queue.put_nowait({'data': packet.copy(), 'timestamp': time.time(), 'should_save': False})
+                                        else:
+                                            # 丢弃最旧，保持流动
+                                            ap.audio_buffer_queue.get_nowait()
+                                            ap.audio_buffer_queue.put_nowait({'data': packet.copy(), 'timestamp': time.time(), 'should_save': False})
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                        # 构建并启动临时采集流（仅输入）
+                        stream_params = {
+                            'channels': int(getattr(ap, 'channels', 1) or 1),
+                            'samplerate': int(getattr(ap, 'sample_rate', 48000) or 48000),
+                            'blocksize': int(getattr(ap, 'chunk_size', 256) or 256),
+                            'callback': _env_capture_callback,
+                            'dtype': _np.float32,
+                        }
+                        ap._env_temp_stream = sd.InputStream(**stream_params)
+                        ap._env_temp_stream.start()
+                        setattr(ap, '_env_auto_started_stream', True)
+                        # 同步实际输入采样率给分析器（若不同）
+                        try:
+                            ap._apply_actual_input_samplerate(int(stream_params['samplerate']))
+                        except Exception:
+                            pass
+                    except Exception as _e:
+                        # 回退：如果无法创建临时流，提示并允许用户手动开启监听
+                        print(f"⚠️ 环境噪声采集临时输入流启动失败: {_e}")
+                _poll_timer.timeout.connect(_poll_env_status)
+                _poll_timer.start()
+            except Exception as e:
+                status_lbl.setText(f"采集启动失败：{e}")
+        def _clear_env_profile():
+            try:
+                setattr(self.audio_processor, '_env_noise_profile', None)
+                setattr(self.audio_processor, '_env_noise_enable', False)
+                setattr(self.audio_processor, '_env_notch_coeffs', None)
+                setattr(self.audio_processor, '_env_notch_states', None)
+                setattr(self.audio_processor, '_env_capture_status', {'active': False, 'done': False})
+                status_lbl.setText("已清除环境噪声配置")
+                enable_chk.setChecked(False)
+                # 若存在临时流，安全停止
+                try:
+                    ap = self.audio_processor
+                    if getattr(ap, '_env_temp_stream', None) is not None:
+                        try:
+                            ap._env_temp_stream.stop(); ap._env_temp_stream.close()
+                        except Exception:
+                            pass
+                        setattr(ap, '_env_temp_stream', None)
+                    # 清理直采标志与缓冲
+                    try:
+                        ap._env_direct_mode = False
+                        ap._env_direct_done = False
+                        ap._env_capture_accum = None
+                        ap._env_capture_target_samples = 0
+                    except Exception:
+                        pass
+                    # 若由采集自动启动了处理线程，此处也一并停止
+                    if bool(getattr(ap, '_env_auto_started_processing', False)):
+                        ap.stop_audio_processing_thread()
+                        setattr(ap, '_env_auto_started_processing', False)
+                    setattr(ap, '_env_auto_started_stream', False)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        start_btn.clicked.connect(_start_env_capture)
+        clear_btn.clicked.connect(_clear_env_profile)
+
         # 操作按钮
         btn_row = QHBoxLayout()
         ok_btn = QPushButton("确定")
@@ -19942,27 +20906,48 @@ class IntegratedRecordingInterface(QMainWindow):
                     tip = QLabel("已检测到：本环境不支持 Spleeter，但发现外部 Spleeter 环境，将通过桥接使用（无需切换主环境）。")
                     tip.setStyleSheet("color:#ffcc00;")
                     tip.setWordWrap(True)
+                    # 这里应添加刚创建的 tip 到布局
                     v.addWidget(tip)
-                else:
-                    warn = QLabel("提示：当前环境不支持 Spleeter（建议使用 Python 3.8–3.10 并安装 spleeter，或配置 MIND_ECHO_SPLEETER_PY）。已默认使用 Demucs。")
-                    warn.setStyleSheet("color:#ffcc00;")
-                    warn.setWordWrap(True)
-                    v.addWidget(warn)
+
+                    # 环境噪声采集（仅应用于“录音分析”的音高检测）
+                    env_group = QGroupBox("环境噪声采集（录音分析专用）")
+                    env_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
+                    eg = QVBoxLayout(env_group)
+                    eg.addWidget(QLabel("说明：点击开始后请保持安静约5秒，程序将采集当前环境噪声（如风扇/嗡鸣）并用于录音分析阶段的有针对性降噪。"))
+                    row_env = QHBoxLayout()
+                    start_btn = QPushButton("开始采集环境音(5s)")
+                    status_lbl = QLabel("未采集")
+                    status_lbl.setStyleSheet("color:#aaaaaa;")
+                    enable_chk = QCheckBox("录音分析时启用环境噪声抑制")
+                    # 初始化勾选状态
                     try:
-                        algo_combo.setCurrentIndex(0)  # 默认 Demucs
-                        # 禁用 Spleeter 选项，避免误选
-                        m = algo_combo.model(); idx = m.index(1, 0)
-                        m.setData(idx, 0, Qt.ItemDataRole.EnabledRole)
+                        enable_chk.setChecked(bool(getattr(self.audio_processor, '_env_noise_enable', False)))
                     except Exception:
-                        pass
+                        enable_chk.setChecked(False)
+                    def _toggle_env_enable(checked: bool):
+                        try:
+                            setattr(self.audio_processor, '_env_noise_enable', bool(checked))
+                        except Exception:
+                            pass
+                    enable_chk.toggled.connect(_toggle_env_enable)
+                    clear_btn = QPushButton("清除配置")
+                    row_env.addWidget(start_btn)
+                    row_env.addWidget(clear_btn)
+                    row_env.addStretch()
+                    row_env.addWidget(enable_chk)
+                    eg.addLayout(row_env)
+                    eg.addWidget(status_lbl)
+                    v.addWidget(env_group)
             except Exception:
+                # 探测异常时，静默回退，不阻断后续 UI
                 pass
-            # 分离声部数选择
-            stems_row = QHBoxLayout(); stems_row.addWidget(QLabel("分离声部:"))
+
+            # 声部分离选择（2/4/5 声部），供后续逻辑使用
+            stems_row = QHBoxLayout(); stems_row.addWidget(QLabel("声部分离:"))
             stems_combo = QComboBox(); stems_combo.addItems([
-                "2 声部（人声/伴奏）",
-                "4 声部（人声/鼓/贝斯/其他）",
-                "5 声部（人声/鼓/贝斯/钢琴/其他）",
+                "2 声部（人声+伴奏）",
+                "4 声部（人声+鼓+贝斯+其他）",
+                "5 声部（人声+鼓+贝斯+钢琴+其他）",
             ])
             try:
                 stems_combo.setCurrentIndex(0)
