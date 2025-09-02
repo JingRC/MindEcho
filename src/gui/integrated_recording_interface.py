@@ -9198,6 +9198,15 @@ class ECGStylePitchVisualizer(QWidget):
                     self._last_visible_time_set = set()
             except Exception:
                 pass
+            # 清空扁平点缓存，防止旧窗口的点跨分钟被复用
+            try:
+                if hasattr(self, '_flat_points') and self._flat_points is not None:
+                    try:
+                        self._flat_points.clear()
+                    except Exception:
+                        self._flat_points = []
+            except Exception:
+                pass
             # 重置平滑xlim历史，确保立即对齐至新视窗
             try:
                 self._smoothed_xlim = None
@@ -9207,6 +9216,13 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if hasattr(self, 'update_display'):
                     self.update_display()
+            except Exception:
+                pass
+            # 标记：回退后 time_data 可能出现“先大后小”的非单调拼接，
+            # 在一段时间内（例如2秒）按照“无序序列”策略筛选/排序窗口数据，避免跨接/漏点
+            try:
+                self._assume_unsorted_time_data = True
+                self._assume_unsorted_until = now + 2.0
             except Exception:
                 pass
         except Exception:
@@ -9952,6 +9968,12 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_data.clear()
         self.confidence_data.clear()
         self.note_data.clear()
+        # 回到默认：清会话后时间序列视为单调，恢复二分筛选
+        try:
+            self._assume_unsorted_time_data = False
+            self._assume_unsorted_until = 0.0
+        except Exception:
+            pass
         # 清理时间桶去重集合
         try:
             if hasattr(self, '_added_time_bins'):
@@ -14474,6 +14496,9 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 self._last_render_window = (axis_start, axis_end)
             
+            # 非单调保护标记：保持为 True 直到重新清空数据/新会话
+            # （避免回退后过期导致再次滚动到旧窗口时段“消失”）
+
             # 过滤时间窗口内的数据（保持顺序）
             # 长时录制优化：在“录音中+自动跟随+非手动冻结+已过中心时间”时，优先使用尾部滑窗缓存，避免对全量历史做 list 拷贝与二分
             use_tail = False
@@ -14512,33 +14537,41 @@ class ECGStylePitchVisualizer(QWidget):
                 if data_len == 0:
                     valid_indices = []
                 else:
-                    import bisect
-                    try:
-                        start_idx = bisect.bisect_left(_time_seq, data_start - 1e-6)
-                    except Exception as _bis_e:
-                        print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} data_start={data_start:.4f}")
-                        # 回退线性查找
-                        start_idx = 0
-                        while start_idx < data_len and _time_seq[start_idx] < data_start - 1e-6:
-                            start_idx += 1
-                    # 仍向后线性扩展到窗口结束（数据局部连续，线性更快）
-                    end_idx = start_idx
-                    while end_idx < data_len and _time_seq[end_idx] <= data_end + 1e-6:
-                        end_idx += 1
-                    valid_indices = list(range(start_idx, end_idx))
-                    # 记录用于下一帧（允许轻微回退缓存1个点）
-                    self._last_window_start_index = max(0, start_idx - 1)
-                    # 调试：可选打印一次方向变化（节流）
-                    if hasattr(self, '_last_window_start_index_real'):
-                        if start_idx < getattr(self, '_last_window_start_index_real_previous', start_idx+1):
-                            if self.debug_flags.get('segment_log') and not hasattr(self, '_last_backward_scroll_logged'):
-                                print(f"🔁 回退滚动重建窗口: start_idx={start_idx}")
-                                self._last_backward_scroll_logged = True
-                        else:
-                            if hasattr(self, '_last_backward_scroll_logged'):
-                                delattr(self, '_last_backward_scroll_logged')
-                    self._last_window_start_index_real_previous = start_idx
-                    self._last_window_start_index_real = start_idx
+                    # 在回退后，time_data 可能出现非单调时间（例如先记录3:10再记录1:00），
+                    # 此时 bisect 假设的有序性被破坏，容易漏选或错选。通过标记触发稳健路径。
+                    unsorted_seq = bool(getattr(self, '_assume_unsorted_time_data', False))
+                    if not unsorted_seq:
+                        import bisect
+                        try:
+                            start_idx = bisect.bisect_left(_time_seq, data_start - 1e-6)
+                        except Exception as _bis_e:
+                            print(f"[BISect_ERR] {type(_bis_e).__name__}: {_bis_e} len_time_seq={len(_time_seq)} data_start={data_start:.4f}")
+                            # 回退线性查找
+                            start_idx = 0
+                            while start_idx < data_len and _time_seq[start_idx] < data_start - 1e-6:
+                                start_idx += 1
+                        # 仍向后线性扩展到窗口结束（数据局部连续，线性更快）
+                        end_idx = start_idx
+                        while end_idx < data_len and _time_seq[end_idx] <= data_end + 1e-6:
+                            end_idx += 1
+                        valid_indices = list(range(start_idx, end_idx))
+                        # 记录用于下一帧（允许轻微回退缓存1个点）
+                        self._last_window_start_index = max(0, start_idx - 1)
+                        # 调试：可选打印一次方向变化（节流）
+                        if hasattr(self, '_last_window_start_index_real'):
+                            if start_idx < getattr(self, '_last_window_start_index_real_previous', start_idx+1):
+                                if self.debug_flags.get('segment_log') and not hasattr(self, '_last_backward_scroll_logged'):
+                                    print(f"🔁 回退滚动重建窗口: start_idx={start_idx}")
+                                    self._last_backward_scroll_logged = True
+                            else:
+                                if hasattr(self, '_last_backward_scroll_logged'):
+                                    delattr(self, '_last_backward_scroll_logged')
+                        self._last_window_start_index_real_previous = start_idx
+                        self._last_window_start_index_real = start_idx
+                    else:
+                        # 稳健路径：线性筛选窗口内所有点索引（不依赖全局有序），避免回退后漏选
+                        valid_indices = [i for i, t in enumerate(_time_seq)
+                                         if (t >= data_start - 1e-6) and (t <= data_end + 1e-6)]
 
                 # 提取有效数据
                 if data_len > 0 and valid_indices:
@@ -14559,6 +14592,16 @@ class ECGStylePitchVisualizer(QWidget):
                         times = [_time_seq[i] for i in indices]
                         pitches = [self.pitch_data[i] for i in indices]
                         confidences = [self.confidence_data[i] for i in indices]
+                        # 若序列可能非单调或索引选择导致乱序，按时间升序稳定排序，
+                        # 杜绝跨窗反向连线与“空窗”误判
+                        try:
+                            if times and (bool(getattr(self, '_assume_unsorted_time_data', False)) or any(times[k] > times[k+1] for k in range(len(times)-1))):
+                                tri = sorted(zip(times, pitches, confidences), key=lambda r: float(r[0]))
+                                times = [r[0] for r in tri]
+                                pitches = [r[1] for r in tri]
+                                confidences = [r[2] for r in tri]
+                        except Exception:
+                            pass
                     except TypeError as _idx_e:
                         # 捕获可能的 slice 索引异常，输出详细上下文
                         print(f"[INDEX_ERR] {type(_idx_e).__name__}: {_idx_e} valid_indices_sample={valid_indices[:10]} len_valid={len(valid_indices)} data_len={data_len}")
@@ -15134,6 +15177,10 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 # 普通模式不再使用整体 pitch_line，以避免跨窗口连线；走分段绘制兜底
                 try:
+                    try:
+                        self._ensure_pitch_line(alpha=0.0)
+                    except Exception:
+                        pass
                     self.pitch_line.set_data([], [])
                 except Exception:
                     pass
@@ -15284,10 +15331,24 @@ class ECGStylePitchVisualizer(QWidget):
                             except Exception:
                                 pass
                         try:
-                            # 普通模式下，如存在兜底集合，保持隐藏以避免与逐段点冲突
+                            # 仅当已有逐段白点集合真正可见时才隐藏兜底点；
+                            # 否则保留兜底点以确保“跳转后一帧也有白点”。
+                            any_visible_seg_pts = False
+                            for coll in getattr(self, '_segment_points', []) or []:
+                                try:
+                                    if (coll.get_alpha() or 0) > 0.1:
+                                        any_visible_seg_pts = True
+                                        break
+                                except Exception:
+                                    pass
                             if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
-                                self._browse_points_fallback.set_alpha(0.0)
-                                self._browse_points_fallback.set_visible(False)
+                                if any_visible_seg_pts:
+                                    self._browse_points_fallback.set_alpha(0.0)
+                                    self._browse_points_fallback.set_visible(False)
+                                else:
+                                    # 兜底点置顶，避免被线条遮挡
+                                    try: self._browse_points_fallback.set_zorder(14)
+                                    except Exception: pass
                         except Exception:
                             pass
                 except Exception:
@@ -15522,6 +15583,7 @@ class ECGStylePitchVisualizer(QWidget):
                             target_coll = self._browse_points_fallback
                             import numpy as _np
                             arr = _np.empty((0, 2), dtype=_np.float32)
+                            # 1) 优先用 _flat_points（若存在）
                             if hasattr(self, '_flat_points') and self._flat_points is not None and len(self._flat_points) > 0:
                                 x0p, x1p = self.ax.get_xlim() if hasattr(self, 'ax') else (None, None)
                                 fp = list(self._flat_points)
@@ -15529,6 +15591,23 @@ class ECGStylePitchVisualizer(QWidget):
                                 if arr.size > 0 and x0p is not None and x1p is not None:
                                     mask = (arr[:, 0] >= x0p) & (arr[:, 0] <= x1p)
                                     arr = arr[mask]
+                            # 2) 若为空，则直接从原始缓冲构建兜底点（保证实时播放时也立即可见）
+                            if arr.size == 0:
+                                try:
+                                    tbuf = list(getattr(self, 'time_data', []))
+                                    pbuf = list(getattr(self, 'pitch_data', []))
+                                    if tbuf and pbuf and len(tbuf) == len(pbuf):
+                                        x0p, x1p = self.ax.get_xlim() if hasattr(self, 'ax') else (None, None)
+                                        ta = _np.asarray(tbuf, dtype=_np.float32)
+                                        ya = _np.asarray(pbuf, dtype=_np.float32)
+                                        if x0p is not None and x1p is not None:
+                                            m = (ta >= x0p) & (ta <= x1p)
+                                            ta = ta[m]; ya = ya[m]
+                                        # 只保留非 NaN 点
+                                        if ta.size > 0:
+                                            arr = _np.column_stack((ta, ya))
+                                except Exception:
+                                    pass
                             target_coll.set_offsets(arr)
                             # 尺寸与其他细点一致
                             base_w = float(getattr(self, 'current_linewidth', 0.6))
