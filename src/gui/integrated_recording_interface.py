@@ -11867,7 +11867,32 @@ class ECGStylePitchVisualizer(QWidget):
     # should_show_note_label 逻辑已被各 zoom 模式的严格规则替换
     
     def draw_interactive_note_labels(self, y_start, y_end):
-        """绘制交互式音调标签 (重新精简 & 修复缩进，5.0x 保持十二平均律垂直位置)"""
+        """绘制交互式音调标签 (高倍缩放节流 + 轻量化)"""
+        # 高倍缩放下按视图变化节流重建，避免卡顿
+        try:
+            profile = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+            self._current_zoom_profile = profile
+            mode = profile.get('mode')
+            zoom = float(getattr(self, 'zoom_level', 1.0))
+            now = time.time()
+            # 依据缩放确定重建的最小间隔
+            if zoom >= 4.5:
+                min_interval = 0.12
+            elif zoom >= 2.0:
+                min_interval = 0.09
+            else:
+                min_interval = 0.0
+            last = getattr(self, '_last_note_labels_meta', None)
+            if last is not None:
+                last_y0, last_y1, last_mode, last_t = last
+                # 视窗轻微移动时允许跳过重建
+                if (abs(y_start - last_y0) < 0.12 and abs(y_end - last_y1) < 0.12 and mode == last_mode):
+                    if (now - last_t) < min_interval:
+                        return
+            self._last_note_labels_meta = (y_start, y_end, mode, now)
+        except Exception:
+            pass
+
         # 清理旧元素
         if hasattr(self, '_note_label_texts'):
             for t in self._note_label_texts:
@@ -11899,6 +11924,17 @@ class ECGStylePitchVisualizer(QWidget):
         mode = profile.get('mode')
         filt = profile['note_filter']
         fixed_mode = mode in ('zoom_0_5','zoom_0_8')
+        # 预计算一次坐标变换，避免每条标签重复求解
+        try:
+            base_px_x = self.ax.transAxes.transform((label_x, 0))[0]
+            inv_axes = self.ax.transAxes.inverted()
+        except Exception:
+            base_px_x = None
+            inv_axes = None
+        zoom = float(getattr(self, 'zoom_level', 1.0))
+        # 限制高倍缩放下的水平虚线数量
+        max_hlines = 0 if zoom >= 4.5 else (2 if zoom >= 2.0 else 4)
+        added_hlines = 0
         # 遍历十二平均律位置
         for octave in range(int(display_start), int(display_end) + 1):
             for semitone in range(12):
@@ -11927,6 +11963,9 @@ class ECGStylePitchVisualizer(QWidget):
                     continue
                 note_full = f"{self.note_names[semitone]}{octave}"
                 distance = abs(y_pos - current_center)
+                # 5.0x 下远离中心的弱级别半音直接省略
+                if mode == 'zoom_5_0' and semitone not in (0,2,4,5,7,9,11) and distance > 0.35:
+                    continue
                 # 样式层级
                 if mode == 'zoom_5_0':
                     if semitone == 0:
@@ -11972,22 +12011,20 @@ class ECGStylePitchVisualizer(QWidget):
                                    clip_on=False, zorder=50,
                                    bbox=dict(facecolor=self.bg_color, edgecolor='none', pad=0.2, alpha=0.55))
                 try:
-                    base_px = self.ax.transAxes.transform((label_x,0))[0]
-                    extra_px = 0
-                    if mode == 'zoom_5_0':  # 水平交错：奇数半音再左移 4px
-                        if semitone % 2 == 1:
-                            extra_px = -4
-                    new_axes_x = self.ax.transAxes.inverted().transform(
-                        (base_px + self.label_left_pixel_offset + extra_px, 0))[0]
-                    txt.set_x(new_axes_x)
+                    if base_px_x is not None and inv_axes is not None:
+                        extra_px = -4 if (mode == 'zoom_5_0' and (semitone % 2 == 1)) else 0
+                        new_axes_x = inv_axes.transform((base_px_x + self.label_left_pixel_offset + extra_px, 0))[0]
+                        txt.set_x(new_axes_x)
                 except Exception:
                     pass
                 self._note_label_texts.append(txt)
-                if self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5:
+                if (max_hlines > 0 and added_hlines < max_hlines and
+                    self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5):
                     ln_alpha = alpha * 0.3
                     try:
                         ln = self.ax.axhline(y=y_pos, color=color, linestyle=':', linewidth=0.8, alpha=ln_alpha, zorder=5)
                         self._active_note_highlight_lines.append(ln)
+                        added_hlines += 1
                     except Exception:
                         pass
         # 边界标签保障（滚动模式）
@@ -12005,10 +12042,9 @@ class ECGStylePitchVisualizer(QWidget):
                                    clip_on=False, zorder=60,
                                    bbox=dict(facecolor=self.bg_color, edgecolor='none', pad=0.25, alpha=0.65))
                 try:
-                    base_px = self.ax.transAxes.transform((label_x,0))[0]
-                    new_axes_x = self.ax.transAxes.inverted().transform(
-                        (base_px + self.label_left_pixel_offset, 0))[0]
-                    txt.set_x(new_axes_x)
+                    if base_px_x is not None and inv_axes is not None:
+                        new_axes_x = inv_axes.transform((base_px_x + self.label_left_pixel_offset, 0))[0]
+                        txt.set_x(new_axes_x)
                 except Exception:
                     pass
                 self._note_label_texts.append(txt)
@@ -14057,6 +14093,20 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if not hasattr(self, 'ax'):
                 return
+            # 高倍缩放下节流辅助线更新与重绘，避免频繁 draw_idle 造成卡顿
+            now = time.time()
+            zoom = float(getattr(self, 'zoom_level', 1.0))
+            # 函数级调用节流（完全跳过一次更新）
+            if zoom >= 4.5:
+                call_min = 0.040  # 25 FPS 最多
+            elif zoom >= 2.0:
+                call_min = 0.030
+            else:
+                call_min = 0.0
+            last_call = getattr(self, '_last_guides_update_time', 0.0)
+            if call_min > 0 and (now - last_call) < call_min:
+                return
+            self._last_guides_update_time = now
             # 纵向位置：
             #   - ≤8s：跟随当前时间（夹紧到窗口）
             #   - >8s 且自动跟随：将视觉位置锁定在图表像素中心，避免因 xlim 微抖导致的“左右晃动”
@@ -14257,10 +14307,19 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
 
-            # 轻触发重绘，确保立即可见
+            # 节制触发重绘（draw_idle），高倍缩放下放宽到更低频率
             if hasattr(self, 'canvas'):
                 try:
-                    self.canvas.draw_idle()
+                    if zoom >= 4.5:
+                        min_redraw = 0.060
+                    elif zoom >= 2.0:
+                        min_redraw = 0.045
+                    else:
+                        min_redraw = 0.0
+                    last_di = getattr(self, '_last_guides_draw_idle_time', 0.0)
+                    if min_redraw == 0.0 or (now - last_di) >= min_redraw:
+                        self.canvas.draw_idle()
+                        self._last_guides_draw_idle_time = now
                 except Exception:
                     pass
         except Exception:
@@ -19498,7 +19557,29 @@ class IntegratedRecordingInterface(QMainWindow):
         self._vis_min_interval_sec = 0.018
         # 最近频率历史（用于可视化平滑）；只存少量点，避免开销
         self._plot_freq_history = []  # list[float]
-        self._plot_freq_alpha = 0.35  # EMA回退系数
+        self._plot_freq_alpha = 0.35  # EMA回退系数（按性能模式覆盖）
+        # 按模式可调的可视化参数（默认值；初始化后由性能管理器覆盖）
+        self._plot_freq_history_maxlen = 33  # 历史长度上限
+        self._plot_savgol_win = 9            # SG平滑窗口（奇数）
+        self._plot_savgol_poly = 2           # SG多项式阶数
+
+        # 依据性能模式联动可视化参数，并监听模式变化
+        try:
+            from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+            _pm_ui = get_performance_manager()
+            if _pm_ui:
+                # 先应用当前模式参数
+                try:
+                    self._apply_ui_params_for_mode(_pm_ui.get_current_mode(), _pm_ui.get_current_config())
+                except Exception:
+                    pass
+                # 注册监听器，动态响应模式切换
+                try:
+                    _pm_ui.register_listener(self._on_performance_mode_changed)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         
         # 🚀 零延迟优化组件
         self.audio_processing_thread = None
@@ -19679,6 +19760,15 @@ class IntegratedRecordingInterface(QMainWindow):
         """窗口关闭事件处理 - 确保所有资源正确释放"""
         try:
             print("🔄 正在关闭MindEcho...")
+
+            # 取消注册性能模式监听器（若已注册）
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager
+                _pm_ui = get_performance_manager()
+                if _pm_ui and hasattr(self, '_on_performance_mode_changed'):
+                    _pm_ui.unregister_listener(self._on_performance_mode_changed)
+            except Exception:
+                pass
             
             # 停止音频处理器
             if hasattr(self, 'audio_processor') and self.audio_processor:
@@ -20915,36 +21005,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     tip.setWordWrap(True)
                     # 这里应添加刚创建的 tip 到布局
                     v.addWidget(tip)
-
-                    # 环境噪声采集（仅应用于“录音分析”的音高检测）
-                    env_group = QGroupBox("环境噪声采集（录音分析专用）")
-                    env_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
-                    eg = QVBoxLayout(env_group)
-                    eg.addWidget(QLabel("说明：点击开始后请保持安静约5秒，程序将采集当前环境噪声（如风扇/嗡鸣）并用于录音分析阶段的有针对性降噪。"))
-                    row_env = QHBoxLayout()
-                    start_btn = QPushButton("开始采集环境音(5s)")
-                    status_lbl = QLabel("未采集")
-                    status_lbl.setStyleSheet("color:#aaaaaa;")
-                    enable_chk = QCheckBox("录音分析时启用环境噪声抑制")
-                    # 初始化勾选状态
-                    try:
-                        enable_chk.setChecked(bool(getattr(self.audio_processor, '_env_noise_enable', False)))
-                    except Exception:
-                        enable_chk.setChecked(False)
-                    def _toggle_env_enable(checked: bool):
-                        try:
-                            setattr(self.audio_processor, '_env_noise_enable', bool(checked))
-                        except Exception:
-                            pass
-                    enable_chk.toggled.connect(_toggle_env_enable)
-                    clear_btn = QPushButton("清除配置")
-                    row_env.addWidget(start_btn)
-                    row_env.addWidget(clear_btn)
-                    row_env.addStretch()
-                    row_env.addWidget(enable_chk)
-                    eg.addLayout(row_env)
-                    eg.addWidget(status_lbl)
-                    v.addWidget(env_group)
+                    # 注：环境噪声采集入口仅保留在主界面“设置”中，此处不再展示
             except Exception:
                 # 探测异常时，静默回退，不阻断后续 UI
                 pass
@@ -21678,6 +21739,48 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception as e:
             print(f"❌ 切换电流音检测状态时出错: {e}")
     
+    def _apply_ui_params_for_mode(self, mode, config=None):
+        """根据性能模式调整可视化节流与平滑参数（仅影响显示层）。"""
+        try:
+            from src.audio_processing.performance_manager import PerformanceMode
+        except Exception:
+            PerformanceMode = None
+        try:
+            if PerformanceMode and mode == PerformanceMode.HIGH_PERFORMANCE:
+                # 更高刷新频率、稍弱平滑
+                self._vis_min_interval_sec = 0.012
+                self._plot_freq_alpha = 0.45
+                self._plot_freq_history_maxlen = 25
+                self._plot_savgol_win = 7
+                self._plot_savgol_poly = 2
+            elif PerformanceMode and mode == PerformanceMode.BALANCED:
+                # 默认均衡
+                self._vis_min_interval_sec = 0.016
+                self._plot_freq_alpha = 0.35
+                self._plot_freq_history_maxlen = 33
+                self._plot_savgol_win = 9
+                self._plot_savgol_poly = 2
+            else:
+                # QUIET 或未知：更强平滑、降低刷新频率
+                self._vis_min_interval_sec = 0.022
+                self._plot_freq_alpha = 0.22
+                self._plot_freq_history_maxlen = 41
+                self._plot_savgol_win = 11
+                self._plot_savgol_poly = 2
+        except Exception:
+            # 容错：保持当前参数
+            pass
+
+    def _on_performance_mode_changed(self, new_mode, config):
+        """性能模式变更回调：联动更新显示参数"""
+        try:
+            self._apply_ui_params_for_mode(new_mode, config)
+            # 可选：清理绘图缓存，避免窗口参数巨变导致瞬时抖动
+            if isinstance(getattr(self, '_plot_freq_history', None), list) and len(self._plot_freq_history) > self._plot_freq_history_maxlen:
+                self._plot_freq_history = self._plot_freq_history[-self._plot_freq_history_maxlen:]
+        except Exception:
+            pass
+
     def on_pitch_detected(self, pitch_data):
         """音高检测回调（支持断续音调曲线模式）"""
         try:
@@ -21793,18 +21896,27 @@ class IntegratedRecordingInterface(QMainWindow):
                         try:
                             # 维护少量历史
                             self._plot_freq_history.append(f)
-                            if len(self._plot_freq_history) > 33:
+                            maxlen = int(getattr(self, '_plot_freq_history_maxlen', 33))
+                            if len(self._plot_freq_history) > maxlen:
                                 # 限制长度，避免不必要内存与计算
-                                self._plot_freq_history = self._plot_freq_history[-33:]
+                                self._plot_freq_history = self._plot_freq_history[-maxlen:]
                             f_smooth = None
                             # SciPy Savitzky-Golay（7~11点小窗，二次多项式）
-                            if len(self._plot_freq_history) >= 9:
+                            base_win = int(getattr(self, '_plot_savgol_win', 9))
+                            base_poly = int(getattr(self, '_plot_savgol_poly', 2))
+                            if len(self._plot_freq_history) >= 5:
                                 try:
                                     from scipy.signal import savgol_filter
-                                    # 窗口长度须为奇数且<=长度
-                                    win = 9 if len(self._plot_freq_history) >= 9 else (len(self._plot_freq_history) // 2 * 2 + 1)
-                                    win = max(5, min(win, len(self._plot_freq_history) if len(self._plot_freq_history) % 2 == 1 else len(self._plot_freq_history) - 1))
-                                    poly = 2
+                                    # 窗口长度须为奇数且<=长度；以base_win为目标
+                                    win_target = base_win if base_win > 0 else 9
+                                    # 不能超过现有长度，且需要奇数
+                                    max_allowed = len(self._plot_freq_history)
+                                    if max_allowed % 2 == 0:
+                                        max_allowed -= 1
+                                    win = max(5, min(win_target, max_allowed))
+                                    if win % 2 == 0:
+                                        win = max(5, win - 1)
+                                    poly = max(2, min(base_poly, 4))
                                     sm = savgol_filter(self._plot_freq_history, window_length=win, polyorder=poly, mode='interp')
                                     f_smooth = float(sm[-1])
                                 except Exception:

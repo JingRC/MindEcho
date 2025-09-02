@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "sr": 44100,
+  "spleeter_version": "2.4.0",
+  "python": "3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]",
+  "channels": 2,
+  "frames": 11816448,
+  "duration_sec": 267.94666666666666,
+  "infer_sec": 44.05146884918213,
+  "model": {
+    "resolved": "D:\\-MindEcho-main\\pretrained_models\\2stems",
+    "env": "D:\\-MindEcho-main\\pretrained_models"
+  },
+  "stems": 5,
+  "written": {
+    "vocals": "D:\\-MindEcho-main\\recordings\\VocalConvertOutput\\人声\\单依纯 - 李白 (Live)_人声.flac",
+    "drums": "D:\\-MindEcho-main\\recordings\\VocalConvertOutput\\鼓\\单依纯 - 李白 (Live)_鼓.flac",
+    "bass": "D:\\-MindEcho-main\\recordings\\VocalConvertOutput\\贝斯\\单依纯 - 李白 (Live)_贝斯.flac",
+    "other": "D:\\-MindEcho-main\\recordings\\VocalConvertOutput\\其他\\单依纯 - 李白 (Live)_其他.flac",
+    "piano": "D:\\-MindEcho-main\\recordings\\VocalConvertOutput\\钢琴\\单依纯 - 李白 (Live)_钢琴.flac",
+    "accompaniment": "D:\\-MindEcho-main\\recordings\\VocalConvertOutput\\伴奏\\单依纯 - 李白 (Live)_伴奏.flac"
+  },
+  "engine": "Spleeter-Bridge"
+}
