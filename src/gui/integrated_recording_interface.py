@@ -294,6 +294,12 @@ class IntegratedAudioProcessor(QThread):
         self.enable_pitch_visualization = False
 
         # 实时统计：保存最近的音高点（用于绘制与分析）
+        # 清轴后，确保悬停注解与高亮图元可以重新挂载当前轴
+        try:
+            self._ensure_hover_annot()
+            self._ensure_hover_highlight_artists()
+        except Exception:
+            pass
         self.pitch_history = deque(maxlen=1000)
 
         # 频率范围与算法阈值（供 PitchDetectionService 及其它模块使用）
@@ -9298,6 +9304,34 @@ class ECGStylePitchVisualizer(QWidget):
         self._summary_interval = 2.0
         self._last_summary_time = time.time()
         self._vocal_protect_active = False
+        # 悬停提示（细节点浮动气泡）
+        self._hover_annot = None
+        self._hover_last_xy = None  # (x, y) in data coords
+        self._hover_last_t = 0.0
+        self._hover_throttle_sec = 0.05
+        self._hover_hit_radius_px = 26  # 命中半径（像素），适度增大提升命中体验（提升细点/线附近识别）
+        # 悬停高亮（光晕 + 外环）
+        self._hover_glow = None   # PathCollection (scatter)
+        self._hover_ring = None   # PathCollection (scatter)
+        self._hover_highlight_last_xy = None
+        # 自定义“蓝色羽毛”鼠标指针
+        self._cursor_feather_blue = None
+        self._cursor_is_feather = False
+        # 放大镜（局部放大视图）
+        self._magnifier_ax = None          # inset axes
+        self._magnifier_border = None      # 圆形边框 Patch
+        self._magn_line = None             # 局部放大线
+        self._magn_points = None           # 局部放大散点
+        self._magn_hi_ring = None          # 放大区悬停高亮环
+        self._magn_text = None             # 放大区内的说明文字
+        self._magn_size_px = 180           # 放大镜直径（像素）
+        self._magn_zoom = 2.6              # 放大倍率（相对主视图/像素）
+        # 放大镜窗口：X 轴固定约 2 秒宽（用户需求：显示约 1 秒邻域，面板长度约其 2 倍）；Y 轴按像素缩放
+        self._magn_target_window_sec = 2.0  # 镜内 X 轴宽度（秒）
+        self._magn_focus_window_sec = 1.0   # 镜内“焦点”参考宽度（秒），用于淡色高亮带
+        self._magn_focus_band = None        # 镜内 1 秒淡色带（补初始化）
+        self._magn_vline = None             # 镜内垂直投影线（补初始化）
+        self._magn_visible = False
         # 显示诊断容器
         self._diag_last_display_time = None
         self._diag_display_intervals = []
@@ -9433,8 +9467,20 @@ class ECGStylePitchVisualizer(QWidget):
             # 更新横向辅助线：采样当前时间附近的八度值
             try:
                 now_t = _t.time()
+                # 根据缩放和性能模式动态设定采样最小间隔
+                try:
+                    _z = float(getattr(self, 'zoom_level', 1.0))
+                    from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                    _pm = get_performance_manager(); _mode = _pm.get_current_mode() if _pm else None
+                except Exception:
+                    _z = 1.0; _mode = None
+                base_iv = 0.08
+                if _z >= 4.5:
+                    base_iv = 0.05 if _mode == getattr(PerformanceMode, 'HIGH_PERFORMANCE', None) else (0.07 if (_mode is None or _mode == getattr(PerformanceMode, 'BALANCED', None)) else 0.10)
+                elif _z >= 2.0:
+                    base_iv = 0.06 if _mode == getattr(PerformanceMode, 'HIGH_PERFORMANCE', None) else (0.08 if (_mode is None or _mode == getattr(PerformanceMode, 'BALANCED', None)) else 0.10)
                 last_upd = float(getattr(self, '_last_guide_pitch_upd_t', 0.0))
-                if (now_t - last_upd) >= float(getattr(self, '_guide_pitch_min_interval', 0.08)):
+                if (now_t - last_upd) >= float(getattr(self, '_guide_pitch_min_interval', base_iv)):
                     y = self._estimate_pitch_y_at_time(self.current_global_time)
                     if y is not None:
                         self.last_active_pitch_y = y
@@ -9466,14 +9512,11 @@ class ECGStylePitchVisualizer(QWidget):
 
     def notify_seek(self, target_time: float):
         """通知可视化器发生了用户 seek（特别是回退）。
-        效果：
-        - 设置一个短时窗口(默认≈0.35s)内强制走重帧，避免轻量帧提前返回；
-        - 立即触发一次性强制重绘标志；
-        - 记录回退方向用于后续策略微调（可选）。"""
+        - 记录回退方向用于后续策略微调（可选）。
+        """
         try:
             import time as _t
             now = _t.time()
-            # 先做一次轻量可视清理，避免旧的临时折线在跳转瞬间闪回
             try:
                 self._reset_on_listenback_start()
             except Exception:
@@ -11513,20 +11556,19 @@ class ECGStylePitchVisualizer(QWidget):
             self.canvas.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         except Exception:
             pass
-        
-            # 设置心电图式网格
-            self.setup_ecg_grid()
-        
-            # 初始化空的线条
-            self.pitch_line, = self.ax.plot([], [], color=self.line_color, 
-                                       linewidth=self.current_linewidth, alpha=1.0)
-            self.confidence_scatter = self.ax.scatter([], [], c=[], 
-                                                s=20, alpha=0.0, cmap='viridis')
-            try:
-                # 初始即隐藏，防止误显现导致彩色（紫色）点
-                self.confidence_scatter.set_visible(False)
-            except Exception:
-                pass
+        # 设置心电图式网格（注意：之前误缩进到 except 内，导致未执行）
+        self.setup_ecg_grid()
+
+        # 初始化空的线条/散点（保持与普通模式一致）
+        self.pitch_line, = self.ax.plot([], [], color=self.line_color,
+                                   linewidth=self.current_linewidth, alpha=1.0)
+        self.confidence_scatter = self.ax.scatter([], [], c=[],
+                                            s=20, alpha=0.0, cmap='viridis')
+        try:
+            # 初始即隐藏，防止误显现导致彩色（紫色）点
+            self.confidence_scatter.set_visible(False)
+        except Exception:
+            pass
         
         # 初始化PyQtGraph彩色渐变组件（如果可用）
         self.pyqtgraph_gradient_widget = None
@@ -11598,6 +11640,14 @@ class ECGStylePitchVisualizer(QWidget):
             self.update_guides()
         except Exception:
             pass
+        # 初始化细节点悬停提示（优雅浮窗 + 三角指示）
+        try:
+            # 通过统一的 ensure 方法创建/恢复
+            self._ensure_hover_annot()
+            # 监听鼠标离开，隐藏提示
+            self.canvas.mpl_connect('figure_leave_event', self._on_mouse_leave)
+        except Exception:
+            self._hover_annot = None
     
     def safe_clear_axis(self):
         """安全地清除轴内容，仅保留分段主线与白色细节点，避免恢复冲突元素。
@@ -11867,7 +11917,11 @@ class ECGStylePitchVisualizer(QWidget):
     # should_show_note_label 逻辑已被各 zoom 模式的严格规则替换
     
     def draw_interactive_note_labels(self, y_start, y_end):
-        """绘制交互式音调标签 (高倍缩放节流 + 轻量化)"""
+        """绘制交互式音调标签（更快更顺）
+        - 高倍缩放仍做视图节流，但当节流命中时，对现有文本执行“快速样式更新”，避免整批重建造成卡顿；
+        - 高亮采用基于距离的平滑权重（alpha/粗细），不做花哨的多色切换，仅适度加粗靠近中心的音；
+        - 当前音高中心使用已存在的平滑值（_smoothed_hy，若有），减少跳动。
+        """
         # 高倍缩放下按视图变化节流重建，避免卡顿
         try:
             profile = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
@@ -11875,35 +11929,86 @@ class ECGStylePitchVisualizer(QWidget):
             mode = profile.get('mode')
             zoom = float(getattr(self, 'zoom_level', 1.0))
             now = time.time()
-            # 依据缩放确定重建的最小间隔
+            # 依据缩放确定重建的最小间隔；有当前音高时更频繁一些
             if zoom >= 4.5:
-                min_interval = 0.12
+                min_interval = 0.08 if getattr(self, 'current_pitch_active', False) else 0.12
             elif zoom >= 2.0:
-                min_interval = 0.09
+                min_interval = 0.06 if getattr(self, 'current_pitch_active', False) else 0.09
             else:
                 min_interval = 0.0
             last = getattr(self, '_last_note_labels_meta', None)
             if last is not None:
                 last_y0, last_y1, last_mode, last_t = last
-                # 视窗轻微移动时允许跳过重建
+                # 视窗轻微移动时允许跳过重建；但先做一次“快速样式更新”以保持高亮流畅
                 if (abs(y_start - last_y0) < 0.12 and abs(y_end - last_y1) < 0.12 and mode == last_mode):
                     if (now - last_t) < min_interval:
+                        try:
+                            labels = getattr(self, '_note_label_texts', [])
+                            positions = getattr(self, '_note_label_pos', [])
+                            if labels and positions and len(labels) == len(positions):
+                                # 使用“平滑中心 + 最近半音”融合作为高亮中心，提高匹配度
+                                center_base = getattr(self, '_smoothed_hy', None)
+                                if center_base is None:
+                                    center_base = getattr(self, 'current_pitch_y', getattr(self, 'y_view_center', (y_start + y_end) * 0.5))
+                                # 最近半音对齐
+                                try:
+                                    q_center = round(center_base * 12.0) / 12.0
+                                except Exception:
+                                    q_center = center_base
+                                d_semi = abs(center_base - q_center) * 12.0
+                                conf = float(getattr(self, '_last_stable_conf', 0.6))
+                                if conf < 0.0: conf = 0.0
+                                if conf > 1.0: conf = 1.0
+                                # 置信度与偏差越小越靠近最近半音；C3-C4 区域稍微增加吸附
+                                mid_bias = 1.10 if 3.0 <= center_base <= 4.0 else 1.0
+                                snap_dist_w = max(0.0, 1.0 - (d_semi / 0.45))  # 约45 cents内产生吸附
+                                w_snap = max(0.0, min(1.0, conf * 1.05 * snap_dist_w * mid_bias))
+                                snap_strength = 0.65  # 最大吸附强度
+                                center = (1.0 - snap_strength * w_snap) * center_base + (snap_strength * w_snap) * q_center
+                                # 距离权重：r1 强区，r2 渐隐区（更紧凑，提高匹配感）
+                                r1, r2 = 0.22, 0.65
+                                for i, txt in enumerate(labels):
+                                    try:
+                                        y_pos = positions[i]
+                                        d = abs(y_pos - center)
+                                        if d <= r1:
+                                            w = 1.0
+                                        elif d >= r2:
+                                            w = 0.0
+                                        else:
+                                            t = (d - r1) / (r2 - r1)
+                                            w = 1.0 - t * t  # 二次缓出，更平顺
+                                        new_alpha = 0.30 + 0.70 * w
+                                        if new_alpha < 0.05: new_alpha = 0.05
+                                        if new_alpha > 1.00: new_alpha = 1.00
+                                        txt.set_alpha(new_alpha)
+                                        txt.set_fontweight('bold' if d <= 0.16 else 'normal')
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                         return
             self._last_note_labels_meta = (y_start, y_end, mode, now)
         except Exception:
             pass
 
-        # 清理旧元素
+        # 清理旧元素（确保缩进一致，避免语法分析错误）
         if hasattr(self, '_note_label_texts'):
             for t in self._note_label_texts:
-                try: t.remove()
-                except Exception: pass
+                try:
+                    t.remove()
+                except Exception:
+                    pass
         self._note_label_texts = []
+        self._note_label_pos = []
+
         if hasattr(self, '_active_note_highlight_lines'):
             for ln in self._active_note_highlight_lines:
                 try:
-                    if ln in self.ax.lines: ln.remove()
-                except Exception: pass
+                    if ln in self.ax.lines:
+                        ln.remove()
+                except Exception:
+                    pass
             self._active_note_highlight_lines.clear()
         else:
             self._active_note_highlight_lines = []
@@ -11915,7 +12020,24 @@ class ECGStylePitchVisualizer(QWidget):
         if not hasattr(self, '_axis_blended_transform'):
             self._axis_blended_transform = mtransforms.blended_transform_factory(self.ax.transAxes, self.ax.transData)
         label_x = self.label_x_frac
-        current_center = self.current_pitch_y if self.current_pitch_active else self.y_view_center
+        # 优先使用已平滑的当前音高中心，并对齐最近半音以提升匹配度
+        if self.current_pitch_active:
+            center_base = getattr(self, '_smoothed_hy', getattr(self, 'current_pitch_y', self.y_view_center))
+        else:
+            center_base = self.y_view_center
+        try:
+            q_center = round(center_base * 12.0) / 12.0
+        except Exception:
+            q_center = center_base
+        conf = float(getattr(self, '_last_stable_conf', 0.6))
+        if conf < 0.0: conf = 0.0
+        if conf > 1.0: conf = 1.0
+        d_semi = abs(center_base - q_center) * 12.0
+        mid_bias = 1.10 if 3.0 <= center_base <= 4.0 else 1.0
+        snap_dist_w = max(0.0, 1.0 - (d_semi / 0.45))
+        w_snap = max(0.0, min(1.0, conf * 1.05 * snap_dist_w * mid_bias))
+        snap_strength = 0.65
+        hl_center = (1.0 - snap_strength * w_snap) * center_base + (snap_strength * w_snap) * q_center
         # 显示缓冲
         display_start = max(0.0, y_start - 1.0)
         display_end = min(8.0, y_end + 1.0)
@@ -11932,8 +12054,32 @@ class ECGStylePitchVisualizer(QWidget):
             base_px_x = None
             inv_axes = None
         zoom = float(getattr(self, 'zoom_level', 1.0))
-        # 限制高倍缩放下的水平虚线数量
-        max_hlines = 0 if zoom >= 4.5 else (2 if zoom >= 2.0 else 4)
+        # 限制高倍缩放下的水平虚线数量（联动性能模式）
+        try:
+            from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+            _pm = get_performance_manager(); _mode = _pm.get_current_mode() if _pm else None
+            is_hp = (_mode == PerformanceMode.HIGH_PERFORMANCE)
+            is_bal = (_mode == PerformanceMode.BALANCED)
+        except Exception:
+            _mode = None
+            is_hp = False
+            is_bal = True  # 退化为均衡
+        if zoom >= 4.5:
+            if is_hp:
+                max_hlines = 1
+            elif is_bal:
+                max_hlines = 1
+            else:
+                max_hlines = 0
+        elif zoom >= 2.0:
+            if is_hp:
+                max_hlines = 3
+            elif is_bal:
+                max_hlines = 2
+            else:
+                max_hlines = 1
+        else:
+            max_hlines = 4
         added_hlines = 0
         # 遍历十二平均律位置
         for octave in range(int(display_start), int(display_end) + 1):
@@ -11962,38 +12108,45 @@ class ECGStylePitchVisualizer(QWidget):
                 if not (display_start <= y_pos <= display_end):
                     continue
                 note_full = f"{self.note_names[semitone]}{octave}"
-                distance = abs(y_pos - current_center)
+                distance = abs(y_pos - hl_center)
                 # 5.0x 下远离中心的弱级别半音直接省略
                 if mode == 'zoom_5_0' and semitone not in (0,2,4,5,7,9,11) and distance > 0.35:
                     continue
-                # 样式层级
+                # 样式层级（更克制）：基础样式随模式，强调通过“距离-透明度”实现
                 if mode == 'zoom_5_0':
                     if semitone == 0:
-                        font_size = 11; alpha = 1.0; color = '#FFFF88'; font_weight = 'bold'
+                        font_size = 11; alpha = 0.95; color = '#FFFF88'; font_weight = 'bold'
                     elif semitone in (2,4,5,7,9,11):
-                        font_size = 10; alpha = 0.80; color = self.text_color; font_weight = 'normal'
+                        font_size = 10; alpha = 0.75; color = self.text_color; font_weight = 'normal'
                     else:
-                        font_size = 9; alpha = 0.52; color = self.text_color; font_weight = 'normal'
+                        font_size = 9; alpha = 0.50; color = self.text_color; font_weight = 'normal'
                 elif mode == 'zoom_0_5':
-                    font_size = 12; alpha = 1.0; color = '#FFFF88'; font_weight = 'bold'
+                    font_size = 12; alpha = 0.95; color = '#FFFF88'; font_weight = 'bold'
                 elif mode == 'zoom_2_5' and not (3 <= octave <= 5):
                     if semitone == 0:
-                        font_size = 11; alpha = 0.9; color = '#FFFFAA'; font_weight = 'bold'
+                        font_size = 11; alpha = 0.88; color = '#FFFFAA'; font_weight = 'bold'
                     else:
-                        font_size = 9; alpha = 0.55; color = self.text_color; font_weight = 'normal'
+                        font_size = 9; alpha = 0.52; color = self.text_color; font_weight = 'normal'
                 elif semitone == 0:
-                    font_size = 11; alpha = 1.0; color = '#FFFF88'; font_weight = 'bold'
+                    font_size = 11; alpha = 0.95; color = '#FFFF88'; font_weight = 'bold'
                 elif semitone in (2,4,5,7,9,11):
-                    font_size = 10; alpha = 0.8; color = self.text_color; font_weight = 'normal'
+                    font_size = 10; alpha = 0.75; color = self.text_color; font_weight = 'normal'
                 else:
-                    font_size = 9; alpha = 0.5; color = self.text_color; font_weight = 'normal'
-                if self.current_pitch_active:
-                    if distance <= 0.2:
-                        font_size = max(font_size, 12); alpha = 1.0; color = '#FFD700'; font_weight = 'bold'
-                    elif distance <= 0.5:
-                        alpha = max(alpha, 0.9); color = '#FFC107'; font_weight = 'bold'
-                    elif distance <= 1.0:
-                        alpha = max(alpha, 0.8); color = '#FFEB3B'
+                    font_size = 9; alpha = 0.50; color = self.text_color; font_weight = 'normal'
+                # 平滑距离权重（不过度花哨，只调透明度与粗细）
+                if getattr(self, 'current_pitch_active', False):
+                    center = hl_center
+                    d = abs(y_pos - center)
+                    r1, r2 = 0.22, 0.65
+                    if d <= r1:
+                        w = 1.0
+                    elif d >= r2:
+                        w = 0.0
+                    else:
+                        t = (d - r1) / (r2 - r1)
+                        w = 1.0 - t * t
+                    alpha = max(alpha, 0.30 + 0.70 * w)
+                    font_weight = 'bold' if d <= 0.16 else font_weight
                 # 边缘淡出（固定模式主音 & 全局边界C0/C8 不淡出）
                 apply_fade = True
                 if (fixed_mode and semitone == 0) or (semitone == 0 and octave in (0,8)):
@@ -12018,8 +12171,9 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
                 self._note_label_texts.append(txt)
+                self._note_label_pos.append(y_pos)
                 if (max_hlines > 0 and added_hlines < max_hlines and
-                    self.current_pitch_active and distance <= 1.0 and self.zoom_level < 4.5):
+                    self.current_pitch_active and distance <= 1.0):
                     ln_alpha = alpha * 0.3
                     try:
                         ln = self.ax.axhline(y=y_pos, color=color, linestyle=':', linewidth=0.8, alpha=ln_alpha, zorder=5)
@@ -12399,7 +12553,12 @@ class ECGStylePitchVisualizer(QWidget):
     
     def on_mouse_move(self, event):
         """鼠标移动事件"""
-    # 回听：拖拽选区
+        # 更新光标（暂停/浏览态 -> 蓝色羽毛）
+        try:
+            self._update_hover_cursor(event)
+        except Exception:
+            pass
+        # 回听：拖拽选区
         if getattr(self, '_sel_dragging_side', None) is not None and event.inaxes == self.ax:
             try:
                 x = event.xdata
@@ -12454,7 +12613,12 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             return
-        if not self.dragging or event.inaxes != self.ax:
+        if (not self.dragging) or (event.inaxes != self.ax):
+            # 非拖拽时尝试悬停提示（提炼为助手函数，避免此处嵌套影响缩进解析）
+            try:
+                self._handle_non_drag_hover(event)
+            except Exception:
+                pass
             return
         
         if self.drag_start_pos is None:
@@ -12545,6 +12709,13 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 同步更新滚动条
         self.update_scrollbars()
+
+        # 非拖拽状态下，尝试悬停提示（此处通常为拖拽路径，不执行）
+        try:
+            if not self.dragging:
+                self._handle_hover_tooltip(event)
+        except Exception:
+            pass
 
     # ================= 回听：播放/暂停 与 播放头 =================
     def _toggle_listenback_play_pause(self):
@@ -12700,6 +12871,998 @@ class ECGStylePitchVisualizer(QWidget):
                     self._lb_playhead.set_ydata([0.0, 1.0])
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    # ================= 悬停提示实现 =================
+    def _hover_gating_allowed(self) -> bool:
+        try:
+            # 1) 直接使用本组件自身的暂停/录音状态（优先级最高，最直观符合用户期望）
+            try:
+                if bool(getattr(self, 'is_paused', False)):
+                    return True
+            except Exception:
+                pass
+            try:
+                # 非录音状态也允许浏览
+                if hasattr(self, 'is_recording') and not bool(getattr(self, 'is_recording', False)):
+                    return True
+            except Exception:
+                pass
+            try:
+                # 录音活跃状态关闭时（已停止）允许浏览
+                if hasattr(self, 'is_recording_active') and not bool(getattr(self, 'is_recording_active', False)):
+                    return True
+            except Exception:
+                pass
+
+            # 2) 音频处理器状态（如存在）
+            ap = getattr(self, 'audio_processor', None)
+            if ap is not None:
+                if getattr(ap, 'is_recording', False) and getattr(ap, 'is_paused', False):
+                    return True
+                if not getattr(ap, 'is_recording', False):
+                    return True
+            lb_state = getattr(self, '_lb_state', None)
+            lb_user_paused = getattr(self, '_lb_user_paused', False)
+            if lb_state == 'paused' or lb_user_paused:
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _collect_visible_point_collections(self):
+        cols = []
+        try:
+            hp = getattr(self, '_head_points_scatter', None)
+            if hp is not None and hp.get_visible():
+                cols.append(hp)
+        except Exception:
+            pass
+        try:
+            bf = getattr(self, '_browse_points_fallback', None)
+            if bf is not None and bf.get_visible():
+                cols.append(bf)
+        except Exception:
+            pass
+        try:
+            bp = getattr(self, '_batched_points', None)
+            if bp is not None and bp.get_visible():
+                cols.append(bp)
+        except Exception:
+            pass
+        try:
+            segs = getattr(self, '_segment_points', None)
+            if isinstance(segs, (list, tuple)):
+                for s in segs:
+                    try:
+                        if s is not None and s.get_visible():
+                            cols.append(s)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return cols
+
+    # ================= 自定义蓝色羽毛光标 =================
+    def _ensure_blue_feather_cursor(self):
+        """懒生成一枚蓝色羽毛样式的 QCursor，失败返回 None。"""
+        try:
+            if getattr(self, '_cursor_feather_blue', None) is not None:
+                return self._cursor_feather_blue
+            try:
+                from PyQt6.QtGui import QCursor, QPixmap, QPainter, QPen, QBrush, QColor, QPainterPath, QLinearGradient
+            except Exception:
+                from PyQt5.QtGui import QCursor, QPixmap, QPainter, QPen, QBrush, QColor, QPainterPath, QLinearGradient  # type: ignore
+            size = 36
+            pm = QPixmap(size, size)
+            pm.fill(QColor(0, 0, 0, 0))
+            p = None
+            try:
+                p = QPainter(pm)
+                try:
+                    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                except Exception:
+                    p.setRenderHint(QPainter.Antialiasing, True)
+                # 羽毛主体路径
+                path = QPainterPath()
+                path.moveTo(7, 8)
+                path.cubicTo(12, 3, 22, 3, 29, 12)
+                path.cubicTo(31, 16, 29, 24, 22, 29)
+                path.cubicTo(16, 33, 10, 28, 10, 22)
+                path.cubicTo(10, 18, 12, 14, 15, 12)
+                # 竖梗
+                stem = QPainterPath()
+                stem.moveTo(13, 31)
+                stem.lineTo(24, 9)
+                # 轻微投影
+                shadow = QPainterPath(path)
+                shadow.translate(1.5, 1.5)
+                p.setPen(QPen(QColor(0, 0, 0, 50), 1.0))
+                p.setBrush(QBrush(QColor(0, 0, 0, 40)))
+                p.drawPath(shadow)
+                # 渐变填充
+                blue = QColor(66, 170, 255)
+                blue2 = QColor(30, 120, 210)
+                dark = QColor(24, 96, 168)
+                grad = QLinearGradient(7, 8, 29, 30)
+                grad.setColorAt(0.0, blue)
+                grad.setColorAt(1.0, blue2)
+                p.setPen(QPen(dark, 1.2))
+                p.setBrush(QBrush(grad))
+                p.drawPath(path)
+                p.setPen(QPen(dark, 1.5))
+                p.drawPath(stem)
+            finally:
+                try:
+                    if p is not None:
+                        p.end()
+                except Exception:
+                    pass
+            try:
+                cur = QCursor(pm, 7, 8)
+            except Exception:
+                cur = QCursor(pm)
+            self._cursor_feather_blue = cur
+            return cur
+        except Exception:
+            return None
+
+    def _update_hover_cursor(self, event):
+        """根据门控与轴命中，切换画布光标为蓝色羽毛或默认箭头。"""
+        try:
+            canvas = getattr(self, 'canvas', None)
+            if canvas is None:
+                return
+            try:
+                from PyQt6.QtCore import Qt
+                from PyQt6.QtGui import QCursor
+                ARROW = QCursor(Qt.CursorShape.ArrowCursor)
+            except Exception:
+                from PyQt5.QtCore import Qt  # type: ignore
+                from PyQt5.QtGui import QCursor  # type: ignore
+                ARROW = QCursor(Qt.ArrowCursor)
+            # 主轴或放大镜轴上均维持羽毛光标（镜片上也保持一致的视觉风格）
+            magn_ax = getattr(self, '_magnifier_ax', None)
+            on_main = bool(event and event.inaxes == self.ax)
+            on_magn = bool(event and magn_ax is not None and event.inaxes == magn_ax)
+            allowed = bool(self._hover_gating_allowed()) and (on_main or on_magn)
+            if allowed:
+                cur = self._ensure_blue_feather_cursor()
+                if cur is not None and not getattr(self, '_cursor_is_feather', False):
+                    try:
+                        canvas.setCursor(cur)
+                        self._cursor_is_feather = True
+                    except Exception:
+                        pass
+            else:
+                if getattr(self, '_cursor_is_feather', False):
+                    try:
+                        canvas.setCursor(ARROW)
+                    except Exception:
+                        pass
+                    self._cursor_is_feather = False
+        except Exception:
+            pass
+
+    # ================= 悬停注解确保（ax.clear 后可自愈） =================
+    def _ensure_hover_annot(self):
+        try:
+            # 若已有注解但已从当前 ax 分离，或 ax 改变，统一重建
+            need_new = False
+            if getattr(self, '_hover_annot', None) is None:
+                need_new = True
+            else:
+                try:
+                    if getattr(self._hover_annot, 'axes', None) is not self.ax:
+                        need_new = True
+                except Exception:
+                    need_new = True
+            if not need_new:
+                return self._hover_annot
+            # 创建新的注解
+            from matplotlib.patches import FancyBboxPatch  # noqa: F401
+            box_fc = getattr(self, 'bg_color', '#111111')
+            edge_c = getattr(self, 'grid_color', '#666666')
+            txt_c = getattr(self, 'text_color', '#DDDDDD')
+            ann = self.ax.annotate(
+                "",
+                xy=(0, 0),
+                xytext=(10, 16),
+                textcoords='offset points',
+                ha='left', va='bottom',
+                fontsize=10,
+                color=txt_c,
+                bbox=dict(boxstyle='round,pad=0.35,rounding_size=3', fc=box_fc, ec=edge_c, alpha=0.90, lw=1.0),
+                arrowprops=dict(arrowstyle='-|>', connectionstyle='arc3,rad=0.15', color=edge_c, lw=1.0, shrinkA=0, shrinkB=8)
+            )
+            try:
+                ann.set_clip_on(False)
+            except Exception:
+                pass
+            ann.set_visible(False)
+            ann.set_zorder(9999)
+            self._hover_annot = ann
+            return ann
+        except Exception:
+            self._hover_annot = None
+            return None
+
+    def _handle_non_drag_hover(self, event):
+        """非拖拽态下的悬停处理：
+        - 主轴上：执行悬停命中与放大镜更新
+        - 离开主轴且不在放大镜轴上：隐藏悬停工件
+        """
+        try:
+            magn_ax = getattr(self, '_magnifier_ax', None)
+            in_main = (event.inaxes == self.ax)
+            in_magn = (magn_ax is not None and event.inaxes == magn_ax)
+            if in_main:
+                try:
+                    self._handle_hover_tooltip(event)
+                except Exception:
+                    pass
+                return
+            if (not in_magn) and hasattr(self, '_hover_annot') and (self._hover_annot is not None):
+                if self._hover_annot.get_visible():
+                    self._hover_annot.set_visible(False)
+                try:
+                    self._hide_hover_highlight()
+                except Exception:
+                    pass
+                try:
+                    self._hide_magnifier()
+                except Exception:
+                    pass
+                if hasattr(self, 'canvas'):
+                    self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    # ================= 悬停高亮（光晕 + 外环） =================
+    def _ensure_hover_highlight_artists(self):
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            # 光晕：较大点，半透明亮蓝
+            if self._hover_glow is None or getattr(self._hover_glow, 'axes', None) is not self.ax:
+                try:
+                    # 若对象存在但已脱离当前轴，先尝试移除再重建
+                    if self._hover_glow is not None:
+                        try:
+                            self._hover_glow.remove()
+                        except Exception:
+                            pass
+                    glow_color = (0.20, 0.60, 1.00, 0.28)  # 柔和蓝色光晕
+                    self._hover_glow = self.ax.scatter([], [], s=190, color=glow_color,
+                                                       linewidths=0, edgecolors='none', zorder=9980)
+                    self._hover_glow.set_visible(False)
+                except Exception:
+                    self._hover_glow = None
+            # 外环：细描边环形，透明填充
+            if self._hover_ring is None or getattr(self._hover_ring, 'axes', None) is not self.ax:
+                try:
+                    if self._hover_ring is not None:
+                        try:
+                            self._hover_ring.remove()
+                        except Exception:
+                            pass
+                    ring_edge = (0.75, 0.85, 1.00, 0.95)  # 淡亮边
+                    self._hover_ring = self.ax.scatter([], [], s=46, facecolors=(0,0,0,0),
+                                                       linewidths=1.4, edgecolors=[ring_edge], zorder=9985)
+                    self._hover_ring.set_visible(False)
+                except Exception:
+                    self._hover_ring = None
+        except Exception:
+            pass
+
+    def _update_hover_highlight(self, x: float, y: float):
+        try:
+            self._ensure_hover_highlight_artists()
+            changed = False
+            if self._hover_glow is not None:
+                try:
+                    self._hover_glow.set_offsets([(x, y)])
+                    self._hover_glow.set_visible(True)
+                    changed = True
+                except Exception:
+                    pass
+            if self._hover_ring is not None:
+                try:
+                    self._hover_ring.set_offsets([(x, y)])
+                    self._hover_ring.set_visible(True)
+                    changed = True
+                except Exception:
+                    pass
+            if changed:
+                self._hover_highlight_last_xy = (x, y)
+        except Exception:
+            pass
+
+    def _hide_hover_highlight(self):
+        try:
+            changed = False
+            if self._hover_glow is not None and self._hover_glow.get_visible():
+                try:
+                    self._hover_glow.set_visible(False)
+                    changed = True
+                except Exception:
+                    pass
+            if self._hover_ring is not None and self._hover_ring.get_visible():
+                try:
+                    self._hover_ring.set_visible(False)
+                    changed = True
+                except Exception:
+                    pass
+            if changed and hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    # ================= 放大镜（局部放大） =================
+    def _ensure_magnifier(self):
+        try:
+            if getattr(self, '_magnifier_ax', None) is not None:
+                try:
+                    # 仅当仍属于当前 figure 时复用
+                    if getattr(self._magnifier_ax, 'figure', None) is self.figure:
+                        return
+                except Exception:
+                    pass
+            if not hasattr(self, 'figure') or self.figure is None:
+                return
+            fig = self.figure
+            # 初始放在右上角，等首次更新再定位
+            w_frac = max(0.08, min(0.5, float(self._magn_size_px) / float(fig.bbox.width)))
+            h_frac = max(0.08, min(0.5, float(self._magn_size_px) / float(fig.bbox.height)))
+            left = 0.8
+            bottom = 0.1
+            import matplotlib.pyplot as _plt  # 确保后端可用
+            ax = fig.add_axes([left, bottom, w_frac, h_frac], zorder=9970)
+            ax.set_facecolor(getattr(self, 'bg_color', '#0c0c0c'))
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            # 局部线与散点
+            try:
+                ln_color = getattr(getattr(self, 'pitch_line', None), 'get_color', lambda: '#88ccff')()
+                self._magn_line, = ax.plot([], [], color=ln_color or '#88ccff', linewidth=1.6, zorder=9972)
+            except Exception:
+                self._magn_line, = ax.plot([], [], color='#88ccff', linewidth=1.6, zorder=9972)
+            try:
+                self._magn_points = ax.scatter([], [], s=16, c='#FFFFFF', edgecolors='#88ccff', linewidths=0.4, zorder=9973)
+            except Exception:
+                self._magn_points = None
+            # 圆形边框（视觉化“镜片”）
+            try:
+                from matplotlib.patches import Circle
+                # 使用轴坐标创建单位圆，随位置更新时重置变换
+                circ = Circle((0.5, 0.5), 0.5, transform=ax.transAxes, fill=False,
+                              edgecolor=(0.45, 0.75, 1.0, 0.75), linewidth=1.1, zorder=9976)
+                ax.add_patch(circ)
+                self._magnifier_border = circ
+            except Exception:
+                self._magnifier_border = None
+            # 焦点淡色高亮带（表示约 1 秒邻域），用轴坐标下的矩形填充
+            try:
+                from matplotlib.patches import Rectangle
+                focus = Rectangle((0.25, 0.0), 0.50, 1.0, transform=ax.transAxes,
+                                  facecolor=(0.5, 0.75, 1.0, 0.10), edgecolor='none', zorder=9971)
+                ax.add_patch(focus)
+                self._magn_focus_band = focus
+            except Exception:
+                self._magn_focus_band = None
+            # 垂直投影线（对齐鼠标在镜内的 x）
+            try:
+                self._magn_vline = ax.axvline(0.5, color=(0.85, 0.92, 1.0, 0.6), linewidth=0.9, zorder=9975)
+            except Exception:
+                self._magn_vline = None
+            # 放大区内悬停高亮环
+            try:
+                ring_edge = (0.85, 0.92, 1.00, 0.98)
+                self._magn_hi_ring = ax.scatter([], [], s=60, facecolors=(0,0,0,0),
+                                               linewidths=1.5, edgecolors=[ring_edge], zorder=9978)
+            except Exception:
+                self._magn_hi_ring = None
+            # 放大区内文本
+            try:
+                txt_c = getattr(self, 'text_color', '#DDDDDD')
+                self._magn_text = ax.text(0.03, 0.97, '', transform=ax.transAxes, va='top', ha='left',
+                                          fontsize=9, color=txt_c, zorder=9977,
+                                          bbox=dict(boxstyle='round,pad=0.25,rounding_size=2',
+                                                    fc=getattr(self, 'bg_color', '#0c0c0c'), ec='none', alpha=0.72))
+            except Exception:
+                self._magn_text = None
+            self._magnifier_ax = ax
+            self._magn_visible = True
+        except Exception:
+            pass
+
+    def _update_magnifier(self, event, x: float, y: float, text: str = ''):
+        try:
+            self._ensure_magnifier()
+            ax_main = self.ax
+            ax = self._magnifier_ax
+            if ax is None or ax_main is None or event is None:
+                return
+            fig = self.figure
+            # 计算像素尺寸占比
+            w_frac = max(0.06, min(0.6, float(self._magn_size_px) / float(fig.bbox.width)))
+            h_frac = max(0.06, min(0.6, float(self._magn_size_px) / float(fig.bbox.height)))
+            # 在鼠标附近摆放（向右上偏移），并避免越界
+            px = float(event.x)
+            py = float(event.y)
+            fig_w = float(fig.bbox.width)
+            fig_h = float(fig.bbox.height)
+            # 默认在鼠标右上方放置；若越界则自动镜像至其他象限，避免遮挡鼠标附近的线条
+            left = (px + 18) / fig_w
+            bottom = (py + 18) / fig_h
+            # 若右侧放不下，则放到鼠标左侧
+            if left + w_frac > 0.985:
+                left = (px - 18 - w_frac * fig_w) / fig_w
+            # 若上方放不下，则放到鼠标下方
+            if bottom + h_frac > 0.985:
+                bottom = (py - 18 - h_frac * fig_h) / fig_h
+            if left + w_frac > 0.985:
+                left = max(0.005, 0.985 - w_frac)
+            if bottom + h_frac > 0.985:
+                bottom = max(0.005, 0.985 - h_frac)
+            ax.set_position([left, bottom, w_frac, h_frac])
+            # 依据像素→数据比例与放大倍率，或固定时间窗，确定局部窗口
+            try:
+                x0, x1 = ax_main.get_xlim()
+                y0, y1 = ax_main.get_ylim()
+            except Exception:
+                return
+            main_w_px = float(ax_main.bbox.width)
+            main_h_px = float(ax_main.bbox.height)
+            if main_w_px <= 0 or main_h_px <= 0:
+                return
+            dx_per_px = (x1 - x0) / main_w_px
+            dy_per_px = (y1 - y0) / main_h_px
+            # 基于“固定约 2s”优先；若无法判断时间单位，则退化为基于像素/倍率的计算
+            try:
+                # 取数据单位即为秒；镜宽 = target_window_sec
+                target_sec = float(getattr(self, '_magn_target_window_sec', 2.0))
+                half_w_data = 0.5 * target_sec
+            except Exception:
+                half_w_data = 0.5 * self._magn_size_px * dx_per_px / max(1e-6, float(self._magn_zoom))
+            half_h_data = 0.5 * self._magn_size_px * dy_per_px / max(1e-6, float(self._magn_zoom))
+            xL, xR = (x - half_w_data, x + half_w_data)
+            yB, yT = (y - half_h_data, y + half_h_data)
+            ax.set_xlim(xL, xR)
+            ax.set_ylim(yB, yT)
+            # 镜片背景与主轴一致，营造“真放大”视觉
+            try:
+                ax.set_facecolor(getattr(self, 'bg_color', '#0c0c0c'))
+            except Exception:
+                pass
+            # 焦点带宽度与位置（默认在镜内居中，覆盖约 1 秒）
+            try:
+                if getattr(self, '_magn_focus_band', None) is not None:
+                    # 根据 target_sec 与 focus_sec，计算 X 轴上相对宽度
+                    focus_sec = float(getattr(self, '_magn_focus_window_sec', 1.0))
+                    target_sec = float(getattr(self, '_magn_target_window_sec', 2.0))
+                    frac = max(0.05, min(0.95, focus_sec / max(1e-6, target_sec)))
+                    # 以 0.5 为中心
+                    left_ax = 0.5 - 0.5 * frac
+                    self._magn_focus_band.set_x(left_ax)
+                    self._magn_focus_band.set_width(frac)
+            except Exception:
+                pass
+            # 垂直投影线移动到镜内 x=0.5（随镜窗口中心）
+            try:
+                if getattr(self, '_magn_vline', None) is not None:
+                    self._magn_vline.set_xdata([x, x])
+            except Exception:
+                pass
+            # 更新局部主线：优先复用主线；若主线不可用，尝试由分段/点重建
+            try:
+                import numpy as _np
+                xs_sel = None
+                ys_sel = None
+                ln = getattr(self, 'pitch_line', None)
+                if ln is not None and (getattr(ln, 'get_visible', lambda: True)()):
+                    xs = _np.asarray(ln.get_xdata() or [], dtype=float)
+                    ys = _np.asarray(ln.get_ydata() or [], dtype=float)
+                    if xs.size and ys.size and xs.size == ys.size:
+                        m = (xs >= xL) & (xs <= xR)
+                        if _np.any(m):
+                            xs_sel = xs[m]
+                            ys_sel = ys[m]
+                if (xs_sel is None or ys_sel is None) and getattr(self, '_segments', None):
+                    # 从分段聚合
+                    xs_acc, ys_acc = [], []
+                    try:
+                        for (ts, ys) in self._segments:
+                            if not ts:
+                                continue
+                            for tt, yy in zip(ts, ys):
+                                if tt >= xL and tt <= xR:
+                                    xs_acc.append(tt)
+                                    ys_acc.append(yy)
+                    except Exception:
+                        pass
+                    if xs_acc:
+                        xs_sel = _np.asarray(xs_acc, dtype=float)
+                        ys_sel = _np.asarray(ys_acc, dtype=float)
+                        # 按时间排序
+                        order = _np.argsort(xs_sel)
+                        xs_sel = xs_sel[order]
+                        ys_sel = ys_sel[order]
+                if (xs_sel is None or ys_sel is None) and getattr(self, '_segment_points', None):
+                    # 再退回到可见散点合集
+                    pts_all = []
+                    try:
+                        for c in (self._segment_points or []):
+                            off = getattr(c, 'get_offsets', lambda: None)()
+                            if off is None:
+                                continue
+                            arr = _np.asarray(off)
+                            if arr.size == 0:
+                                continue
+                            m = (arr[:, 0] >= xL) & (arr[:, 0] <= xR)
+                            if _np.any(m):
+                                pts_all.append(arr[m])
+                    except Exception:
+                        pass
+                    if pts_all:
+                        arr_cat = _np.vstack(pts_all)
+                        order = _np.argsort(arr_cat[:, 0])
+                        arr_cat = arr_cat[order]
+                        xs_sel = arr_cat[:, 0]
+                        ys_sel = arr_cat[:, 1]
+                # 赋给镜片主线
+                if xs_sel is not None and ys_sel is not None and xs_sel.size:
+                    self._magn_line.set_data(xs_sel, ys_sel)
+                    self._magn_line.set_visible(True)
+                else:
+                    self._magn_line.set_data([], [])
+            except Exception:
+                pass
+            # 更新局部散点：聚合可见集合并筛选窗口内（仅按 X 过滤，避免 Y 微差导致漏点）
+            try:
+                cols = self._collect_visible_point_collections()
+                import numpy as _np
+                pts_all = []
+                for c in cols:
+                    try:
+                        off = c.get_offsets()
+                        if off is None:
+                            continue
+                        arr = _np.asarray(off)
+                        if arr.size == 0:
+                            continue
+                        mask = (arr[:, 0] >= xL) & (arr[:, 0] <= xR)
+                        if _np.any(mask):
+                            pts_all.append(arr[mask])
+                    except Exception:
+                        continue
+                if pts_all:
+                    arr_cat = _np.vstack(pts_all)
+                    # 防止过密点造成卡顿，简单下采样
+                    if arr_cat.shape[0] > 1200:
+                        arr_cat = arr_cat[::max(1, arr_cat.shape[0] // 1200)]
+                    if self._magn_points is not None:
+                        self._magn_points.set_offsets(arr_cat)
+                        try:
+                            self._magn_points.set_sizes([18])
+                        except Exception:
+                            pass
+                else:
+                    if self._magn_points is not None:
+                        import numpy as _np
+                        self._magn_points.set_offsets(_np.empty((0, 2)))
+            except Exception:
+                pass
+            # 文本（仅在镜片顶部显示；主图注解已隐藏）
+            try:
+                if self._magn_text is not None:
+                    self._magn_text.set_text(text or '')
+            except Exception:
+                pass
+            # 高亮环置于目标点
+            try:
+                if self._magn_hi_ring is not None:
+                    self._magn_hi_ring.set_offsets([(x, y)])
+            except Exception:
+                pass
+            # 显示
+            self._magn_visible = True
+            try:
+                ax.set_visible(True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _hide_magnifier(self):
+        try:
+            ax = getattr(self, '_magnifier_ax', None)
+            if ax is None:
+                return
+            try:
+                ax.set_visible(False)
+            except Exception:
+                pass
+            self._magn_visible = False
+        except Exception:
+            pass
+
+    def _find_nearest_point(self, event, max_pixel_dist=12):
+        try:
+            if not event or not hasattr(self, 'ax') or self.ax is None:
+                return None
+            if not event.inaxes or event.inaxes != self.ax:
+                return None
+            cols = self._collect_visible_point_collections()
+            if not cols:
+                return None
+            ex, ey = event.x, event.y
+            best = None
+            best_d = float('inf')
+            import numpy as _np
+            for col in cols:
+                try:
+                    offsets = col.get_offsets()
+                    if offsets is None:
+                        continue
+                    arr = _np.asarray(offsets)
+                    if arr.size == 0:
+                        continue
+                    pts = self.ax.transData.transform(arr)
+                    dx = pts[:, 0] - ex
+                    dy = pts[:, 1] - ey
+                    dist2 = dx * dx + dy * dy
+                    i = int(_np.argmin(dist2))
+                    d = float(dist2[i] ** 0.5)
+                    if d < best_d:
+                        best_d = d
+                        best = (col, i, float(arr[i, 0]), float(arr[i, 1]))
+                except Exception:
+                    continue
+            if best is None or best_d > float(max_pixel_dist):
+                return None
+            return best
+        except Exception:
+            return None
+
+    def _fallback_nearest_from_segments(self, event, max_pixel_dist=20):
+        try:
+            if not hasattr(self, '_segments') or not self._segments or not event or event.inaxes != self.ax:
+                return None
+            import numpy as _np
+            try:
+                x0, x1 = self.ax.get_xlim()
+            except Exception:
+                x0, x1 = None, None
+            pts_list = []
+            for (ts, ys) in self._segments:
+                if not ts:
+                    continue
+                if x0 is not None and x1 is not None:
+                    # 仅取视口内，降低运算开销
+                    for t, y in zip(ts, ys):
+                        if t >= x0 and t <= x1:
+                            pts_list.append((t, y))
+                else:
+                    for t, y in zip(ts, ys):
+                        pts_list.append((t, y))
+            if not pts_list:
+                return None
+            arr = _np.asarray(pts_list, dtype=float)
+            pix = self.ax.transData.transform(arr)
+            dx = pix[:, 0] - event.x
+            dy = pix[:, 1] - event.y
+            dist2 = dx*dx + dy*dy
+            i = int(_np.argmin(dist2))
+            d = float(dist2[i] ** 0.5)
+            if d > float(max_pixel_dist):
+                return None
+            return (None, i, float(arr[i,0]), float(arr[i,1]))
+        except Exception:
+            return None
+
+    def _fallback_nearest_from_line(self, event, max_pixel_dist=18):
+        """当没有可见散点/分段点时，从主线 Line2D 上选最近点。
+        仅用于普通模式下已画线但未显式绘制细点的情况。
+    返回 (col_or_None, idx, x, y)
+        """
+        try:
+            if not event or event.inaxes != self.ax:
+                return None
+            ln = getattr(self, 'pitch_line', None)
+            if ln is None:
+                return None
+            try:
+                if hasattr(ln, 'get_visible') and not ln.get_visible():
+                    return None
+            except Exception:
+                pass
+            import numpy as _np
+            xs = _np.asarray(ln.get_xdata() or [], dtype=float)
+            ys = _np.asarray(ln.get_ydata() or [], dtype=float)
+            if xs.size == 0 or ys.size == 0 or xs.size != ys.size:
+                return None
+            # 仅取视口内，降低计算量
+            try:
+                x0, x1 = self.ax.get_xlim()
+                mask = (xs >= x0) & (xs <= x1)
+                if not _np.any(mask):
+                    # 无窗口内数据则放弃
+                    return None
+                xs_v = xs[mask]
+                ys_v = ys[mask]
+            except Exception:
+                xs_v, ys_v = xs, ys
+            # 在像素空间对折线段进行最近投影，得到更精确的最近点
+            pts = _np.column_stack([xs_v, ys_v])
+            pix = self.ax.transData.transform(pts)
+            if pix.shape[0] == 0:
+                return None
+            if pix.shape[0] == 1:
+                dx = pix[0, 0] - event.x
+                dy = pix[0, 1] - event.y
+                d = float((dx*dx + dy*dy) ** 0.5)
+                if d > float(max_pixel_dist):
+                    return None
+                return (None, 0, float(xs_v[0]), float(ys_v[0]))
+            p0 = pix[:-1, :]
+            p1 = pix[1:, :]
+            seg = p1 - p0  # (n-1,2)
+            v = _np.column_stack([_np.full(p0.shape[0], event.x), _np.full(p0.shape[0], event.y)]) - p0
+            seg_len2 = _np.sum(seg * seg, axis=1)
+            # 避免除零
+            seg_len2 = _np.where(seg_len2 <= 1e-9, 1e-9, seg_len2)
+            t = _np.sum(v * seg, axis=1) / seg_len2
+            t = _np.clip(t, 0.0, 1.0)
+            cp = p0 + (seg * t[:, None])  # 最近点（像素）
+            dxy = cp - _np.array([event.x, event.y])[None, :]
+            dist2 = _np.sum(dxy * dxy, axis=1)
+            j = int(_np.argmin(dist2))  # 段索引 j -> 点在 j..j+1 上
+            dmin = float(dist2[j] ** 0.5)
+            if dmin > float(max_pixel_dist):
+                return None
+            # 回到数据坐标：在 xs_v[j]..xs_v[j+1] 之间按 t[j] 插值
+            tj = float(t[j])
+            x_hit = float(xs_v[j] + tj * (xs_v[j+1] - xs_v[j]))
+            y_hit = float(ys_v[j] + tj * (ys_v[j+1] - ys_v[j]))
+            # 返回 j（段起点索引）作为 idx 以便相邻参考
+            return (None, j, x_hit, y_hit)
+        except Exception:
+            return None
+
+    def _format_pitch_text(self, y_value: float, x_value: float = None) -> str:
+        """根据悬停点的 y(连续八度) 反推频率并格式化文本。
+        文本格式：<音名><八度> · <频率Hz> · <偏差cents>（可选时间戳）
+        """
+        try:
+            import math as _m
+            # y = octave_exact = midi/12 - 1 => midi = (y+1)*12
+            midi = float(y_value) * 12.0 + 12.0
+            # midi -> 频率
+            hz = 440.0 * (2.0 ** ((midi - 69.0) / 12.0))
+            # 计算音名/八度与分音偏差
+            note_info = None
+            try:
+                if callable(getattr(self, 'frequency_to_note_info', None)):
+                    note_info = self.frequency_to_note_info(hz)
+            except Exception:
+                note_info = None
+            if note_info and isinstance(note_info, dict) and note_info.get('note_name') is not None:
+                # 使用 ASCII 升降号，避免在部分中文字体下出现方块字符
+                name = self._normalize_note_ascii(f"{note_info.get('note_name','')}")
+                octv = note_info.get('octave', '')
+                cents = note_info.get('cents', 0.0)
+                parts = [f"{name}{octv}", f"{hz:.2f} Hz", f"{cents:+.1f} cents"]
+            else:
+                # 退化：仅显示Hz
+                parts = [f"{hz:.2f} Hz"]
+            # 可选附加时间
+            try:
+                if x_value is not None:
+                    parts.append(f"t={float(x_value):.2f}s")
+            except Exception:
+                pass
+            return "  ·  ".join(parts)
+        except Exception:
+            # 再退化：仅根据 y 值显示
+            try:
+                return f"y={float(y_value):.3f}"
+            except Exception:
+                return ""
+
+    def _format_magnifier_text(self, y_value: float, x_value: float = None) -> str:
+        """放大镜内的文本：优先显示 音符(如 B3) · 频率Hz · t=xxs，不显示 cents。"""
+        try:
+            # 由 y 估算频率
+            midi = float(y_value) * 12.0 + 12.0
+            hz = 440.0 * (2.0 ** ((midi - 69.0) / 12.0))
+            name_oct = None
+            try:
+                if callable(getattr(self, 'frequency_to_note_info', None)):
+                    ni = self.frequency_to_note_info(hz)
+                    if ni and isinstance(ni, dict) and ni.get('note_name') is not None:
+                        # 使用 ASCII 升降号，避免在部分中文字体下出现方块字符
+                        nm = self._normalize_note_ascii(f"{ni.get('note_name','')}")
+                        oc = ni.get('octave', '')
+                        name_oct = f"{nm}{oc}"
+            except Exception:
+                name_oct = None
+            # 兜底：自行从 MIDI 计算音符与八度
+            if not name_oct:
+                try:
+                    import math as _m
+                    midi_rounded = int(round(midi))
+                    pc = midi_rounded % 12
+                    octave = (midi_rounded // 12) - 1
+                    names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+                    # 使用 ASCII 升号，避免 Unicode ♯ 在部分字体下显示方块
+                    nm2 = names[pc]
+                    name_oct = f"{nm2}{octave}"
+                except Exception:
+                    name_oct = None
+            parts = []
+            if name_oct:
+                parts.append(name_oct)
+            parts.append(f"{hz:.2f} Hz")
+            if x_value is not None:
+                parts.append(f"t={float(x_value):.2f}s")
+            return "  ·  ".join(parts)
+        except Exception:
+            try:
+                return f"t={float(x_value):.2f}s" if x_value is not None else ""
+            except Exception:
+                return ""
+
+    def _normalize_note_ascii(self, s: str) -> str:
+        """将可能出现的 Unicode 升降号替换为 ASCII，避免字体方块。"""
+        try:
+            return s.replace('♯', '#').replace('♭', 'b')
+        except Exception:
+            return s
+
+    def _handle_hover_tooltip(self, event):
+        try:
+            # 清轴或切换后确保注解/高亮图元存在
+            try:
+                self._ensure_hover_annot()
+                self._ensure_hover_highlight_artists()
+            except Exception:
+                pass
+            if self._hover_annot is None:
+                return
+            # 门控
+            if not self._hover_gating_allowed():
+                if self._hover_annot.get_visible():
+                    self._hover_annot.set_visible(False)
+                try:
+                    self._hide_hover_highlight()
+                except Exception:
+                    pass
+                try:
+                    self._hide_magnifier()
+                except Exception:
+                    pass
+                return
+            # 正在拖拽则不显示
+            if getattr(self, 'dragging', False) or getattr(self, '_sel_dragging_side', None) is not None or getattr(self, '_dragging_playhead', False):
+                if self._hover_annot.get_visible():
+                    self._hover_annot.set_visible(False)
+                try:
+                    self._hide_hover_highlight()
+                except Exception:
+                    pass
+                try:
+                    self._hide_magnifier()
+                except Exception:
+                    pass
+                return
+            # 节流
+            now = time.time()
+            if now - float(getattr(self, '_hover_last_t', 0.0)) < float(getattr(self, '_hover_throttle_sec', 0.05)):
+                return
+            self._hover_last_t = now
+            # 先从已存在的 PathCollection 命中；若失败再从 _segments 回退查找
+            hit_radius = float(getattr(self, '_hover_hit_radius_px', 18))
+            hit = self._find_nearest_point(event, max_pixel_dist=hit_radius)
+            if not hit:
+                # 普通模式下常见：只有主线无散点
+                hit = self._fallback_nearest_from_line(event, max_pixel_dist=hit_radius)
+            if not hit:
+                # 再退回到分段缓存
+                hit = self._fallback_nearest_from_segments(event, max_pixel_dist=hit_radius)
+            if not hit:
+                if self._hover_annot.get_visible():
+                    self._hover_annot.set_visible(False)
+                try:
+                    self._hide_hover_highlight()
+                except Exception:
+                    pass
+                try:
+                    self._hide_magnifier()
+                except Exception:
+                    pass
+                return
+            col, idx, x, y = hit
+            text = self._format_pitch_text(y, x)
+            if not text:
+                if self._hover_annot.get_visible():
+                    self._hover_annot.set_visible(False)
+                try:
+                    self._hide_hover_highlight()
+                except Exception:
+                    pass
+                try:
+                    self._hide_magnifier()
+                except Exception:
+                    pass
+                return
+            # 更新主注解文本，但由于放大镜显示需求，主图注解将保持隐藏（只在镜片内显示）
+            self._hover_annot.xy = (x, y)
+            self._hover_annot.set_text(text)
+            # 自适应偏移，避免遮挡
+            try:
+                bbox = self.ax.get_window_extent()
+                right_bias = (event.x > (bbox.x0 + bbox.width * 0.66))
+                up_bias = (event.y > (bbox.y0 + bbox.height * 0.66))
+                dx = -12 if right_bias else 10
+                dy = -16 if up_bias else 16
+                self._hover_annot.set_position((dx, dy))
+            except Exception:
+                pass
+            self._hover_annot.set_zorder(9999)
+            # 只在镜片内显示文本：主图注解隐藏
+            if self._hover_annot.get_visible():
+                self._hover_annot.set_visible(False)
+            # 高亮悬停点
+            try:
+                self._update_hover_highlight(x, y)
+            except Exception:
+                pass
+            # 放大镜：靠近细节点时显示局部放大，并在放大区内显示同样的信息
+            try:
+                # 放大镜内文本：音符 · 频率 · t
+                mag_text = self._format_magnifier_text(y, x)
+                self._update_magnifier(event, x, y, mag_text)
+            except Exception:
+                pass
+            # 轻量刷新
+            self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _on_mouse_leave(self, event):
+        try:
+            if self._hover_annot is not None and self._hover_annot.get_visible():
+                self._hover_annot.set_visible(False)
+                self.canvas.draw_idle()
+            try:
+                self._hide_hover_highlight()
+            except Exception:
+                pass
+            try:
+                self._hide_magnifier()
+            except Exception:
+                pass
+            # 恢复默认箭头光标
+            try:
+                canvas = getattr(self, 'canvas', None)
+                if canvas is not None:
+                    try:
+                        from PyQt6.QtCore import Qt
+                        from PyQt6.QtGui import QCursor
+                        canvas.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+                    except Exception:
+                        from PyQt5.QtCore import Qt  # type: ignore
+                        from PyQt5.QtGui import QCursor  # type: ignore
+                        canvas.setCursor(QCursor(Qt.ArrowCursor))
+                self._cursor_is_feather = False
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -13116,53 +14279,62 @@ class ECGStylePitchVisualizer(QWidget):
     
     def update_scrollbars(self):
         """更新滚动条位置以同步当前视图状态"""
+        # 垂直滚动条
         if hasattr(self, 'v_scrollbar'):
-            prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
-            half_range = self.compute_half_range()
-            disable_v = bool(prof.get('disable_v_scroll'))
-            # 预先计算允许范围，避免分支中引用未定义变量
-            min_center = half_range
-            max_center = 8.0 - half_range
-            if disable_v:
-                # 0.5x 固定 C3-C5；0.8x 固定全区中心
-                fc = prof.get('force_center', 4.0)
-                self.y_view_center = fc
-                self.v_scrollbar.setEnabled(False)
-                self.v_scrollbar.blockSignals(True)
-                self.v_scrollbar.setValue(50)
-                self.v_scrollbar.blockSignals(False)
-            else:
-                # 允许垂直滚动：启用滚动条并在越界时夹紧中心
-                self.v_scrollbar.setEnabled(True)
-                changed = False
-                if self.y_view_center < min_center:
-                    self.y_view_center = min_center; changed = True
-                elif self.y_view_center > max_center:
-                    self.y_view_center = max_center; changed = True
-                # 同步滚动条值（顶部对应高音 → 反转）
-                if max_center > min_center:
-                    ratio = (self.y_view_center - min_center) / (max_center - min_center)
+            try:
+                prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+                half_range = self.compute_half_range()
+                disable_v = bool(prof.get('disable_v_scroll'))
+                # 合法中心范围：保持上下边界在 [1.0, 7.0] 内
+                min_center = 1.0 + float(half_range)
+                max_center = 7.0 - float(half_range)
+                if max_center < min_center:
+                    min_center = max_center = 4.0
+                if disable_v:
+                    # 固定中心，禁用滚动条
+                    fc = float(prof.get('force_center', 4.0))
+                    self.y_view_center = fc
+                    self.v_scrollbar.setEnabled(False)
+                    self.v_scrollbar.blockSignals(True)
+                    self.v_scrollbar.setValue(50)
+                    self.v_scrollbar.blockSignals(False)
                 else:
-                    ratio = 0.5
-                scroll_value = int((1.0 - ratio) * 100)
+                    # 允许垂直滚动：启用滚动条并在越界时夹紧中心
+                    self.v_scrollbar.setEnabled(True)
+                    changed = False
+                    if self.y_view_center < min_center:
+                        self.y_view_center = min_center; changed = True
+                    elif self.y_view_center > max_center:
+                        self.y_view_center = max_center; changed = True
+                    # 同步滚动条值（顶部对应高音 → 反转）
+                    if max_center > min_center:
+                        ratio = (self.y_view_center - min_center) / (max_center - min_center)
+                    else:
+                        ratio = 0.5
+                    scroll_value = int((1.0 - ratio) * 100)
+                    try:
+                        sig = (prof.get('mode'), round(self.y_view_center, 2), half_range, scroll_value, changed)
+                        now_ts = time.time()
+                        if sig != getattr(self, '_last_scroll_signature', None) or (now_ts - getattr(self, '_last_scroll_log_time', 0.0)) > 1.5:
+                            self._log_rate_limit('scroll_sync', f"[SCROLLBAR SYNC] mode={prof.get('mode')} center={self.y_view_center:.2f} half={half_range} val={scroll_value} changed={changed}", interval=0.5, burst=2)
+                            self._last_scroll_signature = sig
+                            self._last_scroll_log_time = now_ts
+                    except Exception:
+                        pass
+                    self.v_scrollbar.blockSignals(True)
+                    self.v_scrollbar.setValue(scroll_value)
+                    self.v_scrollbar.blockSignals(False)
+                # 引导线可见性
+                if getattr(self, 'v_guide_glow_line', None) is not None:
+                    self.v_guide_glow_line.set_visible(self.guides_enabled)
+                if getattr(self, 'h_guide_glow_line', None) is not None:
+                    self.h_guide_glow_line.set_visible(self.guides_enabled)
+            except Exception as e:
                 try:
-                    sig = (prof.get('mode'), round(self.y_view_center, 2), half_range, scroll_value, changed)
-                    now_ts = time.time()
-                    if sig != self._last_scroll_signature or (now_ts - self._last_scroll_log_time) > 1.5:
-                        self._log_rate_limit('scroll_sync', f"[SCROLLBAR SYNC] mode={prof.get('mode')} center={self.y_view_center:.2f} half={half_range} val={scroll_value} changed={changed}", interval=0.5, burst=2)
-                        self._last_scroll_signature = sig
-                        self._last_scroll_log_time = now_ts
+                    print(f"⚠️ 更新滚动条时出错: {e}")
                 except Exception:
                     pass
-                self.v_scrollbar.blockSignals(True)
-                self.v_scrollbar.setValue(scroll_value)
-                self.v_scrollbar.blockSignals(False)
-            # 同步辅助线可见性
-            if getattr(self, 'v_guide_glow_line', None) is not None:
-                self.v_guide_glow_line.set_visible(self.guides_enabled)
-            if getattr(self, 'h_guide_glow_line', None) is not None:
-                self.h_guide_glow_line.set_visible(self.guides_enabled)
-        
+
         if hasattr(self, 'h_scrollbar'):
             # 更新水平滚动条 - 适应新的滚动逻辑
             # 移除对time_data的依赖，直接使用max_history_time
@@ -14093,20 +15265,84 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if not hasattr(self, 'ax'):
                 return
-            # 高倍缩放下节流辅助线更新与重绘，避免频繁 draw_idle 造成卡顿
+            # 高倍缩放下节制重绘频率，避免频繁 draw_idle 造成卡顿（仅节流重绘，不中断位置更新）
             now = time.time()
             zoom = float(getattr(self, 'zoom_level', 1.0))
-            # 函数级调用节流（完全跳过一次更新）
-            if zoom >= 4.5:
-                call_min = 0.040  # 25 FPS 最多
-            elif zoom >= 2.0:
-                call_min = 0.030
-            else:
-                call_min = 0.0
+            # 性能模式联动参数（仅对 2.5x/5.0x 施加更强配置）
+            try:
+                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                _pm = get_performance_manager()
+                _mode = _pm.get_current_mode() if _pm else None
+            except Exception:
+                _pm = None
+                _mode = None
+            # 默认（适中）参数（更快更淡的基调）
+            params = {
+                'min_redraw': 0.0,
+                'base_alpha': 0.28,
+                'base_max_step': 0.16,
+                'snap_eps': 0.009,
+                't1': 0.04,  # 小/中位移阈
+                't2': 0.10,  # 中/大位移阈
+                'motion_div': 0.12,
+                'glow_base': 0.40,
+                'glow_span': 0.10,
+                'lw_span': 0.12,
+                'v_main_alpha': 0.55,  # 纵向主线的不透明度（更淡）
+            }
+            if zoom >= 4.5 or zoom >= 2.0:
+                # 按性能模式调参
+                try:
+                    if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                        params.update({
+                            'min_redraw': 0.040 if zoom >= 4.5 else 0.030,
+                            'base_alpha': 0.32,
+                            'base_max_step': 0.20,
+                            'snap_eps': 0.012,
+                            't1': 0.05,
+                            't2': 0.12,
+                            'motion_div': 0.10,
+                            'glow_base': 0.45,
+                            'glow_span': 0.12,
+                            'lw_span': 0.14,
+                        })
+                    elif _mode == PerformanceMode.BALANCED or _mode is None:
+                        params.update({
+                            'min_redraw': 0.060 if zoom >= 4.5 else 0.045,
+                            'base_alpha': 0.28,
+                            'base_max_step': 0.16,
+                            'snap_eps': 0.010,
+                            't1': 0.04,
+                            't2': 0.10,
+                            'motion_div': 0.12,
+                            'glow_base': 0.40,
+                            'glow_span': 0.10,
+                            'lw_span': 0.12,
+                            'v_main_alpha': 0.55,
+                        })
+                    else:  # 视为 QUIET
+                        params.update({
+                            'min_redraw': 0.080 if zoom >= 4.5 else 0.060,
+                            'base_alpha': 0.22,
+                            'base_max_step': 0.14,
+                            'snap_eps': 0.008,
+                            't1': 0.03,
+                            't2': 0.08,
+                            'motion_div': 0.16,
+                            'glow_base': 0.35,
+                            'glow_span': 0.08,
+                            'lw_span': 0.10,
+                            'v_main_alpha': 0.50,
+                        })
+                except Exception:
+                    pass
+            call_min = params['min_redraw'] if zoom >= 2.0 else 0.0
             last_call = getattr(self, '_last_guides_update_time', 0.0)
+            # 不再提前 return，继续更新数据以保证灵敏；仅记录时间用于后续 draw_idle 节流
             if call_min > 0 and (now - last_call) < call_min:
-                return
-            self._last_guides_update_time = now
+                pass
+            else:
+                self._last_guides_update_time = now
             # 纵向位置：
             #   - ≤8s：跟随当前时间（夹紧到窗口）
             #   - >8s 且自动跟随：将视觉位置锁定在图表像素中心，避免因 xlim 微抖导致的“左右晃动”
@@ -14134,26 +15370,87 @@ class ECGStylePitchVisualizer(QWidget):
                 if want_center:
                     v_x = (time_start + time_end) * 0.5
                     self._smoothed_vx = v_x
+                    self._last_vx_time = now
                 else:
-                    alpha = float(getattr(self, '_guide_vx_alpha', 0.35))
-                    max_step = float(getattr(self, '_guide_vx_max_step', 0.10))
+                    base_alpha = float(getattr(self, '_guide_vx_alpha', params['base_alpha']))
+                    base_max_step = float(getattr(self, '_guide_vx_max_step', params['base_max_step']))
                     prev = getattr(self, '_smoothed_vx', None)
                     if prev is None:
                         v_x = v_target
                     else:
-                        delta = (v_target - prev) * alpha
-                        if delta > max_step:
-                            delta = max_step
-                        elif delta < -max_step:
-                            delta = -max_step
-                        v_x = prev + delta
+                        delta_raw = (v_target - prev)
+                        ad = abs(delta_raw)
+                        # 自适应平滑：小位移更敏感，大位移更克制
+                        if ad < params['t1']:
+                            alpha = max(base_alpha, 0.65)
+                            max_step = max(base_max_step, 0.12)
+                        elif ad < params['t2']:
+                            alpha = max(base_alpha, 0.48)
+                            max_step = max(base_max_step, 0.12 if zoom < 2.0 else 0.14)
+                        else:
+                            alpha = base_alpha
+                            max_step = base_max_step if zoom < 2.0 else max(base_max_step, 0.12)
+                        # 极小位移直接吸附，去滞后感
+                        if ad < params['snap_eps']:
+                            v_x = v_target
+                        else:
+                            delta = delta_raw * alpha
+                            if delta > max_step:
+                                delta = max_step
+                            elif delta < -max_step:
+                                delta = -max_step
+                            v_x = prev + delta
                     self._smoothed_vx = v_x
+                    self._last_vx_time = now
             except Exception:
                 v_x = v_target
 
-            # 横向位置：最后一次有效音高（静音保持不变），默认以当前中心代替
+            # 横向目标（当前识别音高）：最后一次有效音高（静音保持不变），默认以当前中心代替
             if self.last_active_pitch_y is None:
                 self.last_active_pitch_y = getattr(self, 'current_pitch_y', self.y_view_center)
+
+            # 横向：自适应平滑的目标 y（提灵敏，降抖动）
+            try:
+                h_target = float(self.last_active_pitch_y)
+            except Exception:
+                h_target = float(getattr(self, 'current_pitch_y', self.y_view_center))
+            try:
+                base_h_alpha = float(params.get('base_alpha', 0.40))
+                base_h_step = float(params.get('base_max_step', 0.12))
+                h_t1 = float(params.get('t1', 0.04))
+                h_t2 = float(params.get('t2', 0.10))
+                h_snap = float(params.get('snap_eps', 0.006))
+            except Exception:
+                base_h_alpha, base_h_step, h_t1, h_t2, h_snap = 0.40, 0.12, 0.04, 0.10, 0.006
+
+            try:
+                prev_h = getattr(self, '_smoothed_hy', None)
+                if prev_h is None:
+                    h_y = h_target
+                else:
+                    dd = h_target - prev_h
+                    ad = abs(dd)
+                    if ad < h_t1:
+                        a = max(base_h_alpha, 0.70)
+                        ms = max(base_h_step, 0.14)
+                    elif ad < h_t2:
+                        a = max(base_h_alpha, 0.50)
+                        ms = max(base_h_step, 0.14 if zoom < 2.0 else 0.16)
+                    else:
+                        a = base_h_alpha
+                        ms = base_h_step if zoom < 2.0 else max(base_h_step, 0.12)
+                    if ad < h_snap:
+                        h_y = h_target
+                    else:
+                        delta = dd * a
+                        if delta > ms:
+                            delta = ms
+                        elif delta < -ms:
+                            delta = -ms
+                        h_y = prev_h + delta
+                self._smoothed_hy = h_y
+            except Exception:
+                h_y = h_target
 
         # 纵向：柔光底线
             need_new_v_glow = (
@@ -14223,6 +15520,12 @@ class ECGStylePitchVisualizer(QWidget):
                         self.v_guide_glow_line.set_transform(trans)
                         self.v_guide_glow_line.set_xdata(xdata_center)
                         self.v_guide_glow_line.set_ydata(ydata_span)
+                        # 中心模式：保持柔和
+                        try:
+                            self.v_guide_glow_line.set_alpha(self.guide_alpha_glow)
+                            self.v_guide_glow_line.set_linewidth(self.guide_linewidth_glow)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     # 主线
@@ -14230,6 +15533,12 @@ class ECGStylePitchVisualizer(QWidget):
                         self.v_guide_line.set_transform(trans)
                         self.v_guide_line.set_xdata(xdata_center)
                         self.v_guide_line.set_ydata(ydata_span)
+                        try:
+                            # 更淡的主线透明度
+                            self.v_guide_line.set_alpha(float(params.get('v_main_alpha', 0.55)))
+                            self.v_guide_line.set_linewidth(self.guide_linewidth_main)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                 else:
@@ -14241,18 +15550,33 @@ class ECGStylePitchVisualizer(QWidget):
                         self.v_guide_glow_line.set_transform(trans)
                         self.v_guide_glow_line.set_xdata(xdata_v)
                         self.v_guide_glow_line.set_ydata(ydata_span)
+                        # 根据移动强度动态调整柔光和主线粗细，视觉更灵敏
+                        try:
+                            ad = abs(v_target - getattr(self, '_smoothed_vx', v_x))
+                            motion = max(0.0, min(1.0, ad / float(params['motion_div'])))
+                            self.v_guide_glow_line.set_alpha(float(self.guide_alpha_glow) * (float(params['glow_base']) + float(params['glow_span']) * motion))
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     try:
                         self.v_guide_line.set_transform(trans)
                         self.v_guide_line.set_xdata(xdata_v)
                         self.v_guide_line.set_ydata(ydata_span)
+                        try:
+                            # 更淡的主线透明度
+                            self.v_guide_line.set_alpha(float(params.get('v_main_alpha', 0.55)))
+                            ad = abs(v_target - getattr(self, '_smoothed_vx', v_x))
+                            motion = max(0.0, min(1.0, ad / float(params['motion_div'])))
+                            self.v_guide_line.set_linewidth(float(self.guide_linewidth_main) * (1.0 + float(params['lw_span']) * motion))
+                        except Exception:
+                            pass
                     except Exception:
                         pass
             except Exception:
                 pass
 
-            # 横向：柔光底线
+        # 横向：柔光底线
             need_new_h_glow = (
                 getattr(self, 'h_guide_glow_line', None) is None or
                 getattr(getattr(self, 'h_guide_glow_line', None), 'axes', None) is None or
@@ -14260,7 +15584,7 @@ class ECGStylePitchVisualizer(QWidget):
             )
             if need_new_h_glow:
                 self.h_guide_glow_line = self.ax.axhline(
-                    y=self.last_active_pitch_y, color=self.guide_h_color, linestyle='-',
+                    y=h_y, color=self.guide_h_color, linestyle='-',
                     linewidth=self.guide_linewidth_glow, alpha=self.guide_alpha_glow,
                     zorder=80, visible=self.guides_enabled
                 )
@@ -14270,7 +15594,7 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             else:
                 try:
-                    self.h_guide_glow_line.set_ydata([self.last_active_pitch_y, self.last_active_pitch_y])
+                    self.h_guide_glow_line.set_ydata([h_y, h_y])
                     self.h_guide_glow_line.set_visible(self.guides_enabled)
                     self.h_guide_glow_line.set_zorder(80)
                 except Exception:
@@ -14284,7 +15608,7 @@ class ECGStylePitchVisualizer(QWidget):
             )
             if need_new_h:
                 self.h_guide_line = self.ax.axhline(
-                    y=self.last_active_pitch_y, color=self.guide_h_color, linestyle='--',
+                    y=h_y, color=self.guide_h_color, linestyle='--',
                     linewidth=self.guide_linewidth_main, alpha=self.guide_alpha_main,
                     zorder=90, visible=self.guides_enabled
                 )
@@ -14301,21 +15625,80 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             else:
                 try:
-                    self.h_guide_line.set_ydata([self.last_active_pitch_y, self.last_active_pitch_y])
+                    self.h_guide_line.set_ydata([h_y, h_y])
                     self.h_guide_line.set_visible(self.guides_enabled)
                     self.h_guide_line.set_zorder(90)
                 except Exception:
                     pass
 
+            # 横向：当前音高“焦点带”（轻量矩形，x轴使用轴坐标变换，避免重算）
+            try:
+                show_band = bool(zoom >= 2.0 and self.guides_enabled)
+                if show_band:
+                    # 按缩放与性能模式设定半宽与不透明度
+                    if zoom >= 4.5:
+                        band_half = 0.055  # 八度坐标
+                    else:
+                        band_half = 0.070
+                    # 模式联动
+                    try:
+                        from src.audio_processing.performance_manager import PerformanceMode
+                        if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                            band_half *= 0.85
+                            band_alpha = 0.14
+                        elif _mode is None or _mode == PerformanceMode.BALANCED:
+                            band_alpha = 0.12
+                        else:  # Quiet
+                            band_half *= 1.10
+                            band_alpha = 0.10
+                    except Exception:
+                        band_alpha = 0.12
+                    # 动态：根据位移强度略调透明度
+                    try:
+                        ad = abs(h_target - getattr(self, '_smoothed_hy', h_y))
+                        motion = max(0.0, min(1.0, ad / float(params.get('motion_div', 0.12))))
+                        band_alpha = band_alpha * (0.85 + 0.30 * motion)
+                    except Exception:
+                        pass
+                    # 创建或更新
+                    import matplotlib.patches as mpatches
+                    need_band = (
+                        getattr(self, 'h_focus_band', None) is None or
+                        getattr(getattr(self, 'h_focus_band', None), 'axes', None) is None or
+                        self.h_focus_band not in getattr(self.ax, 'patches', [])
+                    )
+                    if need_band:
+                        try:
+                            trans = self.ax.get_xaxis_transform()
+                            rect = mpatches.Rectangle((0.0, h_y - band_half), 1.0, band_half * 2.0,
+                                                      transform=trans, facecolor=self.guide_h_color,
+                                                      edgecolor='none', alpha=band_alpha, zorder=75, visible=True)
+                            self.ax.add_patch(rect)
+                            self.h_focus_band = rect
+                        except Exception:
+                            self.h_focus_band = None
+                    else:
+                        try:
+                            self.h_focus_band.set_y(h_y - band_half)
+                            self.h_focus_band.set_height(band_half * 2.0)
+                            self.h_focus_band.set_alpha(band_alpha)
+                            self.h_focus_band.set_visible(True)
+                            self.h_focus_band.set_zorder(75)
+                        except Exception:
+                            pass
+                else:
+                    if hasattr(self, 'h_focus_band') and self.h_focus_band is not None:
+                        try:
+                            self.h_focus_band.set_visible(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             # 节制触发重绘（draw_idle），高倍缩放下放宽到更低频率
             if hasattr(self, 'canvas'):
                 try:
-                    if zoom >= 4.5:
-                        min_redraw = 0.060
-                    elif zoom >= 2.0:
-                        min_redraw = 0.045
-                    else:
-                        min_redraw = 0.0
+                    min_redraw = params['min_redraw'] if zoom >= 2.0 else 0.0
                     last_di = getattr(self, '_last_guides_draw_idle_time', 0.0)
                     if min_redraw == 0.0 or (now - last_di) >= min_redraw:
                         self.canvas.draw_idle()
@@ -16668,6 +18051,10 @@ class ECGStylePitchVisualizer(QWidget):
                                           linewidths=0,
                                           edgecolors='none',
                                           zorder=14)
+                    try:
+                        pts.set_visible(True)
+                    except Exception:
+                        pass
                     self._segment_points.append(pts)
                 else:
                     line = self._segment_lines[i]
@@ -16752,6 +18139,10 @@ class ECGStylePitchVisualizer(QWidget):
                                                   linewidths=0,
                                                   edgecolors='none',
                                                   zorder=14)
+                        try:
+                            new_pts.set_visible(True)
+                        except Exception:
+                            pass
                         self._segment_points[i] = new_pts
 
                 if self.debug_flags.get('segment_log') and i % 8 == 0:
