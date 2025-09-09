@@ -9320,8 +9320,9 @@ class ECGStylePitchVisualizer(QWidget):
         # 放大镜（局部放大视图）
         self._magnifier_ax = None          # inset axes
         self._magnifier_border = None      # 圆形边框 Patch
-        self._magn_line = None             # 局部放大线
-        self._magn_points = None           # 局部放大散点
+        self._magn_line = None             # 局部放大线（截图式后保持隐藏）
+        self._magn_points = None           # 局部放大散点（截图式后保持隐藏）
+        self._magn_image = None            # 镜片截图图像 (AxesImage)
         self._magn_hi_ring = None          # 放大区悬停高亮环
         self._magn_text = None             # 放大区内的说明文字
         self._magn_size_px = 180           # 放大镜直径（像素）
@@ -13219,61 +13220,137 @@ class ECGStylePitchVisualizer(QWidget):
             bottom = 0.1
             import matplotlib.pyplot as _plt  # 确保后端可用
             ax = fig.add_axes([left, bottom, w_frac, h_frac], zorder=9970)
-            ax.set_facecolor(getattr(self, 'bg_color', '#0c0c0c'))
+            try:
+                # 避免额外纵横比约束导致再次插值
+                ax.set_aspect('auto')
+            except Exception:
+                pass
+            # 放大镜轴背景设为透明，避免出现矩形底色，保证圆形裁剪可见
+            try:
+                ax.set_facecolor((0, 0, 0, 0))
+                ax.patch.set_alpha(0.0)
+            except Exception:
+                pass
             for spine in ax.spines.values():
                 spine.set_visible(False)
             ax.set_xticks([])
             ax.set_yticks([])
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
-            # 局部线与散点
+            # 截图式镜片图像（默认用 2x2 占位，extent 归一坐标）
+            try:
+                import numpy as _np
+                _placeholder = _np.zeros((2, 2, 4), dtype=_np.uint8)
+                # 禁止插值，确保像素级显示（后续按轴像素尺寸做最近邻缩放）
+                im = ax.imshow(_placeholder, extent=(0, 1, 0, 1), origin='upper', interpolation='none', zorder=9972)
+                try:
+                    im.set_resample(False)
+                except Exception:
+                    pass
+                self._magn_image = im
+            except Exception:
+                self._magn_image = None
+            # 旧版线/点在截图模式下禁用
             try:
                 ln_color = getattr(getattr(self, 'pitch_line', None), 'get_color', lambda: '#88ccff')()
-                self._magn_line, = ax.plot([], [], color=ln_color or '#88ccff', linewidth=1.6, zorder=9972)
+                self._magn_line, = ax.plot([], [], color=ln_color or '#88ccff', linewidth=1.6, zorder=9971)
+                self._magn_line.set_visible(False)
             except Exception:
-                self._magn_line, = ax.plot([], [], color='#88ccff', linewidth=1.6, zorder=9972)
+                self._magn_line = None
             try:
-                self._magn_points = ax.scatter([], [], s=16, c='#FFFFFF', edgecolors='#88ccff', linewidths=0.4, zorder=9973)
+                self._magn_points = ax.scatter([], [], s=16, c='#FFFFFF', edgecolors='#88ccff', linewidths=0.4, zorder=9971)
+                self._magn_points.set_visible(False)
             except Exception:
                 self._magn_points = None
-            # 圆形边框（视觉化“镜片”）
+            # 圆形边框（分为两个：一个仅用于裁剪；另一个为可见的浅蓝色细边框）
             try:
                 from matplotlib.patches import Circle
                 # 使用轴坐标创建单位圆，随位置更新时重置变换
+                # 注意：edgecolor 设为 'none' 且 linewidth=0，仅作为 clip path 使用
                 circ = Circle((0.5, 0.5), 0.5, transform=ax.transAxes, fill=False,
-                              edgecolor=(0.45, 0.75, 1.0, 0.75), linewidth=1.1, zorder=9976)
+                              edgecolor='none', linewidth=0.0, zorder=9976)
                 ax.add_patch(circ)
                 self._magnifier_border = circ
+                # 截图图像裁剪为圆形镜片
+                try:
+                    if self._magn_image is not None:
+                        self._magn_image.set_clip_path(circ)
+                except Exception:
+                    pass
+                # 可见的浅蓝色细边框（满足“最外层浅蓝色很细边框”的视觉要求）
+                try:
+                    border = Circle((0.5, 0.5), 0.5, transform=ax.transAxes, fill=False,
+                                     edgecolor=(0.45, 0.75, 1.0, 0.38), linewidth=0.9, zorder=9980)
+                    ax.add_patch(border)
+                    self._magnifier_visible_ring = border
+                except Exception:
+                    self._magnifier_visible_ring = None
             except Exception:
                 self._magnifier_border = None
-            # 焦点淡色高亮带（表示约 1 秒邻域），用轴坐标下的矩形填充
+            # 顶部信息条（仅背景，不再绘制边线，避免白色横线伪线；同样裁剪为圆形）
+            try:
+                from matplotlib.patches import Rectangle
+                header = Rectangle((0.0, 0.84), 1.0, 0.16, transform=ax.transAxes,
+                                   facecolor=(0.06, 0.10, 0.16, 0.90), edgecolor='none',
+                                   linewidth=0.0, zorder=9977)
+                ax.add_patch(header)
+                try:
+                    if self._magnifier_border is not None:
+                        header.set_clip_path(self._magnifier_border)
+                except Exception:
+                    pass
+                self._magn_header_rect = header
+            except Exception:
+                self._magn_header_rect = None
+            # 焦点淡色高亮带（默认隐藏，避免产生额外线条/带）
             try:
                 from matplotlib.patches import Rectangle
                 focus = Rectangle((0.25, 0.0), 0.50, 1.0, transform=ax.transAxes,
                                   facecolor=(0.5, 0.75, 1.0, 0.10), edgecolor='none', zorder=9971)
                 ax.add_patch(focus)
+                try:
+                    focus.set_visible(False)
+                except Exception:
+                    pass
                 self._magn_focus_band = focus
             except Exception:
                 self._magn_focus_band = None
-            # 垂直投影线（对齐鼠标在镜内的 x）
+            # 垂直投影线（默认隐藏，避免在镜片中出现额外竖线）
             try:
                 self._magn_vline = ax.axvline(0.5, color=(0.85, 0.92, 1.0, 0.6), linewidth=0.9, zorder=9975)
+                try:
+                    self._magn_vline.set_visible(False)
+                except Exception:
+                    pass
             except Exception:
                 self._magn_vline = None
-            # 放大区内悬停高亮环
+            # 放大区内悬停高亮环（默认隐藏，避免蓝白色圆圈伪线）
             try:
                 ring_edge = (0.85, 0.92, 1.00, 0.98)
                 self._magn_hi_ring = ax.scatter([], [], s=60, facecolors=(0,0,0,0),
                                                linewidths=1.5, edgecolors=[ring_edge], zorder=9978)
+                # 使用轴坐标, 便于以 (fx, fy) 归一化坐标定位到截图图像上
+                try:
+                    self._magn_hi_ring.set_transform(ax.transAxes)
+                except Exception:
+                    pass
+                try:
+                    self._magn_hi_ring.set_visible(False)
+                except Exception:
+                    pass
             except Exception:
                 self._magn_hi_ring = None
-            # 放大区内文本
+            # 放大区内文本（仅显示在顶部信息条内，不再在主图重复显示）
             try:
                 txt_c = getattr(self, 'text_color', '#DDDDDD')
-                self._magn_text = ax.text(0.03, 0.97, '', transform=ax.transAxes, va='top', ha='left',
-                                          fontsize=9, color=txt_c, zorder=9977,
-                                          bbox=dict(boxstyle='round,pad=0.25,rounding_size=2',
-                                                    fc=getattr(self, 'bg_color', '#0c0c0c'), ec='none', alpha=0.72))
+                self._magn_text = ax.text(0.03, 0.95, '', transform=ax.transAxes, va='top', ha='left',
+                                          fontsize=9, color=txt_c, zorder=9979)
+                try:
+                    # 文本也裁剪到圆形范围，确保不改变镜片外观
+                    if self._magnifier_border is not None:
+                        self._magn_text.set_clip_path(self._magnifier_border)
+                except Exception:
+                    pass
             except Exception:
                 self._magn_text = None
             self._magnifier_ax = ax
@@ -13311,7 +13388,12 @@ class ECGStylePitchVisualizer(QWidget):
             if bottom + h_frac > 0.985:
                 bottom = max(0.005, 0.985 - h_frac)
             ax.set_position([left, bottom, w_frac, h_frac])
-            # 依据像素→数据比例与放大倍率，或固定时间窗，确定局部窗口
+            # 保持透明背景（避免矩形区域显现）
+            try:
+                ax.patch.set_alpha(0.0)
+            except Exception:
+                pass
+            # 依据固定时间窗计算截图的数据窗口（并强制在显示像素维度上为正方形，便于圆形裁剪）
             try:
                 x0, x1 = ax_main.get_xlim()
                 y0, y1 = ax_main.get_ylim()
@@ -13321,159 +13403,234 @@ class ECGStylePitchVisualizer(QWidget):
             main_h_px = float(ax_main.bbox.height)
             if main_w_px <= 0 or main_h_px <= 0:
                 return
-            dx_per_px = (x1 - x0) / main_w_px
-            dy_per_px = (y1 - y0) / main_h_px
-            # 基于“固定约 2s”优先；若无法判断时间单位，则退化为基于像素/倍率的计算
+            # 像素比例（数据单位/像素）
+            dx_per_px = (x1 - x0) / max(1e-6, main_w_px)
+            dy_per_px = (y1 - y0) / max(1e-6, main_h_px)
+            # 先确定水平半宽（依据目标秒数或倍率），再按像素比例换算垂直半高，使显示区域为正方形
             try:
-                # 取数据单位即为秒；镜宽 = target_window_sec
                 target_sec = float(getattr(self, '_magn_target_window_sec', 2.0))
                 half_w_data = 0.5 * target_sec
             except Exception:
                 half_w_data = 0.5 * self._magn_size_px * dx_per_px / max(1e-6, float(self._magn_zoom))
-            half_h_data = 0.5 * self._magn_size_px * dy_per_px / max(1e-6, float(self._magn_zoom))
+            # 为保证像素上的正方形：dy = dx * (dy_per_px / dx_per_px)
+            half_h_data = float(half_w_data) * float(dy_per_px) / max(1e-9, float(dx_per_px))
             xL, xR = (x - half_w_data, x + half_w_data)
             yB, yT = (y - half_h_data, y + half_h_data)
-            ax.set_xlim(xL, xR)
-            ax.set_ylim(yB, yT)
-            # 镜片背景与主轴一致，营造“真放大”视觉
-            try:
-                ax.set_facecolor(getattr(self, 'bg_color', '#0c0c0c'))
-            except Exception:
-                pass
-            # 焦点带宽度与位置（默认在镜内居中，覆盖约 1 秒）
-            try:
-                if getattr(self, '_magn_focus_band', None) is not None:
-                    # 根据 target_sec 与 focus_sec，计算 X 轴上相对宽度
-                    focus_sec = float(getattr(self, '_magn_focus_window_sec', 1.0))
-                    target_sec = float(getattr(self, '_magn_target_window_sec', 2.0))
-                    frac = max(0.05, min(0.95, focus_sec / max(1e-6, target_sec)))
-                    # 以 0.5 为中心
-                    left_ax = 0.5 - 0.5 * frac
-                    self._magn_focus_band.set_x(left_ax)
-                    self._magn_focus_band.set_width(frac)
-            except Exception:
-                pass
-            # 垂直投影线移动到镜内 x=0.5（随镜窗口中心）
-            try:
-                if getattr(self, '_magn_vline', None) is not None:
-                    self._magn_vline.set_xdata([x, x])
-            except Exception:
-                pass
-            # 更新局部主线：优先复用主线；若主线不可用，尝试由分段/点重建
+            # 截图：从 figure 的 RGBA 缓冲区裁剪出主轴内 [xL,xR]x[yB,yT] 的像素区域
             try:
                 import numpy as _np
-                xs_sel = None
-                ys_sel = None
-                ln = getattr(self, 'pitch_line', None)
-                if ln is not None and (getattr(ln, 'get_visible', lambda: True)()):
-                    xs = _np.asarray(ln.get_xdata() or [], dtype=float)
-                    ys = _np.asarray(ln.get_ydata() or [], dtype=float)
-                    if xs.size and ys.size and xs.size == ys.size:
-                        m = (xs >= xL) & (xs <= xR)
-                        if _np.any(m):
-                            xs_sel = xs[m]
-                            ys_sel = ys[m]
-                if (xs_sel is None or ys_sel is None) and getattr(self, '_segments', None):
-                    # 从分段聚合
-                    xs_acc, ys_acc = [], []
+                # 临时隐藏放大镜轴，避免把自身边框/叠加件截进镜片（自我递归）
+                _magn_prev_visible = True
+                try:
+                    _magn_prev_visible = bool(ax.get_visible())
+                    ax.set_visible(False)
+                except Exception:
+                    pass
+                # 同步渲染器，确保缓冲区与当前可见元素一致（此时放大镜已隐藏）
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    pass
+                # 确保渲染器最新
+                try:
+                    # 避免频繁阻塞重绘——仅在没有 renderer 时强制一次
+                    if getattr(fig.canvas, 'renderer', None) is None:
+                        fig.canvas.draw()
+                except Exception:
                     try:
-                        for (ts, ys) in self._segments:
-                            if not ts:
-                                continue
-                            for tt, yy in zip(ts, ys):
-                                if tt >= xL and tt <= xR:
-                                    xs_acc.append(tt)
-                                    ys_acc.append(yy)
+                        fig.canvas.draw()
                     except Exception:
                         pass
-                    if xs_acc:
-                        xs_sel = _np.asarray(xs_acc, dtype=float)
-                        ys_sel = _np.asarray(ys_acc, dtype=float)
-                        # 按时间排序
-                        order = _np.argsort(xs_sel)
-                        xs_sel = xs_sel[order]
-                        ys_sel = ys_sel[order]
-                if (xs_sel is None or ys_sel is None) and getattr(self, '_segment_points', None):
-                    # 再退回到可见散点合集
-                    pts_all = []
+                # 把数据窗口转换为显示像素
+                p0 = ax_main.transData.transform([(xL, yB), (xR, yT)])
+                (xL_px, yB_px), (xR_px, yT_px) = p0[0], p0[1]
+                # 与主轴 bbox 求交，避免截出轴外的黑边
+                ab = ax_main.get_window_extent()
+                ax_x0, ax_y0, ax_x1, ax_y1 = float(ab.x0), float(ab.y0), float(ab.x1), float(ab.y1)
+                ix0 = int(_np.floor(max(min(xL_px, xR_px), ax_x0)))
+                ix1 = int(_np.ceil(min(max(xL_px, xR_px), ax_x1)))
+                iy0 = int(_np.floor(max(min(yB_px, yT_px), ax_y0)))
+                iy1 = int(_np.ceil(min(max(yB_px, yT_px), ax_y1)))
+                # 读取整幅图像 RGBA
+                fig_w_px = int(_np.round(fig.bbox.width))
+                fig_h_px = int(_np.round(fig.bbox.height))
+                buf = None
+                try:
+                    mem = fig.canvas.buffer_rgba()
+                    buf = _np.frombuffer(mem, dtype=_np.uint8).reshape(fig_h_px, fig_w_px, 4)
+                except Exception:
                     try:
-                        for c in (self._segment_points or []):
-                            off = getattr(c, 'get_offsets', lambda: None)()
-                            if off is None:
-                                continue
-                            arr = _np.asarray(off)
-                            if arr.size == 0:
-                                continue
-                            m = (arr[:, 0] >= xL) & (arr[:, 0] <= xR)
-                            if _np.any(m):
-                                pts_all.append(arr[m])
+                        _renderer = getattr(fig.canvas, 'renderer', None) or fig.canvas.get_renderer()
+                        buf = _np.asarray(_renderer.buffer_rgba())
                     except Exception:
-                        pass
-                    if pts_all:
-                        arr_cat = _np.vstack(pts_all)
-                        order = _np.argsort(arr_cat[:, 0])
-                        arr_cat = arr_cat[order]
-                        xs_sel = arr_cat[:, 0]
-                        ys_sel = arr_cat[:, 1]
-                # 赋给镜片主线
-                if xs_sel is not None and ys_sel is not None and xs_sel.size:
-                    self._magn_line.set_data(xs_sel, ys_sel)
-                    self._magn_line.set_visible(True)
-                else:
-                    self._magn_line.set_data([], [])
-            except Exception:
-                pass
-            # 更新局部散点：聚合可见集合并筛选窗口内（仅按 X 过滤，避免 Y 微差导致漏点）
-            try:
-                cols = self._collect_visible_point_collections()
-                import numpy as _np
-                pts_all = []
-                for c in cols:
+                        buf = None
+                if buf is None:
+                    raise RuntimeError('no-figure-buffer')
+                # 转为数组索引（注意：图像数组原点在左上，显示坐标原点在左下）
+                row0 = int(max(0, min(fig_h_px, _np.floor(fig_h_px - iy1))))
+                row1 = int(max(0, min(fig_h_px, _np.ceil (fig_h_px - iy0))))
+                col0 = int(max(0, min(fig_w_px, ix0)))
+                col1 = int(max(0, min(fig_w_px, ix1)))
+                if row1 <= row0 or col1 <= col0:
+                    # 无有效区域，直接隐藏
+                    if self._magn_image is not None:
+                        self._magn_image.set_visible(False)
+                    self._magn_visible = False
+                    return
+                crop = buf[row0:row1, col0:col1, :]
+                # 等比缩放到放大镜轴像素大小内，并居中填充，避免被横向/纵向挤压
+                try:
+                    import numpy as _np
+                    # 放大镜轴当前像素尺寸
+                    ax_bb = ax.get_window_extent()
+                    ax_w = max(1, int(_np.round(ax_bb.width)))
+                    ax_h = max(1, int(_np.round(ax_bb.height)))
+                    ch, cw = int(crop.shape[0]), int(crop.shape[1])
+                    # 计算等比缩放目标大小
+                    scale = min(ax_w / float(cw), ax_h / float(ch))
+                    new_w = max(1, int(_np.round(cw * scale)))
+                    new_h = max(1, int(_np.round(ch * scale)))
+                    # 生成最近邻索引进行缩放
+                    if new_w != cw or new_h != ch:
+                        yy = (_np.arange(new_h) / (new_h / float(ch))).round().astype(int)
+                        xx = (_np.arange(new_w) / (new_w / float(cw))).round().astype(int)
+                        yy = _np.clip(yy, 0, ch - 1)
+                        xx = _np.clip(xx, 0, cw - 1)
+                        resized = crop[yy[:, None], xx[None, :], :]
+                    else:
+                        resized = crop
+                    # 创建背景并居中贴图
+                    canvas = _np.empty((ax_h, ax_w, 4), dtype=_np.uint8)
+                    # 背景色：使用轴背景颜色（若解析失败则用全透明）
                     try:
-                        off = c.get_offsets()
-                        if off is None:
-                            continue
-                        arr = _np.asarray(off)
-                        if arr.size == 0:
-                            continue
-                        mask = (arr[:, 0] >= xL) & (arr[:, 0] <= xR)
-                        if _np.any(mask):
-                            pts_all.append(arr[mask])
+                        _bg = getattr(self, 'bg_color', '#0c0c0c')
+                        if isinstance(_bg, str) and _bg.startswith('#') and (len(_bg) in (7, 9)):
+                            r = int(_bg[1:3], 16)
+                            g = int(_bg[3:5], 16)
+                            b = int(_bg[5:7], 16)
+                            a = 255
+                        else:
+                            r, g, b, a = 0, 0, 0, 0
                     except Exception:
-                        continue
-                if pts_all:
-                    arr_cat = _np.vstack(pts_all)
-                    # 防止过密点造成卡顿，简单下采样
-                    if arr_cat.shape[0] > 1200:
-                        arr_cat = arr_cat[::max(1, arr_cat.shape[0] // 1200)]
-                    if self._magn_points is not None:
-                        self._magn_points.set_offsets(arr_cat)
+                        r, g, b, a = 0, 0, 0, 0
+                    canvas[..., 0] = r
+                    canvas[..., 1] = g
+                    canvas[..., 2] = b
+                    canvas[..., 3] = a
+                    # 计算居中位置
+                    y0 = (ax_h - new_h) // 2
+                    x0 = (ax_w - new_w) // 2
+                    canvas[y0:y0+new_h, x0:x0+new_w, :] = resized
+                    crop = canvas
+                    # 记录内容区域在轴坐标下的矩形，供高亮环/命中对齐
+                    try:
+                        x0f = x0 / float(ax_w)
+                        y0f = y0 / float(ax_h)
+                        wf = new_w / float(ax_w)
+                        hf = new_h / float(ax_h)
+                        self._magn__content_rect_axes = (x0f, y0f, wf, hf)
+                    except Exception:
                         try:
-                            self._magn_points.set_sizes([18])
+                            self._magn__content_rect_axes = (0.0, 0.0, 1.0, 1.0)
                         except Exception:
                             pass
-                else:
-                    if self._magn_points is not None:
-                        import numpy as _np
-                        self._magn_points.set_offsets(_np.empty((0, 2)))
+                except Exception:
+                    pass
+                # 计算与主轴交集对应的数据范围（用于镜内标记定位）
+                try:
+                    inv = ax_main.transData.inverted()
+                    # 注意：索引行列转回显示坐标时，y 使用 ax 坐标的显示系；
+                    # 这里直接用 display 坐标边界 (ix0,iy0)-(ix1,iy1)
+                    (x_eff0, y_eff0) = inv.transform((float(ix0), float(iy0)))
+                    (x_eff1, y_eff1) = inv.transform((float(ix1), float(iy1)))
+                    xL_eff = min(x_eff0, x_eff1)
+                    xR_eff = max(x_eff0, x_eff1)
+                    yB_eff = min(y_eff0, y_eff1)
+                    yT_eff = max(y_eff0, y_eff1)
+                except Exception:
+                    xL_eff, xR_eff, yB_eff, yT_eff = xL, xR, yB, yT
+                _magn_eff_window = (xL_eff, xR_eff, yB_eff, yT_eff)
+                self._magn__last_eff_window = _magn_eff_window
+                # 更新镜片图像，使用归一 extent 以便 (fx,fy) 直接用轴坐标
+                if self._magn_image is not None:
+                    self._magn_image.set_data(crop)
+                    try:
+                        self._magn_image.set_visible(True)
+                    except Exception:
+                        pass
+            except Exception:
+                # 截屏失败则隐藏镜片图像
+                try:
+                    if self._magn_image is not None:
+                        self._magn_image.set_visible(False)
+                except Exception:
+                    pass
+            finally:
+                # 恢复放大镜可见状态
+                try:
+                    if _magn_prev_visible:
+                        ax.set_visible(True)
+                except Exception:
+                    pass
+            # 焦点带宽度与位置（默认隐藏；若未来需要再启用，可在此处设为可见并更新位置）
+            try:
+                if getattr(self, '_magn_focus_band', None) is not None:
+                    try:
+                        self._magn_focus_band.set_visible(False)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            # 文本（仅在镜片顶部显示；主图注解已隐藏）
+            # 垂直投影线默认隐藏（避免伪线）。如需显示，可在此处更新位置并设为可见
+            try:
+                if getattr(self, '_magn_vline', None) is not None:
+                    try:
+                        self._magn_vline.set_visible(False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # 禁用镜内线与点（避免与截图冲突导致“错误连线/尺寸不一”）
+            try:
+                if self._magn_line is not None:
+                    self._magn_line.set_visible(False)
+                if self._magn_points is not None:
+                    self._magn_points.set_visible(False)
+            except Exception:
+                pass
+            # 文本（仅在镜片顶部信息条显示；主图注解已隐藏）
             try:
                 if self._magn_text is not None:
                     self._magn_text.set_text(text or '')
+                    try:
+                        # 锁定在顶部条内部，避免漂移
+                        self._magn_text.set_position((0.03, 0.95))
+                    except Exception:
+                        pass
+                    try:
+                        self._magn_text.set_visible(True)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            # 高亮环置于目标点
+            # 高亮环默认隐藏（避免蓝色圆圈伪线）
             try:
                 if self._magn_hi_ring is not None:
-                    self._magn_hi_ring.set_offsets([(x, y)])
+                    try:
+                        self._magn_hi_ring.set_visible(False)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # 显示
             self._magn_visible = True
             try:
                 ax.set_visible(True)
+            except Exception:
+                pass
+            # 轻量刷新显示
+            try:
+                fig.canvas.draw_idle()
             except Exception:
                 pass
         except Exception:
@@ -13815,9 +13972,11 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             self._hover_annot.set_zorder(9999)
-            # 只在镜片内显示文本：主图注解隐藏
-            if self._hover_annot.get_visible():
+            # 只在镜片内显示文本：主图注解隐藏（强制隐藏，避免重复显示）
+            try:
                 self._hover_annot.set_visible(False)
+            except Exception:
+                pass
             # 高亮悬停点
             try:
                 self._update_hover_highlight(x, y)
