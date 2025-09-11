@@ -22042,33 +22042,38 @@ class IntegratedRecordingInterface(QMainWindow):
         """左键点击循环切换模式；需要的音频未加载则提示加载。"""
         try:
             # 若尚未初始化按钮（防御）
-            if not hasattr(self, 'backing_button'):  # UI 尚未创建
+            if not hasattr(self, 'backing_button'):
                 return
+            prev_mode = self.backing_mode
             if self.backing_mode == 'off':
-                if self.backing_pcm_accompaniment is None:
+                if getattr(self, 'backing_pcm_accompaniment', None) is None:
                     self._load_local_backing(is_original=False)
-                    if self.backing_pcm_accompaniment is None:  # 用户取消
+                    if self.backing_pcm_accompaniment is None:
                         return
                 self.backing_mode = 'accompaniment'
             elif self.backing_mode == 'accompaniment':
-                # 需要原唱轨
-                if self.backing_pcm_original is None:
+                if getattr(self, 'backing_pcm_original', None) is None:
                     self._load_local_backing(is_original=True)
                     if self.backing_pcm_original is None:
-                        # 保持在伴奏模式
                         self.backing_mode = 'accompaniment'
-                        self.update_backing_button_style()
-                        return
-                self.backing_mode = 'both'
+                    else:
+                        self.backing_mode = 'both'
+                else:
+                    self.backing_mode = 'both'
             else:
                 self.backing_mode = 'off'
-                self._stop_backing_playback()
             self.update_backing_button_style()
-            # 若正在录音 / 分析，切换后立即作用
-            if self.backing_mode != 'off' and (self.is_recording or self.is_analyzing):
-                self._maybe_start_backing_playback()
-            elif self.backing_mode == 'off':
+            # 非录音/分析状态：强制静音，停止任何可能存在的播放流
+            if not (self.is_recording or self.is_analyzing):
                 self._stop_backing_playback()
+                return
+            # 录音/分析活跃状态下
+            if self.backing_mode == 'off':
+                self._stop_backing_playback()
+            else:
+                if prev_mode != self.backing_mode:
+                    self._stop_backing_playback()
+                self._maybe_start_backing_playback()
         except Exception as e:
             print(f"⚠️ 切换伴奏模式失败: {e}")
 
@@ -22174,7 +22179,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 "}\n"
                 "QPushButton:hover {\n"
                 "    border:2px solid #ffe066;\n"
-                "    filter: brightness(1.08);\n"
+                "    /* removed unsupported filter property */\n"
                 "}\n"
                 "QPushButton:pressed {\n"
                 "    border:2px solid #ffaa00;\n"
@@ -22285,6 +22290,11 @@ class IntegratedRecordingInterface(QMainWindow):
     def _maybe_start_backing_playback(self):
         """在录音/分析开始时启动伴奏播放。"""
         try:
+            # 仅当处于录音或实时分析状态才允许播放伴奏/原唱
+            if not (self.is_recording or self.is_analyzing):
+                # 防御：如果误调用且当前正在播放，立即停止
+                self._stop_backing_playback()
+                return
             if self.backing_mode == 'off' or self.backing_pcm_accompaniment is None or self.backing_sample_rate is None:
                 return
             # 已在回调播放
@@ -22363,6 +22373,8 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             import numpy as _np
             with self._backing_lock:
+                if not (self.is_recording or self.is_analyzing):
+                    return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
                 if self.backing_mode == 'off' or self.backing_pcm_accompaniment is None or self.backing_sample_rate is None:
                     return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
                 acc = self.backing_pcm_accompaniment
@@ -23322,6 +23334,8 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             self.audio_processor.stop_recording()
             self.is_recording = False
+            # 录音结束时同步结束分析状态，防止伴奏误判仍在分析
+            self.is_analyzing = False
             # 停止伴奏播放（与录音联动）
             self._stop_backing_playback()
             # 重置暂停按钮文本为“暂停”，并禁用
@@ -23466,6 +23480,9 @@ class IntegratedRecordingInterface(QMainWindow):
                 
             self.system_status_label.setText("状态: 就绪")
             print("🎧 监听功能已停止")
+            # 监听结束后也不应继续播放伴奏
+            if not (self.is_recording or self.is_analyzing):
+                self._stop_backing_playback()
             
         except Exception as e:
             print(f"❌ 停止监听功能失败: {e}")
@@ -23957,6 +23974,10 @@ class IntegratedRecordingInterface(QMainWindow):
     def on_recording_finished(self, filename, analysis_results):
         """录音完成"""
         try:
+            # 强制复位所有活动标志并停止伴奏
+            self.is_recording = False
+            self.is_analyzing = False
+            self._stop_backing_playback()
             # 显示结果
             total_pitches = analysis_results.get('total_pitches', 0)
             duration = analysis_results.get('recording_duration', 0)
