@@ -15993,6 +15993,36 @@ class ECGStylePitchVisualizer(QWidget):
             self._in_update_display = False
             return
         if len(self.pitch_data) == 0:
+            # ✅ 无任何音调点时仍需推进时间轴与中心辅助线，避免卡在 8 秒
+            try:
+                # 依据当前自动滚动 offset 与窗口宽度刷新可视区域
+                x_min = float(getattr(self, 'time_offset', 0.0))
+                x_max = x_min + float(getattr(self, 'time_window', 16.0))
+                if hasattr(self, 'ax') and self.ax is not None:
+                    cur_xlim = self.ax.get_xlim() if hasattr(self.ax, 'get_xlim') else (None, None)
+                    # 只有在窗口发生明显变化时才设置，减少不必要重绘
+                    if not cur_xlim or abs(cur_xlim[0]-x_min) > 1e-6 or abs(cur_xlim[1]-x_max) > 1e-6:
+                        try:
+                            self.ax.set_xlim(x_min, x_max)
+                        except Exception:
+                            pass
+                    # 更新中心显示辅助线（若存在）
+                    center_t = x_min + float(getattr(self, 'center_display_time', 8.0))
+                    for line_attr in ('_center_line', '_time_cursor_line', '_guideline_center'):
+                        line_obj = getattr(self, line_attr, None)
+                        if line_obj is not None:
+                            try:
+                                line_obj.set_xdata([center_t, center_t])
+                            except Exception:
+                                pass
+                # 触发一次轻量重绘
+                if hasattr(self, 'canvas') and self.canvas is not None:
+                    try:
+                        self.canvas.draw_idle()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             self._in_update_display = False
             return
         
@@ -22053,6 +22083,15 @@ class IntegratedRecordingInterface(QMainWindow):
             act_net_accomp = menu.addAction("网络伴奏 (占位)")
             act_net_orig = menu.addAction("网络原唱 (占位)")
             menu.addSeparator()
+            # 音量调节
+            try:
+                cur_acc = int(getattr(self, 'backing_volume_accompaniment', 1.0) * 100)
+                cur_orig = int(getattr(self, 'backing_volume_original', 1.0) * 100)
+            except Exception:
+                cur_acc, cur_orig = 100, 100
+            act_vol_acc = menu.addAction(f"设置伴奏音量 ({cur_acc}%)")
+            act_vol_orig = menu.addAction(f"设置原唱音量 ({cur_orig}%)")
+            menu.addSeparator()
             act_clear_accomp = menu.addAction("清除伴奏")
             act_clear_orig = menu.addAction("清除原唱")
             act_clear_all = menu.addAction("清除全部")
@@ -22065,6 +22104,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._load_local_backing(is_original=True)
             elif chosen in (act_net_accomp, act_net_orig):
                 QMessageBox.information(self, "占位", "网络来源功能占位，后续实现。")
+            elif chosen == act_vol_acc:
+                self._adjust_backing_volume(is_original=False)
+            elif chosen == act_vol_orig:
+                self._adjust_backing_volume(is_original=True)
             elif chosen == act_clear_accomp:
                 self._clear_backing(False)
             elif chosen == act_clear_orig:
@@ -22074,6 +22117,28 @@ class IntegratedRecordingInterface(QMainWindow):
             self.update_backing_button_style()
         except Exception as e:
             print(f"⚠️ 显示伴奏菜单失败: {e}")
+
+    def _adjust_backing_volume(self, is_original: bool):
+        """弹出输入框调整伴奏/原唱音量 (0-200%)"""
+        try:
+            from PyQt6.QtWidgets import QInputDialog
+            if not hasattr(self, 'backing_volume_accompaniment'):
+                self.backing_volume_accompaniment = 1.0
+            if not hasattr(self, 'backing_volume_original'):
+                self.backing_volume_original = 1.0
+            current = self.backing_volume_original if is_original else self.backing_volume_accompaniment
+            val, ok = QInputDialog.getInt(self, "设置音量", "音量百分比 (0-200%)", int(current * 100), 0, 200, 5)
+            if not ok:
+                return
+            new_v = max(0.0, min(2.0, val / 100.0))
+            if is_original:
+                self.backing_volume_original = new_v
+                print(f"🎚️ 原唱音量: {val}%")
+            else:
+                self.backing_volume_accompaniment = new_v
+                print(f"🎚️ 伴奏音量: {val}%")
+        except Exception as e:
+            print(f"⚠️ 调整音量失败: {e}")
 
     def update_backing_button_style(self):
         """根据当前模式与加载状态更新按钮样式。"""
@@ -22088,9 +22153,41 @@ class IntegratedRecordingInterface(QMainWindow):
             style = base + " QPushButton { border:2px solid #ff8fcf; }"
             text = "伴奏: 仅伴奏" if self.backing_pcm_accompaniment is not None else "伴奏: (未加载)"
         else:
-            # 彩虹渐变边框（Qt 6 支持 border-image 渐变；若不支持则仍显示透明）
-            style = base + " QPushButton { border:2px solid transparent; border-image: linear-gradient(to right, #ff0040, #ffa500, #ffff00, #00ff80, #00bfff, #a000ff) 1; }"
+            # 伴奏+原唱模式：整个按钮彩虹渐变背景 + 轻微发光边框
             text = "伴奏: 伴奏+原唱"
+            acc_ok = self.backing_pcm_accompaniment is not None
+            orig_ok = self.backing_pcm_original is not None
+            border_col = "#ffffff" if (acc_ok and orig_ok) else "#ff5555"
+            # 使用 qlineargradient 作为背景而不是仅边框，提升可见度
+            style = (
+                "QPushButton {\n"
+                "    padding:6px 14px; border-radius:8px; font-weight:bold; color:white;\n"
+                f"    border:2px solid {border_col};\n"
+                "    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,\n"
+                "        stop:0 #ff3cac,\n"
+                "        stop:0.18 #784ba0,\n"
+                "        stop:0.36 #2b86c5,\n"
+                "        stop:0.54 #29c079,\n"
+                "        stop:0.72 #f8b500,\n"
+                "        stop:0.90 #ff8921,\n"
+                "        stop:1 #ff3cac);\n"
+                "}\n"
+                "QPushButton:hover {\n"
+                "    border:2px solid #ffe066;\n"
+                "    filter: brightness(1.08);\n"
+                "}\n"
+                "QPushButton:pressed {\n"
+                "    border:2px solid #ffaa00;\n"
+                "    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,\n"
+                "        stop:0 #e62f9c,\n"
+                "        stop:0.18 #663e8c,\n"
+                "        stop:0.36 #246f9f,\n"
+                "        stop:0.54 #219e65,\n"
+                "        stop:0.72 #d29b00,\n"
+                "        stop:0.90 #e07300,\n"
+                "        stop:1 #e62f9c);\n"
+                "}\n"
+            )
         # 标记缺失资源
         if self.backing_mode != 'off':
             if self.backing_mode in ('accompaniment','both') and self.backing_pcm_accompaniment is None:
@@ -22278,6 +22375,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     remain = end - len(acc)
                     part2 = acc[:remain % len(acc)] if len(acc) else part1
                     acc_chunk = _np.concatenate([part1, part2]) if part2.size else part1
+                acc_vol = float(getattr(self, 'backing_volume_accompaniment', 1.0))
                 if self.backing_mode == 'both' and self.backing_pcm_original is not None:
                     orig = self.backing_pcm_original
                     if end <= len(orig):
@@ -22287,9 +22385,14 @@ class IntegratedRecordingInterface(QMainWindow):
                         remain = end - len(orig)
                         part2 = orig[:remain % len(orig)] if len(orig) else part1
                         orig_chunk = _np.concatenate([part1, part2]) if part2.size else part1
-                    mix = (acc_chunk.astype(_np.float32) + orig_chunk.astype(_np.float32)) * 0.5
+                    orig_vol = float(getattr(self, 'backing_volume_original', 1.0))
+                    mix = acc_chunk.astype(_np.float32) * acc_vol + orig_chunk.astype(_np.float32) * orig_vol
                 else:
-                    mix = acc_chunk.astype(_np.float32)
+                    mix = acc_chunk.astype(_np.float32) * acc_vol
+                # 简单限幅，避免 >1.0 失真
+                peak = _np.max(_np.abs(mix))
+                if peak > 1.0:
+                    mix = mix / peak
                 self.backing_play_position = end % len(acc)
             return (mix.tobytes(), 0)
         except Exception as e:
@@ -22329,9 +22432,15 @@ class IntegratedRecordingInterface(QMainWindow):
                         remain = end - len(orig)
                         part2 = orig[:remain % len(orig)] if len(orig) > 0 else part1
                         orig_chunk = np.concatenate([part1, part2]) if part2.size else part1
-                    mix = (acc_chunk.astype(np.float32) + orig_chunk.astype(np.float32)) * 0.5
+                    acc_vol = float(getattr(self, 'backing_volume_accompaniment', 1.0))
+                    orig_vol = float(getattr(self, 'backing_volume_original', 1.0))
+                    mix = acc_chunk.astype(np.float32) * acc_vol + orig_chunk.astype(np.float32) * orig_vol
                 else:
-                    mix = acc_chunk.astype(np.float32)
+                    acc_vol = float(getattr(self, 'backing_volume_accompaniment', 1.0))
+                    mix = acc_chunk.astype(np.float32) * acc_vol
+                peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+                if peak > 1.0:
+                    mix = mix / peak
                 self.backing_play_position = end % len(acc)
             try:
                 self._backing_stream.write(mix.tobytes())
@@ -22352,6 +22461,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
     def _init_backing_state(self):
         """(重建) 初始化伴奏/原唱播放状态（放置于其它播放函数附近，避免重复定义冲突）。"""
+        # 基本状态
         self.backing_mode = 'off'
         self.backing_pcm_accompaniment = None
         self.backing_pcm_original = None
@@ -22365,6 +22475,12 @@ class IntegratedRecordingInterface(QMainWindow):
         self._backing_lock = getattr(self, '_backing_lock', _thr.Lock())
         self.lyrics_enabled = False
         self._backing_callback_enabled = True
+        # 音量（线性倍数，GUI 显示百分比）；保持已有值避免覆盖用户设置
+        # 默认初始：伴奏 30%，原唱 50%（首次更舒适；若用户已有设置不覆盖）
+        if not hasattr(self, 'backing_volume_accompaniment'):
+            self.backing_volume_accompaniment = 0.30
+        if not hasattr(self, 'backing_volume_original'):
+            self.backing_volume_original = 0.50
 
     def create_control_panel(self):
         """创建控制面板（重构修复缩进/重复问题）"""
