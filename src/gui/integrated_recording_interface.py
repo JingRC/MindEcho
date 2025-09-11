@@ -61,29 +61,42 @@ class LatencyMeasurer:
 # 音频处理优化工具
 class AudioProcessor:
     """高效音频处理器"""
-    def __init__(self, sample_rate=48000):
-        self.sample_rate = sample_rate
-        self.smooth_state = 0.0
-        self.alpha = 0.1
-        
-    @profile
-    def fast_smoothing(self, data):
-        """使用IIR滤波器实现低延迟平滑"""
-        if len(data) == 0:
-            return data
-        smoothed = np.zeros_like(data, dtype=np.float32)
-        smoothed[0] = self.alpha * data[0] + (1 - self.alpha) * self.smooth_state
-        for i in range(1, len(data)):
-            smoothed[i] = self.alpha * data[i] + (1 - self.alpha) * smoothed[i-1]
-        self.smooth_state = smoothed[-1]
-        return smoothed
-    
-    @profile
-    def compute_gain(self, audio_chunk):
-        """快速RMS计算与增益调整"""
-        rms = np.sqrt(np.mean(np.square(audio_chunk)))
-        target_rms = 0.12
-        return np.clip(target_rms / (rms + 1e-6), 1.0, 2.5)
+    # （原本这里的 RMS 归一化散落代码已移除，如需可实现成独立函数）
+    def __init__(self, sample_rate: int = 48000, chunk_size: int = 1024, channels: int = 1):
+        """基础音频处理器初始化
+
+        Args:
+            sample_rate (int): 采样率，默认 48000，外部可传入 96000 等高采样率。
+            chunk_size (int): 处理块大小（外部性能模式可能覆盖）。
+            channels (int): 声道数，目前仅支持 1。
+        """
+        try:
+            self.sample_rate = int(sample_rate)
+        except Exception:
+            self.sample_rate = 48000
+        try:
+            self.chunk_size = int(chunk_size)
+        except Exception:
+            self.chunk_size = 1024
+        self.channels = 1 if channels != 2 else 2  # 预留多声道
+        # GPU / 其它高级特性占位（由上层检测后动态设置）
+        self.use_gpu_acceleration = False
+        # 兼容历史代码中可能期望存在的属性
+        self.enhanced_yin_processor = None
+        # 智能音量增强与其它功能主要在 IntegratedAudioProcessor 中实现，这里保持精简
+
+    def set_sample_rate(self, sr: int):
+        try:
+            self.sample_rate = int(sr)
+        except Exception:
+            pass
+
+    def set_chunk_size(self, size: int):
+        try:
+            if size > 0:
+                self.chunk_size = int(size)
+        except Exception:
+            pass
     
     @profile
     def optimized_audio_process(self, input_data, enable_smooth=True):
@@ -21298,6 +21311,8 @@ class IntegratedRecordingInterface(QMainWindow):
             if self.audio_processor.start_recording(should_save=False):
                 print("✅ 实时音高分析已启动")
                 self.is_analyzing = True
+                # 若伴奏开启则启动播放
+                self._maybe_start_backing_playback()
                 # 更新UI状态
                 if hasattr(self, 'status_label'):
                     self.update_status_display()
@@ -21992,55 +22007,392 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception as e:
             print(f"❌ 初始化默认降噪模式失败: {e}")
     
+    # ====================== 伴奏 / 原唱 / 歌词 扩展功能 ======================
+    def _cycle_backing_mode(self):
+        """左键点击循环切换模式；需要的音频未加载则提示加载。"""
+        try:
+            # 若尚未初始化按钮（防御）
+            if not hasattr(self, 'backing_button'):  # UI 尚未创建
+                return
+            if self.backing_mode == 'off':
+                if self.backing_pcm_accompaniment is None:
+                    self._load_local_backing(is_original=False)
+                    if self.backing_pcm_accompaniment is None:  # 用户取消
+                        return
+                self.backing_mode = 'accompaniment'
+            elif self.backing_mode == 'accompaniment':
+                # 需要原唱轨
+                if self.backing_pcm_original is None:
+                    self._load_local_backing(is_original=True)
+                    if self.backing_pcm_original is None:
+                        # 保持在伴奏模式
+                        self.backing_mode = 'accompaniment'
+                        self.update_backing_button_style()
+                        return
+                self.backing_mode = 'both'
+            else:
+                self.backing_mode = 'off'
+                self._stop_backing_playback()
+            self.update_backing_button_style()
+            # 若正在录音 / 分析，切换后立即作用
+            if self.backing_mode != 'off' and (self.is_recording or self.is_analyzing):
+                self._maybe_start_backing_playback()
+            elif self.backing_mode == 'off':
+                self._stop_backing_playback()
+        except Exception as e:
+            print(f"⚠️ 切换伴奏模式失败: {e}")
+
+    def show_backing_context_menu(self, pos):
+        """右键菜单：加载/清除伴奏与原唱、网络占位等。"""
+        try:
+            from PyQt6.QtWidgets import QMenu, QMessageBox
+            menu = QMenu(self.backing_button)
+            act_load_accomp = menu.addAction("加载本地伴奏 (WAV/FLAC)")
+            act_load_orig = menu.addAction("加载本地原唱 (WAV/FLAC)")
+            menu.addSeparator()
+            act_net_accomp = menu.addAction("网络伴奏 (占位)")
+            act_net_orig = menu.addAction("网络原唱 (占位)")
+            menu.addSeparator()
+            act_clear_accomp = menu.addAction("清除伴奏")
+            act_clear_orig = menu.addAction("清除原唱")
+            act_clear_all = menu.addAction("清除全部")
+            chosen = menu.exec(self.backing_button.mapToGlobal(pos))
+            if chosen is None:
+                return
+            if chosen == act_load_accomp:
+                self._load_local_backing(is_original=False)
+            elif chosen == act_load_orig:
+                self._load_local_backing(is_original=True)
+            elif chosen in (act_net_accomp, act_net_orig):
+                QMessageBox.information(self, "占位", "网络来源功能占位，后续实现。")
+            elif chosen == act_clear_accomp:
+                self._clear_backing(False)
+            elif chosen == act_clear_orig:
+                self._clear_backing(True)
+            elif chosen == act_clear_all:
+                self._clear_backing(False); self._clear_backing(True)
+            self.update_backing_button_style()
+        except Exception as e:
+            print(f"⚠️ 显示伴奏菜单失败: {e}")
+
+    def update_backing_button_style(self):
+        """根据当前模式与加载状态更新按钮样式。"""
+        if not hasattr(self, 'backing_button'):
+            return
+        base = "QPushButton { padding:6px 14px; border-radius:8px; font-weight:bold; background-color:#2C2C2C; color:white; } QPushButton:hover { background-color:#333333; }"
+        if self.backing_mode == 'off':
+            style = base + " QPushButton { border:2px solid #444444; }"
+            text = "伴奏: 关闭"
+        elif self.backing_mode == 'accompaniment':
+            # 浅粉色边框
+            style = base + " QPushButton { border:2px solid #ff8fcf; }"
+            text = "伴奏: 仅伴奏" if self.backing_pcm_accompaniment is not None else "伴奏: (未加载)"
+        else:
+            # 彩虹渐变边框（Qt 6 支持 border-image 渐变；若不支持则仍显示透明）
+            style = base + " QPushButton { border:2px solid transparent; border-image: linear-gradient(to right, #ff0040, #ffa500, #ffff00, #00ff80, #00bfff, #a000ff) 1; }"
+            text = "伴奏: 伴奏+原唱"
+        # 标记缺失资源
+        if self.backing_mode != 'off':
+            if self.backing_mode in ('accompaniment','both') and self.backing_pcm_accompaniment is None:
+                text += "⚠"
+            if self.backing_mode == 'both' and self.backing_pcm_original is None:
+                text += "⚠"
+        self.backing_button.setText(text)
+        self.backing_button.setStyleSheet(style)
+
+    def _load_local_backing(self, is_original: bool):
+        """选择本地 WAV/FLAC，解码至 float32 PCM mono 缓存。"""
+        try:
+            from PyQt6.QtWidgets import QFileDialog, QMessageBox
+            import numpy as np
+            file_filter = "音频文件 (*.wav *.WAV *.flac *.FLAC)"
+            path, _ = QFileDialog.getOpenFileName(self, "选择音频文件", str(getattr(self, 'save_base_dir', '.')), file_filter)
+            if not path:
+                return
+            # 尝试使用 soundfile
+            data = None; sr = None
+            try:
+                import soundfile as sf  # type: ignore
+                data, sr = sf.read(path, always_2d=False)
+            except Exception:
+                # 回退 wave (仅 WAV)
+                import wave, struct
+                if not path.lower().endswith('.wav'):
+                    QMessageBox.warning(self, "读取失败", "需要安装 soundfile 以读取 FLAC。")
+                    return
+                with wave.open(path, 'rb') as wf:
+                    sr = wf.getframerate()
+                    n_channels = wf.getnchannels()
+                    n_frames = wf.getnframes()
+                    raw = wf.readframes(n_frames)
+                    fmt = '<' + 'h' * (len(raw)//2)
+                    import struct as _s
+                    samples = _s.unpack(fmt, raw)
+                    import numpy as _np
+                    data = _np.array(samples, dtype=_np.float32) / 32768.0
+                    if n_channels > 1:
+                        data = data.reshape(-1, n_channels).mean(axis=1)
+            if data is None or sr is None:
+                QMessageBox.warning(self, "读取失败", "无法读取音频文件。")
+                return
+            import numpy as np
+            data = np.asarray(data, dtype=np.float32)
+            # 若多声道 -> 单声道
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            # 记忆 sample rate；如已有其它轨且 sr 不同，进行简单线性重采样 => 统一到第一条已加载轨的采样率
+            target_sr = self.backing_sample_rate or sr
+            if self.backing_sample_rate and sr != self.backing_sample_rate:
+                try:
+                    import numpy as np
+                    ratio = target_sr / sr
+                    new_len = int(len(data) * ratio)
+                    x_old = np.linspace(0, 1, len(data), endpoint=False)
+                    x_new = np.linspace(0, 1, new_len, endpoint=False)
+                    data = np.interp(x_new, x_old, data).astype(np.float32)
+                except Exception as _re:
+                    print(f"⚠️ 重采样失败，使用原采样率: {_re}")
+                    target_sr = sr
+            self.backing_sample_rate = target_sr
+            if is_original:
+                self.backing_pcm_original = data
+                print(f"🎵 已加载原唱: {path} 采样率={target_sr} 长度={len(data)}")
+            else:
+                self.backing_pcm_accompaniment = data
+                print(f"🎵 已加载伴奏: {path} 采样率={target_sr} 长度={len(data)}")
+            # 默认切换到伴奏模式（若当前为 off 且加载伴奏）
+            if self.backing_mode == 'off' and not is_original:
+                self.backing_mode = 'accompaniment'
+            self.update_backing_button_style()
+        except Exception as e:
+            print(f"❌ 加载音频失败: {e}")
+
+    def _clear_backing(self, is_original: bool):
+        try:
+            with self._backing_lock:
+                if is_original:
+                    self.backing_pcm_original = None
+                else:
+                    self.backing_pcm_accompaniment = None
+                need_off = False
+                if self.backing_mode == 'accompaniment' and self.backing_pcm_accompaniment is None:
+                    need_off = True
+                elif self.backing_mode == 'both' and (self.backing_pcm_accompaniment is None or self.backing_pcm_original is None):
+                    need_off = True
+                if need_off:
+                    self.backing_mode = 'off'
+            self.update_backing_button_style()
+        except Exception as e:
+            print(f"⚠️ 清除伴奏失败: {e}")
+
+    def _maybe_start_backing_playback(self):
+        """在录音/分析开始时启动伴奏播放。"""
+        try:
+            if self.backing_mode == 'off' or self.backing_pcm_accompaniment is None or self.backing_sample_rate is None:
+                return
+            # 已在回调播放
+            if self._backing_stream is not None and getattr(self._backing_stream, 'is_active', lambda: False)():
+                return
+            # 初始化 PyAudio
+            if self._pyaudio_out is None:
+                try:
+                    import pyaudio  # type: ignore
+                    self._pyaudio_out = pyaudio.PyAudio()
+                    self._pyaudio_mod = pyaudio
+                except Exception as _ie:
+                    print(f"⚠️ PyAudio 初始化失败，回退 QTimer: {_ie}")
+                    self._backing_callback_enabled = False
+            self.backing_play_position = 0
+            if self._backing_callback_enabled and self._pyaudio_out is not None:
+                # 回调方式（低延迟稳定）
+                import pyaudio  # type: ignore
+                def _cb(in_data, frame_count, time_info, status_flags):
+                    return self._backing_pyaudio_callback(frame_count)
+                try:
+                    self._backing_stream = self._pyaudio_out.open(
+                        format=pyaudio.paFloat32,
+                        channels=1,
+                        rate=int(self.backing_sample_rate),
+                        output=True,
+                        frames_per_buffer=self._backing_chunk,
+                        stream_callback=_cb
+                    )
+                    self._backing_stream.start_stream()
+                    print("▶️ 伴奏播放启动(回调模式)")
+                    return
+                except Exception as _open_err:
+                    print(f"⚠️ 打开回调流失败，回退 QTimer: {_open_err}")
+                    self._backing_callback_enabled = False
+            # 回退: QTimer 推送
+            if self.backing_play_timer is None:
+                from PyQt6.QtCore import QTimer
+                self.backing_play_timer = QTimer()
+                self.backing_play_timer.timeout.connect(self._backing_play_chunk)
+            interval_ms = int(self._backing_chunk / self.backing_sample_rate * 1000)
+            if interval_ms < 10:
+                interval_ms = 10
+            self.backing_play_timer.start(interval_ms)
+            # 打开一个普通写流
+            if self._pyaudio_out is not None and self._backing_stream is None:
+                try:
+                    import pyaudio  # type: ignore
+                    self._backing_stream = self._pyaudio_out.open(format=pyaudio.paFloat32, channels=1, rate=int(self.backing_sample_rate), output=True)
+                except Exception:
+                    pass
+            print("▶️ 伴奏播放启动(QTimer)")
+        except Exception as e:
+            print(f"❌ 启动伴奏播放失败: {e}")
+
+    def _stop_backing_playback(self):
+        try:
+            if self.backing_play_timer and self.backing_play_timer.isActive():
+                try: self.backing_play_timer.stop()
+                except Exception: pass
+            if self._backing_stream is not None:
+                try:
+                    if getattr(self._backing_stream, 'is_active', lambda: False)():
+                        self._backing_stream.stop_stream()
+                except Exception: pass
+                try: self._backing_stream.close()
+                except Exception: pass
+                self._backing_stream = None
+            # 保留 self._pyaudio_out 不立即 terminate 以便重复开始/停止；在窗口关闭时清理
+            print("⏹️ 伴奏播放停止")
+        except Exception as e:
+            print(f"⚠️ 停止伴奏播放异常: {e}")
+
+    def _backing_pyaudio_callback(self, frame_count: int):
+        """PyAudio 回调: 线程安全生成混音数据，减少 GUI 定时器抖动。"""
+        try:
+            import numpy as _np
+            with self._backing_lock:
+                if self.backing_mode == 'off' or self.backing_pcm_accompaniment is None or self.backing_sample_rate is None:
+                    return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
+                acc = self.backing_pcm_accompaniment
+                pos = self.backing_play_position
+                end = pos + frame_count
+                if end <= len(acc):
+                    acc_chunk = acc[pos:end]
+                else:
+                    part1 = acc[pos:]
+                    remain = end - len(acc)
+                    part2 = acc[:remain % len(acc)] if len(acc) else part1
+                    acc_chunk = _np.concatenate([part1, part2]) if part2.size else part1
+                if self.backing_mode == 'both' and self.backing_pcm_original is not None:
+                    orig = self.backing_pcm_original
+                    if end <= len(orig):
+                        orig_chunk = orig[pos:end]
+                    else:
+                        part1 = orig[pos:]
+                        remain = end - len(orig)
+                        part2 = orig[:remain % len(orig)] if len(orig) else part1
+                        orig_chunk = _np.concatenate([part1, part2]) if part2.size else part1
+                    mix = (acc_chunk.astype(_np.float32) + orig_chunk.astype(_np.float32)) * 0.5
+                else:
+                    mix = acc_chunk.astype(_np.float32)
+                self.backing_play_position = end % len(acc)
+            return (mix.tobytes(), 0)
+        except Exception as e:
+            try:
+                print(f"⚠️ 回调混音异常: {e}")
+            except Exception:
+                pass
+            import numpy as _np
+            return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
+
+    def _backing_play_chunk(self):
+        """定时器回调：推送下一段伴奏（及原唱）到输出。循环播放。"""
+        try:
+            # 回调模式下不需要 QTimer 推送
+            if self._backing_stream is not None and self._backing_callback_enabled:
+                return
+            import numpy as np
+            if self._backing_stream is None or self.backing_pcm_accompaniment is None:
+                return
+            with self._backing_lock:
+                acc = self.backing_pcm_accompaniment
+                start = self.backing_play_position
+                end = start + self._backing_chunk
+                if end <= len(acc):
+                    acc_chunk = acc[start:end]
+                else:
+                    part1 = acc[start:]
+                    remain = end - len(acc)
+                    part2 = acc[:remain % len(acc)] if len(acc) > 0 else part1
+                    acc_chunk = np.concatenate([part1, part2]) if part2.size else part1
+                if self.backing_mode == 'both' and self.backing_pcm_original is not None:
+                    orig = self.backing_pcm_original
+                    if end <= len(orig):
+                        orig_chunk = orig[start:end]
+                    else:
+                        part1 = orig[start:]
+                        remain = end - len(orig)
+                        part2 = orig[:remain % len(orig)] if len(orig) > 0 else part1
+                        orig_chunk = np.concatenate([part1, part2]) if part2.size else part1
+                    mix = (acc_chunk.astype(np.float32) + orig_chunk.astype(np.float32)) * 0.5
+                else:
+                    mix = acc_chunk.astype(np.float32)
+                self.backing_play_position = end % len(acc)
+            try:
+                self._backing_stream.write(mix.tobytes())
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"⚠️ 播放伴奏块异常: {e}")
+
+    def _toggle_lyrics(self):
+        try:
+            self.lyrics_enabled = getattr(self, 'lyrics_button').isChecked()
+            if self.lyrics_enabled:
+                # 占位：未来加载歌词解析/滚动
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "歌词", "歌词显示功能占位，后续实现。")
+        except Exception as e:
+            print(f"⚠️ 歌词开关错误: {e}")
+
+    def _init_backing_state(self):
+        """(重建) 初始化伴奏/原唱播放状态（放置于其它播放函数附近，避免重复定义冲突）。"""
+        self.backing_mode = 'off'
+        self.backing_pcm_accompaniment = None
+        self.backing_pcm_original = None
+        self.backing_sample_rate = None
+        self.backing_play_position = 0
+        self.backing_play_timer = None
+        self._pyaudio_out = None
+        self._backing_stream = None
+        self._backing_chunk = 2048
+        import threading as _thr
+        self._backing_lock = getattr(self, '_backing_lock', _thr.Lock())
+        self.lyrics_enabled = False
+        self._backing_callback_enabled = True
+
     def create_control_panel(self):
-        """创建控制面板"""
+        """创建控制面板（重构修复缩进/重复问题）"""
         control_group = QGroupBox("录音和分析控制")
         layout = QVBoxLayout(control_group)
-        
+
         # 第一行：录音控制
         recording_layout = QHBoxLayout()
-        
-        # 录音模式
         recording_layout.addWidget(QLabel("录音模式:"))
         self.recording_mode = QComboBox()
-        self.recording_mode.addItems([
-            "录音+分析+保存",
-            "仅分析(不保存)",
-            "录音+保存(不分析)"
-        ])
+        self.recording_mode.addItems(["录音+分析+保存", "仅分析(不保存)", "录音+保存(不分析)"])
         self.recording_mode.currentTextChanged.connect(self.on_recording_mode_changed)
         recording_layout.addWidget(self.recording_mode)
-        
-        # 主录音按钮
+
         self.main_record_button = QPushButton("开始录音分析")
         self.main_record_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2E7D32;
-                border: 2px solid #4CAF50;
-                border-radius: 8px;
-                padding: 12px 24px;
-                font-size: 14px;
-                font-weight: bold;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #388E3C;
-                border-color: #66BB6A;
-            }
-            QPushButton:pressed {
-                background-color: #1B5E20;
-            }
+            QPushButton { background-color:#2E7D32; border:2px solid #4CAF50; border-radius:8px; padding:12px 24px; font-size:14px; font-weight:bold; color:white; }
+            QPushButton:hover { background-color:#388E3C; border-color:#66BB6A; }
+            QPushButton:pressed { background-color:#1B5E20; }
         """)
         self.main_record_button.clicked.connect(self.toggle_main_recording)
         recording_layout.addWidget(self.main_record_button)
-        
-        # 暂停按钮
+
         self.pause_button = QPushButton("暂停")
         self.pause_button.setEnabled(False)
         self.pause_button.clicked.connect(self.pause_recording)
         recording_layout.addWidget(self.pause_button)
 
-        # 回听按钮（Phase1：仅UI与选区交互，无音频回放）
         self.listenback_button = QPushButton("回听")
         self.listenback_button.setCheckable(True)
         self.listenback_button.setToolTip("启用回听选区：拖动两条细线选择时间段")
@@ -22053,118 +22405,76 @@ class IntegratedRecordingInterface(QMainWindow):
         self.listenback_button.toggled.connect(_toggle_listenback)
         recording_layout.addWidget(self.listenback_button)
 
-        # 本地音高解析入口（先加按钮，功能后续逐步完善）
         self.local_pitch_btn = QPushButton("本地音高解析")
         self.local_pitch_btn.setToolTip("从本地音频文件进行音高分析或转换")
         self.local_pitch_btn.clicked.connect(self.open_local_pitch_dialog)
         recording_layout.addWidget(self.local_pitch_btn)
-        
+
         recording_layout.addStretch()
         layout.addLayout(recording_layout)
-        
+
         # 第二行：录音参数
         params_layout = QHBoxLayout()
-        
         params_layout.addWidget(QLabel("采样率:"))
-        self.sample_rate_combo = QComboBox()
-        self.sample_rate_combo.addItems(["48000", "44100", "96000"])  # 48kHz优先
-        self.sample_rate_combo.setCurrentText("48000")  # 默认48kHz
+        self.sample_rate_combo = QComboBox(); self.sample_rate_combo.addItems(["48000","44100","96000"]); self.sample_rate_combo.setCurrentText("48000")
         params_layout.addWidget(self.sample_rate_combo)
-        
+
         params_layout.addWidget(QLabel("录音文件名:"))
-        self.filename_prefix = QComboBox()
-        self.filename_prefix.setEditable(True)
-        # 预置常用中英文示例，同时支持自由输入
-        self.filename_prefix.addItems([
-            "recording",
-            "practice",
-            "performance",
-            "test",
-            "录音",
-            "练习",
-            "演出",
-            "测试"
-        ])
+        self.filename_prefix = QComboBox(); self.filename_prefix.setEditable(True)
+        self.filename_prefix.addItems(["recording","practice","performance","test","录音","练习","演出","测试"])
         try:
-            editor = self.filename_prefix.lineEdit()
-            if editor is not None:
-                editor.setPlaceholderText("可输入中文或英文作为录音文件名")
+            ed = self.filename_prefix.lineEdit();
+            if ed: ed.setPlaceholderText("可输入中文或英文作为录音文件名")
         except Exception:
             pass
         params_layout.addWidget(self.filename_prefix)
-        
+
         params_layout.addWidget(QLabel("保存录音:"))
-        self.save_checkbox = QCheckBox()
-        self.save_checkbox.setChecked(True)
-        self.save_checkbox.toggled.connect(self.on_save_mode_changed)
+        self.save_checkbox = QCheckBox(); self.save_checkbox.setChecked(True); self.save_checkbox.toggled.connect(self.on_save_mode_changed)
         params_layout.addWidget(self.save_checkbox)
-        
-        # 降噪控制
+
         params_layout.addWidget(QLabel("降噪模式:"))
-        self.noise_reduction_combo = QComboBox()
-        self.noise_reduction_combo.addItems([
-            "关闭",
-            "基础频域降噪", 
-            "AI降噪",
-            "高级音乐保护"
-        ])
-        self.noise_reduction_combo.setCurrentText("基础频域降噪")  # 🎯 修改默认为基础频域降噪
+        self.noise_reduction_combo = QComboBox(); self.noise_reduction_combo.addItems(["关闭","基础频域降噪","AI降噪","高级音乐保护"])
+        self.noise_reduction_combo.setCurrentText("基础频域降噪")
         self.noise_reduction_combo.currentTextChanged.connect(self.on_noise_reduction_changed)
         self.noise_reduction_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #2C2C2C;
-                border: 2px solid #4A90E2;
-                border-radius: 4px;
-                padding: 4px 8px;
-                color: white;
-                font-size: 12px;
-            }
-            QComboBox:hover {
-                border-color: #66BB6A;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid white;
-                margin-right: 5px;
-            }
+            QComboBox { background-color:#2C2C2C; border:2px solid #4A90E2; border-radius:4px; padding:4px 8px; color:white; font-size:12px; }
+            QComboBox:hover { border-color:#66BB6A; }
+            QComboBox::drop-down { border:none; }
+            QComboBox::down-arrow { image:none; border-left:5px solid transparent; border-right:5px solid transparent; border-top:5px solid white; margin-right:5px; }
         """)
         params_layout.addWidget(self.noise_reduction_combo)
-        
-        # 🔥 APO电流音检测控制
+
         params_layout.addWidget(QLabel("电流音检测:"))
-        self.electric_noise_checkbox = QCheckBox("启用APO检测")
-        self.electric_noise_checkbox.setChecked(True)  # 默认启用
+        self.electric_noise_checkbox = QCheckBox("启用APO检测"); self.electric_noise_checkbox.setChecked(True)
         self.electric_noise_checkbox.toggled.connect(self.on_electric_noise_detection_changed)
         self.electric_noise_checkbox.setStyleSheet("""
-            QCheckBox {
-                color: white;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border: 2px solid #4A90E2;
-                border-radius: 3px;
-                background-color: #2C2C2C;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #4CAF50;
-                border-color: #66BB6A;
-            }
-            QCheckBox::indicator:hover {
-                border-color: #66BB6A;
-            }
+            QCheckBox { color:white; font-size:12px; }
+            QCheckBox::indicator { width:16px; height:16px; border:2px solid #4A90E2; border-radius:3px; background-color:#2C2C2C; }
+            QCheckBox::indicator:checked { background-color:#4CAF50; border-color:#66BB6A; }
+            QCheckBox::indicator:hover { border-color:#66BB6A; }
         """)
         params_layout.addWidget(self.electric_noise_checkbox)
-        
+
         params_layout.addStretch()
         layout.addLayout(params_layout)
-        
+
+        # 第三行：伴奏 / 原唱 / 歌词
+        self._init_backing_state()
+        backing_layout = QHBoxLayout()
+        backing_layout.addWidget(QLabel("伴奏/原唱:"))
+        self.backing_button = QPushButton("伴奏: 关闭")
+        self.backing_button.setToolTip("左键：切换模式 (关闭→仅伴奏→伴奏+原唱)；右键：加载/清除资源")
+        self.backing_button.clicked.connect(self._cycle_backing_mode)
+        self.backing_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.backing_button.customContextMenuRequested.connect(self.show_backing_context_menu)
+        backing_layout.addWidget(self.backing_button)
+        self.lyrics_button = QPushButton("歌词"); self.lyrics_button.setCheckable(True); self.lyrics_button.toggled.connect(self._toggle_lyrics)
+        self.lyrics_button.setStyleSheet("QPushButton { padding:6px 14px; border:2px solid #444; border-radius:8px; background:#2C2C2C; color:white;} QPushButton:checked { border-color:#4A90E2; }")
+        backing_layout.addWidget(self.lyrics_button)
+        backing_layout.addStretch(); layout.addLayout(backing_layout)
+        self.update_backing_button_style()
+
         return control_group
     
     def create_status_panel(self):
@@ -22885,6 +23195,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 
                 # 开始时间追踪（支持断续音调曲线）
                 self.visualizer.start_time_tracking()
+                # 若伴奏模式开启则启动伴奏播放
+                self._maybe_start_backing_playback()
                 
         except Exception as e:
             QMessageBox.critical(self, "录音错误", f"启动录音失败: {e}")
@@ -22894,6 +23206,8 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             self.audio_processor.stop_recording()
             self.is_recording = False
+            # 停止伴奏播放（与录音联动）
+            self._stop_backing_playback()
             # 重置暂停按钮文本为“暂停”，并禁用
             try:
                 self.pause_button.setText("暂停")
