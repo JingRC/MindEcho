@@ -1,177 +1,339 @@
-"""
-MindEcho 集成录音与实时音高分析界面
-将录音、音高分析和心电图式可视化集成到一个统一界面
-"""
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QGroupBox, QHBoxLayout,
+    QSlider, QLabel, QPushButton, QMainWindow,
+    QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
+    QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QFrame, QMenu, QApplication
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 
-import sys
-import os
-import time
-import threading
-import numpy as np
-from pathlib import Path
 from collections import deque
-import sounddevice as sd
-import wave
-import json
-import queue
-import psutil
-def profile(func):
-    """性能分析装饰器：测量函数执行时间"""
-    def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = func(*args, **kwargs)
-        elapsed = (time.perf_counter() - start) * 1000
-        if elapsed > 5:
-            print(f"🔍 {func.__name__} 耗时: {elapsed:.3f}ms")
-        return result
-    return wrapper
+import time, threading, queue, json, os, sys, wave, math
+import contextlib  # 补充：_apply_backing_seek 中曾使用，之前未导入导致伴奏跳转 silently 失效
+from pathlib import Path
+import numpy as np
 
-# 延迟测量工具类
-class LatencyMeasurer:
-    """延迟测量与统计工具"""
-    def __init__(self, window_size=100):
-        self.timestamps = []
-        self.window_size = window_size
-        
-    def record_latency(self, input_time, current_time):
-        """记录单次延迟"""
-        latency = (current_time - input_time) * 1000
-        self.timestamps.append(latency)
-        if len(self.timestamps) > self.window_size:
-            self.timestamps.pop(0)
-    
-    def get_stats(self):
-        """获取延迟统计信息"""
-        if not self.timestamps:
-            return None
-        return {
-            'avg': np.mean(self.timestamps),
-            'max': np.max(self.timestamps),
-            'min': np.min(self.timestamps),
-            'std': np.std(self.timestamps),
-            'count': len(self.timestamps)
-        }
-    
-    def print_stats(self):
-        """打印延迟统计"""
-        stats = self.get_stats()
-        if stats:
-            print(f"🎧 延迟统计: 平均{stats['avg']:.2f}ms, 最大{stats['max']:.2f}ms, 最小{stats['min']:.2f}ms, 标准差{stats['std']:.2f}ms (样本数:{stats['count']})")
-
-# 音频处理优化工具
-class AudioProcessor:
-    """高效音频处理器"""
-    # （原本这里的 RMS 归一化散落代码已移除，如需可实现成独立函数）
-    def __init__(self, sample_rate: int = 48000, chunk_size: int = 1024, channels: int = 1):
-        """基础音频处理器初始化
-
-        Args:
-            sample_rate (int): 采样率，默认 48000，外部可传入 96000 等高采样率。
-            chunk_size (int): 处理块大小（外部性能模式可能覆盖）。
-            channels (int): 声道数，目前仅支持 1。
-        """
-        try:
-            self.sample_rate = int(sample_rate)
-        except Exception:
-            self.sample_rate = 48000
-        try:
-            self.chunk_size = int(chunk_size)
-        except Exception:
-            self.chunk_size = 1024
-        self.channels = 1 if channels != 2 else 2  # 预留多声道
-        # GPU / 其它高级特性占位（由上层检测后动态设置）
-        self.use_gpu_acceleration = False
-        # 兼容历史代码中可能期望存在的属性
-        self.enhanced_yin_processor = None
-        # 智能音量增强与其它功能主要在 IntegratedAudioProcessor 中实现，这里保持精简
-
-    def set_sample_rate(self, sr: int):
-        try:
-            self.sample_rate = int(sr)
-        except Exception:
-            pass
-
-    def set_chunk_size(self, size: int):
-        try:
-            if size > 0:
-                self.chunk_size = int(size)
-        except Exception:
-            pass
-    
-    @profile
-    def optimized_audio_process(self, input_data, enable_smooth=True):
-        """优化的音频处理流水线（极简化版本，减少电流音）"""
-        if len(input_data) == 0:
-            return input_data.astype(np.float32)
-        input_rms = np.sqrt(np.mean(np.square(input_data)))
-        input_max = np.max(np.abs(input_data))
-        if input_rms < 0.001 and input_max < 0.002:
-            return np.zeros_like(input_data, dtype=np.float32)
-        processed = input_data.copy().astype(np.float32)
-        if input_rms < 0.02:
-            safe_gain = min(2.0, 0.05 / (input_rms + 1e-6))
-            processed = processed * safe_gain
-        processed = np.tanh(processed * 0.95) * 0.9
-        if enable_smooth and len(processed) > 2:
-            smoothed = processed.copy()
-            for i in range(1, len(smoothed)-1):
-                smoothed[i] = processed[i] * 0.7 + processed[i-1] * 0.15 + processed[i+1] * 0.15
-            processed = smoothed
-        processed = np.clip(processed, -0.8, 0.8)
-        return processed
-
-# 系统优化工具
-def set_realtime_priority():
-    """设置进程为实时优先级"""
-    try:
-        p = psutil.Process(os.getpid())
-        if sys.platform == "win32":
-            p.nice(psutil.HIGH_PRIORITY_CLASS)
-        else:
-            p.nice(-10)
-        print("🚀 已设置高优先级")
-        return True
-    except Exception as e:
-        print(f"⚠️ 设置优先级失败: {e}")
-        return False
-
-# 添加项目根目录到路径
-current_dir = Path(__file__).parent
-project_root = current_dir.parent.parent
-sys.path.insert(0, str(project_root))
-
-# PyQt导入
+# ------------- 提前定义项目根与 PyQt 版本 -------------
 try:
-    from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                                 QPushButton, QLabel, QSlider, QComboBox,
-                                 QGroupBox, QProgressBar, QCheckBox, QSpinBox,
-                                 QApplication, QMessageBox, QFrame, QGridLayout,
-                                 QScrollBar, QDialog, QMenu, QFileDialog, QLineEdit)
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject, QObject
-    from PyQt6.QtGui import QFont, QPalette, QColor
+    project_root  # type: ignore
+except NameError:
+    try:
+        project_root = Path(__file__).resolve().parent.parent.parent
+    except Exception:
+        project_root = Path.cwd()
+
+PYQT_VERSION = 0
+try:
+    from PyQt6 import QtCore as _QC6  # type: ignore
     PYQT_VERSION = 6
-except ImportError:
+except Exception:
     try:
-        from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                                     QPushButton, QLabel, QSlider, QComboBox,
-                                     QGroupBox, QProgressBar, QCheckBox, QSpinBox,
-                                     QApplication, QMessageBox, QFrame, QFileDialog, QLineEdit)
-        from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QSettings, QMetaObject, QObject
-        from PyQt5.QtGui import QFont, QPalette, QColor
+        from PyQt5 import QtCore as _QC5  # type: ignore
         PYQT_VERSION = 5
-    except ImportError:
-        print("PyQt6/PyQt5 未安装")
-    raise
+    except Exception:
+        PYQT_VERSION = 0
 
-
-            # 导入PyQtGraph彩色渐变组件
-PYQTGRAPH_GRADIENT_AVAILABLE = False
+# ---------- 占位/容错：可能在其它模块中定义，若缺失则提供轻量占位以免IDE报错 ----------
 try:
-    from src.gui.pyqtgraph_gradient_widget import PyQtGraphColorGradientWidget
-    PYQTGRAPH_GRADIENT_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ PyQtGraph彩色渐变组件不可用: {e}")
-    print("将使用Matplotlib备用渐变方案")
+    from .pyqtgraph_gradient_widget import (
+        PYQTGRAPH_AVAILABLE as _PG_AVAIL,
+        PyQtGraphColorGradientWidget
+    )
+    PYQTGRAPH_GRADIENT_AVAILABLE = _PG_AVAIL
+except Exception:  # 允许缺失
+    PYQTGRAPH_GRADIENT_AVAILABLE = False
+    class PyQtGraphColorGradientWidget(QWidget):  # type: ignore
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+
+# （保留旧的兼容片段：已提前定义，此处不再需要）
+
+class AudioProcessor:  # 占位，真实实现应在独立文件
+    def __init__(self, sample_rate=48000):
+        self.sample_rate = sample_rate
+    def process_block(self, data):
+        return data
+
+class LatencyMeasurer:
+    def __init__(self, window_size=100):
+        self.window_size = window_size
+        self.values = deque(maxlen=window_size)
+    def add(self, v):
+        self.values.append(float(v))
+    def avg(self):
+        return sum(self.values)/len(self.values) if self.values else 0.0
+
+def set_realtime_priority():
+    try:
+        if os.name == 'nt':
+            pass
+    except Exception:
+        pass
+
+# 可选第三方: sounddevice
+try:
+    import sounddevice as sd  # type: ignore
+except Exception:
+    class _DummySD:
+        def __getattr__(self, item):
+            raise RuntimeError("sounddevice 不可用: " + item)
+    sd = _DummySD()  # type: ignore
+
+# 兜底：若上方导入失败，提供最小空类，避免类型分析器持续报错
+try:
+    QThread
+except NameError:
+    class QThread:  # type: ignore
+        def __init__(self,*a,**k): pass
+        def start(self): pass
+        def quit(self): pass
+        def wait(self, *a, **k): pass
+
+
+class _BackingControlWindow(QDialog):
+    """平行伴奏/原唱控制窗口。
+    提供: 进度跳转(回退裁剪/前向偏移)、区间重录、伴奏/原唱/监听音量调节、暂停/继续/结束。"""
+
+    def __init__(self, main: 'IntegratedRecordingInterface'):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("伴奏/原唱控制")
+        self.setMinimumWidth(430)
+        self.setStyleSheet(
+            "QDialog { background:#202020; color:#ffffff; } "
+            "QLabel{color:white;} "
+            "QSlider::groove:horizontal{height:6px;background:#404040;border-radius:3px;} "
+            "QSlider::handle:horizontal{background:#4A90E2;width:14px;margin:-4px 0;border-radius:7px;} "
+            "QSlider::sub-page:horizontal{background:#66BB6A;border-radius:3px;}"
+        )
+
+        layout = QVBoxLayout(self)
+
+        # ---- 播放进度 ----
+        progress_group = QGroupBox("播放进度")
+        progress_group.setStyleSheet("QGroupBox { border:1px solid #444; margin-top:10px; padding-top:12px; }")
+        pg_layout = QVBoxLayout(progress_group)
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 0)
+        self.position_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.position_slider.sliderReleased.connect(self._on_slider_released)
+        self.position_slider.valueChanged.connect(self._on_slider_changed)
+        pg_layout.addWidget(self.position_slider)
+        time_row = QHBoxLayout()
+        self.time_label = QLabel("00:00.000")
+        self.total_label = QLabel("/ 00:00.000")
+        time_row.addWidget(self.time_label)
+        time_row.addStretch()
+        time_row.addWidget(self.total_label)
+        pg_layout.addLayout(time_row)
+        layout.addWidget(progress_group)
+
+        # ---- 音量控制 ----
+        vol_group = QGroupBox("音量控制")
+        vol_group.setStyleSheet("QGroupBox { border:1px solid #444; margin-top:10px; padding-top:12px; }")
+        vg_layout = QVBoxLayout(vol_group)
+        vg_layout.addLayout(self._make_volume_slider("伴奏", getattr(main, 'backing_volume_accompaniment', 0.30), self._on_accomp_volume))
+        vg_layout.addLayout(self._make_volume_slider("原唱", getattr(main, 'backing_volume_original', 0.50), self._on_orig_volume))
+        vg_layout.addLayout(self._make_volume_slider("监听(人声)", getattr(main, 'monitor_volume', 1.0), self._on_vocal_volume))
+        layout.addWidget(vol_group)
+
+        # ---- 控制按钮 ----
+        ctrl_layout = QHBoxLayout()
+        self.pause_btn = QPushButton("暂停")
+        self.resume_btn = QPushButton("开始")  # 原“恢复”更名
+        self.stop_btn = QPushButton("结束")
+        self.redo_btn = QPushButton("区间重录")
+        self.resume_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self._on_pause)
+        self.resume_btn.clicked.connect(self._on_resume)
+        self.stop_btn.clicked.connect(self._on_stop)
+        self.redo_btn.clicked.connect(self._on_redo)
+        for b in (self.pause_btn, self.resume_btn, self.stop_btn, self.redo_btn):
+            ctrl_layout.addWidget(b)
+        ctrl_layout.addStretch()
+        layout.addLayout(ctrl_layout)
+
+        # ---- 定时同步 ----
+        self.sync_timer = QTimer(self)
+        self.sync_timer.setInterval(120)
+        self.sync_timer.timeout.connect(self._tick_sync)
+        self.sync_timer.start()
+        self.is_user_dragging = False
+        self._refresh_total_duration()
+        self._update_enabled_state()
+
+    # ---------- 工具 ----------
+    def _fmt_time(self, sec: float) -> str:
+        try:
+            m = int(sec // 60); s = sec - m * 60
+            return f"{m:02d}:{s:06.3f}"
+        except Exception:
+            return "00:00.000"
+
+    def _refresh_total_duration(self):
+        try:
+            dur = 0.0
+            if self.main.backing_sample_rate and self.main.backing_pcm_accompaniment is not None:
+                # 使用真实伴奏长度
+                dur = len(self.main.backing_pcm_accompaniment)/self.main.backing_sample_rate
+            else:
+                # 无伴奏：使用当前可视化时间或历史末尾时间作为“虚拟长度”
+                try:
+                    vis = getattr(self.main, 'visualizer', None)
+                    last_t = 0.0
+                    if vis is not None:
+                        try:
+                            if getattr(vis, 'time_data', None):
+                                last_t = float(vis.time_data[-1])
+                        except Exception:
+                            pass
+                        cur_t = float(getattr(vis, 'current_global_time', 0.0))
+                        dur = max(cur_t, last_t)
+                    dur = max(dur, self.position_slider.maximum()/1000.0)
+                    # 预留 2 秒缓冲，便于拖到稍后的时间直接建立偏移
+                    dur = dur + 2.0
+                except Exception:
+                    dur = max(10.0, dur)
+            self.position_slider.setRange(0, int(max(0.0, dur) * 1000))
+            self.total_label.setText(f"/ {self._fmt_time(max(0.0, dur))}")
+        except Exception:
+            pass
+
+    def _update_enabled_state(self):
+        try:
+            # 未加载伴奏也允许拖动，用于纯时间轴跳转（前奏跳过/区间回退）
+            enabled = (self.main.backing_mode != 'off') or (self.main.backing_pcm_accompaniment is not None)
+            self.position_slider.setEnabled(enabled)
+        except Exception:
+            pass
+
+    def _make_volume_slider(self, label: str, value: float, cb):
+        from PyQt6.QtWidgets import QSlider, QLabel
+        from PyQt6.QtCore import Qt
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label + ":"))
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 200)
+        slider.setValue(int(value * 100))
+        slider.valueChanged.connect(cb)
+        val_lbl = QLabel(f"{int(value * 100)}%")
+        def _upd(v):
+            val_lbl.setText(f"{v}%"); cb(v)
+        slider.valueChanged.connect(_upd)
+        row.addWidget(slider); row.addWidget(val_lbl)
+        return row
+
+    # ---------- 进度滑块 ----------
+    def _on_slider_pressed(self):
+        self.is_user_dragging = True
+
+    def _on_slider_released(self):
+        try:
+            val_ms = self.position_slider.value()
+            self.is_user_dragging = False
+            self.main._apply_backing_seek(val_ms / 1000.0, trim_if_backward=True)
+        except Exception:
+            pass
+
+    def _on_slider_changed(self, v):
+        if self.is_user_dragging:
+            try:
+                self.time_label.setText(self._fmt_time(v / 1000.0))
+            except Exception:
+                pass
+
+    # ---------- 音量 ----------
+    def _on_accomp_volume(self, val):
+        try:
+            self.main.backing_volume_accompaniment = max(0.0, min(2.0, float(val) / 100.0))
+        except Exception:
+            pass
+
+    def _on_orig_volume(self, val):
+        try:
+            self.main.backing_volume_original = max(0.0, min(2.0, float(val) / 100.0))
+        except Exception:
+            pass
+
+    def _on_vocal_volume(self, val):
+        try:
+            if hasattr(self.main, 'set_monitoring_volume'):
+                self.main.set_monitoring_volume(float(val))
+        except Exception:
+            pass
+
+    # ---------- 控制按钮 ----------
+    def _on_pause(self):
+        try:
+            self.main._set_backing_paused(True)
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(True)
+        except Exception:
+            pass
+
+    def _on_resume(self):
+        try:
+            self.main._set_backing_paused(False)
+            self.pause_btn.setEnabled(True)
+            self.resume_btn.setEnabled(False)
+        except Exception:
+            pass
+
+    def _on_stop(self):
+        try:
+            if self.main.is_recording:
+                try:
+                    self.main.stop_recording()
+                except Exception:
+                    pass
+            self.main._stop_backing_playback()
+            self.close()
+        except Exception:
+            pass
+
+    def _on_redo(self):
+        """区间重录：删除当前选区数据并跳回区间开始。"""
+        try:
+            v = getattr(self.main, 'visualizer', None)
+            if v is None or not getattr(v, 'selection_active', False):
+                try:
+                    QMessageBox.information(self, "区间重录", "请先在主界面拖动建立一个时间选区（两条竖线）。")
+                except Exception:
+                    pass
+                return
+            start = float(getattr(v, 'sel_start', 0.0))
+            end = float(getattr(v, 'sel_end', start))
+            if end <= start + 1e-6:
+                return
+            try:
+                v.remove_range(start, end)
+            except Exception:
+                pass
+            try:
+                self.main._apply_backing_seek(start, trim_if_backward=False)
+            except Exception:
+                pass
+            # 对于区间重录：允许在 start 之前的旧点继续存在，因此不扩大 trim_point，只在不存在时设置
+            try:
+                if not hasattr(self.main, '_record_trim_point'):
+                    self.main._record_trim_point = start
+            except Exception:
+                pass
+            if not self.main.is_recording:
+                try:
+                    self.main.start_recording()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # ---------- 同步 ----------
+    def _tick_sync(self):
+        try:
+            self._refresh_total_duration()
+            self._update_enabled_state()
+            self.main._backing_control_tick_sync()
+        except Exception:
+            pass
 
 # 导入scipy用于线条平滑插值
 SCIPY_AVAILABLE = False
@@ -426,8 +588,31 @@ class IntegratedAudioProcessor(QThread):
             'summary_enabled': True,          # 周期性统计汇总
             'perf_verbose': False,            # 额外性能日志（默认关闭）
             'display_diag': False,            # 显示层诊断（处理线程中通常不用）
-            'segment_log': False              # 分段调试（处理线程中通常不用）
+            'segment_log': False,             # 分段调试（处理线程中通常不用）
+            'allow_accompaniment_audio_debug': False  # 伴奏模式下强制允许底层音频调试输出
         }
+        # 🎛️ 伴奏模式调试输出抑制：在伴奏/双轨模式录音分析时，临时关闭大量底层音频回调日志
+        # 判定逻辑：
+        # 1) 处于伴奏相关模式 (backing_mode in {'accompaniment','both'})
+        # 2) 未显式开启以下 debug 标志任一：audio_status_log / latency_report / latency_warn_verbose / perf_verbose
+        # 3) 非首次关键诊断（首次少量输出仍保留，避免完全静默导致误判）
+        # 可通过在外部设置 self.debug_flags['perf_verbose']=True 或 audio_status_log=True 临时恢复
+        def _should_suppress_audio_debug():
+            try:
+                mode = getattr(self, 'backing_mode', 'off')
+                if mode not in ('accompaniment', 'both'):
+                    return False
+                flags = getattr(self, 'debug_flags', {}) or {}
+                # 若显式允许伴奏模式底层日志 或 开启性能/状态类详细调试，则不抑制
+                if flags.get('allow_accompaniment_audio_debug') or any(flags.get(k, False) for k in (
+                    'audio_status_log','latency_report','latency_warn_verbose','perf_verbose'
+                )):
+                    return False
+                return True
+            except Exception:
+                return False
+        # 绑定为实例方法供回调内部使用
+        self._should_suppress_audio_debug = _should_suppress_audio_debug
         # 🔧 统计计数器（回调中引用，避免 AttributeError）
         self._stat_counters = {
             'vocal_protect': 0,
@@ -2561,15 +2746,19 @@ class IntegratedAudioProcessor(QThread):
                 # 添加调试计数器
                 if not hasattr(self, '_callback_counter'):
                     self._callback_counter = 0
-                    print("🎤 音频回调函数首次调用（录音模式）")
-                    print(f"🎤 回调参数: 输入形状={indata.shape}, 帧数={frames}")
+                    # 首次仍输出（即使抑制开启），便于确认回调已启动
+                    if not callable(getattr(self, '_should_suppress_audio_debug', None)) or \
+                       (not self._should_suppress_audio_debug()):
+                        print("🎤 音频回调函数首次调用（录音模式）")
+                        print(f"🎤 回调参数: 输入形状={indata.shape}, 帧数={frames}")
                 
                 self._callback_counter += 1
                 
                 # 🎯 增强调试：前10次回调详细输出
                 if self._callback_counter <= 10:
                     audio_rms = np.sqrt(np.mean(indata ** 2)) if len(indata) > 0 else 0
-                    print(f"🎤 回调#{self._callback_counter}: 输入RMS={audio_rms:.4f}, 形状={indata.shape}, 状态={status}")
+                    if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                        print(f"🎤 回调#{self._callback_counter}: 输入RMS={audio_rms:.4f}, 形状={indata.shape}, 状态={status}")
                 
                 if status and getattr(self, 'debug_flags', {}).get('audio_status_log', False):
                     # 只记录非overflow的状态信息，减少控制台输出
@@ -2586,8 +2775,9 @@ class IntegratedAudioProcessor(QThread):
                     # 🔥 修复：RMS计算应该与实际处理的数据一致
                     audio_data_preview = indata[:, 0] if self.channels == 1 else indata
                     audio_rms = np.sqrt(np.mean(audio_data_preview ** 2))
-                    print(f"🎤 音频回调#{self._callback_counter}: RMS={audio_rms:.4f}, 帧数={frames}")
-                    print(f"     原始输入形状: {indata.shape}, 处理后形状: {audio_data_preview.shape}")
+                    if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                        print(f"🎤 音频回调#{self._callback_counter}: RMS={audio_rms:.4f}, 帧数={frames}")
+                        print(f"     原始输入形状: {indata.shape}, 处理后形状: {audio_data_preview.shape}")
                 
                 self.total_audio_frames += 1
                 
@@ -2595,7 +2785,8 @@ class IntegratedAudioProcessor(QThread):
                 if self.channels == 1 and indata.shape[1] > 1:
                     # 双声道混合到单声道，保持音量
                     audio_data = np.mean(indata, axis=1)  # 平均两个声道
-                    print(f"🔊 双声道混合: {indata.shape} → {audio_data.shape}, RMS={np.sqrt(np.mean(audio_data**2)):.4f}")
+                    if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                        print(f"🔊 双声道混合: {indata.shape} → {audio_data.shape}, RMS={np.sqrt(np.mean(audio_data**2)):.4f}")
                 else:
                     audio_data = indata[:, 0] if len(indata.shape) > 1 else indata
                 
@@ -2718,7 +2909,8 @@ class IntegratedAudioProcessor(QThread):
                         self._stat_counters['high_latency'] += 1
                     else:
                         if getattr(self, 'debug_flags', {}).get('latency_warn_verbose', False):
-                            self._log_rate_limit('latency_ok', f"✅ 延迟良好: {_format_latency_ms(total_latency)}", interval=0.8)
+                            if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                                self._log_rate_limit('latency_ok', f"✅ 延迟良好: {_format_latency_ms(total_latency)}", interval=0.8)
                     
                     # 清理旧数据
                     self._processing_times = []
@@ -3388,7 +3580,8 @@ class IntegratedAudioProcessor(QThread):
                                 self._log_rate_limit('high_latency_monitor', f"⚠️ 监听延迟偏高 {total_monitoring_latency:.2f}ms", interval=1.0)
                             self._stat_counters['high_latency'] += 1
                         else:
-                            self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好 {_format_latency_ms(total_monitoring_latency)}", interval=2.0)
+                            if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                                self._log_rate_limit('latency_ok_monitor', f"✅ 监听延迟良好 {_format_latency_ms(total_monitoring_latency)}", interval=2.0)
                         self._monitoring_processing_times = []
                 
                 # 创建专业级低延迟音频流（监听模式智能配置）
@@ -3554,19 +3747,18 @@ class IntegratedAudioProcessor(QThread):
                 return False
             if not getattr(self, 'is_paused', False):
                 return True
+            # 不再平移 start_time，保持伴奏进度为唯一时间来源
             paused_span = 0.0
-            try:
-                if self._pause_started_at:
+            if hasattr(self, '_pause_started_at') and self._pause_started_at:
+                try:
                     paused_span = max(0.0, time.time() - float(self._pause_started_at))
-            except Exception:
-                paused_span = 0.0
-            # 通过平移 recording_start_time 抵消暂停时长，保证 current_duration 连续
-            try:
-                if hasattr(self, 'recording_start_time') and self.recording_start_time:
-                    self.recording_start_time += paused_span
-            except Exception:
-                pass
-            self._total_paused_time = float(getattr(self, '_total_paused_time', 0.0)) + paused_span
+                except Exception:
+                    paused_span = 0.0
+            self._total_paused_time = float(getattr(self, '_total_paused_time', 0.0)) + float(paused_span)
+            # 初始化检测频率恢复平滑
+            self._detection_rate_smoothing_active = True
+            self._detection_rate_smoothing_start = time.time()
+            self._detection_rate_baseline_pitches = int(getattr(self, 'total_pitches_detected', 0))
             self._pause_started_at = None
             self.is_paused = False
             return True
@@ -5393,15 +5585,17 @@ class IntegratedAudioProcessor(QThread):
             print("❌ 音频处理线程状态: 未启动")
             
         # 调试：检查队列初始状态
-        print(f"📦 音频队列初始状态: 大小={self.audio_buffer_queue.qsize()}, 最大大小={self.audio_buffer_queue.maxsize}")
-        print(f"🎯 is_audio_processing标志: {self.is_audio_processing}")
-        print(f"🎯 is_recording标志: {self.is_recording}")
-        print(f"🎯 is_monitoring_only标志: {getattr(self, 'is_monitoring_only', 'Not set')}")
+        if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+            print(f"📦 音频队列初始状态: 大小={self.audio_buffer_queue.qsize()}, 最大大小={self.audio_buffer_queue.maxsize}")
+            print(f"🎯 is_audio_processing标志: {self.is_audio_processing}")
+            print(f"🎯 is_recording标志: {self.is_recording}")
+            print(f"🎯 is_monitoring_only标志: {getattr(self, 'is_monitoring_only', 'Not set')}")
     
     def stop_audio_processing_thread(self):
         """停止异步音频处理线程"""
         try:
-            print("🔄 正在停止异步音频处理线程...")
+            if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                print("🔄 正在停止异步音频处理线程...")
             self.is_audio_processing = False
             if self.audio_processing_thread and self.audio_processing_thread.is_alive():
                 self.audio_processing_thread.join(timeout=2.0)  # 等待最多2秒
@@ -9191,7 +9385,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.audio_processor = None  # 运行时再注入
         self.time_window = 16.0
         self.max_points = 1024
-        self.update_interval = 16  # ~60FPS，提升实时感
+        self.update_interval = 16  # ~60FPS
 
         # ===== 视图 / 历史窗口初始化 =====
         self.max_history_time = 300.0
@@ -9205,7 +9399,6 @@ class ECGStylePitchVisualizer(QWidget):
         self._last_zoom_preset_logged = None
         self.auto_scale = True
         self.auto_follow = True
-        # 默认不锁定，允许缩放/滚动立即生效
         self.freeze_y_center = False
         self._initial_y_center = self.y_view_center
         self._last_warn_y_shift = 0.0
@@ -9226,7 +9419,6 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_data = deque(maxlen=max_data_points)
         self.confidence_data = deque(maxlen=max_data_points)
         self.note_data = deque(maxlen=max_data_points)
-        # 时间桶去重（按10ms归一），避免重复播放导致重复细节点
         self._timebin_eps = 0.01
         self._added_time_bins = set()
 
@@ -9235,7 +9427,8 @@ class ECGStylePitchVisualizer(QWidget):
         self.current_global_time = 0.0
         self.is_recording_active = False
         self.last_pitch_time = 0
-        
+        self._accumulated_pause_dur = 0.0
+        self._viz_pause_started_at = None
 
         # ================== 绘制辅助 ==================
         self.gradient_lines = []
@@ -9250,40 +9443,32 @@ class ECGStylePitchVisualizer(QWidget):
 
         # ================== 调试控制 ==================
         self.debug_flags = {
-            # 默认关闭高频日志，避免影响实时性；需要时可在调试面板开启
             'display_diag': False,
             'segment_log': False,
             'incremental_miss': True,
             'vocal_protect_verbose': False,
             'latency_warn_verbose': False,
-            'summary_enabled': False,    # 关闭周期性SUMMARY，按需开启
-            'axis_log': False,           # 轴范围日志
-            'detection_log': False,      # 检测统计UI打印
-            'latency_report': False,     # 回调详尽延迟报告
-            'pitch_log': False,          # 逐条音高成功日志
-            'pitch_precision_log': False,# 音高精度修复/验证日志
-            'fft_log': False,            # FFT频率与高频抑制日志
-            'queue_log': False,          # 队列/帧产出/循环诊断
-            'artist_dump': False         # 轴Artist对象转储
+            'summary_enabled': False,
+            'axis_log': False,
+            'detection_log': False,
+            'latency_report': False,
+            'pitch_log': False,
+            'pitch_precision_log': False,
+            'fft_log': False,
+            'queue_log': False,
+            'artist_dump': False
         }
-        # 启用单集合批量细节点（减少每帧 set_offsets 调用次数）
         self._use_batched_points = True
-        # 仅更新末尾N段的细节点（旧段点位不变，减少每帧 set_offsets 开销）
         self._lazy_points_update_n = 3
-        # 绘制负载上限（保证恒定复杂度）：降低默认上限，避免长时录制后窗口过密
         self._batched_points_cap_light = getattr(self, '_batched_points_cap_light', 700)
         self._batched_points_cap_heavy = getattr(self, '_batched_points_cap_heavy', 1000)
         self._window_points_soft_cap = getattr(self, '_window_points_soft_cap', 3000)
         self._window_points_downsample_target = getattr(self, '_window_points_downsample_target', 2000)
-        # 分段签名缓存：[(first_t, last_t, length), ...]
         self._segment_sigs = []
-        # 时间轴平滑滚动状态
-        self._smoothed_xlim = None  # (start, end)
-        # 性能/绘制采样容器
+        self._smoothed_xlim = None
         self._seg_timing_samples = deque(maxlen=120)
         self._draw_timing_samples = deque(maxlen=120)
         self._diag_last_perf_report = 0
-        # 近期头部点：用于极低延迟显示最近0.6秒内的细节点
         self._head_points_scatter = None
         self._head_points_window_s = 0.60
         self._head_points_capacity = 240
@@ -9292,16 +9477,12 @@ class ECGStylePitchVisualizer(QWidget):
             self._head_points = _dq(maxlen=self._head_points_capacity)
         except Exception:
             self._head_points = []
-        # 静音判定阈值：超出该时长未收到新点，则按墙钟推进时间轴与纵向辅助线
         self._silence_follow_threshold = 0.12
-        # 扁平点缓冲：实时录音时的快速可视窗口采样（避免每帧遍历所有段）
         try:
             from collections import deque as _dq2
-            # 预留约 6000 点的滑窗（足够覆盖 16s 可视窗 + 余量）
             self._flat_points = _dq2(maxlen=6000)
         except Exception:
             self._flat_points = []
-        # 速率限制日志 & 统计
         self._last_log_times = {
             'vocal_protect': 0.0,
             'segment_draw': 0.0,
@@ -9460,11 +9641,24 @@ class ECGStylePitchVisualizer(QWidget):
             self.current_global_time = float(max(0.0, t))
             # 自动跟随逻辑（不依赖 is_recording_active）
             if getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
-                if self.current_global_time <= float(getattr(self, 'center_display_time', 8.0)):
-                    self.time_offset = 0.0
-                else:
-                    max_offset = max(0.0, float(getattr(self, 'max_history_time', 300.0)) - float(getattr(self, 'time_window', 16.0)))
-                    self.time_offset = min(max(0.0, self.current_global_time - float(getattr(self, 'center_display_time', 8.0))), max_offset)
+                # 抑制条件：用户刚手动滚动 或 伴奏轴锁定且当前非录音浏览
+                suppress_auto = False
+                try:
+                    if getattr(self, '_manual_time_offset_override_until', 0.0) > _t.time():
+                        suppress_auto = True
+                    if getattr(self, '_backing_axis_locked', False) and not getattr(self, 'is_recording_active', False):
+                        suppress_auto = True
+                except Exception:
+                    suppress_auto = False
+                if suppress_auto is False:
+                    if self.current_global_time <= float(getattr(self, 'center_display_time', 8.0)):
+                        self.time_offset = 0.0
+                    else:
+                        max_offset = max(0.0, float(getattr(self, 'max_history_time', 300.0)) - float(getattr(self, 'time_window', 16.0)))
+                        self.time_offset = min(
+                            max(0.0, self.current_global_time - float(getattr(self, 'center_display_time', 8.0))),
+                            max_offset
+                        )
             # 推进xlim（平滑以获得与实时一致的观感）
             x_min = float(getattr(self, 'time_offset', 0.0))
             x_max = x_min + float(getattr(self, 'time_window', 16.0))
@@ -9685,6 +9879,126 @@ class ECGStylePitchVisualizer(QWidget):
                 self._assume_unsorted_until = now + 2.0
             except Exception:
                 pass
+        except Exception:
+            pass
+
+    def trim_after(self, cutoff: float):
+        """裁剪掉 cutoff 之后的所有点（含时间/信心/音符等），用于录音中回退重录。
+        - 仅修改数据缓冲，不影响视觉状态重建（由 notify_seek 触发）。
+        - 重新生成时间桶集合，避免旧桶阻塞新点加入。
+        """
+        try:
+            cutoff = float(max(0.0, cutoff))
+            if not self.time_data:
+                return
+            # 若末尾时间本就 <= cutoff 则无需动作
+            try:
+                last_t = self.time_data[-1]
+                if last_t <= cutoff + 1e-9:
+                    return
+            except Exception:
+                pass
+            # 转为列表一次性裁剪（deque 不支持切片）
+            t_list = list(self.time_data)
+            # 找到第一处 > cutoff 的索引
+            cut_idx = None
+            for i, t in enumerate(t_list):
+                if t > cutoff + 1e-9:
+                    cut_idx = i
+                    break
+            if cut_idx is None:
+                return
+            keep_len = cut_idx
+            def _trim_deque(dq, keep):
+                try:
+                    if len(dq) <= keep:
+                        return dq
+                    # 重新构造 deque 以维持 maxlen
+                    from collections import deque as _dq
+                    kept = list(dq)[:keep]
+                    return _dq(kept, maxlen=dq.maxlen)
+                except Exception:
+                    return dq
+            self.time_data = _trim_deque(self.time_data, keep_len)
+            self.pitch_data = _trim_deque(self.pitch_data, keep_len)
+            self.confidence_data = _trim_deque(self.confidence_data, keep_len)
+            self.note_data = _trim_deque(self.note_data, keep_len)
+            # 重建时间桶集合，避免已移除时间阻塞
+            try:
+                self._added_time_bins = set()
+                eps = float(getattr(self, '_timebin_eps', 0.01))
+                for tt in self.time_data:
+                    self._added_time_bins.add(int(round(float(tt)/eps)))
+            except Exception:
+                pass
+            # 裁剪尾部/扁平缓存
+            try:
+                if hasattr(self, '_tail_time') and isinstance(self._tail_time, list):
+                    keep_mask = [t <= cutoff + 1e-9 for t in self._tail_time]
+                    self._tail_time = [t for t,k in zip(self._tail_time, keep_mask) if k]
+                    self._tail_pitch = [p for p,k in zip(self._tail_pitch, keep_mask) if k]
+                    self._tail_conf = [c for c,k in zip(self._tail_conf, keep_mask) if k]
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_flat_points') and self._flat_points is not None:
+                    if isinstance(self._flat_points, list):
+                        self._flat_points = [pt for pt in self._flat_points if pt[0] <= cutoff + 1e-9]
+                    else:
+                        from collections import deque as _dq2
+                        tmp = [pt for pt in list(self._flat_points) if pt[0] <= cutoff + 1e-9]
+                        self._flat_points = _dq2(tmp, maxlen=self._flat_points.maxlen)  # type: ignore
+            except Exception:
+                pass
+            # 标记强制重绘（下帧重建曲线）
+            try:
+                self._force_redraw_on_next_update = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def remove_range(self, start: float, end: float):
+        """删除时间区间 [start, end) 内所有已绘制点，保留前后段；用于区间重录。
+        不改动 start 之前与 end 之后的数据，之后的数据时间不回填（保持真实时间轴）。"""
+        try:
+            start = float(max(0.0, start)); end = float(max(start, end))
+            if not self.time_data or end <= start + 1e-9:
+                return
+            t_list = list(self.time_data)
+            keep_mask = [(t < start - 1e-9) or (t >= end - 1e-9) for t in t_list]
+            if all(keep_mask):
+                return
+            from collections import deque as _dq
+            def _filter(dq):
+                try:
+                    arr = list(dq)
+                    filtered = [v for v,k in zip(arr, keep_mask) if k]
+                    return _dq(filtered, maxlen=dq.maxlen)
+                except Exception:
+                    return dq
+            self.time_data = _filter(self.time_data)
+            self.pitch_data = _filter(self.pitch_data)
+            self.confidence_data = _filter(self.confidence_data)
+            self.note_data = _filter(self.note_data)
+            try:
+                self._added_time_bins = set()
+                eps = float(getattr(self, '_timebin_eps', 0.01))
+                for tt in self.time_data:
+                    self._added_time_bins.add(int(round(float(tt)/eps)))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_flat_points') and self._flat_points is not None:
+                    if isinstance(self._flat_points, list):
+                        self._flat_points = [pt for pt in self._flat_points if (pt[0] < start -1e-9) or (pt[0] >= end -1e-9)]
+                    else:
+                        tmp = [pt for pt in list(self._flat_points) if (pt[0] < start -1e-9) or (pt[0] >= end -1e-9)]
+                        from collections import deque as _dq2
+                        self._flat_points = _dq2(tmp, maxlen=self._flat_points.maxlen)  # type: ignore
+            except Exception:
+                pass
+            self._force_redraw_on_next_update = True
         except Exception:
             pass
 
@@ -13753,8 +14067,22 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             import numpy as _np
-            xs = _np.asarray(ln.get_xdata() or [], dtype=float)
-            ys = _np.asarray(ln.get_ydata() or [], dtype=float)
+            # 避免使用 "obj or []" 触发 numpy 数组真值歧义 (DeprecationWarning)
+            _xs_raw = ln.get_xdata()
+            _ys_raw = ln.get_ydata()
+            if _xs_raw is None:
+                _xs_raw = []
+            if _ys_raw is None:
+                _ys_raw = []
+            try:
+                # list/tuple/ndarray 统一转 float32/64
+                xs = _np.asarray(_xs_raw, dtype=float)
+            except Exception:
+                xs = _np.asarray([], dtype=float)
+            try:
+                ys = _np.asarray(_ys_raw, dtype=float)
+            except Exception:
+                ys = _np.asarray([], dtype=float)
             if xs.size == 0 or ys.size == 0 or xs.size != ys.size:
                 return None
             # 仅取视口内，降低计算量
@@ -14331,8 +14659,14 @@ class ECGStylePitchVisualizer(QWidget):
     def on_horizontal_scroll(self, value):
         """水平滚动条事件（控制时间偏移）"""
         # 将滚动条值 (0-100) 映射到时间偏移范围
-        # 移除对time_data的依赖，改为直接使用max_history_time
-        max_time = self.max_history_time  # 直接使用最大历史时间
+        # 优先使用伴奏锁定总长度（修复：分析/录音开始后初期只能滚到约120秒的问题）
+        try:
+            if getattr(self, '_backing_axis_locked', False):
+                max_time = float(getattr(self, '_backing_axis_length', self.max_history_time))
+            else:
+                max_time = float(getattr(self, 'max_history_time', 0.0))
+        except Exception:
+            max_time = getattr(self, 'max_history_time', 0.0)
         # 标记手动操作时间，供平滑器参考
         try:
             import time as _t
@@ -14341,8 +14675,141 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         # 滚动条左端(0)对应最开始时间(时间偏移0)，右端(100)对应最大偏移
         normalized_value = value / 100.0
-        max_offset = max(0, max_time - self.time_window)
+        max_offset = max(0.0, max_time - float(getattr(self, 'time_window', 16.0)))
         self.time_offset = normalized_value * max_offset
+        # 若接近最右端直接对齐，避免多次拖动才能看到最末尾
+        try:
+            if normalized_value > 0.98:
+                self.time_offset = max_offset
+                # 临时时间锚定（短期，保留原逻辑）
+                try:
+                    import time as _t
+                    self._manual_end_anchor_until = _t.time() + 3.0
+                except Exception:
+                    pass
+            # 持久“查看末端”模式：伴奏锁定 + 用户处于末端区域时激活
+            try:
+                if getattr(self, '_backing_axis_locked', False):
+                    if normalized_value > 0.975:
+                        if not getattr(self, '_viewing_backing_end', False):
+                            self._viewing_backing_end = True
+                            if getattr(self, '_debug_axis_trace', True):
+                                print(f"[END_VIEW] enter backing_end len={getattr(self,'_backing_axis_length','?')} tw={getattr(self,'time_window',0)}")
+                    elif normalized_value < 0.90 and getattr(self, '_viewing_backing_end', False):
+                        self._viewing_backing_end = False
+                        if getattr(self, '_debug_axis_trace', True):
+                            print(f"[END_VIEW] leave (user scrolled away)")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # 调试：记录一次关键状态
+        try:
+            if getattr(self, '_debug_axis_trace', True):
+                print(f"[HSCROLL] val={value} norm={normalized_value:.3f} max_time={max_time:.2f} time_window={getattr(self,'time_window',0)} max_offset={max_offset:.2f} time_offset={self.time_offset:.2f} locked={getattr(self,'_backing_axis_locked',False)} locked_len={getattr(self,'_backing_axis_length','-')}")
+            # 若已经滚到末端，立即强制刷新 xlim，避免视觉上仍显示前段数据
+            if normalized_value > 0.98:
+                try:
+                    if hasattr(self, 'ax'):
+                        self.ax.set_xlim(self.time_offset, self.time_offset + float(getattr(self,'time_window',16.0)))
+                        self.canvas.draw_idle()
+                        if getattr(self, '_debug_axis_trace', True):
+                            print(f"[HSCROLL-END] force_xlim=({self.time_offset:.2f},{self.time_offset + float(getattr(self,'time_window',16.0)):.2f}) end_view={getattr(self,'_viewing_backing_end',False)}")
+                        # 抑制下一次平滑
+                        self._suppress_next_smooth_xlim = True
+                except Exception:
+                    pass
+            # 硬末端锁激活/退出逻辑：伴奏锁定 + 用户滚动 >98.5% 进入，<90% 退出
+            try:
+                if getattr(self, '_backing_axis_locked', False):
+                    # 进入硬锁
+                    if normalized_value > 0.985:
+                        if not getattr(self, '_hard_end_view_active', False):
+                            self._hard_end_view_active = True
+                            # 计算末端窗口并立即设置
+                            _total = float(getattr(self, '_backing_axis_length', max_time))
+                            _tw = float(getattr(self, 'time_window', 16.0))
+                            _start = max(0.0, _total - _tw)
+                            self.time_offset = _start
+                            try:
+                                if hasattr(self, 'ax'):
+                                    self.ax.set_xlim(_start, _start + _tw)
+                                    if getattr(self, '_debug_axis_trace', True):
+                                        print(f"[END_HARD] enter total={_total:.2f} win={_tw:.2f} -> ({_start:.2f},{_start + _tw:.2f})")
+                            except Exception:
+                                pass
+                            self._suppress_next_smooth_xlim = True
+                    # 退出硬锁
+                    elif normalized_value < 0.90 and getattr(self, '_hard_end_view_active', False):
+                        self._hard_end_view_active = False
+                        if getattr(self, '_debug_axis_trace', True):
+                            print("[END_HARD] leave (user scrolled away)")
+                    # 硬起点锁：用户滚动接近最左端并希望看到精确 0s 不被轻微回弹
+                    if normalized_value < 0.015:
+                        if not getattr(self, '_hard_start_view_active', False):
+                            self._hard_start_view_active = True
+                            try:
+                                self.time_offset = 0.0
+                                if hasattr(self, 'ax'):
+                                    _tw2 = float(getattr(self,'time_window',16.0))
+                                    self.ax.set_xlim(0.0, _tw2)
+                                    if getattr(self, '_debug_axis_trace', True):
+                                        print(f"[START_HARD] enter win={_tw2:.2f} -> (0.00,{_tw2:.2f})")
+                                self._suppress_next_smooth_xlim = True
+                            except Exception:
+                                pass
+                    elif normalized_value > 0.10 and getattr(self, '_hard_start_view_active', False):
+                        self._hard_start_view_active = False
+                        if getattr(self, '_debug_axis_trace', True):
+                            print("[START_HARD] leave (user scrolled away)")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # 伴奏模式长度纠正：优先使用自身锁属性；若没有再回退父窗口
+        try:
+            locked_flag = getattr(self, '_backing_axis_locked', None)
+            locked_len_local = getattr(self, '_backing_axis_length', None)
+            parent = None
+            if locked_flag is None or locked_len_local is None:
+                try:
+                    parent = self.parent() if hasattr(self, 'parent') else None
+                except Exception:
+                    parent = None
+                if parent is not None and getattr(parent, '_backing_axis_locked', False):
+                    locked_flag = True
+                    locked_len_local = float(getattr(parent, '_backing_axis_length', 0.0))
+            if locked_flag and locked_len_local and locked_len_local > 0:
+                cur_len = float(getattr(self, 'max_history_time', 0.0))
+                # 任何缩短(>0.01)都强制恢复，避免需要多次拖动
+                if cur_len + 0.01 < locked_len_local:
+                    try:
+                        if hasattr(self, 'set_max_history_time'):
+                            self.set_max_history_time(locked_len_local)
+                        else:
+                            self.max_history_time = locked_len_local
+                    except Exception:
+                        pass
+                    max_offset = max(0.0, locked_len_local - float(getattr(self, 'time_window', 16.0)))
+                    if normalized_value > 0.90:  # 放宽条件，用户已接近末端即可直接对齐
+                        self.time_offset = max_offset
+                    try:
+                        if hasattr(self, 'update_scrollbars'):
+                            self.update_scrollbars()
+                    except Exception:
+                        pass
+                    try:
+                        print(f"🔁 强制恢复伴奏锁定长度 {locked_len_local:.2f}s (原={cur_len:.2f}s) horizontal_scroll")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # 手动覆盖：记录短暂窗口抑制自动滚动
+        try:
+            import time as _t
+            self._manual_time_offset_override_until = _t.time() + 2.5
+        except Exception:
+            pass
         
         # 手动滚动时暂时禁用自动滚动
         if hasattr(self, 'auto_scroll_enabled'):
@@ -14393,6 +14860,7 @@ class ECGStylePitchVisualizer(QWidget):
             x_max = self.time_offset + self.time_window
             # 滚动条为明确的用户导航：直接设置，避免粘滞
             self.ax.set_xlim(x_min, x_max)
+            self._suppress_next_smooth_xlim = True
         except Exception:
             pass
         if getattr(self, 'is_recording_active', False):
@@ -14447,7 +14915,8 @@ class ECGStylePitchVisualizer(QWidget):
     def re_enable_auto_scroll(self):
         """重新启用自动滚动"""
         self.auto_scroll_enabled = True
-        print("🔄 自动滚动已重新启用")
+        if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+            print("🔄 自动滚动已重新启用")
     
     def update_scrollbars(self):
         """更新滚动条位置以同步当前视图状态"""
@@ -14636,7 +15105,35 @@ class ECGStylePitchVisualizer(QWidget):
                 self.start_time = timestamp
                 print(f"🕐 设置开始时间: {self.start_time}")
             
-            global_time = timestamp - self.start_time
+            # 计算原始全局时间并扣除暂停累计，避免暂停恢复后时间轴跳跃
+            try:
+                pause_comp = float(getattr(self, '_accumulated_pause_dur', 0.0))
+            except Exception:
+                pause_comp = 0.0
+            raw_global_time = (timestamp - self.start_time) - pause_comp
+            if raw_global_time < 0:
+                raw_global_time = 0.0
+            # 应用前向/后向 seek 累积偏移（用于伴奏窗口跳过前奏等）
+            try:
+                offset_shift = float(getattr(self, '_time_offset_shift', 0.0))
+            except Exception:
+                offset_shift = 0.0
+            global_time = raw_global_time + offset_shift
+
+            # 若存在录音回退重录起点，则过滤掉回退之前段落后被裁掉的旧数据
+            try:
+                trim_point = float(getattr(self, '_record_trim_point', -1.0))
+                if trim_point >= 0.0 and global_time < trim_point - 1e-6:
+                    return
+            except Exception:
+                pass
+
+            # 若外部暂停（伴奏控制窗口触发），冻结时间轴推进与点添加
+            try:
+                if getattr(self, '_external_paused', False):
+                    return
+            except Exception:
+                pass
             
             # 总是更新当前全局时间，保持时间轴推进
             self.current_global_time = global_time
@@ -15050,8 +15547,67 @@ class ECGStylePitchVisualizer(QWidget):
         - 单步最大位移随 dt 与积压误差自适应，消除“跟随不够→粘滞感”。
         """
         try:
+            # 硬末端视图锁：任何平滑调用都直接对齐末端窗口，避免被平滑回拉
+            if getattr(self, '_hard_end_view_active', False):
+                try:
+                    total_len = 0.0
+                    if getattr(self, '_backing_axis_locked', False):
+                        total_len = float(getattr(self, '_backing_axis_length', getattr(self,'max_history_time',0.0)))
+                    else:
+                        total_len = float(getattr(self, 'max_history_time', 0.0))
+                    tw = float(getattr(self, 'time_window', target_end - target_start))
+                    start = max(0.0, total_len - tw)
+                    if hasattr(self, 'ax'):
+                        self.ax.set_xlim(start, start + tw)
+                        if getattr(self, '_debug_axis_trace', True):
+                            print(f"[END_HARD] smooth-bypass -> ({start:.2f},{start + tw:.2f}) total={total_len:.2f}")
+                        if hasattr(self,'canvas'):
+                            self.canvas.draw_idle()
+                    self._smoothed_xlim = (start, start + tw)
+                except Exception:
+                    pass
+                return
+            # 硬起点锁：直接固定 (0, time_window)
+            if getattr(self, '_hard_start_view_active', False):
+                try:
+                    tw = float(getattr(self, 'time_window', target_end - target_start))
+                    if hasattr(self, 'ax'):
+                        self.ax.set_xlim(0.0, tw)
+                        if getattr(self, '_debug_axis_trace', True):
+                            print(f"[START_HARD] smooth-bypass -> (0.00,{tw:.2f})")
+                        if hasattr(self,'canvas'):
+                            self.canvas.draw_idle()
+                    self._smoothed_xlim = (0.0, tw)
+                except Exception:
+                    pass
+                return
+            # 若标记要求直接跳过平滑，优先执行
+            if getattr(self, '_suppress_next_smooth_xlim', False):
+                self._suppress_next_smooth_xlim = False
+                if hasattr(self, 'ax'):
+                    self.ax.set_xlim(target_start, target_end)
+                    if getattr(self, '_debug_axis_trace', True):
+                        print(f"[SMOOTH_SKIP] direct_xlim=({target_start:.2f},{target_end:.2f})")
+                return
             if not hasattr(self, 'ax'):
                 return
+            # 若最近 1.0s 内用户有手动滚动并且跨度较大，直接跳过去
+            try:
+                import time as _t
+                last_manual = float(getattr(self, '_last_manual_scroll_time', 0.0))
+                if (_t.time() - last_manual) < 1.0:
+                    try:
+                        cur0, cur1 = self.ax.get_xlim()
+                        # 如果目标窗口起点与当前起点相差超过半个窗口，认定为大跨度手动seek
+                        if abs(cur0 - target_start) > 0.5 * (target_end - target_start):
+                            self.ax.set_xlim(target_start, target_end)
+                            if getattr(self, '_debug_axis_trace', True):
+                                print(f"[SMOOTH_BYPASS] manual_seek -> ({target_start:.2f},{target_end:.2f})")
+                            return
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             import time as _t
             import math as _m
             cur_start, cur_end = self.ax.get_xlim()
@@ -15904,34 +16460,48 @@ class ECGStylePitchVisualizer(QWidget):
             
             # 无论是否有音高数据，都要更新时间相关的UI元素（仅录音中自动跟随）
             if self.is_recording_active and self.auto_follow and self.auto_scroll_enabled:
-                # 新的滚动逻辑：第8秒之前不滚动，第8秒后开始滚动
-                if self.current_global_time <= self.center_display_time:
-                    # 前8秒：时间偏移保持为0，显示从0到16秒的内容
-                    self.time_offset = 0.0
-                else:
-                    # 第8秒后：开始滚动，保持时间轴在屏幕中央生成
-                    if not hasattr(self, '_auto_scroll_started'):
-                        print(f"▶ 自动滚动启动: t={self.current_global_time:.2f}s (center={self.center_display_time}s)")
-                        self._auto_scroll_started = True
-                    # 使用“最新数据时间+前瞻”作为目标，降低>8s后的主观延迟
-                    try:
-                        latest_time = self.time_data[-1] if self.time_data else self.current_global_time
-                        target_t = float(self._get_follow_target_time(latest_time=latest_time))
-                    except Exception:
-                        target_t = self.current_global_time
-                    self.time_offset = max(0.0, target_t - self.center_display_time)
-                    
-                    # 确保时间偏移不超过最大历史时间限制
-                    max_offset = max(0, self.max_history_time - self.time_window)
-                    self.time_offset = min(self.time_offset, max_offset)
-                
-                # 更新滚动条位置
-                self.update_scrollbars()
-                # 同步辅助线位置
+                # 抑制：若用户刚手动滚动，或伴奏轴锁定且当前暂停（非active），避免覆盖手动浏览
+                suppress_auto = False
                 try:
-                    self.update_guides()
+                    import time as _t
+                    if getattr(self, '_manual_time_offset_override_until', 0.0) > _t.time():
+                        suppress_auto = True
+                    if getattr(self, '_backing_axis_locked', False) and getattr(self, 'is_backing_paused', False):
+                        suppress_auto = True
                 except Exception:
-                    pass
+                    suppress_auto = False
+                if suppress_auto:
+                    try:
+                        self.update_scrollbars()
+                    except Exception:
+                        pass
+                    try:
+                        self.update_guides()
+                    except Exception:
+                        pass
+                else:
+                    if self.current_global_time <= self.center_display_time:
+                        self.time_offset = 0.0
+                    else:
+                        if not hasattr(self, '_auto_scroll_started'):
+                            print(f"▶ 自动滚动启动: t={self.current_global_time:.2f}s (center={self.center_display_time}s)")
+                            self._auto_scroll_started = True
+                        try:
+                            latest_time = self.time_data[-1] if self.time_data else self.current_global_time
+                            target_t = float(self._get_follow_target_time(latest_time=latest_time))
+                        except Exception:
+                            target_t = self.current_global_time
+                        self.time_offset = max(0.0, target_t - self.center_display_time)
+                        max_offset = max(0, self.max_history_time - self.time_window)
+                        self.time_offset = min(self.time_offset, max_offset)
+                    try:
+                        self.update_scrollbars()
+                    except Exception:
+                        pass
+                    try:
+                        self.update_guides()
+                    except Exception:
+                        pass
             
             # 即使没有新音高数据，也要刷新显示（显示时间轴推进）
             if time_since_last_pitch > 0.1:  # 超过100ms没有音高数据
@@ -19773,6 +20343,15 @@ class ECGStylePitchVisualizer(QWidget):
     
     def set_max_history_time(self, max_time):
         """设置最大历史时间"""
+        # 锁定期间阻止缩短
+        try:
+            if getattr(self, '_backing_axis_locked', False):
+                locked_len = float(getattr(self, '_backing_axis_length', max_time))
+                if float(max_time) < locked_len:
+                    print(f"ℹ️ 忽略缩短 max_history_time={max_time} 因伴奏锁定 {locked_len}s")
+                    max_time = locked_len
+        except Exception:
+            pass
         self.max_history_time = float(max_time)
         
         # 重新计算数据缓冲区大小
@@ -19837,12 +20416,130 @@ class ECGStylePitchVisualizer(QWidget):
         # 更新显示
         self.update_axis_ranges()
         self.canvas.draw()
+
+    # ================== 伴奏轴锁定保护辅助 ==================
+    def _enforce_backing_axis_lock(self, source: str = ""):
+        """若伴奏时间轴已锁定，确保 self.max_history_time 未被意外缩短。
+        source: 调用来源标签，便于日志定位异常覆盖路径。
+        """
+        try:
+            if not getattr(self, '_backing_axis_locked', False):
+                return
+            locked_len = float(getattr(self, '_backing_axis_length', 0.0))
+            cur = float(getattr(self, 'max_history_time', 0.0))
+            if cur + 1e-6 < locked_len:
+                # 回滚缩短
+                print(f"⚠️ 监测到 max_history_time 被缩短 ({cur:.2f} < {locked_len:.2f}) 来源={source}，已回滚")
+                self.max_history_time = locked_len
+                try:
+                    if hasattr(self, 'time_slider'):
+                        self.time_slider.setRange(5, int(locked_len))
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_scrollbars'):
+                        self.update_scrollbars()
+                except Exception:
+                    pass
+        except Exception as _e_lock:
+            try:
+                print(f"⚠️ _enforce_backing_axis_lock 异常: {_e_lock}")
+            except Exception:
+                pass
         
-        # 同步滚动条
-        self.update_scrollbars()
-        
-        # 更新状态显示
-        self.update_status_display()
+    # ------------------------------------------------------------------
+    # 伴奏时间轴同步封装
+    # ------------------------------------------------------------------
+    def _sync_time_axis_to_accompaniment(self, accomp_dur: float, *, reason: str = "", force: bool = False):
+        """将时间轴(最大历史长度/offset/窗口)同步到伴奏长度。
+        参数:
+            accomp_dur: 伴奏时长(秒)
+            reason: 日志原因标签
+        逻辑:
+            - 若伴奏长度 <= 0 忽略
+            - 若与当前 max_history_time 差异 <0.5s 且未强制，不重复重建
+            - 优先使用本对象的 set_max_history_time
+            - 自动裁剪 time_window 与 time_offset
+            - 保持自动跟随时末尾对齐
+        """
+        try:
+            accomp_dur = float(accomp_dur)
+            if accomp_dur <= 0:
+                return False
+            delta = abs(getattr(self, 'max_history_time', 0.0) - accomp_dur)
+            need = (delta > 0.5) or force
+            if not need:
+                return False
+            # 记录一次原始值
+            if not hasattr(self, '_user_prev_max_history_time'):
+                self._user_prev_max_history_time = getattr(self, 'max_history_time', accomp_dur)
+            # 调整（考虑锁定）
+            target_len = accomp_dur
+            try:
+                if getattr(self, '_backing_axis_locked', False):
+                    locked_len = float(getattr(self, '_backing_axis_length', accomp_dur))
+                    # 伴奏替换长度变化较大时更新锁
+                    if abs(locked_len - accomp_dur) > 0.5:
+                        self._backing_axis_length = float(accomp_dur)
+                        locked_len = float(accomp_dur)
+                        print(f"🔄 更新伴奏锁长度 -> {locked_len:.2f}s reason={reason}")
+                    target_len = locked_len
+            except Exception:
+                pass
+            if hasattr(self, 'set_max_history_time'):
+                self.set_max_history_time(target_len)
+            else:
+                self.max_history_time = target_len
+            # 调整窗口
+            if getattr(self, 'time_window', 16.0) > accomp_dur:
+                self.time_window = min(accomp_dur, getattr(self, 'time_window', accomp_dur))
+            # 滚动与偏移
+            if getattr(self, 'auto_follow', True) and (getattr(self, 'is_recording_active', False) or getattr(self, 'is_recording', False)):
+                # 保持末尾对齐
+                self.time_offset = max(0.0, accomp_dur - self.time_window)
+            else:
+                # 非自动跟随或未录音: 若 offset 超出则回调
+                if getattr(self, 'time_offset', 0.0) + self.time_window > accomp_dur:
+                    self.time_offset = max(0.0, accomp_dur - self.time_window)
+            # 立即刷新坐标
+            try:
+                if hasattr(self, 'ax'):
+                    self.ax.set_xlim(self.time_offset, self.time_offset + self.time_window)
+            except Exception:
+                pass
+            # 同步滚动条与状态显示（之前代码放在 return 之后不可达）
+            try:
+                if hasattr(self, 'update_scrollbars'):
+                    self.update_scrollbars()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'update_status_display'):
+                    self.update_status_display()
+            except Exception:
+                pass
+            print(f"🕒 时间轴已同步伴奏长度={accomp_dur:.2f}s reason={reason} force={force} 锁定={getattr(self,'_backing_axis_locked', False)} 目标={target_len:.2f}s 原max={getattr(self,'_user_prev_max_history_time','?')}s")
+            return True
+        except Exception as _e:
+            print(f"⚠️ _sync_time_axis_to_accompaniment 失败: {_e}")
+            return False
+
+    # （已前移）
+
+    def ensure_backing_time_axis_sync(self, reason: str = "external_call"):
+        """外部安全调用：若存在伴奏数据则尝试同步时间轴。
+        避免因为动态重载或实例差异导致属性缺失崩溃。
+        """
+        try:
+            if getattr(self, 'backing_sample_rate', None) and getattr(self, 'backing_pcm_accompaniment', None) is not None:
+                dur = len(self.backing_pcm_accompaniment)/float(self.backing_sample_rate)
+                ok = self._sync_time_axis_to_accompaniment(dur, reason=reason)
+                if not ok:
+                    print(f"⚠️ ensure_backing_time_axis_sync 未触发更新 (dur={dur:.2f})")
+            else:
+                print("ℹ️ ensure_backing_time_axis_sync: 无伴奏数据可同步")
+        except Exception as _e:
+            print(f"⚠️ ensure_backing_time_axis_sync 失败: {_e}")
     
     def reset_view(self):
         """重置视图到默认状态（中心C4、缩放1.0x、时间偏移0、解锁Y轴）。"""
@@ -20009,6 +20706,9 @@ class ECGStylePitchVisualizer(QWidget):
         self.start_time = time.time()
         self.current_global_time = 0.0
         self.is_recording_active = True
+        # 重置暂停补偿
+        self._accumulated_pause_dur = 0.0
+        self._viz_pause_started_at = None
         # 启动时间更新定时器
         if hasattr(self, 'time_update_timer'):
             self.time_update_timer.start(self.time_update_interval)
@@ -20076,14 +20776,229 @@ class ECGStylePitchVisualizer(QWidget):
         """更新时间轴（支持断续音调曲线）"""
         if not self.is_recording_active or self.start_time is None:
             return
+        # 外部暂停（伴奏控制窗口）时冻结时间推进
         try:
-            # 更新全局时间
-            self.current_global_time = time.time() - self.start_time
+            if getattr(self, '_external_paused', False):
+                return
+        except Exception:
+            pass
+        # 在每个时间轴 tick 主动校验伴奏锁长度，防止被其它路径意外缩短
+        try:
+            if hasattr(self, '_enforce_backing_axis_lock'):
+                self._enforce_backing_axis_lock(source="time_tick")
+        except Exception:
+            pass
+        try:
+            # 更新全局时间（扣除累计暂停时长）
+            raw_now = time.time() - self.start_time - float(getattr(self, '_accumulated_pause_dur', 0.0))
+            try:
+                shift = float(getattr(self, '_time_offset_shift', 0.0))
+            except Exception:
+                shift = 0.0
+            self.current_global_time = raw_now + shift
+            # 防御：当前窗口若超出锁定总时长范围（或末端少展示），进行末端对齐纠正
+            try:
+                eff_total = float(getattr(self,'_backing_axis_length', getattr(self,'max_history_time',0.0))) if getattr(self,'_backing_axis_locked',False) else float(getattr(self,'max_history_time',0.0))
+                tw = float(getattr(self,'time_window',16.0))
+                if eff_total > 0 and tw < eff_total:
+                    max_off = eff_total - tw
+                    if self.time_offset > max_off + 1e-3:
+                        self.time_offset = max_off
+                        try:
+                            if hasattr(self,'ax'):
+                                self.ax.set_xlim(self.time_offset, self.time_offset + tw)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # 调试：记录周期性状态（每 ~1s 一次）
+            try:
+                _now_dbg = int(self.current_global_time)
+                if _now_dbg != getattr(self, '_last_dbg_second', None):
+                    self._last_dbg_second = _now_dbg
+                    if getattr(self, '_debug_axis_trace', True):
+                        eff_total = getattr(self, '_backing_axis_length', getattr(self,'max_history_time',0.0)) if getattr(self,'_backing_axis_locked',False) else getattr(self,'max_history_time',0.0)
+                        print(f"[TIME_TICK] t={self.current_global_time:.2f}s eff_total={eff_total:.2f} max_history={getattr(self,'max_history_time',0.0):.2f} window={getattr(self,'time_window',0.0):.2f} offset={getattr(self,'time_offset',0.0):.2f} locked={getattr(self,'_backing_axis_locked',False)}")
+            except Exception:
+                pass
 
             # 手动滚动冻结逻辑：最近 2 秒用户交互则暂不自动滚动
-            manual_freeze = (time.time() - getattr(self, '_last_manual_scroll_time', 0)) < 1.4
+            # 若用户在 2.5s 抑制窗口内，保持手动视图（参考 _manual_time_offset_override_until）
+            now_ts = time.time()
+            manual_freeze = False
+            try:
+                if now_ts - float(getattr(self, '_last_manual_scroll_time', 0.0)) < 1.4:
+                    manual_freeze = True
+                if now_ts < float(getattr(self, '_manual_time_offset_override_until', 0.0)):
+                    manual_freeze = True
+            except Exception:
+                manual_freeze = False
+
+            # 记录暂停->恢复 过渡，用于快速释放端点锁
+            try:
+                cur_paused = bool(getattr(self, 'is_recording_paused', False)) or bool(getattr(self,'_viz_pause_started_at', None))
+                last_paused = getattr(self, '_last_pause_state', None)
+                if last_paused is None:
+                    self._last_pause_state = cur_paused
+                elif last_paused and (not cur_paused):
+                    # 刚刚从暂停恢复
+                    import time as _t
+                    self._resume_transition_ts = _t.time()
+                    if getattr(self, '_debug_axis_trace', True):
+                        print(f"[RESUME] transition cur_t={getattr(self,'current_global_time',0.0):.2f} off={getattr(self,'time_offset',0.0):.2f}")
+                self._last_pause_state = cur_paused
+            except Exception:
+                pass
+
+            # 若检测到刚恢复（100ms 内）并且当前处于末端硬锁/末端查看，则立即跳回实时跟随位置
+            try:
+                import time as _t
+                if hasattr(self,'_resume_transition_ts') and (_t.time() - float(getattr(self,'_resume_transition_ts',0.0)) < 0.12):
+                    # 只在不暂停的真实恢复条件下执行
+                    if not bool(getattr(self,'is_recording_paused',False)) and getattr(self,'auto_follow',True) and getattr(self,'auto_scroll_enabled',True):
+                        # 如果是硬末端或查看末端模式，释放
+                        if getattr(self,'_hard_end_view_active',False) or getattr(self,'_viewing_backing_end',False):
+                            # 释放标志
+                            if getattr(self,'_hard_end_view_active',False):
+                                self._hard_end_view_active = False
+                            if getattr(self,'_viewing_backing_end',False):
+                                self._viewing_backing_end = False
+                            # 计算实时 offset（与主 auto-follow 一致）
+                            cur_t = float(getattr(self,'current_global_time',0.0))
+                            cdisp = float(getattr(self,'center_display_time',8.0))
+                            tw = float(getattr(self,'time_window',16.0))
+                            if cur_t > cdisp:
+                                max_off = max(0.0, float(getattr(self,'max_history_time',0.0)) - tw)
+                                new_off = min(max_off, max(0.0, cur_t - cdisp))
+                            else:
+                                new_off = 0.0
+                            self.time_offset = new_off
+                            if hasattr(self,'ax'):
+                                self.ax.set_xlim(new_off, new_off + tw)
+                                self._suppress_next_smooth_xlim = True
+                                if getattr(self,'_debug_axis_trace',True):
+                                    print(f"[END_HARD] fast-release cur_t={cur_t:.2f} off={new_off:.2f} win={tw:.2f}")
+                                if hasattr(self,'canvas'):
+                                    self.canvas.draw_idle()
+            except Exception:
+                pass
 
             if self.auto_follow and self.auto_scroll_enabled and not manual_freeze:
+                # 硬起点锁备用释放（fast-release 已在前面执行，这里仅兜底）
+                try:
+                    if getattr(self, '_hard_start_view_active', False):
+                        is_paused = bool(getattr(self, 'is_recording_paused', False)) or bool(getattr(self,'_viz_pause_started_at', None))
+                        cur_t = float(getattr(self, 'current_global_time', 0.0))
+                        tw0 = float(getattr(self, 'time_window', 16.0))
+                        if (not is_paused) and cur_t > (tw0 + 0.08):
+                            self._hard_start_view_active = False
+                            if getattr(self, '_debug_axis_trace', True):
+                                print(f"[START_HARD] auto-release(cur) cur_t={cur_t:.2f} win={tw0:.2f}")
+                except Exception:
+                    pass
+                # 末端查看/硬末端锁备用释放：若恢复后实时推进（>=0.05s）则解除以允许即时跟随
+                try:
+                    if (getattr(self,'_hard_end_view_active',False) or getattr(self,'_viewing_backing_end',False)) and not bool(getattr(self,'is_recording_paused',False)):
+                        cur_t = float(getattr(self,'current_global_time',0.0))
+                        if cur_t >= 0.05:  # 任何有效推进
+                            if getattr(self,'_hard_end_view_active',False):
+                                self._hard_end_view_active = False
+                            if getattr(self,'_viewing_backing_end',False):
+                                self._viewing_backing_end = False
+                            if getattr(self,'_debug_axis_trace',True):
+                                print(f"[END_HARD] auto-release(cur) t={cur_t:.2f}")
+                except Exception:
+                    pass
+                # 硬起点锁优先级最高：一旦激活保持 (0, time_window) 不被任何自动逻辑改变
+                try:
+                    if getattr(self, '_hard_start_view_active', False):
+                        tw0 = float(getattr(self, 'time_window', 16.0))
+                        if getattr(self, 'time_offset', 0.0) != 0.0:
+                            self.time_offset = 0.0
+                        try:
+                            if hasattr(self, 'ax'):
+                                cur0, cur1 = self.ax.get_xlim()
+                                if abs(cur0 - 0.0) > 1e-6 or abs(cur1 - tw0) > 1e-6:
+                                    self.ax.set_xlim(0.0, tw0)
+                                    # 节流日志
+                                    try:
+                                        import time as _t
+                                        _now_s = _t.time()
+                                        _last_s = getattr(self, '_hard_start_last_log', 0.0)
+                                        if (_now_s - _last_s) > 0.5 and getattr(self, '_debug_axis_trace', True):
+                                            print(f"[START_HARD] enforce win={tw0:.2f} -> (0.00,{tw0:.2f}) t={getattr(self,'current_global_time',0.0):.2f}")
+                                            self._hard_start_last_log = _now_s
+                                    except Exception:
+                                        pass
+                                    if hasattr(self,'canvas'):
+                                        self.canvas.draw_idle()
+                        except Exception:
+                            pass
+                        # 起点锁期间跳过后续自动跟随
+                        raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
+                # 硬末端锁优先：一旦激活则强制窗口保持末端并跳过后续自动跟随
+                try:
+                    if getattr(self, '_hard_end_view_active', False):
+                        # 计算当前总长度（优先伴奏锁定长度）
+                        total_len = 0.0
+                        if getattr(self, '_backing_axis_locked', False):
+                            total_len = float(getattr(self, '_backing_axis_length', getattr(self,'max_history_time',0.0)))
+                        else:
+                            total_len = float(getattr(self, 'max_history_time', 0.0))
+                        tw = float(getattr(self, 'time_window', 16.0))
+                        hard_start = max(0.0, total_len - tw)
+                        # 若 time_offset 偏离（>5ms）则重置并立即刷新
+                        if abs(float(getattr(self,'time_offset',0.0)) - hard_start) > 0.005:
+                            self.time_offset = hard_start
+                        try:
+                            if hasattr(self, 'ax'):
+                                cur0, cur1 = self.ax.get_xlim()
+                                if abs(cur0 - hard_start) > 1e-6 or abs(cur1 - (hard_start + tw)) > 1e-6:
+                                    self.ax.set_xlim(hard_start, hard_start + tw)
+                                    # 日志节流：500ms 内只打印一次 enforce
+                                    try:
+                                        import time as _t
+                                        _nowh = _t.time()
+                                        _lasth = getattr(self, '_hard_end_last_log', 0.0)
+                                        if (_nowh - _lasth) > 0.5 and getattr(self, '_debug_axis_trace', True):
+                                            print(f"[END_HARD] enforce total={total_len:.2f} win={tw:.2f} -> ({hard_start:.2f},{hard_start + tw:.2f}) t={getattr(self,'current_global_time',0.0):.2f}")
+                                            self._hard_end_last_log = _nowh
+                                    except Exception:
+                                        pass
+                                    if hasattr(self,'canvas'):
+                                        self.canvas.draw_idle()
+                        except Exception:
+                            pass
+                        # 硬锁期间跳过 auto-follow 其它逻辑
+                        raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
+                # 若当前处于“查看末端”模式，则跳过自动跟随（保持末端视图稳定）
+                try:
+                    if getattr(self, '_viewing_backing_end', False) and getattr(self, '_backing_axis_locked', False):
+                        if getattr(self, '_debug_axis_trace', True):
+                            print(f"[AUTO_FOLLOW] skip(end-view) t={self.current_global_time:.2f} off={self.time_offset:.2f}")
+                        raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
+                # 手动末端锚定：若刚拖到最右端，在锚定期内跳过自动跟随防止回拉
+                try:
+                    if time.time() < float(getattr(self, '_manual_end_anchor_until', 0.0)):
+                        if getattr(self, '_debug_axis_trace', True):
+                            print(f"[AUTO_FOLLOW] skip(end-anchor) t={self.current_global_time:.2f} off={self.time_offset:.2f}")
+                        raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
                 if self.current_global_time > self.center_display_time:
                     # 第8秒后严格按墙钟推进：每秒推进1秒，保证轴速不滞后
                     target_offset = self.current_global_time - self.center_display_time
@@ -20121,8 +21036,9 @@ class ECGStylePitchVisualizer(QWidget):
                 return
             if hasattr(self, 'time_update_timer'):
                 self.time_update_timer.stop()
-            # 记录暂停起点用于调试
-            self._viz_pause_started_at = time.time()
+            # 记录暂停起点（仅首次）
+            if self._viz_pause_started_at is None:
+                self._viz_pause_started_at = time.time()
         except Exception:
             pass
 
@@ -20130,11 +21046,10 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if not getattr(self, 'is_recording_active', False):
                 return
-            # 将可视化的 start_time 前移暂停时长，确保 add_pitch_data 使用的 (timestamp-start_time) 去掉暂停间隔
+            # 累加暂停时长补偿，避免恢复跳跃
             try:
-                if hasattr(self, '_viz_pause_started_at') and self._viz_pause_started_at and hasattr(self, 'start_time') and self.start_time:
-                    paused_span = max(0.0, time.time() - float(self._viz_pause_started_at))
-                    self.start_time += paused_span
+                if self._viz_pause_started_at is not None:
+                    self._accumulated_pause_dur += max(0.0, time.time() - self._viz_pause_started_at)
             except Exception:
                 pass
             if hasattr(self, 'time_update_timer'):
@@ -21100,42 +22015,41 @@ class IntegratedRecordingInterface(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        
-        # 状态变量
+
+        # === 基础状态 ===
         self.is_recording = False
         self.is_analyzing = False
         self.should_save_recording = True
-        # 调试计数器（防御初始化，避免早期引用报错）
         self._pitch_precision_debug_counter = 0
-        
-        # 当前音高状态（用于交互式标注）
-        self.current_pitch_y = 4.0  # 当前音高的y坐标
-        self.current_pitch_active = False  # 是否有活跃的音高输入
-        self.last_pitch_time = 0  # 最后一次音高输入的时间
-        
+
+        # 当前音高交互状态
+        self.current_pitch_y = 4.0
+        self.current_pitch_active = False
+        self.last_pitch_time = 0
+
         # 音频处理器
         self.audio_processor = IntegratedAudioProcessor()
-        
-        # 降噪处理器
+
+        # 降噪处理器（可选）
         try:
             from src.audio_processing.noise_reduction import NoiseReductionProcessor
             self.noise_processor = NoiseReductionProcessor(sample_rate=44100, frame_size=2048)
             print("✅ 降噪处理器初始化成功")
-        except ImportError as e:
+        except Exception as e:
             print(f"❌ 降噪处理器初始化失败: {e}")
             self.noise_processor = None
-        
-        # 🔥 初始化电流音检测器（主窗口）
+
+        # 电流音检测配置
         self.electric_noise_detector = {
             'enabled': True,
             'threshold': 2.0,
             'consecutive_count': 0,
             'last_detection_time': 0,
             'rms_threshold': 0.0008,
-            'high_freq_ratio_threshold': 0.95
+            'high_freq_ratio_threshold': 0.95,
         }
 
-        # 🔥 增强型检测器初始化变量
+        # 高级检测占位
         self.advanced_detector = None
         self.precision_processor = None
         self.calibration_system = None
@@ -21144,101 +22058,93 @@ class IntegratedRecordingInterface(QMainWindow):
         self.detection_stats = {'total': 0, 'detected': 0, 'vocal_protected': 0}
         self.latency_timestamps = []
         self.frame_counter = 0
-        # UI绘制节流与平滑缓存（仅影响可视化，不影响分析）
-        self._vis_last_draw_wall = 0.0
-        # 高性能默认 ~55FPS；必要时由性能管理器覆盖
-        self._vis_min_interval_sec = 0.018
-        # 最近频率历史（用于可视化平滑）；只存少量点，避免开销
-        self._plot_freq_history = []  # list[float]
-        self._plot_freq_alpha = 0.35  # EMA回退系数（按性能模式覆盖）
-        # 按模式可调的可视化参数（默认值；初始化后由性能管理器覆盖）
-        self._plot_freq_history_maxlen = 33  # 历史长度上限
-        self._plot_savgol_win = 9            # SG平滑窗口（奇数）
-        self._plot_savgol_poly = 2           # SG多项式阶数
 
-        # 依据性能模式联动可视化参数，并监听模式变化
+        # 可视化节流/平滑参数
+        self._vis_last_draw_wall = 0.0
+        self._vis_min_interval_sec = 0.018
+        self._plot_freq_history = []
+        self._plot_freq_alpha = 0.35
+        self._plot_freq_history_maxlen = 33
+        self._plot_savgol_win = 9
+        self._plot_savgol_poly = 2
+
+        # 性能模式联动
         try:
-            from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+            from src.audio_processing.performance_manager import get_performance_manager
             _pm_ui = get_performance_manager()
             if _pm_ui:
-                # 先应用当前模式参数
                 try:
                     self._apply_ui_params_for_mode(_pm_ui.get_current_mode(), _pm_ui.get_current_config())
                 except Exception:
                     pass
-                # 注册监听器，动态响应模式切换
                 try:
                     _pm_ui.register_listener(self._on_performance_mode_changed)
                 except Exception:
                     pass
         except Exception:
             pass
-        
-        # 🚀 零延迟优化组件
+
+        # 零延迟优化组件
         self.audio_processing_thread = None
         self.zero_copy_enabled = True
         self.memory_pool = None
         self.preallocated_buffers = {}
-        
-        # 🎯 独立音频处理线程配置
+
+        # 独立音频处理线程
         self.dedicated_audio_thread = None
-        self.audio_queue = queue.Queue(maxsize=10)  # 小队列，减少延迟
+        self.audio_queue = queue.Queue(maxsize=10)
         self.processing_lock = threading.Lock()
-        
-        # 🔥 零拷贝内存管理
+
+        # 零拷贝内存池 & 线程启动
         self._init_memory_pool()
-        
-        # 启动专用音频处理线程
         self._start_dedicated_audio_thread()
-        
-        # 统计数据
+
+        # 统计与录音时长管理
         self.total_pitches_detected = 0
-        self.recording_duration = 0
+        self.recording_duration = 0.0
+        self._is_duration_frozen = False
+        self._freeze_recording_duration = 0.0
+        self._last_trim_time = None
         self.current_note = "--"
-        self.current_frequency = 0
-        
-        # 字体状态
+        self.current_frequency = 0.0
+
+        # 字体/对话框占位
         self.chinese_font_available = False
-        
-        # 🎚️ 音量控制对话框
         self.volume_control_dialog = None
-        
-        # 初始化界面
+
+        # 初始化 UI
         self.init_ui()
         self.setup_connections()
-        
-        # 🎯 加载用户首选设备配置到音频处理器
+
+        # 加载设备配置
         if hasattr(self.audio_processor, '_selected_device_config') and self.audio_processor._selected_device_config:
-            print(f"🎧 主窗口已加载首选设备配置: {self.audio_processor._selected_device_config['name']}")
-        
-        # 🔧 移除自动启动实时分析 - 只有用户主动录音时才启动
-        # QTimer.singleShot(1000, self.start_realtime_analysis)  # 已禁用
-        
+            try:
+                print(f"🎧 主窗口已加载首选设备配置: {self.audio_processor._selected_device_config['name']}")
+            except Exception:
+                pass
+
         # 状态定时器
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status_display)
-        self.status_timer.start(100)  # 100ms更新一次
+        self.status_timer.start(100)
 
-        # 默认录音保存目录（可配置）
+        # 录音保存目录
         try:
             self.default_recordings_dir = project_root / "recordings"
             self.default_recordings_dir.mkdir(exist_ok=True)
         except Exception:
             self.default_recordings_dir = Path.cwd() / "recordings"
             self.default_recordings_dir.mkdir(exist_ok=True)
-        # 从 QSettings 读取持久化的保存目录
         try:
             settings = QSettings("MindEcho", "IntegratedRecorder")
             saved_dir = settings.value("save_base_dir", str(self.default_recordings_dir))
         except Exception:
             saved_dir = str(self.default_recordings_dir)
-        # 当前会话保存目录
         try:
             self.save_base_dir = Path(saved_dir)
             self.save_base_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             self.save_base_dir = Path(self.default_recordings_dir)
-        # 同步给音频处理器
         if hasattr(self.audio_processor, 'set_save_base_dir'):
             try:
                 self.audio_processor.set_save_base_dir(str(self.save_base_dir))
@@ -21473,6 +22379,63 @@ class IntegratedRecordingInterface(QMainWindow):
         
         # 🎯 初始化默认降噪模式为"基础频域降噪"
         self.init_default_noise_reduction()
+
+    # ======================= 时间轴同步主类封装 =======================
+    def _sync_time_axis_to_accompaniment(self, accomp_dur: float, *, reason: str = "main_wrapper", force: bool = False):
+        """主窗口包装：转发到 visualizer 的同步逻辑。如果 visualizer 不存在或无该方法则退化手动调整。"""
+        try:
+            if not (accomp_dur and accomp_dur > 0):
+                return False
+            vis = getattr(self, 'visualizer', None)
+            if vis is None:
+                print("⚠️ 主窗口同步失败: 可视化组件缺失")
+                return False
+            if hasattr(vis, '_sync_time_axis_to_accompaniment'):
+                return vis._sync_time_axis_to_accompaniment(accomp_dur, reason=reason, force=force)
+            prev = getattr(vis, 'max_history_time', 0.0)
+            if abs(prev - accomp_dur) <= 0.5 and not force:
+                return False
+            vis.max_history_time = accomp_dur
+            # 若已有伴奏锁，确保未被缩短（fallback 路径缺省保护）
+            try:
+                if hasattr(vis, '_enforce_backing_axis_lock'):
+                    vis._enforce_backing_axis_lock(source="fallback_main_sync")
+            except Exception:
+                pass
+            if getattr(vis, 'time_window', 16.0) > accomp_dur:
+                vis.time_window = min(accomp_dur, getattr(vis, 'time_window', accomp_dur))
+            if getattr(vis, 'auto_follow', True) and (getattr(self, 'is_recording', False) or getattr(self, 'is_analyzing', False)):
+                vis.time_offset = max(0.0, accomp_dur - vis.time_window)
+            else:
+                if getattr(vis, 'time_offset', 0.0) + vis.time_window > accomp_dur:
+                    vis.time_offset = max(0.0, accomp_dur - vis.time_window)
+            if hasattr(vis, 'ax'):
+                try:
+                    vis.ax.set_xlim(vis.time_offset, vis.time_offset + vis.time_window)
+                except Exception:
+                    pass
+            if hasattr(vis, 'update_scrollbars'):
+                try:
+                    vis.update_scrollbars()
+                except Exception:
+                    pass
+            if hasattr(vis, 'canvas') and hasattr(vis.canvas, 'draw_idle'):
+                vis.canvas.draw_idle()
+            print(f"🕒(fallback-main) 同步伴奏长度={accomp_dur:.2f}s reason={reason} force={force}")
+            return True
+        except Exception as _e:
+            print(f"⚠️ 主窗口 _sync_time_axis_to_accompaniment 异常: {_e}")
+            return False
+
+    def ensure_backing_time_axis_sync(self, reason: str = "main_wrapper_call"):
+        try:
+            if getattr(self, 'backing_sample_rate', None) and getattr(self, 'backing_pcm_accompaniment', None) is not None:
+                dur = len(self.backing_pcm_accompaniment)/float(self.backing_sample_rate)
+                self._sync_time_axis_to_accompaniment(dur, reason=reason)
+            else:
+                print("ℹ️ 主窗口同步跳过：暂无伴奏数据")
+        except Exception as _e:
+            print(f"⚠️ ensure_backing_time_axis_sync(main) 异常: {_e}")
 
     def open_settings_dialog(self):
         """打开设置对话框，配置录音保存位置"""
@@ -22066,6 +23029,15 @@ class IntegratedRecordingInterface(QMainWindow):
             # 非录音/分析状态：强制静音，停止任何可能存在的播放流
             if not (self.is_recording or self.is_analyzing):
                 self._stop_backing_playback()
+                # 即使不在录音/分析，也执行一次时间轴同步（便于预览）
+                try:
+                    if self.backing_mode in ('accompaniment','both') and \
+                       getattr(self, 'backing_sample_rate', None) and \
+                       getattr(self, 'backing_pcm_accompaniment', None) is not None:
+                        self._sync_time_axis_to_accompaniment(len(self.backing_pcm_accompaniment)/float(self.backing_sample_rate), reason="mode_switch_idle")
+                except Exception as _e_sync:
+                    print(f"⚠️ 切换同步伴奏时间轴失败: {_e_sync}")
+                # 结束非录音/分析状态下的模式切换处理
                 return
             # 录音/分析活跃状态下
             if self.backing_mode == 'off':
@@ -22074,6 +23046,23 @@ class IntegratedRecordingInterface(QMainWindow):
                 if prev_mode != self.backing_mode:
                     self._stop_backing_playback()
                 self._maybe_start_backing_playback()
+                # 录音/分析状态下同步（若尚未同步或伴奏替换）
+                try:
+                    if self.backing_mode in ('accompaniment','both') and \
+                       getattr(self, 'backing_sample_rate', None) and \
+                       getattr(self, 'backing_pcm_accompaniment', None) is not None:
+                        self._sync_time_axis_to_accompaniment(len(self.backing_pcm_accompaniment)/float(self.backing_sample_rate), reason="mode_switch_active")
+                except Exception as _e_sync2:
+                    print(f"⚠️ 录音态同步伴奏时间轴失败: {_e_sync2}")
+                # 伴奏/原唱开启后自动弹出控制窗口（只弹一次，若用户关闭可手动再开）
+                # 优化：仅当当前伴奏模式不是 off 时才自动弹出，避免用户在纯录音/分析(伴奏关闭)时被打扰
+                try:
+                    if getattr(self, 'backing_mode', 'off') != 'off':
+                        self.open_backing_control_window()
+                    else:
+                        print("ℹ️ 跳过自动弹出伴奏控制窗口：当前伴奏模式=off")
+                except Exception as _e_show:
+                    print(f"⚠️ 自动弹出伴奏控制窗口失败: {_e_show}")
         except Exception as e:
             print(f"⚠️ 切换伴奏模式失败: {e}")
 
@@ -22262,6 +23251,12 @@ class IntegratedRecordingInterface(QMainWindow):
             else:
                 self.backing_pcm_accompaniment = data
                 print(f"🎵 已加载伴奏: {path} 采样率={target_sr} 长度={len(data)}")
+                # 伴奏模式时间轴同步
+                try:
+                    if target_sr and len(data) > 0:
+                        self._sync_time_axis_to_accompaniment(len(data)/float(target_sr), reason="load_accompaniment")
+                except Exception as _sync_e:
+                    print(f"⚠️ 同步伴奏时间轴失败: {_sync_e}")
             # 默认切换到伴奏模式（若当前为 off 且加载伴奏）
             if self.backing_mode == 'off' and not is_original:
                 self.backing_mode = 'accompaniment'
@@ -22373,6 +23368,8 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             import numpy as _np
             with self._backing_lock:
+                if getattr(self, '_backing_paused', False):
+                    return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
                 if not (self.is_recording or self.is_analyzing):
                     return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
                 if self.backing_mode == 'off' or self.backing_pcm_accompaniment is None or self.backing_sample_rate is None:
@@ -22424,6 +23421,8 @@ class IntegratedRecordingInterface(QMainWindow):
             import numpy as np
             if self._backing_stream is None or self.backing_pcm_accompaniment is None:
                 return
+            if getattr(self, '_backing_paused', False):
+                return
             with self._backing_lock:
                 acc = self.backing_pcm_accompaniment
                 start = self.backing_play_position
@@ -22472,27 +23471,215 @@ class IntegratedRecordingInterface(QMainWindow):
             print(f"⚠️ 歌词开关错误: {e}")
 
     def _init_backing_state(self):
-        """(重建) 初始化伴奏/原唱播放状态（放置于其它播放函数附近，避免重复定义冲突）。"""
-        # 基本状态
-        self.backing_mode = 'off'
-        self.backing_pcm_accompaniment = None
-        self.backing_pcm_original = None
-        self.backing_sample_rate = None
-        self.backing_play_position = 0
-        self.backing_play_timer = None
-        self._pyaudio_out = None
-        self._backing_stream = None
-        self._backing_chunk = 2048
-        import threading as _thr
-        self._backing_lock = getattr(self, '_backing_lock', _thr.Lock())
-        self.lyrics_enabled = False
-        self._backing_callback_enabled = True
-        # 音量（线性倍数，GUI 显示百分比）；保持已有值避免覆盖用户设置
-        # 默认初始：伴奏 30%，原唱 50%（首次更舒适；若用户已有设置不覆盖）
-        if not hasattr(self, 'backing_volume_accompaniment'):
-            self.backing_volume_accompaniment = 0.30
-        if not hasattr(self, 'backing_volume_original'):
-            self.backing_volume_original = 0.50
+        """初始化/重置伴奏与原唱播放相关状态。"""
+        try:
+            # 基础状态
+            self.backing_mode = 'off'
+            self.backing_pcm_accompaniment = None
+            self.backing_pcm_original = None
+            self.backing_sample_rate = None
+            self.backing_play_position = 0
+            self.backing_play_timer = None
+            self._pyaudio_out = None
+            self._backing_stream = None
+            self._backing_chunk = 2048
+            import threading as _thr
+            self._backing_lock = getattr(self, '_backing_lock', _thr.Lock())
+            self.lyrics_enabled = False
+            self._backing_callback_enabled = True
+            self._backing_paused = False
+            # 音量（线性倍数，GUI 显示百分比）；保持已有值避免覆盖用户设置
+            if not hasattr(self, 'backing_volume_accompaniment'):
+                self.backing_volume_accompaniment = 0.30
+            if not hasattr(self, 'backing_volume_original'):
+                self.backing_volume_original = 0.50
+            # 平行控制窗口引用
+            self._backing_control_win = None
+        except Exception as _ie:
+            try:
+                print(f"⚠️ 初始化伴奏状态失败: {_ie}")
+            except Exception:
+                pass
+
+    # ======================= 新增：伴奏/原唱控制平行窗口 =======================
+    def open_backing_control_window(self):
+        """打开或聚焦伴奏/原唱控制窗口。
+        - 可调伴奏/原唱音量
+        - 进度拖动（单轨或双轨）并驱动可视化 seek
+        - 仅在录音/分析激活时允许回退触发裁剪
+        """
+        try:
+            if self._backing_control_win and self._backing_control_win.isVisible():
+                self._backing_control_win.activateWindow(); self._backing_control_win.raise_(); return
+            self._backing_control_win = _BackingControlWindow(self)
+            self._backing_control_win.show()
+        except Exception as e:
+            print(f"⚠️ 打开伴奏控制窗口失败: {e}")
+
+    def _apply_backing_seek(self, target_sec: float, *, trim_if_backward: bool = True):
+        """由伴奏控制窗口驱动的 seek：
+        - 调整伴奏播放位置；
+        - 驱动可视化时间轴跳转；
+        - 若处于录音+分析，并回退，则裁剪可视化与内部缓存（仅 UI 层）。
+        """
+        try:
+            if target_sec < 0:
+                target_sec = 0.0
+            # 1) 伴奏样本定位（有伴奏才执行）
+            if self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
+                self._seek_backing_audio(target_sec)
+            # 2) 可视化 seek（无伴奏时也可用：允许跳过前奏/回退重录）
+            v = getattr(self, 'visualizer', None)
+            if v is None:
+                return
+            cur_before = float(getattr(v, 'current_global_time', 0.0))
+            backward = target_sec < cur_before - 1e-6
+            if backward and trim_if_backward and bool(getattr(self, 'is_recording', False)) and bool(getattr(self, 'is_analyzing', False)):
+                # 回退 -> 裁剪未来点
+                try:
+                    v.trim_after(target_sec)
+                    self._record_trim_point = float(target_sec)
+                    # 更新录音时长显示为裁剪后的时间
+                    try:
+                        self.recording_duration = float(target_sec)
+                        if self._is_duration_frozen:
+                            self._freeze_recording_duration = float(target_sec)
+                        self._last_trim_time = float(target_sec)
+                    except Exception:
+                        pass
+                except Exception as _te:
+                    print(f"⚠️ 裁剪失败: {_te}")
+            elif target_sec > cur_before + 1e-6:
+                # 前向跳转 -> 时间偏移
+                try:
+                    cur_shift = float(getattr(v, '_time_offset_shift', 0.0))
+                    delta = target_sec - cur_before
+                    v._time_offset_shift = cur_shift + delta
+                    v.current_global_time = target_sec
+                except Exception:
+                    pass
+            # 3) 通知可视化刷新
+            try:
+                v.notify_seek(target_sec)
+            except Exception:
+                pass
+            try:
+                v.follow_playback_time(target_sec)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"⚠️ 应用回放跳转失败: {e}")
+
+    # ---- 新增：伴奏内部跳转封装 ----
+    def _seek_backing_audio(self, target_sec: float):
+        """精确跳转伴奏播放位置：
+        - 安全获取锁
+        - 计算样本下标
+        - 可选刷新 PyAudio 流 解决极小概率缓冲残留造成的 1~2 个 block 延迟（避免点击感仅在活跃流且跳转跨度>0.2s时重启）
+        """
+        try:
+            if self.backing_sample_rate is None or self.backing_pcm_accompaniment is None:
+                return
+            sr = int(self.backing_sample_rate)
+            acc = self.backing_pcm_accompaniment
+            total_len = len(acc)
+            if total_len == 0:
+                return
+            new_pos = int(target_sec * sr)
+            if new_pos >= total_len:
+                new_pos = total_len - 1
+            if new_pos < 0:
+                new_pos = 0
+            lock = getattr(self, '_backing_lock', None)
+            if lock:
+                try:
+                    lock.acquire()
+                    self.backing_play_position = new_pos
+                finally:
+                    try: lock.release()
+                    except Exception: pass
+            else:
+                self.backing_play_position = new_pos
+            # 若使用回调流，轻量“冲刷”缓冲使下一 callback 立即从新位置出声
+            try:
+                if (self._backing_stream is not None and
+                    getattr(self._backing_stream, 'is_active', lambda: False)() and
+                    abs((getattr(self, '_last_seek_audio_sec', -9999.0)) - target_sec) > 0.2):
+                    # 仅在跨度较大时做一次 stop/start，避免频繁 seek 造成顿挫
+                    try:
+                        self._backing_stream.stop_stream()
+                        self._backing_stream.start_stream()
+                    except Exception:
+                        pass
+                self._last_seek_audio_sec = float(target_sec)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"⚠️ 伴奏跳转失败: {e}")
+            except Exception:
+                pass
+
+    def _backing_control_tick_sync(self):
+        """供控制窗口轮询/slider 拖动时调用：刷新滑块位置与可视化同步。"""
+        try:
+            win = self._backing_control_win
+            if not win or not win.isVisible():
+                return
+            # 当前时间 = 伴奏位置（秒）
+            pos_sec = 0.0
+            if self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
+                try:
+                    pos_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
+                except Exception:
+                    pos_sec = 0.0
+            # 若未在拖动中则更新 slider
+            if not win.is_user_dragging:
+                try:
+                    win.position_slider.blockSignals(True)
+                    win.position_slider.setValue(int(pos_sec * 1000))  # ms 精度
+                    win.position_slider.blockSignals(False)
+                except Exception:
+                    pass
+            # 时间标签
+            try:
+                win.time_label.setText(win._fmt_time(pos_sec))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _set_backing_paused(self, paused: bool):
+        """设置伴奏/原唱及可视化暂停状态（暂停时不推进时间轴/不绘制新点）。"""
+        try:
+            self._backing_paused = bool(paused)
+            # 冻结录音时长（用户期望：暂停时录音时长停表）
+            if paused and not self._is_duration_frozen:
+                self._freeze_recording_duration = float(getattr(self, 'recording_duration', 0.0))
+                self._is_duration_frozen = True
+            elif (not paused) and self._is_duration_frozen:
+                self._is_duration_frozen = False  # 恢复继续推进
+            # 可视化冻结：通过一个外部标志阻止 add_pitch_data 添加点
+            if hasattr(self, 'visualizer') and self.visualizer is not None:
+                try:
+                    self.visualizer._external_paused = bool(paused)
+                    if paused and hasattr(self.visualizer, 'pause_time_tracking'):
+                        self.visualizer.pause_time_tracking()
+                    elif (not paused) and hasattr(self.visualizer, 'resume_time_tracking'):
+                        self.visualizer.resume_time_tracking()
+                except Exception:
+                    pass
+            # 恢复后重置检测频率平滑基线，避免跨度统计
+            if (not paused):
+                try:
+                    self._detection_rate_smoothing_active = True
+                    self._detection_rate_smoothing_start = time.time()
+                    self._detection_rate_baseline_pitches = int(getattr(self, 'total_pitches_detected', 0))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
     def create_control_panel(self):
         """创建控制面板（重构修复缩进/重复问题）"""
@@ -22597,6 +23784,13 @@ class IntegratedRecordingInterface(QMainWindow):
         self.backing_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.backing_button.customContextMenuRequested.connect(self.show_backing_context_menu)
         backing_layout.addWidget(self.backing_button)
+        self.backing_control_btn = QPushButton("伴奏控制")
+        self.backing_control_btn.setToolTip("打开伴奏/原唱独立控制窗口")
+        try:
+            self.backing_control_btn.clicked.connect(self.open_backing_control_window)
+        except Exception:
+            pass
+        backing_layout.addWidget(self.backing_control_btn)
         self.lyrics_button = QPushButton("歌词"); self.lyrics_button.setCheckable(True); self.lyrics_button.toggled.connect(self._toggle_lyrics)
         self.lyrics_button.setStyleSheet("QPushButton { padding:6px 14px; border:2px solid #444; border-radius:8px; background:#2C2C2C; color:white;} QPushButton:checked { border-color:#4A90E2; }")
         backing_layout.addWidget(self.lyrics_button)
@@ -23323,8 +24517,58 @@ class IntegratedRecordingInterface(QMainWindow):
                 
                 # 开始时间追踪（支持断续音调曲线）
                 self.visualizer.start_time_tracking()
-                # 若伴奏模式开启则启动伴奏播放
+                # 若伴奏模式开启则启动伴奏播放 + 锁定伴奏长度为时间轴最大长度
                 self._maybe_start_backing_playback()
+                try:
+                    if getattr(self, 'backing_mode', 'off') in ('accompaniment','both') and \
+                       getattr(self, 'backing_sample_rate', None) and \
+                       getattr(self, 'backing_pcm_accompaniment', None) is not None:
+                        dur = len(self.backing_pcm_accompaniment)/float(self.backing_sample_rate)
+                        # 主窗口层锁定
+                        self._backing_axis_locked = True
+                        self._backing_axis_length = float(dur)
+                        # 同步到可视化器自身，确保 set_max_history_time 内部缩短保护生效
+                        try:
+                            if hasattr(self.visualizer, '_backing_axis_locked'):
+                                self.visualizer._backing_axis_locked = True
+                            else:
+                                setattr(self.visualizer, '_backing_axis_locked', True)
+                            self.visualizer._backing_axis_length = float(dur)
+                            print(f"🔗 同步可视化锁定长度 {dur:.2f}s -> visualizer")
+                        except Exception as _e_vis_lock:
+                            print(f"⚠️ 可视化锁定同步失败: {_e_vis_lock}")
+                        self._sync_time_axis_to_accompaniment(dur, reason="recording_start_lock", force=True)
+                        try:
+                            if hasattr(self.visualizer, 'update_scrollbars'):
+                                self.visualizer.update_scrollbars()
+                        except Exception:
+                            pass
+                        print(f"🔒 伴奏时间轴锁定 {dur:.2f}s (录音开始)")
+                    else:
+                        # 无伴奏模式：解锁
+                        self._backing_axis_locked = False
+                        if hasattr(self, '_backing_axis_length'):
+                            delattr(self, '_backing_axis_length')
+                        # 解除可视化器锁
+                        try:
+                            if hasattr(self.visualizer, '_backing_axis_locked'):
+                                self.visualizer._backing_axis_locked = False
+                            if hasattr(self.visualizer, '_backing_axis_length'):
+                                delattr(self.visualizer, '_backing_axis_length')
+                        except Exception:
+                            pass
+                except Exception as _sync_rec_e:
+                    print(f"⚠️ 录音开始伴奏轴锁定失败: {_sync_rec_e}")
+                # 自动弹出伴奏/原唱控制窗口（一次性）
+                # 需求：不开启伴奏模式时不要自动打开伴奏控制窗口
+                try:
+                    if getattr(self, 'backing_mode', 'off') != 'off':
+                        self._backing_paused = False
+                        self.open_backing_control_window()
+                    else:
+                        print("ℹ️ 录音开始：伴奏模式=off，不自动弹出伴奏控制窗口")
+                except Exception as _e_show2:
+                    print(f"⚠️ 录音开始阶段自动弹出伴奏控制窗口失败: {_e_show2}")
                 
         except Exception as e:
             QMessageBox.critical(self, "录音错误", f"启动录音失败: {e}")
@@ -23336,6 +24580,20 @@ class IntegratedRecordingInterface(QMainWindow):
             self.is_recording = False
             # 录音结束时同步结束分析状态，防止伴奏误判仍在分析
             self.is_analyzing = False
+            # 若伴奏锁定存在，录音结束后仍允许浏览全长，但去除“锁”使用户可自定义最大长度
+            try:
+                if getattr(self, '_backing_axis_locked', False):
+                    print("🔓 录音结束解除伴奏锁 (保留可视化当前长度)")
+                self._backing_axis_locked = False
+                if hasattr(self, '_backing_axis_length'):
+                    delattr(self, '_backing_axis_length')
+                if hasattr(self, 'visualizer') and self.visualizer is not None:
+                    if hasattr(self.visualizer, '_backing_axis_locked'):
+                        self.visualizer._backing_axis_locked = False
+                    if hasattr(self.visualizer, '_backing_axis_length'):
+                        delattr(self.visualizer, '_backing_axis_length')
+            except Exception:
+                pass
             # 停止伴奏播放（与录音联动）
             self._stop_backing_playback()
             # 重置暂停按钮文本为“暂停”，并禁用
@@ -23346,6 +24604,13 @@ class IntegratedRecordingInterface(QMainWindow):
             
             # 停止时间追踪
             self.visualizer.stop_time_tracking()
+            # 解除伴奏时间轴锁定
+            try:
+                if getattr(self, '_backing_axis_locked', False):
+                    print("🔓 解除伴奏时间轴锁定 (录音结束)")
+                self._backing_axis_locked = False
+            except Exception:
+                pass
             
             # 更新UI
             self.main_record_button.setText("开始录音分析")
@@ -23379,9 +24644,23 @@ class IntegratedRecordingInterface(QMainWindow):
                 if hasattr(self, 'audio_processor') and self.audio_processor:
                     ok = bool(self.audio_processor.pause_recording())
                 if ok:
+                    # 标记全局暂停，供检测/显示层早退
+                    self.is_paused = True
+                    # 可视化冻结：停止时间推进 + 禁止新增点
                     # 冻结可视化时间推进
                     if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'pause_time_tracking'):
                         self.visualizer.pause_time_tracking()
+                    if hasattr(self, 'visualizer'):
+                        try:
+                            self.visualizer._external_paused = True  # add_pitch_data 会检查该标志
+                        except Exception:
+                            pass
+                    # 清空当前音高显示
+                    try:
+                        self.current_pitch_label.setText("当前音高: -- Hz")
+                        self.current_note_label.setText("当前音符: --")
+                    except Exception:
+                        pass
                     self.pause_button.setText("继续")
                     if hasattr(self, 'status_label'):
                         self.status_label.setText("已暂停，点击继续")
@@ -23393,8 +24672,22 @@ class IntegratedRecordingInterface(QMainWindow):
                 if hasattr(self, 'audio_processor') and self.audio_processor:
                     ok = bool(self.audio_processor.resume_recording())
                 if ok:
+                    # 恢复标志
+                    self.is_paused = False
+                    # 重置检测频率平滑基线（防止跨越暂停）
+                    try:
+                        self._detection_rate_smoothing_active = True
+                        self._detection_rate_smoothing_start = time.time()
+                        self._detection_rate_baseline_pitches = int(getattr(self, 'total_pitches_detected', 0))
+                    except Exception:
+                        pass
                     if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'resume_time_tracking'):
                         self.visualizer.resume_time_tracking()
+                    if hasattr(self, 'visualizer'):
+                        try:
+                            self.visualizer._external_paused = False
+                        except Exception:
+                            pass
                     self.pause_button.setText("暂停")
                     if hasattr(self, 'status_label'):
                         self.status_label.setText("录音继续")
@@ -23781,39 +25074,17 @@ class IntegratedRecordingInterface(QMainWindow):
     def on_pitch_detected(self, pitch_data):
         """音高检测回调（支持断续音调曲线模式）"""
         try:
+            # 暂停时完全停止后续检测处理（不累积统计，不绘制，不更新时间）
+            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
+                return
             # 更新统计
             self.total_pitches_detected += 1
             
             # 🔥 立即更新检测统计显示
             self.detection_count_label.setText(f"检测点数: {self.total_pitches_detected}")
             
-            # 计算并更新检测频率
-            if hasattr(self, 'recording_duration') and self.recording_duration > 0:
-                detection_rate = self.total_pitches_detected / self.recording_duration
-                self.detection_rate_label.setText(f"检测频率: {detection_rate:.1f}/秒")
-            else:
-                # 使用运行时间或首次检测时间作为后备，避免"启动中"卡住
-                now_ts = time.time()
-                # 初始化后备起点
-                if not hasattr(self, '_detection_start_time_fallback'):
-                    self._detection_start_time_fallback = None
-                start_ts = None
-                try:
-                    pst = getattr(self.audio_processor, 'processing_start_time', None)
-                    if isinstance(pst, (int, float)) and pst and pst > 0:
-                        start_ts = float(pst)
-                except Exception:
-                    start_ts = None
-                if start_ts is None:
-                    if self._detection_start_time_fallback is None:
-                        self._detection_start_time_fallback = now_ts
-                    start_ts = self._detection_start_time_fallback
-                elapsed_time = max(0.0, now_ts - float(start_ts))
-                if elapsed_time > 0.2:  # 避免瞬时极小时间导致显示过大
-                    detection_rate = self.total_pitches_detected / elapsed_time
-                    self.detection_rate_label.setText(f"检测频率: {detection_rate:.1f}/秒")
-                else:
-                    self.detection_rate_label.setText("检测频率: 计算中...")
+            # 统一检测频率显示
+            self.detection_rate_label.setText(self._compute_and_format_detection_rate())
             
             # 🎯 调试输出检测统计更新（受开关和节流控制）
             if getattr(self, 'debug_flags', {}).get('detection_log', False):
@@ -23844,7 +25115,8 @@ class IntegratedRecordingInterface(QMainWindow):
                         self._raw_smooth_debug = 0
                     self._raw_smooth_debug += 1
                     if self._raw_smooth_debug <= 10:
-                        print(f"🎯 UI接收频率: raw={raw_frequency:.2f}Hz smooth={frequency:.2f}Hz diff={abs(raw_frequency-frequency):.2f}Hz")
+                        if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
+                            print(f"🎯 UI接收频率: raw={raw_frequency:.2f}Hz smooth={frequency:.2f}Hz diff={abs(raw_frequency-frequency):.2f}Hz")
                 
                 if note_info:
                     note_name = note_info.get('note_name', '--')
@@ -23955,6 +25227,8 @@ class IntegratedRecordingInterface(QMainWindow):
     def on_audio_level_updated(self, level):
         """音频电平更新"""
         try:
+            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
+                return  # 暂停状态不刷新电平，保持视觉静止
             # 转换为百分比
             level_percent = min(100, int(level * 1000))
             self.audio_level_bar.setValue(level_percent)
@@ -23965,7 +25239,13 @@ class IntegratedRecordingInterface(QMainWindow):
     
     def on_recording_progress(self, duration):
         """录音进度更新"""
-        self.recording_duration = duration
+        try:
+            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
+                return  # 暂停不更新，保持冻结
+            eff = self.get_effective_recording_time(float(duration))
+            self.recording_duration = max(0.0, float(eff))
+        except Exception:
+            self.recording_duration = float(duration)
     
     def on_status_updated(self, status):
         """状态更新"""
@@ -23974,30 +25254,109 @@ class IntegratedRecordingInterface(QMainWindow):
     def on_recording_finished(self, filename, analysis_results):
         """录音完成"""
         try:
-            # 强制复位所有活动标志并停止伴奏
+            # 复位状态标志与伴奏
             self.is_recording = False
             self.is_analyzing = False
-            self._stop_backing_playback()
-            # 显示结果
-            total_pitches = analysis_results.get('total_pitches', 0)
-            duration = analysis_results.get('recording_duration', 0)
-            
-            if filename:
-                message = f"录音已保存: {os.path.basename(filename)}\n"
-            else:
-                message = "分析完成（未保存录音）\n"
-            
-            message += f"录音时长: {duration:.1f}秒\n"
-            message += f"检测到音高点: {total_pitches}个\n"
-            
-            if duration > 0:
-                detection_rate = total_pitches / duration
-                message += f"平均检测频率: {detection_rate:.1f}次/秒"
-            
-            QMessageBox.information(self, "录音完成", message)
-            
+            try:
+                self._stop_backing_playback()
+            except Exception as _se:
+                print(f"停止伴奏播放失败: {_se}")
+
+            # 安全获取统计
+            total_pitches = 0
+            duration = 0.0
+            try:
+                if isinstance(analysis_results, dict):
+                    total_pitches = int(analysis_results.get('total_pitches', 0))
+                    duration = float(analysis_results.get('recording_duration', 0.0))
+            except Exception as _pe:
+                print(f"解析分析结果失败: {_pe}")
+
+            # 更新内部总数（若需要后续 UI 刷新）
+            self.total_pitches_detected = max(self.total_pitches_detected, total_pitches)
+            self.recording_duration = max(self.recording_duration, duration)
+
+            # 更新按钮 / UI 状态
+            try:
+                if hasattr(self, 'main_record_button'):
+                    self.main_record_button.setText("开始录音分析")
+                    self.main_record_button.setEnabled(True)
+                if hasattr(self, 'pause_button'):
+                    self.pause_button.setEnabled(False)
+                if hasattr(self, 'listenback_button'):
+                    self.listenback_button.setEnabled(True)
+            except Exception as _be:
+                print(f"更新按钮状态失败: {_be}")
+
+            # 系统状态标签
+            try:
+                self.system_status_label.setText("状态: 就绪")
+            except Exception:
+                pass
+
+            # 构建与显示信息
+            try:
+                if filename:
+                    message = f"录音已保存: {os.path.basename(filename)}\n"
+                else:
+                    message = "分析完成（未保存录音）\n"
+                message += f"录音时长: {duration:.1f}秒\n"
+                message += f"检测到音高点: {total_pitches}个\n"
+                if duration > 0:
+                    detection_rate = total_pitches / max(duration, 1e-6)
+                    message += f"平均检测频率: {detection_rate:.1f}次/秒"
+                QMessageBox.information(self, "录音完成", message)
+            except Exception as _ie:
+                print(f"显示录音完成信息失败: {_ie}")
+
         except Exception as e:
             print(f"处理录音完成事件错误: {e}")
+
+    # ================= 新增：统一时长与检测频率辅助 =================
+    def get_effective_recording_time(self, fallback: float) -> float:
+        """伴奏模式用伴奏播放位置其余用回调值；暂停时冻结。"""
+        try:
+            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
+                return float(getattr(self, 'recording_duration', fallback))
+            # 伴奏模式判断：存在 backing_play_position + backing_sample_rate
+            if hasattr(self, 'backing_play_position') and hasattr(self, 'backing_sample_rate') and self.backing_sample_rate:
+                pos_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
+                if pos_sec >= 0:
+                    return pos_sec
+            return float(fallback)
+        except Exception:
+            return float(fallback)
+
+    def _compute_and_format_detection_rate(self) -> str:
+        """计算检测频率（暂停返回 --，恢复初期平滑）。"""
+        try:
+            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
+                return "检测频率: --"
+            dur = float(getattr(self, 'recording_duration', 0.0))
+            if dur <= 0:
+                return "检测频率: 计算中..."
+            total = int(getattr(self, 'total_pitches_detected', 0))
+            if total == 0:
+                return "检测频率: 0/秒"
+            # 平滑窗口
+            if getattr(self, '_detection_rate_smoothing_active', False):
+                window = float(getattr(self, '_detection_rate_smoothing_window', 2.5))
+                start = float(getattr(self, '_detection_rate_smoothing_start', time.time()))
+                elapsed = time.time() - start
+                baseline = int(getattr(self, '_detection_rate_baseline_pitches', total))
+                inc = max(0, total - baseline)
+                if elapsed < window:
+                    rate = inc / window
+                    if elapsed > 0.3:
+                        raw_rate = inc / max(elapsed, 0.3)
+                        rate = min(rate, raw_rate)
+                    return f"检测频率: {rate:.1f}/秒"
+                else:
+                    self._detection_rate_smoothing_active = False
+            rate = total / max(dur, 1e-3)
+            return f"检测频率: {rate:.1f}/秒"
+        except Exception:
+            return "检测频率: 计算中..."
     
     def on_error_occurred(self, error_msg):
         """错误处理"""
@@ -24022,32 +25381,7 @@ class IntegratedRecordingInterface(QMainWindow):
             # 更新检测统计
             self.detection_count_label.setText(f"检测点数: {self.total_pitches_detected}")
             
-            if self.recording_duration > 0:
-                detection_rate = self.total_pitches_detected / self.recording_duration
-                self.detection_rate_label.setText(f"检测频率: {detection_rate:.1f}/秒")
-            else:
-                # 运行中但无录音时长：使用处理器开始时间或首次检测时间作为后备，避免一直显示“启动中”
-                now_ts = time.time()
-                start_ts = None
-                try:
-                    pst = getattr(self.audio_processor, 'processing_start_time', None)
-                    if isinstance(pst, (int, float)) and pst and pst > 0:
-                        start_ts = float(pst)
-                except Exception:
-                    start_ts = None
-                # 若处理器尚未记录启动时间，则用“首次检测回调时间”回退
-                if start_ts is None:
-                    if not hasattr(self, '_detection_start_time_fallback') or self._detection_start_time_fallback is None:
-                        # 若尚未有任何检测，则继续显示“计算中...”；一旦 on_pitch_detected 触发会设置该时间
-                        self.detection_rate_label.setText("检测频率: 计算中...")
-                        return
-                    start_ts = float(self._detection_start_time_fallback)
-                elapsed_time = max(0.0, now_ts - start_ts)
-                if elapsed_time > 0.2 and self.total_pitches_detected > 0:
-                    detection_rate = self.total_pitches_detected / elapsed_time
-                    self.detection_rate_label.setText(f"检测频率: {detection_rate:.1f}/秒")
-                else:
-                    self.detection_rate_label.setText("检测频率: 计算中...")
+            self.detection_rate_label.setText(self._compute_and_format_detection_rate())
             
         except Exception as e:
             print(f"更新状态显示错误: {e}")
@@ -24149,6 +25483,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 
         except Exception as e:
             print(f"⚠️ 统计记录错误: {e}")
+
+
 
 
 def main():
@@ -24542,6 +25878,10 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str):
     try:
         # 默认显示固定窗口（16s），超出通过水平滚动查看
         self.visualizer.max_history_time = max(1.0, float(ctrl.total_s))
+        try:
+            self.visualizer._enforce_backing_axis_lock(source="local_file_mode_init")
+        except Exception:
+            pass
         self.visualizer.time_window = max(1.0, min(16.0, float(ctrl.total_s)))
         self.visualizer.time_offset = 0.0
         # 同步可视化当前时间为0，确保8秒规则从0开始
@@ -24597,6 +25937,10 @@ def _ifc_exit_local_file_mode(self):
         self.visualizer.clear_data()
         prev = getattr(self, '_lfm_prev', {})
         self.visualizer.max_history_time = float(prev.get('vis_max_history_time', 300.0))
+        try:
+            self.visualizer._enforce_backing_axis_lock(source="exit_local_file_mode_restore")
+        except Exception:
+            pass
         self.visualizer.time_window = float(prev.get('vis_time_window', 16.0))
         self.visualizer.time_offset = 0.0
         if hasattr(self.visualizer, 'ax'):
@@ -25161,6 +26505,10 @@ def _apply_full_duration_axis(visualizer, duration: float):
     try:
         dur = max(1.0, float(duration))
         visualizer.max_history_time = dur
+        try:
+            visualizer._enforce_backing_axis_lock(source="apply_full_duration_axis")
+        except Exception:
+            pass
         visualizer.time_window = max(1.0, min(16.0, dur))
         visualizer.time_offset = 0.0
         if hasattr(visualizer, 'ax'):
