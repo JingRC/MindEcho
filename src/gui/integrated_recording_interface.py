@@ -591,6 +591,8 @@ class IntegratedAudioProcessor(QThread):
             'segment_log': False,             # 分段调试（处理线程中通常不用）
             'allow_accompaniment_audio_debug': False  # 伴奏模式下强制允许底层音频调试输出
         }
+        # 回退重录调试标志：控制是否输出 [RETAKE_CHECK] 诊断
+        self._debug_retake = True
         # 🎛️ 伴奏模式调试输出抑制：在伴奏/双轨模式录音分析时，临时关闭大量底层音频回调日志
         # 判定逻辑：
         # 1) 处于伴奏相关模式 (backing_mode in {'accompaniment','both'})
@@ -9821,6 +9823,14 @@ class ECGStylePitchVisualizer(QWidget):
                 self._lb_cover_grace_until = now + float(getattr(self, '_lb_cover_grace_sec', 1.0))
             except Exception:
                 pass
+            # 清空覆盖集合，确保seek后不受旧覆盖影响
+            try:
+                if hasattr(self, '_cov_reset'):
+                    self._cov_reset()
+                elif hasattr(self, '_drawn_coverage'):
+                    self._drawn_coverage = []
+            except Exception:
+                pass
             # 同时短时抑制临时折线的重新生成，避免跨分钟连线回潮
             try:
                 self._suppress_provisional_until = now + max(0.60, float(getattr(self, '_suppress_provisional_window', 0.35)))
@@ -9861,15 +9871,141 @@ class ECGStylePitchVisualizer(QWidget):
                         self._flat_points = []
             except Exception:
                 pass
+            # 防御：回退/seek 后清理彩色渐变相关集合，避免残留叠加线/点
+            try:
+                # 渐变线集合（LineCollection 列表或单个对象）
+                if hasattr(self, 'gradient_lines') and getattr(self, 'gradient_lines') is not None:
+                    try:
+                        for line in list(self.gradient_lines) if isinstance(self.gradient_lines, (list, tuple)) else [self.gradient_lines]:
+                            try:
+                                if line is not None and hasattr(self, 'ax') and line in getattr(self.ax, 'collections', []):
+                                    line.remove()
+                            except Exception:
+                                pass
+                    finally:
+                        try: self.gradient_lines = []
+                        except Exception: pass
+                # 渐变覆盖点
+                if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+                    try:
+                        if hasattr(self, 'ax') and self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                            self.gradient_overlay_points.remove()
+                    except Exception:
+                        pass
+                    self.gradient_overlay_points = None
+                # 渐变散点
+                if hasattr(self, 'gradient_scatter') and self.gradient_scatter is not None:
+                    try:
+                        if hasattr(self, 'ax') and self.gradient_scatter in getattr(self.ax, 'collections', []):
+                            self.gradient_scatter.remove()
+                    except Exception:
+                        pass
+                    self.gradient_scatter = None
+            except Exception:
+                pass
             # 重置平滑xlim历史，确保立即对齐至新视窗
             try:
                 self._smoothed_xlim = None
+            except Exception:
+                pass
+            # 追加：滚动等效即时刷新
+            # 目标：避免必须手动“水平滚动”后旧细节点才消失；seek/回退后立即刷新视窗与批量细节点
+            try:
+                import time as _t
+                now_ts = _t.time()
+                # 短时抑制平滑 & 记一次“手动”时间，确保 follow/平滑逻辑直接跳转
+                try:
+                    self._suppress_next_smooth_xlim = True
+                    self._manual_scroll_active_until = now_ts + 1.6
+                    self._suppress_smooth_until = self._manual_scroll_active_until
+                    self._last_manual_scroll_time = now_ts
+                except Exception:
+                    pass
+                # 计算 seek 后应显示的时间窗口（等效 follow_playback_time，但强制无缓动）
+                try:
+                    center_keep = float(getattr(self, 'center_display_time', 8.0))
+                    tw = float(getattr(self, 'time_window', 16.0))
+                    try:
+                        # 若伴奏锁定，优先使用其总长作为上限
+                        if getattr(self, '_backing_axis_locked', False):
+                            max_time = float(getattr(self, '_backing_axis_length', getattr(self, 'max_history_time', 0.0)))
+                        else:
+                            max_time = float(getattr(self, 'max_history_time', 0.0))
+                    except Exception:
+                        max_time = float(getattr(self, 'max_history_time', 0.0))
+                    max_offset = max(0.0, max_time - tw)
+                    # 保证 target_time 在窗口内，<=center_keep 则从0开始，否则尽量让其居中
+                    if float(target_time) <= center_keep:
+                        x_min = 0.0
+                    else:
+                        x_min = min(max(0.0, float(target_time) - center_keep), max_offset)
+                    x_max = x_min + tw
+                    # 应用并同步内部偏移
+                    try:
+                        self.time_offset = float(x_min)
+                    except Exception:
+                        pass
+                    if hasattr(self, 'ax') and self.ax is not None:
+                        try:
+                            self.ax.set_xlim(x_min, x_max)
+                        except Exception:
+                            pass
+                    # 同步滚动条，保持 UI 一致
+                    try:
+                        if hasattr(self, 'update_scrollbars'):
+                            self.update_scrollbars()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # 立即刷新批量细节点集合（等效 on_horizontal_scroll 的刷新），避免旧点残留
+                try:
+                    mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式')
+                except Exception:
+                    mode = '普通模式'
+                try:
+                    if getattr(self, '_use_batched_points', False) and getattr(self, 'is_recording_active', False):
+                        if mode != '普通模式':
+                            self._refresh_batched_points_for_current_xlim()
+                        else:
+                            # 普通模式下未走批量集合，也确保任何残留 PathCollection 被清空
+                            if hasattr(self, '_batched_points') and self._batched_points is not None:
+                                try:
+                                    import numpy as _np
+                                    self._batched_points.set_offsets(_np.empty((0, 2)))
+                                    self._batched_points.set_alpha(0.0)
+                                except Exception:
+                                    pass
+                    else:
+                        # 非录音/未启用批量点：若集合存在，主动清空，避免显示历史残留
+                        if hasattr(self, '_batched_points') and self._batched_points is not None:
+                            try:
+                                import numpy as _np
+                                self._batched_points.set_offsets(_np.empty((0, 2)))
+                                self._batched_points.set_alpha(0.0)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                # 轻量触发一次绘制，使上述变更在下一帧前即可生效
+                try:
+                    if hasattr(self, 'canvas') and self.canvas is not None:
+                        self.canvas.draw_idle()
+                except Exception:
+                    pass
             except Exception:
                 pass
             # 立即刷新一次，确保新窗口上白色细节点与断开线生效
             try:
                 if hasattr(self, 'update_display'):
                     self.update_display()
+            except Exception:
+                pass
+            # 开启“可见时间上限”：仅在录音/分析活跃时启用；锁定到 seek 目标，直到新点产生逐步提升
+            try:
+                if bool(getattr(self, 'is_recording_active', False)) or bool(getattr(self, 'is_recording', False)) or bool(getattr(self, 'is_analyzing', False)):
+                    self._cap_visible_time_enabled = True
+                    self._max_visible_time = float(max(0.0, target_time))
             except Exception:
                 pass
             # 标记：回退后 time_data 可能出现“先大后小”的非单调拼接，
@@ -14677,6 +14813,22 @@ class ECGStylePitchVisualizer(QWidget):
         normalized_value = value / 100.0
         max_offset = max(0.0, max_time - float(getattr(self, 'time_window', 16.0)))
         self.time_offset = normalized_value * max_offset
+        # 新增：为保证暂停/手动seek时水平滚动条拖动立即生效并保持“无缓动”体验，
+        # 这里设置一个短期(1.6s)的平滑禁用窗口，在 _smooth_set_xlim 内检测。
+        try:
+            import time as _t
+            now_ts = _t.time()
+            # 标记手动滚动活跃期（用于平滑函数判断直接跳过）
+            self._manual_scroll_active_until = now_ts + 1.6
+            # 若处于暂停或非录音激活状态，同时在伴奏模式/或有伴奏锁，延长一点以提升体验
+            paused = bool(getattr(self, 'is_recording_paused', False)) or not bool(getattr(self, 'is_recording_active', False))
+            backing_locked = bool(getattr(self, '_backing_axis_locked', False))
+            if paused and backing_locked:
+                self._manual_scroll_active_until = now_ts + 2.2
+            # 通用抑制时间戳（比 _suppress_next_smooth_xlim 更长，允许后续系统多次刷新仍保持即时跳转）
+            self._suppress_smooth_until = self._manual_scroll_active_until
+        except Exception:
+            pass
         # 若接近最右端直接对齐，避免多次拖动才能看到最末尾
         try:
             if normalized_value > 0.98:
@@ -15099,6 +15251,19 @@ class ECGStylePitchVisualizer(QWidget):
             note_info = pitch_data.get('note_info', {})
             has_pitch = pitch_data.get('has_pitch', frequency > 0)
             audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+            # 回退Epoch过滤：若当前可视化器存在_epoch机制，则仅接受匹配的epoch；缺失_epoch将被丢弃
+            try:
+                cur_epoch_attr = getattr(self, '_current_epoch', None)
+                if cur_epoch_attr is not None:
+                    cur_epoch = int(cur_epoch_attr)
+                    pkt_epoch_raw = pitch_data.get('_epoch', None)
+                    if pkt_epoch_raw is None:
+                        return
+                    pkt_epoch = int(pkt_epoch_raw)
+                    if pkt_epoch != cur_epoch:
+                        return
+            except Exception:
+                pass
             
             # 计算全局时间（从开始到现在的总时间）- 修复NoneType错误
             if not hasattr(self, 'start_time') or self.start_time is None:
@@ -15125,6 +15290,15 @@ class ECGStylePitchVisualizer(QWidget):
                 trim_point = float(getattr(self, '_record_trim_point', -1.0))
                 if trim_point >= 0.0 and global_time < trim_point - 1e-6:
                     return
+            except Exception:
+                pass
+
+            # 动态提升“可见时间上限”（用于回退后阻止旧细节点回潮）
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    cur_cap = float(getattr(self, '_max_visible_time', 0.0))
+                    if global_time > cur_cap:
+                        self._max_visible_time = float(global_time)
             except Exception:
                 pass
 
@@ -15189,7 +15363,8 @@ class ECGStylePitchVisualizer(QWidget):
                             'note_info': note_info,
                             'has_pitch': True,
                             'audio_rms': audio_rms,
-                            '_skip_gate': True  # 回放时跳过门控
+                            '_skip_gate': True,  # 回放时跳过门控
+                            '_epoch': int(getattr(self, '_current_epoch', 0))
                         }
                         if state == 'silent':
                             # onset 缓冲：仅当连续达标且达到最小时长才真正进入 voiced 并一次性回放缓冲帧
@@ -15344,6 +15519,19 @@ class ECGStylePitchVisualizer(QWidget):
                 
                 # 只有在有音高时才添加到音高数据中
                 self.pitch_data.append(y_pos)
+                # 回退后的时间矫正：若存在 _rollback_base_time，且新算出的 global_time < base 则提升到 base；若远大于 base + 10s(异常跳跃)则按帧增量续写
+                try:
+                    if hasattr(self, '_rollback_base_time') and self._rollback_base_time is not None:
+                        base_t = float(self._rollback_base_time)
+                        if global_time < base_t - 1e-6:
+                            global_time = base_t
+                        elif global_time > base_t + 20.0:
+                            # 防止一次性跳回旧末尾：按上一点时间 + 小增量（估计帧 32~48fps -> 0.02 附近）
+                            last_t = self.time_data[-1] if self.time_data else base_t
+                            global_time = max(base_t, last_t + 0.020)
+                    # 记录矫正后时间
+                except Exception:
+                    pass
                 self.time_data.append(global_time)
                 self.confidence_data.append(confidence)
                 self.note_data.append(note_info)
@@ -15547,6 +15735,29 @@ class ECGStylePitchVisualizer(QWidget):
         - 单步最大位移随 dt 与积压误差自适应，消除“跟随不够→粘滞感”。
         """
         try:
+            # 追加：手动横向拖动后的即时跳转优化
+            # 如果在手动滚动活跃窗口内（_manual_scroll_active_until）或全局平滑抑制窗口内（_suppress_smooth_until）
+            # 并且当前不是需要自动跟随推进的场景，则直接设置 xlim，避免任何动画式缓动。
+            import time as _t
+            now_ts = _t.time()
+            manual_active_until = float(getattr(self, '_manual_scroll_active_until', 0.0))
+            suppress_until = float(getattr(self, '_suppress_smooth_until', 0.0))
+            paused = bool(getattr(self, 'is_recording_paused', False)) or not bool(getattr(self, 'is_recording_active', False))
+            backing_locked = bool(getattr(self, '_backing_axis_locked', False))
+            in_manual_window = (now_ts < manual_active_until) or (now_ts < suppress_until)
+            # 伴奏暂停回看或用户刚seek：直接跳，不进入平滑。
+            if in_manual_window and (paused or backing_locked):
+                if hasattr(self, 'ax'):
+                    try:
+                        self.ax.set_xlim(target_start, target_end)
+                        if getattr(self, '_debug_axis_trace', False):
+                            print(f"[SMOOTH_BYPASS|manual] ({target_start:.2f},{target_end:.2f}) paused={paused} backing_locked={backing_locked}")
+                        if hasattr(self, 'canvas'):
+                            self.canvas.draw_idle()
+                        self._smoothed_xlim = (target_start, target_end)
+                    except Exception:
+                        pass
+                return
             # 硬末端视图锁：任何平滑调用都直接对齐末端窗口，避免被平滑回拉
             if getattr(self, '_hard_end_view_active', False):
                 try:
@@ -15940,6 +16151,13 @@ class ECGStylePitchVisualizer(QWidget):
                         arr = _np.asarray(fp, dtype=float)
                         mask = _np.logical_and(arr[:,0] >= x0, arr[:,0] <= x1)
                         arr = arr[mask]
+                        # 应用可见时间上限：防止回退后旧点回潮
+                        if getattr(self, '_cap_visible_time_enabled', False):
+                            try:
+                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                arr = arr[arr[:, 0] <= cap]
+                            except Exception:
+                                pass
                 except Exception:
                     arr = None
             if arr is None or arr.size == 0:
@@ -15950,9 +16168,24 @@ class ECGStylePitchVisualizer(QWidget):
                     if not seg_times:
                         continue
                     for t, y in zip(seg_times, seg_pitches):
+                        # 限制到当前窗口，且若启用 cap 则要求 t<=cap
                         if x0 <= t <= x1:
+                            if getattr(self, '_cap_visible_time_enabled', False):
+                                try:
+                                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                    if t > cap:
+                                        continue
+                                except Exception:
+                                    pass
                             chunks.append((t, y))
                 arr = _np.asarray(chunks, dtype=float) if chunks else _np.empty((0,2), dtype=float)
+            # 二次保险：若前面遗漏，统一在这里再裁一遍
+            try:
+                if arr is not None and arr.size > 0 and getattr(self, '_cap_visible_time_enabled', False):
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    arr = arr[arr[:, 0] <= cap]
+            except Exception:
+                pass
             if arr.size > 0:
                 # 限制点数，避免过度绘制
                 max_pts = int(getattr(self, '_batched_points_cap_heavy', 1200))
@@ -16923,6 +17156,13 @@ class ECGStylePitchVisualizer(QWidget):
                                             arr = _np.asarray(fp, dtype=_np.float32)
                                             mask = (_np.asarray(arr[:, 0] >= x0) & _np.asarray(arr[:, 0] <= x1))
                                             arr = arr[mask]
+                                            # Cap 过滤
+                                            if getattr(self, '_cap_visible_time_enabled', False):
+                                                try:
+                                                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                    arr = arr[arr[:, 0] <= cap]
+                                                except Exception:
+                                                    pass
                                         else:
                                             arr = _np.empty((0, 2), dtype=_np.float32)
                                     else:
@@ -16933,6 +17173,14 @@ class ECGStylePitchVisualizer(QWidget):
                                                     continue
                                                 for t, y in zip(seg_times, seg_pitches):
                                                     if x0 <= t <= x1:
+                                                        # Cap 过滤
+                                                        if getattr(self, '_cap_visible_time_enabled', False):
+                                                            try:
+                                                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                                if t > cap:
+                                                                    continue
+                                                            except Exception:
+                                                                pass
                                                         chunks.append((t, y))
                                         arr = _np.asarray(chunks, dtype=_np.float32) if chunks else _np.empty((0, 2), dtype=_np.float32)
                                     # 若逐段点集合存在，确保其置顶可见
@@ -17007,10 +17255,25 @@ class ECGStylePitchVisualizer(QWidget):
                                             arr = _np.asarray(fp, dtype=_np.float32)
                                             mask = (arr[:, 0] >= x0) & (arr[:, 0] <= x1)
                                             arr = arr[mask]
+                                            # Cap 过滤
+                                            if getattr(self, '_cap_visible_time_enabled', False):
+                                                try:
+                                                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                    arr = arr[arr[:, 0] <= cap]
+                                                except Exception:
+                                                    pass
                                     elif getattr(self, 'time_data', None) and getattr(self, 'pitch_data', None) and len(self.time_data) == len(self.pitch_data):
                                         chunks = []
                                         for tt, yy in zip(self.time_data, self.pitch_data):
                                             if x0 <= tt <= x1:
+                                                # Cap 过滤
+                                                if getattr(self, '_cap_visible_time_enabled', False):
+                                                    try:
+                                                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                        if tt > cap:
+                                                            continue
+                                                    except Exception:
+                                                        pass
                                                 chunks.append((float(tt), float(yy)))
                                         arr = _np.asarray(chunks, dtype=_np.float32) if chunks else _np.empty((0, 2), dtype=_np.float32)
                                 except Exception:
@@ -17512,6 +17775,12 @@ class ECGStylePitchVisualizer(QWidget):
                                     if a2.size > 0:
                                         mask = (_np.asarray(a2[:, 0] >= x0v) & _np.asarray(a2[:, 0] <= x1v))
                                         a2 = a2[mask]
+                                        if getattr(self, '_cap_visible_time_enabled', False):
+                                            try:
+                                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                a2 = a2[a2[:, 0] <= cap]
+                                            except Exception:
+                                                pass
                                     arr = a2 if a2.size > 0 else arr
                                     used_flat = a2.size > 0
                                 except Exception:
@@ -17523,6 +17792,13 @@ class ECGStylePitchVisualizer(QWidget):
                                         continue
                                     for t, y in zip(seg_times, seg_pitches):
                                         if x0v <= t <= x1v:
+                                            if getattr(self, '_cap_visible_time_enabled', False):
+                                                try:
+                                                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                    if t > cap:
+                                                        continue
+                                                except Exception:
+                                                    pass
                                             chunks.append((t, y))
                                 arr = _np.asarray(chunks, dtype=_np.float32) if chunks else arr
                             # 按覆盖过滤（仅回听播放中生效）
@@ -17583,6 +17859,12 @@ class ECGStylePitchVisualizer(QWidget):
                                 if a2.size > 0:
                                     mask = (_np.asarray(a2[:, 0] >= x0v) & _np.asarray(a2[:, 0] <= x1v))
                                     a2 = a2[mask]
+                                    if getattr(self, '_cap_visible_time_enabled', False):
+                                        try:
+                                            cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                            a2 = a2[a2[:, 0] <= cap]
+                                        except Exception:
+                                            pass
                                 arr = a2 if a2.size > 0 else arr
                             if (arr.size == 0) and hasattr(self, '_segments') and self._segments:
                                 chunks = []
@@ -17591,6 +17873,13 @@ class ECGStylePitchVisualizer(QWidget):
                                         continue
                                     for t, y in zip(seg_times, seg_pitches):
                                         if x0v <= t <= x1v:
+                                            if getattr(self, '_cap_visible_time_enabled', False):
+                                                try:
+                                                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                    if t > cap:
+                                                        continue
+                                                except Exception:
+                                                    pass
                                             chunks.append((t, y))
                                 arr = _np.asarray(chunks, dtype=_np.float32) if chunks else arr
                             # 按覆盖过滤（仅回听播放中生效）
@@ -18274,6 +18563,13 @@ class ECGStylePitchVisualizer(QWidget):
                             if not hasattr(self, '_browse_points_fallback') or self._browse_points_fallback is None:
                                 self._browse_points_fallback = self.ax.scatter([], [], s=16, color=detail_rgb, alpha=0.0, linewidths=0, edgecolors='none', zorder=14)
                             arr = _np.column_stack((t_arr, p_arr)) if (t_arr and p_arr and len(t_arr) == len(p_arr)) else _np.empty((0, 2))
+                            # Cap 过滤：仅保留 <= _max_visible_time 的点
+                            try:
+                                if arr.size > 0 and getattr(self, '_cap_visible_time_enabled', False):
+                                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                    arr = arr[arr[:, 0] <= cap]
+                            except Exception:
+                                pass
                             # 使用与分段点一致的感知大小
                             base_w = float(getattr(self, 'current_linewidth', 0.6))
                             zoom = float(getattr(self, 'zoom_level', 1.0))
@@ -18316,6 +18612,12 @@ class ECGStylePitchVisualizer(QWidget):
                                 if arr.size > 0 and x0p is not None and x1p is not None:
                                     mask = (arr[:, 0] >= x0p) & (arr[:, 0] <= x1p)
                                     arr = arr[mask]
+                                if arr.size > 0 and getattr(self, '_cap_visible_time_enabled', False):
+                                    try:
+                                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                        arr = arr[arr[:, 0] <= cap]
+                                    except Exception:
+                                        pass
                             # 2) 若为空，则直接从原始缓冲构建兜底点（保证实时播放时也立即可见）
                             if arr.size == 0:
                                 try:
@@ -18328,6 +18630,13 @@ class ECGStylePitchVisualizer(QWidget):
                                         if x0p is not None and x1p is not None:
                                             m = (ta >= x0p) & (ta <= x1p)
                                             ta = ta[m]; ya = ya[m]
+                                        if getattr(self, '_cap_visible_time_enabled', False):
+                                            try:
+                                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                m2 = (ta <= cap)
+                                                ta = ta[m2]; ya = ya[m2]
+                                            except Exception:
+                                                pass
                                         # 只保留非 NaN 点
                                         if ta.size > 0:
                                             arr = _np.column_stack((ta, ya))
@@ -18660,6 +18969,27 @@ class ECGStylePitchVisualizer(QWidget):
                 r_t, r_p = _prepare_segment_for_render(_seg_times, _seg_pitches)
                 render_segments.append((r_t, r_p))
             segments = render_segments
+
+            # 统一应用“可见时间上限(cap)”到渲染段，确保主线与细节点源数据在回退后被截断
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    import numpy as _np
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    _trimmed = []
+                    for (_ts, _ps) in segments:
+                        if _ts:
+                            ta = _np.asarray(_ts, dtype=_np.float32)
+                            pa = _np.asarray(_ps, dtype=_np.float32)
+                            m = (ta <= cap)
+                            if m.any():
+                                _trimmed.append((ta[m].tolist(), pa[m].tolist()))
+                            else:
+                                _trimmed.append(([], []))
+                        else:
+                            _trimmed.append(([], []))
+                    segments = _trimmed
+            except Exception:
+                pass
             # 对外暴露：渲染后段用于后续轻量帧等路径的批量点刷新；同时保留原始段用于诊断
             try:
                 self._segments = segments
@@ -18775,6 +19105,17 @@ class ECGStylePitchVisualizer(QWidget):
                 # 若相邻两点时间间隔略大于阈值但半音差很小，则不插入 NaN
                 bridge_scale = float(getattr(self, '_bridge_time_scale', 1.15))  # 收紧桥接倍率，降低误连
                 bridge_semi_thr = float(getattr(self, '_bridge_semi_thr', 3.2))  # 半音差<=3.2 认为连续
+                # 再次（防御性）应用 cap 到当前段，确保任何后续 set_data/lt 构造都不越界
+                try:
+                    if getattr(self, '_cap_visible_time_enabled', False) and len(seg_times):
+                        import numpy as _np
+                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                        ta = _np.asarray(seg_times, dtype=_np.float32)
+                        ya = _np.asarray(seg_pitches, dtype=_np.float32)
+                        mcap = (ta <= cap)
+                        seg_times = ta[mcap].tolist(); seg_pitches = ya[mcap].tolist()
+                except Exception:
+                    pass
                 if len(seg_times) >= 2:
                     lt, ly = [], []
                     for j, (tx, py) in enumerate(zip(seg_times, seg_pitches)):
@@ -18816,6 +19157,18 @@ class ECGStylePitchVisualizer(QWidget):
                         pts_boost = (_t.time() <= float(getattr(self, '_force_points_visible_until', 0.0)))
                     except Exception:
                         pts_boost = False
+                    # 初次创建分段散点：如启用cap则裁剪到 <=cap
+                    try:
+                        if getattr(self, '_cap_visible_time_enabled', False):
+                            import numpy as _np
+                            if len(seg_times):
+                                ta = _np.asarray(seg_times, dtype=_np.float32)
+                                ya = _np.asarray(seg_pitches, dtype=_np.float32)
+                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                mcap = (ta <= cap)
+                                seg_times = ta[mcap].tolist(); seg_pitches = ya[mcap].tolist()
+                    except Exception:
+                        pass
                     pts = self.ax.scatter(seg_times, seg_pitches,
                                           s=s_val_global,
                                           color=detail_rgb,
@@ -18881,6 +19234,14 @@ class ECGStylePitchVisualizer(QWidget):
                                     y_vis = y_arr[mask]
                                 else:
                                     t_vis, y_vis = t_arr, y_arr
+                                # Cap过滤
+                                if getattr(self, '_cap_visible_time_enabled', False):
+                                    try:
+                                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                        mcap = (t_vis <= cap)
+                                        t_vis = t_vis[mcap]; y_vis = y_vis[mcap]
+                                    except Exception:
+                                        pass
                                 max_pts_seg = int(getattr(self, '_segment_points_cap_in_view', 450))
                                 if t_vis.size > 0:
                                     if t_vis.size > max_pts_seg:
@@ -18890,7 +19251,22 @@ class ECGStylePitchVisualizer(QWidget):
                                 else:
                                     offs = np.empty((0, 2))
                             else:
-                                offs = np.column_stack((seg_times, seg_pitches)) if len(seg_times) else np.empty((0, 2))
+                                # 非密集或不在视口：直接使用原段（若启用cap则裁剪）
+                                if len(seg_times):
+                                    try:
+                                        if getattr(self, '_cap_visible_time_enabled', False):
+                                            ta = np.asarray(seg_times, dtype=np.float32)
+                                            ya = np.asarray(seg_pitches, dtype=np.float32)
+                                            cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                            mcap = (ta <= cap)
+                                            ta = ta[mcap]; ya = ya[mcap]
+                                            offs = np.column_stack((ta, ya))
+                                        else:
+                                            offs = np.column_stack((seg_times, seg_pitches))
+                                    except Exception:
+                                        offs = np.column_stack((seg_times, seg_pitches))
+                                else:
+                                    offs = np.empty((0, 2))
                             old_pts.set_offsets(offs)
                             old_pts.set_sizes([s_val_global] * (len(offs) if hasattr(offs, 'shape') else (len(seg_times) if len(seg_times) else 1)))
                             old_pts.set_alpha(0.98 if (len(seg_times) and (offs is not None) and (getattr(offs, 'size', 0) > 0)) else 0.0)
@@ -18988,7 +19364,16 @@ class ECGStylePitchVisualizer(QWidget):
                                         t_arr = _np.asarray(seg_times, dtype=_np.float32)
                                         y_arr = _np.asarray(seg_pitches, dtype=_np.float32)
                                         mask = (t_arr >= x0c) & (t_arr <= x1c)
-                                        arr = _np.column_stack((t_arr[mask], y_arr[mask]))
+                                        t_vis = t_arr[mask]; y_vis = y_arr[mask]
+                                        # Cap过滤
+                                        if getattr(self, '_cap_visible_time_enabled', False):
+                                            try:
+                                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                mcap = (t_vis <= cap)
+                                                t_vis = t_vis[mcap]; y_vis = y_vis[mcap]
+                                            except Exception:
+                                                pass
+                                        arr = _np.column_stack((t_vis, y_vis))
                                     coll.set_offsets(arr)
                                 coll.set_alpha(0.98)
                                 coll.set_zorder(14)
@@ -19041,6 +19426,17 @@ class ECGStylePitchVisualizer(QWidget):
             return False
         
         try:
+            # 先应用 cap 过滤，防御回退后的越界线段
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    import numpy as _np
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    ta = _np.asarray(list(times), dtype=_np.float32)
+                    ya = _np.asarray(list(pitches), dtype=_np.float32)
+                    m = (ta <= cap)
+                    times = ta[m].tolist(); pitches = ya[m].tolist()
+            except Exception:
+                pass
             # 导入matplotlib线条集合
             from matplotlib.collections import LineCollection
             import colorsys
@@ -19202,6 +19598,17 @@ class ECGStylePitchVisualizer(QWidget):
             if _mode == "普通模式":
                 # 在普通模式中，直接返回，不使用整体线
                 return
+            # 先应用 cap 过滤，防御回退后的越界连线
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    import numpy as _np
+                    ta = _np.asarray(list(times), dtype=_np.float32)
+                    ya = _np.asarray(list(pitches), dtype=_np.float32)
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    m = (ta <= cap)
+                    times = ta[m].tolist(); pitches = ya[m].tolist()
+            except Exception:
+                pass
             # 安全检查pitch_line是否还存在于axes中
             if not hasattr(self, 'pitch_line') or self.pitch_line is None or self.pitch_line not in self.ax.lines:
                 # 重新创建pitch_line（使用用户设置的粗细）
@@ -20455,7 +20862,14 @@ class ECGStylePitchVisualizer(QWidget):
         参数:
             accomp_dur: 伴奏时长(秒)
             reason: 日志原因标签
-        逻辑:
+            pts = _np.asarray(list(getattr(self, '_head_points', []) or []), dtype=float)
+            # Cap过滤，防止回退后头部点越界
+            try:
+                if pts.size > 0 and getattr(self, '_cap_visible_time_enabled', False):
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    pts = pts[pts[:, 0] <= cap]
+            except Exception:
+                pass
             - 若伴奏长度 <= 0 忽略
             - 若与当前 max_history_time 差异 <0.5s 且未强制，不重复重建
             - 优先使用本对象的 set_max_history_time
@@ -23533,12 +23947,78 @@ class IntegratedRecordingInterface(QMainWindow):
             if v is None:
                 return
             cur_before = float(getattr(v, 'current_global_time', 0.0))
-            backward = target_sec < cur_before - 1e-6
+            # 统一向后判断：当前时间比目标时间大就视为向后
+            backward = cur_before > target_sec + 1e-6
+            # 新增：伴奏模式下的“回退重录”交互
+            # 触发条件：
+            #  - 伴奏模式 (backing_mode in {'accompaniment','both'})
+            #  - 当前录音与分析已启动且处于暂停状态（用户通常暂停后回听）
+            #  - 本次 seek 为向后并且跨度 >= 1.0 秒 (避免微调频繁弹窗)
+            #  - 目标时间 > 0
+            #  - 已经累计录制时长超过目标时间至少 1 秒（确保不是初始化跳转）
+            try:
+                mode = getattr(self, 'backing_mode', 'off')
+                is_backing_mode = mode in {'accompaniment', 'both'}
+                # 不再强制需要暂停；实时回退也允许触发
+                paused = bool(getattr(self, 'is_recording_paused', False)) or bool(getattr(self, 'is_paused', False))
+                active_session = bool(getattr(self, 'is_analyzing', False)) or bool(getattr(self, 'is_recording', False))
+                span = cur_before - target_sec  # 向后时 span>0
+                enable_retake = (is_backing_mode and active_session and backward and span >= 0.4 and target_sec >= 0.0)
+                import time as _t
+                now_ts = _t.time()
+                last_prompt = float(getattr(self, '_last_retake_prompt_time', 0.0))
+                if now_ts - last_prompt < 0.8:  # 略缩短节流窗口
+                    enable_retake = False
+                if getattr(self, '_debug_retake', True):
+                    print(f"[RETAKE_CHECK] backing={is_backing_mode} paused={paused} analyzing={getattr(self,'is_analyzing',None)} recording={getattr(self,'is_recording',None)} backward={backward} span={span:.2f} target={target_sec:.2f} enable={enable_retake}")
+            except Exception:
+                enable_retake = False
+            if enable_retake:
+                try:
+                    from PyQt6.QtWidgets import QMessageBox
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Icon.Warning)
+                    start_t = target_sec
+                    end_t = cur_before
+                    msg.setWindowTitle("回退重录确认")
+                    msg.setText(f"确认回退到 {start_t:.2f} 秒？\n将清除区间 {start_t:.2f} – {end_t:.2f} 秒 的:\n  • 录制音频缓冲(若保存模式下最终文件会截断)\n  • 已绘制的音调线与细节点\n回退后可继续从 {start_t:.2f} 秒重新录制。")
+                    msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    msg.setDefaultButton(QMessageBox.StandardButton.No)
+                    ret = msg.exec()
+                    try:
+                        import time as _t
+                        self._last_retake_prompt_time = _t.time()
+                    except Exception:
+                        pass
+                    if ret == QMessageBox.StandardButton.Yes:
+                        try:
+                            self.rollback_to_time(start_t, end_t)
+                            # 回退后当前 seek 目标即为新的末尾
+                            cur_before = start_t
+                            backward = False
+                            # 直接覆盖 target_sec 以驱动后续刷新逻辑
+                            target_sec = start_t
+                        except Exception as _re:
+                            print(f"⚠️ 回退执行失败: {_re}")
+                    else:
+                        # 用户取消：不执行后续 seek（保持原位置）
+                        return
+                except Exception as _dlg:
+                    print(f"⚠️ 回退确认弹窗失败: {_dlg}")
             if backward and trim_if_backward and bool(getattr(self, 'is_recording', False)) and bool(getattr(self, 'is_analyzing', False)):
                 # 回退 -> 裁剪未来点
                 try:
                     v.trim_after(target_sec)
                     self._record_trim_point = float(target_sec)
+                    # 递增录制Epoch，丢弃任何旧Epoch的迟到点
+                    try:
+                        self._record_epoch = int(getattr(self, '_record_epoch', 0)) + 1
+                    except Exception:
+                        self._record_epoch = 1
+                    try:
+                        setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
+                    except Exception:
+                        pass
                     # 更新录音时长显示为裁剪后的时间
                     try:
                         self.recording_duration = float(target_sec)
@@ -23567,8 +24047,446 @@ class IntegratedRecordingInterface(QMainWindow):
                 v.follow_playback_time(target_sec)
             except Exception:
                 pass
+            # 同步可视化器Epoch（非回退seek也保持一致）
+            try:
+                setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
+            except Exception:
+                pass
         except Exception as e:
             print(f"⚠️ 应用回放跳转失败: {e}")
+
+    # ================= 回退重录核心实现 =================
+    def rollback_to_time(self, start_t: float, end_t: float):
+        """回退到 start_t，删除区间 [start_t, end_t) 的：
+        1. 可视化数据 (time/pitch/conf/note)
+        2. 累积 pitch_history 中对应元素
+        3. 录音音频缓冲 (audio_buffer) 截断到 start_t 对应样本
+        4. 重置 current_duration / current_global_time / time_offset
+        5. 清理段缓存/平滑状态
+        注意：不立即写文件，最终保存时自然得到截断结果。"""
+        try:
+            start_t = float(max(0.0, start_t)); end_t = float(max(start_t, end_t))
+            v = getattr(self, 'visualizer', None)
+            # 提升录制Epoch：所有旧Epoch的迟到数据在UI层被丢弃
+            try:
+                self._record_epoch = int(getattr(self, '_record_epoch', 0)) + 1
+            except Exception:
+                self._record_epoch = 1
+            try:
+                if v is not None:
+                    setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
+            except Exception:
+                pass
+            # 1) 删除可视化区间（采用 remove_range 保留前后，但我们还会截掉后半音频，因此相当于截断）
+            if v is not None:
+                try:
+                    # 先删除区间，再强制将 end_t 之后全部裁掉，形成真正截断
+                    v.remove_range(start_t, end_t)
+                    v.trim_after(start_t)
+                except Exception as _e:
+                    print(f"⚠️ 可视化区间删除失败: {_e}")
+            # 2) 截断 pitch_history (其元素包含 timestamp 字段)
+            try:
+                if hasattr(self, 'pitch_history') and self.pitch_history:
+                    from collections import deque as _dq
+                    kept = []
+                    for item in self.pitch_history:
+                        try:
+                            ts = float(item.get('timestamp', -1))
+                            if ts < start_t - 1e-9:
+                                kept.append(item)
+                        except Exception:
+                            pass
+                    self.pitch_history = _dq(kept, maxlen=getattr(self.pitch_history, 'maxlen', 1000))
+            except Exception as _ph:
+                print(f"⚠️ pitch_history 截断失败: {_ph}")
+            # 3) 截断录音音频缓冲
+            try:
+                # 清空覆盖集合，避免旧覆盖影响新点
+                try:
+                    if hasattr(v, '_cov_reset'):
+                        v._cov_reset()
+                    elif hasattr(v, '_drawn_coverage'):
+                        v._drawn_coverage = []
+                except Exception:
+                    pass
+                # 截断缓冲到回退点
+                if hasattr(self, 'audio_buffer') and self.audio_buffer and hasattr(self, 'active_input_samplerate'):
+                    sr = int(getattr(self, 'active_input_samplerate', getattr(self, 'sample_rate', 44100)))
+                    total_samples = len(self.audio_buffer)
+                    cutoff_samples = int(start_t * sr)
+                    if cutoff_samples < total_samples:
+                        self.audio_buffer = self.audio_buffer[:cutoff_samples]
+            except Exception as _ab:
+                print(f"⚠️ 音频缓冲截断失败: {_ab}")
+            # 4) 重置时长与时间轴参考（并设置回退后新的起始时间基准）
+            try:
+                self.current_duration = start_t
+                # 同步录音时长（伴奏模式下也与播放进度保持一致）
+                try:
+                    self.recording_duration = float(start_t)
+                    if getattr(self, '_is_duration_frozen', False):
+                        self._freeze_recording_duration = float(start_t)
+                except Exception:
+                    pass
+                if hasattr(self, 'visualizer') and self.visualizer is not None:
+                    self.visualizer.current_global_time = start_t
+                    # 重置平滑窗口与 offset
+                    self.visualizer.time_offset = max(0.0, start_t - float(getattr(self.visualizer, 'time_window', 16.0)) * 0.5)
+                    if hasattr(self.visualizer, '_time_offset_shift'):
+                        self.visualizer._time_offset_shift = 0.0
+                    self.visualizer._smoothed_xlim = None
+                    self.visualizer._suppress_next_smooth_xlim = True
+                    # 重置可视化器的时间基准与暂停累计，让新点从 start_t 开始推进
+                    try:
+                        import time as _t
+                        v_now = _t.time()
+                        # 让 (timestamp - v.start_time) ≈ start_t
+                        self.visualizer.start_time = v_now - start_t
+                    except Exception:
+                        pass
+                    try:
+                        # 清零暂停累计，避免回退后首批点被过往暂停抵消
+                        self.visualizer._accumulated_pause_dur = 0.0
+                    except Exception:
+                        pass
+                # 关键：重置录音/分析起点，使新点时间戳不再建立在最早的 recording_start_time / start_time 上
+                import time as _t
+                now_wall = _t.time()
+                try:
+                    # 给一个新的墙钟基准，让后续 (time.time() - recording_start_time) ≈ start_t 开始递增
+                    if hasattr(self, 'recording_start_time') and self.recording_start_time:
+                        self.recording_start_time = now_wall - start_t
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'start_time') and self.start_time:
+                        self.start_time = now_wall - start_t
+                except Exception:
+                    pass
+                # 对分析开始基准同样重设
+                try:
+                    if hasattr(self, 'processing_start_time') and self.processing_start_time:
+                        self.processing_start_time = now_wall - start_t
+                except Exception:
+                    pass
+                try:
+                    # 记录回退基准，供新增点追加逻辑使用
+                    self._rollback_base_time = float(start_t)
+                    # 同步更新裁剪阈值，避免 add_pitch_data 因旧阈值误丢弃回退点之后的新数据
+                    self._record_trim_point = float(start_t)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # 5) 清理段缓存、平滑辅助结构 + 过滤已存在 PathCollection 中超过截断点的旧细节点
+            try:
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None:
+                    # 启用可见时间上限，防止旧点在回退后回潮
+                    try:
+                        setattr(viz, '_cap_visible_time_enabled', True)
+                        setattr(viz, '_max_visible_time', float(start_t))
+                    except Exception:
+                        pass
+                    try:
+                        # 将裁剪基准传递给可视化器，便于数据到达时丢弃“回退前的迟到旧帧”
+                        setattr(viz, '_record_trim_point', float(start_t))
+                    except Exception:
+                        pass
+                    # 删除需要强制重建的缓存属性
+                    for attr in ['_segments_cache', '_segments_cache_window', '_segments', '_flat_points']:
+                        if hasattr(viz, attr):
+                            try:
+                                delattr(viz, attr)
+                            except Exception:
+                                pass
+                    # 同步清空分段签名与原始段缓存，避免旧签名阻止段重建
+                    try:
+                        if hasattr(viz, '_segment_sigs'):
+                            viz._segment_sigs = []
+                    except Exception:
+                        pass
+                    # 清空已绘制覆盖，避免在回退区间内抑制新点追加
+                    try:
+                        if hasattr(viz, '_cov_reset') and callable(getattr(viz, '_cov_reset')):
+                            viz._cov_reset()
+                        elif hasattr(viz, '_drawn_coverage'):
+                            viz._drawn_coverage = []
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(viz, '_segments_raw'):
+                            viz._segments_raw = []
+                    except Exception:
+                        pass
+                    filtered_total = 0
+                    # 细节点批量集合
+                    try:
+                        if hasattr(viz, '_batched_points') and viz._batched_points is not None:
+                            coll = viz._batched_points
+                            try:
+                                offs = coll.get_offsets()
+                                # 有的后端返回 numpy.ndarray, 有的返回 list-like
+                                new_offs = [o for o in offs if o[0] <= start_t + 1e-9]
+                                filtered_total += len(offs) - len(new_offs)
+                                if len(new_offs) == 0:
+                                    # 没剩余 -> 移除
+                                    try:
+                                        if coll in viz.ax.collections:
+                                            coll.remove()
+                                    except Exception:
+                                        pass
+                                    viz._batched_points = None
+                                else:
+                                    import numpy as _np
+                                    coll.set_offsets(_np.asarray(new_offs))
+                            except Exception:
+                                # 失败则直接移除，等待重建
+                                try:
+                                    if coll in viz.ax.collections:
+                                        coll.remove()
+                                except Exception:
+                                    pass
+                                viz._batched_points = None
+                    except Exception:
+                        pass
+                    # 浏览兜底散点集合（白色细点）
+                    try:
+                        if hasattr(viz, '_browse_points_fallback') and viz._browse_points_fallback is not None:
+                            coll = viz._browse_points_fallback
+                            try:
+                                offs = coll.get_offsets()
+                                new_offs = [o for o in offs if o[0] <= start_t + 1e-9]
+                                filtered_total += len(offs) - len(new_offs)
+                                if len(new_offs) == 0:
+                                    try:
+                                        if coll in viz.ax.collections:
+                                            coll.remove()
+                                    except Exception:
+                                        pass
+                                    viz._browse_points_fallback = None
+                                else:
+                                    import numpy as _np
+                                    coll.set_offsets(_np.asarray(new_offs))
+                                    # 若仍保留，确保透明度与可见性与数据一致
+                                    try:
+                                        coll.set_alpha(0.98 if len(new_offs) > 0 else 0.0)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                try:
+                                    if coll in viz.ax.collections:
+                                        coll.remove()
+                                except Exception:
+                                    pass
+                                viz._browse_points_fallback = None
+                            # 促使下一帧走重帧路径
+                            try:
+                                self.visualizer._last_heavy_redraw_time = 0.0
+                                self.visualizer._new_points_since_last_draw = 0
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    # 头部即时散点
+                    try:
+                        if hasattr(viz, '_head_points_scatter') and viz._head_points_scatter is not None:
+                            coll = viz._head_points_scatter
+                            try:
+                                offs = coll.get_offsets()
+                                new_offs = [o for o in offs if o[0] <= start_t + 1e-9]
+                                filtered_total += len(offs) - len(new_offs)
+                                if len(new_offs) == 0:
+                                    if coll in viz.ax.collections:
+                                        coll.remove()
+                                    viz._head_points_scatter = None
+                                else:
+                                    import numpy as _np
+                                    coll.set_offsets(_np.asarray(new_offs))
+                            except Exception:
+                                try:
+                                    if coll in viz.ax.collections:
+                                        coll.remove()
+                                except Exception:
+                                    pass
+                                viz._head_points_scatter = None
+                    except Exception:
+                        pass
+                    # 分段点集合列表（可能是多个 PathCollection）
+                    try:
+                        if hasattr(viz, '_segment_points') and viz._segment_points:
+                            new_list = []
+                            for coll in list(viz._segment_points):
+                                try:
+                                    offs = coll.get_offsets()
+                                    new_offs = [o for o in offs if o[0] <= start_t + 1e-9]
+                                    filtered_total += len(offs) - len(new_offs)
+                                    if len(new_offs) == 0:
+                                        if coll in viz.ax.collections:
+                                            coll.remove()
+                                    else:
+                                        import numpy as _np
+                                        coll.set_offsets(_np.asarray(new_offs))
+                                        new_list.append(coll)
+                                except Exception:
+                                    try:
+                                        if coll in viz.ax.collections:
+                                            coll.remove()
+                                    except Exception:
+                                        pass
+                            viz._segment_points = new_list
+                    except Exception:
+                        pass
+                    # 截断源数据：_head_points / _segment_points 依赖的内部缓冲（否则后续重建又会出现回退后点）
+                    try:
+                        if hasattr(viz, '_head_points') and viz._head_points:
+                            try:
+                                from collections import deque as _dq
+                                pts = [p for p in list(viz._head_points) if p[0] <= start_t + 1e-9]
+                                viz._head_points = _dq(pts, maxlen=getattr(viz, '_head_points_capacity', 240))
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    # 若有备用的 batched 扁平缓存（_flat_points 已删属性会重建，这里无需处理）
+                    try:
+                        if hasattr(viz, '_tail_time') and isinstance(viz._tail_time, list):
+                            keep_mask = [t <= start_t + 1e-9 for t in viz._tail_time]
+                            viz._tail_time = [t for t,k in zip(viz._tail_time, keep_mask) if k]
+                            viz._tail_pitch = [p for p,k in zip(getattr(viz,'_tail_pitch',[]), keep_mask) if k]
+                            viz._tail_conf = [c for c,k in zip(getattr(viz,'_tail_conf',[]), keep_mask) if k]
+                    except Exception:
+                        pass
+                    # 可能存在的临时线条，直接移除避免跨截断残影
+                    for attr in ['_provisional_line', '_provisional_polyline']:
+                        try:
+                            obj = getattr(viz, attr, None)
+                            if obj is not None and hasattr(obj, 'remove'):
+                                try:
+                                    obj.remove()
+                                except Exception:
+                                    pass
+                            setattr(viz, attr, None)
+                        except Exception:
+                            pass
+                    # 额外：清理彩色渐变相关的可视元素，避免旧区间残影
+                    try:
+                        # 渐变线集合（LineCollection 列表）
+                        if hasattr(viz, 'gradient_lines') and viz.gradient_lines:
+                            for line in list(viz.gradient_lines):
+                                try:
+                                    if line in getattr(viz.ax, 'collections', []):
+                                        line.remove()
+                                except Exception:
+                                    pass
+                            viz.gradient_lines = []
+                    except Exception:
+                        pass
+                    try:
+                        # 渐变叠加的白色细节点
+                        if hasattr(viz, 'gradient_overlay_points') and viz.gradient_overlay_points is not None:
+                            try:
+                                if viz.gradient_overlay_points in getattr(viz.ax, 'collections', []):
+                                    viz.gradient_overlay_points.remove()
+                            except Exception:
+                                pass
+                            viz.gradient_overlay_points = None
+                    except Exception:
+                        pass
+                    try:
+                        # 置信度散点（普通模式下不应显示）
+                        if hasattr(viz, 'confidence_scatter') and viz.confidence_scatter is not None:
+                            try:
+                                # 清空并隐藏
+                                if hasattr(viz.confidence_scatter, 'set_offsets'):
+                                    import numpy as _np
+                                    viz.confidence_scatter.set_offsets(_np.empty((0, 2)))
+                                viz.confidence_scatter.set_alpha(0.0)
+                                viz.confidence_scatter.set_visible(False)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    # 清空主线数据（由后续刷新按最新数据重建），避免旧线在一次重绘前短暂可见
+                    try:
+                        if hasattr(viz, 'pitch_line') and viz.pitch_line is not None:
+                            viz.pitch_line.set_data([], [])
+                            viz.pitch_line.set_alpha(0.0)
+                    except Exception:
+                        pass
+                    # 调试统计
+                    try:
+                        remaining_time_pts = len(getattr(viz, 'time_data', []))
+                    except Exception:
+                        remaining_time_pts = -1
+                    print(f"[ROLLBACK_DEBUG] truncated<= {start_t:.2f}s remain_time_pts={remaining_time_pts} filtered_visual_points={filtered_total}")
+            except Exception:
+                pass
+            # 6) 触发一次刷新
+            try:
+                if self.visualizer is not None:
+                    # 标记：下一次网格重建不恢复任何旧对象（避免安全清轴后又挂回旧段/点）
+                    try:
+                        self.visualizer._clear_all_artists_on_next_grid = True
+                    except Exception:
+                        pass
+                    # 通知seek以同步内部缓存与post-seek窗口，确保重帧
+                    try:
+                        self.visualizer.notify_seek(start_t)
+                    except Exception:
+                        pass
+                    # Hard purge: 强制移除所有分段/批量点集合防止残影（下帧由增量逻辑重建）
+                    try:
+                        viz = self.visualizer
+                        for attr in ['_segment_points','_segment_lines','_batched_points','_head_points_scatter','_browse_points_fallback']:
+                            if hasattr(viz, attr):
+                                obj = getattr(viz, attr)
+                                try:
+                                    if isinstance(obj, list):
+                                        for it in list(obj):
+                                            try:
+                                                if hasattr(it,'remove'): it.remove()
+                                            except Exception: pass
+                                        setattr(viz, attr, [])
+                                    else:
+                                        if obj is not None and hasattr(obj,'remove'):
+                                            try: obj.remove()
+                                            except Exception: pass
+                                        setattr(viz, attr, None)
+                                except Exception: pass
+                    except Exception: pass
+                    self.visualizer._force_redraw_on_next_update = True
+                    self.visualizer.update_display()
+                    self.visualizer.update_scrollbars()
+                    # 强制重建网格与音名标签，修复个别场景下回退后“纵轴/网格暂时消失”的问题
+                    try:
+                        self.visualizer.setup_ecg_grid(create_pitch_line=True)
+                        # 重建后确保辅助线与画布刷新
+                        try:
+                            self.visualizer.update_guides()
+                        except Exception:
+                            pass
+                        if hasattr(self.visualizer, 'canvas'):
+                            try:
+                                self.visualizer.canvas.draw_idle()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    try:
+                        # 简要基线日志，帮助确认时间基准是否正确重设
+                        vt0 = getattr(self.visualizer, 'start_time', None)
+                        voff = getattr(self.visualizer, '_time_offset_shift', None)
+                        vpd = getattr(self.visualizer, '_accumulated_pause_dur', None)
+                        print(f"[RET_BASE] v.start_time_reset={(vt0 is not None)} offset_shift={voff} pause_accum={vpd}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            print(f"✅ 已回退到 {start_t:.2f}s，清除区间 [{start_t:.2f},{end_t:.2f}) 数据，等待继续录制。")
+        except Exception as e:
+            print(f"⚠️ 回退处理失败: {e}")
 
     # ---- 新增：伴奏内部跳转封装 ----
     def _seek_backing_audio(self, target_sec: float):
@@ -25204,6 +26122,14 @@ class IntegratedRecordingInterface(QMainWindow):
                             # 平滑失败时直接使用原值
                             data_for_draw = pitch_data
                     # 录音分析模式：显示音调线
+                    try:
+                        # 附带当前录制epoch，供可视化器过滤迟到旧点
+                        cur_epoch = int(getattr(self, '_record_epoch', 0))
+                        if isinstance(data_for_draw, dict):
+                            data_for_draw = dict(data_for_draw)
+                            data_for_draw['_epoch'] = cur_epoch
+                    except Exception:
+                        pass
                     self.visualizer.add_pitch_data(data_for_draw)
                     self._vis_last_draw_wall = now_wall
             else:
