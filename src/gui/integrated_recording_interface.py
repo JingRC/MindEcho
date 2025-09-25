@@ -829,11 +829,20 @@ class IntegratedAudioProcessor(QThread):
                         self._lb_pos = end
                 except sd.CallbackStop:
                     raise
-                except Exception:
+                except Exception as _e:
                     try:
                         outdata.fill(0)
                     except Exception:
                         pass
+                    # 降低异常打印频率
+                    if not hasattr(self, '_lb_err_count'):
+                        self._lb_err_count = 0
+                    self._lb_err_count += 1
+                    if self._lb_err_count <= 3 or (self._lb_err_count % 200 == 0):
+                        try:
+                            print(f"⚠️ 回听回调异常: {str(_e)[:80]}...")
+                        except Exception:
+                            pass
                     raise sd.CallbackStop()
 
             def _on_finished():
@@ -851,12 +860,15 @@ class IntegratedAudioProcessor(QThread):
                     self._lb_stream.close()
             except Exception:
                 pass
+            # 提升回听流缓冲，避免与录音/伴奏的低延迟流产生XRUN竞争
             self._lb_stream = sd.OutputStream(
                 samplerate=int(self.sample_rate),
                 channels=1,
                 dtype='float32',
                 callback=_cb,
-                finished_callback=_on_finished
+                finished_callback=_on_finished,
+                blocksize=max(2048, int(self.sample_rate // 20)),  # ~50ms块
+                latency='high'
             )
             self._lb_stream.start()
             return True
@@ -937,7 +949,9 @@ class IntegratedAudioProcessor(QThread):
                 channels=1,
                 dtype='float32',
                 callback=_cb,
-                finished_callback=_on_finished
+                finished_callback=_on_finished,
+                blocksize=max(2048, int(self.sample_rate // 20)),
+                latency='high'
             )
             self._lb_stream.start()
             return True
@@ -2701,7 +2715,7 @@ class IntegratedAudioProcessor(QThread):
             if not self.setup_analyzers():
                 return False
             
-            # 录音回调前置：根据性能模式设置合批与限频
+            # 录音回调前置：根据性能模式设置合批与限频（减少回调压力、防止XRUN）
             try:
                 from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
                 _pm = get_performance_manager()
@@ -2722,12 +2736,13 @@ class IntegratedAudioProcessor(QThread):
             self._enqueue_accum = np.empty(0, dtype=np.float32)
             self._last_level_emit_t = time.time()
             self._last_progress_emit_t = time.time()
-            self._level_emit_interval = 0.05   # 50ms 一次
-            self._progress_emit_interval = 0.10 # 100ms 一次
+            # 下调信号发射频率，降低跨线程负载
+            self._level_emit_interval = 0.10    # 100ms 一次
+            self._progress_emit_interval = 0.20 # 200ms 一次
             # 关闭回调内重处理，保留必要削峰，减负载
             self.enable_callback_dsp = False
 
-            # 音频回调函数 - 优化以减少input overflow，增加详细调试
+            # 音频回调函数 - 持续优化以减少XRUN，默认抑制大量日志
             def audio_callback(indata, frames, time_info, status):
                 # 暂停时跳过处理与保存，但保持流运行以维持设备状态
                 if getattr(self, 'is_paused', False):
@@ -2748,19 +2763,16 @@ class IntegratedAudioProcessor(QThread):
                 # 添加调试计数器
                 if not hasattr(self, '_callback_counter'):
                     self._callback_counter = 0
-                    # 首次仍输出（即使抑制开启），便于确认回调已启动
-                    if not callable(getattr(self, '_should_suppress_audio_debug', None)) or \
-                       (not self._should_suppress_audio_debug()):
-                        print("🎤 音频回调函数首次调用（录音模式）")
-                        print(f"🎤 回调参数: 输入形状={indata.shape}, 帧数={frames}")
                 
                 self._callback_counter += 1
                 
-                # 🎯 增强调试：前10次回调详细输出
-                if self._callback_counter <= 10:
-                    audio_rms = np.sqrt(np.mean(indata ** 2)) if len(indata) > 0 else 0
-                    if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
-                        print(f"🎤 回调#{self._callback_counter}: 输入RMS={audio_rms:.4f}, 形状={indata.shape}, 状态={status}")
+                # 可选：仅在显式开启详细音频日志时输出（默认关闭以降低I/O抖动）
+                if getattr(self, 'debug_flags', {}).get('audio_verbose', False) and self._callback_counter <= 5:
+                    try:
+                        audio_rms = float(np.sqrt(np.mean(indata ** 2))) if len(indata) > 0 else 0.0
+                        print(f"🎤 回调#{self._callback_counter}: RMS={audio_rms:.4f}, shape={indata.shape}, status={status}")
+                    except Exception:
+                        pass
                 
                 if status and getattr(self, 'debug_flags', {}).get('audio_status_log', False):
                     # 只记录非overflow的状态信息，减少控制台输出
@@ -2773,13 +2785,12 @@ class IntegratedAudioProcessor(QThread):
                         print(f"🔊 音频状态: {status}")
                 
                 # 每1000次回调输出一次状态
-                if self._callback_counter % 1500 == 0:
+                if self._callback_counter % 2000 == 0:
                     # 🔥 修复：RMS计算应该与实际处理的数据一致
                     audio_data_preview = indata[:, 0] if self.channels == 1 else indata
                     audio_rms = np.sqrt(np.mean(audio_data_preview ** 2))
-                    if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
-                        print(f"🎤 音频回调#{self._callback_counter}: RMS={audio_rms:.4f}, 帧数={frames}")
-                        print(f"     原始输入形状: {indata.shape}, 处理后形状: {audio_data_preview.shape}")
+                    if getattr(self, 'debug_flags', {}).get('audio_verbose', False):
+                        print(f"🎤 回调#{self._callback_counter}: RMS={audio_rms:.4f}, 帧数={frames}, in={indata.shape} -> proc={audio_data_preview.shape}")
                 
                 self.total_audio_frames += 1
                 
@@ -2787,8 +2798,11 @@ class IntegratedAudioProcessor(QThread):
                 if self.channels == 1 and indata.shape[1] > 1:
                     # 双声道混合到单声道，保持音量
                     audio_data = np.mean(indata, axis=1)  # 平均两个声道
-                    if not (callable(getattr(self, '_should_suppress_audio_debug', None)) and self._should_suppress_audio_debug()):
-                        print(f"🔊 双声道混合: {indata.shape} → {audio_data.shape}, RMS={np.sqrt(np.mean(audio_data**2)):.4f}")
+                    if getattr(self, 'debug_flags', {}).get('audio_verbose', False):
+                        try:
+                            print(f"🔊 双声道混合: {indata.shape} → {audio_data.shape}, RMS={np.sqrt(np.mean(audio_data**2)):.4f}")
+                        except Exception:
+                            pass
                 else:
                     audio_data = indata[:, 0] if len(indata.shape) > 1 else indata
                 
@@ -9544,6 +9558,172 @@ class ECGStylePitchVisualizer(QWidget):
             self._robust_freq_window = []
         self._last_stable_freq = None
         self._last_stable_conf = 0.0
+
+        # ================== 轻量持久化（NDJSON） ==================
+        # 目标：将绘制点按时间流式写入 recordings/Details 下的 .ndjson 文件；
+        # - 在回退时写入 trim 标记用于后续加载过滤  
+        # - 自动清理 7 天前旧文件（轻量、低干扰）
+        try:
+            self._persist_enabled = True
+            self._persist_dir = None            # Path to recordings/Details
+            self._persist_file = None           # open file handle
+            self._persist_buf = []              # pending json rows
+            self._persist_last_flush = 0.0
+            self._persist_flush_every_n = 200   # flush by count
+            self._persist_flush_every_s = 1.0   # flush by time
+            import time as _t
+            self._persist_session_id = _t.strftime("%Y%m%d_%H%M%S")
+            self._persist_cleanup_days = 7
+            self._persist_cleanup_timer = None
+        except Exception:
+            # 任何异常都不影响主流程
+            self._persist_enabled = False
+
+    # ===== 持久化：公共接口 =====
+    def set_save_base_dir(self, base_dir: str):
+        """设置保存目录并初始化 Details 子目录与清理任务。"""
+        try:
+            from pathlib import Path as _P
+            base = _P(str(base_dir))
+            base.mkdir(parents=True, exist_ok=True)
+            details = base / "Details"
+            details.mkdir(parents=True, exist_ok=True)
+            self._persist_dir = details
+            # 启动/刷新定期清理任务（每小时）
+            try:
+                from PyQt5.QtCore import QTimer  # type: ignore
+            except Exception:
+                try:
+                    from PyQt6.QtCore import QTimer  # type: ignore
+                except Exception:
+                    QTimer = None  # type: ignore
+            if QTimer is not None:
+                try:
+                    if self._persist_cleanup_timer is None:
+                        self._persist_cleanup_timer = QTimer()
+                        self._persist_cleanup_timer.timeout.connect(self._persist_cleanup_old_files)  # type: ignore
+                    # 每小时清理一次
+                    self._persist_cleanup_timer.start(3600 * 1000)
+                except Exception:
+                    pass
+            # 立即清理一次
+            self._persist_cleanup_old_files()
+        except Exception:
+            pass
+
+    def close_persistence(self):
+        """安全关闭持久化（写入缓冲并关闭句柄）。"""
+        try:
+            self._persist_flush(force=True)
+        except Exception:
+            pass
+        try:
+            if self._persist_file is not None:
+                try:
+                    self._persist_file.close()
+                except Exception:
+                    pass
+                self._persist_file = None
+        except Exception:
+            pass
+
+    # ===== 持久化：内部工具 =====
+    def _persist_open_writer(self):
+        try:
+            if (not self._persist_enabled) or (self._persist_dir is None):
+                return
+            if self._persist_file is not None:
+                return
+            from pathlib import Path as _P
+            import json as _json, time as _t
+            fp = _P(self._persist_dir) / f"pitch_{self._persist_session_id}.ndjson"
+            # 采用追加模式，防止覆盖既有会话内容
+            self._persist_file = open(str(fp), 'a', encoding='utf-8', newline='\n')
+            # 若是新文件或首次写入，追加一个会话头
+            try:
+                self._persist_file.write(_json.dumps({
+                    'op': 'session', 'session': self._persist_session_id, 'ts': float(_t.time())
+                }, separators=(',', ':')) + "\n")
+                self._persist_file.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _persist_on_point(self, t: float, y: float, c: float):
+        try:
+            if not self._persist_enabled:
+                return
+            if self._persist_dir is None:
+                return
+            # 点进入缓冲；按阈值或时间刷新
+            self._persist_buf.append({'op': 'p', 't': float(t), 'y': float(y), 'c': float(c)})
+            self._persist_flush()
+        except Exception:
+            pass
+
+    def _persist_on_trim(self, cutoff: float):
+        """回退裁剪：记录 trim 标记以便后续读取时忽略 cutoff 之后的旧点。"""
+        try:
+            if (not self._persist_enabled) or (self._persist_dir is None):
+                return
+            import time as _t
+            self._persist_buf.append({'op': 'trim_after', 'cutoff': float(cutoff), 'ts': float(_t.time())})
+            self._persist_flush(force=True)
+        except Exception:
+            pass
+
+    def _persist_flush(self, force: bool = False):
+        try:
+            if (not self._persist_enabled) or (self._persist_dir is None):
+                return
+            if not self._persist_buf:
+                return
+            import time as _t, json as _json
+            now = _t.time()
+            if (not force):
+                if (len(self._persist_buf) < int(getattr(self, '_persist_flush_every_n', 200)) \
+                    and (now - float(getattr(self, '_persist_last_flush', 0.0)) < float(getattr(self, '_persist_flush_every_s', 1.0)))):
+                    return
+            # 打开写入器
+            self._persist_open_writer()
+            if self._persist_file is None:
+                # 无法打开则丢弃缓冲，避免阻塞主流程
+                self._persist_buf.clear()
+                self._persist_last_flush = now
+                return
+            # 批量写入
+            try:
+                for row in self._persist_buf:
+                    self._persist_file.write(_json.dumps(row, separators=(',', ':')) + "\n")
+                self._persist_file.flush()
+            finally:
+                self._persist_buf.clear()
+                self._persist_last_flush = now
+        except Exception:
+            pass
+
+    def _persist_cleanup_old_files(self):
+        """删除 7 天前的 Details 持久化文件。"""
+        try:
+            if self._persist_dir is None:
+                return
+            from pathlib import Path as _P
+            import time as _t
+            keep_seconds = max(1, int(getattr(self, '_persist_cleanup_days', 7))) * 86400
+            now = _t.time()
+            for fp in _P(self._persist_dir).glob('*.ndjson'):
+                try:
+                    st = fp.stat()
+                    if (now - float(st.st_mtime)) > keep_seconds:
+                        try:
+                            fp.unlink()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # 允许的单步最大跳变（半音）——超过则进行倍频修正或限幅
         self._max_step_semitones = 7.0
         # 置信度门限：高于此值放宽限幅（更跟手），低于此值更保守
@@ -9802,13 +9982,15 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             # 标记post-seek窗口，期间降低重帧阈值并禁止轻量帧提前返回
             dur = float(getattr(self, '_post_seek_force_duration', 0.70))
-            self._post_seek_until = now + max(0.05, min(0.8, dur))
+            # 稍微延长 post-seek 强制窗口，确保跳转后至少一轮重帧与断续段重建完成
+            self._post_seek_until = now + max(0.20, min(1.60, dur))
             # 若是明显回退，稍微延长一点时间（更稳妥地促发一次重帧）
             try:
                 prev_t = float(getattr(self, 'current_global_time', 0.0))
                 self._last_seek_backward = bool(target_time < (prev_t - 0.02))
                 if self._last_seek_backward:
-                    self._post_seek_until = max(self._post_seek_until, now + 0.60)
+                    # 明显回退：进一步拉长窗口，确保首轮重帧稳定完成
+                    self._post_seek_until = max(self._post_seek_until, now + 1.00)
             except Exception:
                 pass
             # 一次性强制重绘标记（在 update_display 中消费并清零）
@@ -9838,7 +10020,8 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             # 跳转后短时“细节点可见性强化窗口”，确保第一帧就能看到白点
             try:
-                self._force_points_visible_until = now + max(1.20, float(getattr(self, '_post_seek_points_boost_sec', 0.90)))
+                # 适度延长白点可见性增强时间窗
+                self._force_points_visible_until = now + max(1.60, float(getattr(self, '_post_seek_points_boost_sec', 1.20)))
             except Exception:
                 pass
             # seek后：清理段缓存，强制下帧在新窗口重建，避免引用旧段造成跨分钟连线
@@ -9862,13 +10045,28 @@ class ECGStylePitchVisualizer(QWidget):
                     self._last_visible_time_set = set()
             except Exception:
                 pass
-            # 清空扁平点缓存，防止旧窗口的点跨分钟被复用
+            # 过滤扁平点缓存，仅保留回退点之前的历史点，确保回退前细节点立即可见且不过度清空
             try:
                 if hasattr(self, '_flat_points') and self._flat_points is not None:
                     try:
-                        self._flat_points.clear()
+                        from collections import deque as _dq
+                        def _keep_leq(points, cutoff):
+                            try:
+                                kept = [pt for pt in list(points) if float(pt[0]) <= float(cutoff) + 1e-9]
+                            except Exception:
+                                kept = []
+                            # 维持原有容量上限
+                            try:
+                                return _dq(kept, maxlen=getattr(points, 'maxlen', len(kept) or 10000))
+                            except Exception:
+                                return kept
+                        self._flat_points = _keep_leq(self._flat_points, target_time)
                     except Exception:
-                        self._flat_points = []
+                        # 无法过滤时，退回完全清空（安全）
+                        try:
+                            self._flat_points.clear()
+                        except Exception:
+                            self._flat_points = []
             except Exception:
                 pass
             # 防御：回退/seek 后清理彩色渐变相关集合，避免残留叠加线/点
@@ -10001,11 +10199,31 @@ class ECGStylePitchVisualizer(QWidget):
                     self.update_display()
             except Exception:
                 pass
+            # 关键：清空“上次更新状态”，避免智能早退挡住 seek 后的首轮重帧
+            try:
+                self._last_update_state = None
+            except Exception:
+                pass
             # 开启“可见时间上限”：仅在录音/分析活跃时启用；锁定到 seek 目标，直到新点产生逐步提升
             try:
                 if bool(getattr(self, 'is_recording_active', False)) or bool(getattr(self, 'is_recording', False)) or bool(getattr(self, 'is_analyzing', False)):
                     self._cap_visible_time_enabled = True
                     self._max_visible_time = float(max(0.0, target_time))
+            except Exception:
+                pass
+            # 关键：录音态回退时，立刻裁剪掉 target_time 之后的老数据，
+            # 以便后续在相同时间段重录时不会被“时间桶去重”(_added_time_bins)拦截，
+            # 同时也能减少内存与避免后续路径误判。
+            try:
+                if bool(getattr(self, 'is_recording_active', False)) or bool(getattr(self, 'is_recording', False)):
+                    # 写入持久化 trim 标记（用于后续加载过滤）
+                    try:
+                        if hasattr(self, '_persist_on_trim'):
+                            self._persist_on_trim(float(target_time))
+                    except Exception:
+                        pass
+                    # 使用已有的安全裁剪函数，会同步重建 _added_time_bins、尾部/扁平缓存等
+                    self.trim_after(float(target_time))
             except Exception:
                 pass
             # 标记：回退后 time_data 可能出现“先大后小”的非单调拼接，
@@ -10089,6 +10307,12 @@ class ECGStylePitchVisualizer(QWidget):
             # 标记强制重绘（下帧重建曲线）
             try:
                 self._force_redraw_on_next_update = True
+            except Exception:
+                pass
+            # 持久化：记录一次 trim 标记，便于后续离线回放按时间过滤
+            try:
+                if hasattr(self, '_persist_on_trim'):
+                    self._persist_on_trim(float(cutoff))
             except Exception:
                 pass
         except Exception:
@@ -15275,15 +15499,25 @@ class ECGStylePitchVisualizer(QWidget):
                 pause_comp = float(getattr(self, '_accumulated_pause_dur', 0.0))
             except Exception:
                 pause_comp = 0.0
-            raw_global_time = (timestamp - self.start_time) - pause_comp
-            if raw_global_time < 0:
-                raw_global_time = 0.0
-            # 应用前向/后向 seek 累积偏移（用于伴奏窗口跳过前奏等）
+            # 允许调用方直接指定绝对时间（例如测试/离线喂数），否则使用内部时钟
+            _explicit_gt = None
             try:
-                offset_shift = float(getattr(self, '_time_offset_shift', 0.0))
+                if isinstance(pitch_data, dict) and ('global_time' in pitch_data):
+                    _explicit_gt = float(pitch_data.get('global_time'))
             except Exception:
-                offset_shift = 0.0
-            global_time = raw_global_time + offset_shift
+                _explicit_gt = None
+            if _explicit_gt is None:
+                raw_global_time = (timestamp - self.start_time) - pause_comp
+                if raw_global_time < 0:
+                    raw_global_time = 0.0
+                # 应用前向/后向 seek 累积偏移（用于伴奏窗口跳过前奏等）
+                try:
+                    offset_shift = float(getattr(self, '_time_offset_shift', 0.0))
+                except Exception:
+                    offset_shift = 0.0
+                global_time = raw_global_time + offset_shift
+            else:
+                global_time = _explicit_gt
 
             # 若存在录音回退重录起点，则过滤掉回退之前段落后被裁掉的旧数据
             try:
@@ -15535,6 +15769,12 @@ class ECGStylePitchVisualizer(QWidget):
                 self.time_data.append(global_time)
                 self.confidence_data.append(confidence)
                 self.note_data.append(note_info)
+                # 持久化：写入一个点记录（NDJSON 缓冲）
+                try:
+                    if hasattr(self, '_persist_on_point'):
+                        self._persist_on_point(float(global_time), float(y_pos), float(confidence))
+                except Exception:
+                    pass
                 # 记录时间桶避免重复；并标记覆盖区间（由“数据到达”驱动，避免竞态）
                 try:
                     if hasattr(self, '_added_time_bins'):
@@ -16975,6 +17215,12 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 ensure_line_visible = False
 
+            # 额外豁免：若用户最近进行了手动滚动，则不要用轻量帧提前返回，强制走一次重帧以填充旧区间的细节点与线条
+            _manual_recent = False
+            try:
+                _manual_recent = (now - float(getattr(self, '_last_manual_scroll_time', 0.0))) < 2.0
+            except Exception:
+                _manual_recent = False
             if (not in_post_seek_window and
                 getattr(self, '_new_points_since_last_draw', 0) == 0 and
                 getattr(self, 'is_recording_active', False) and
@@ -16985,7 +17231,8 @@ class ECGStylePitchVisualizer(QWidget):
                 (now - self._last_heavy_redraw_time) < (heavy_interval_threshold * (1.25 if (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0 else 1.0)) and
                 not force_latency_redraw and
                 not force_redraw and
-                not ensure_line_visible):
+                not ensure_line_visible and
+                not _manual_recent):
                 # Watchdog：若重帧间隔已经超过两倍阈值，放弃轻量帧直接走重帧，避免长时段漂移
                 if (now - self._last_heavy_redraw_time) > (heavy_interval_threshold * 2.0):
                     raise RuntimeError("skip_light_frame_watchdog")
@@ -17012,12 +17259,31 @@ class ECGStylePitchVisualizer(QWidget):
                         # 若当前视口内仍无可见主线，快速构建并显示“临时叠加主线”以避免只有细节点
                         try:
                             if ensure_line_visible:
-                                # 普通模式禁止在轻量帧构建临时叠加线，避免同窗双线/上下两条
+                                # 普通模式在 post-seek 短窗口内也允许一次临时叠加线，保证新点“立即成线”
                                 try:
                                     _mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
                                 except Exception:
                                     _mode = "普通模式"
-                                if _mode == "普通模式":
+                                # 允许普通模式在以下条件下启用临时折线：
+                                # 1) post-seek宽限期内；或 2) 伴奏相关模式下确保“立即成线”；或 3) 用户刚进行手动滚动
+                                _allow_provisional = True
+                                try:
+                                    import time as _t
+                                    _in_post_seek = bool(getattr(self, '_post_seek_until', 0.0) and (_t.time() < float(getattr(self, '_post_seek_until', 0.0))))
+                                except Exception:
+                                    _in_post_seek = False
+                                _is_backing = False
+                                try:
+                                    _is_backing = (getattr(self, 'backing_mode', 'off') in ('accompaniment', 'both'))
+                                except Exception:
+                                    _is_backing = False
+                                _manual_recent2 = False
+                                try:
+                                    _manual_recent2 = (_t.time() - float(getattr(self, '_last_manual_scroll_time', 0.0))) < 2.0
+                                except Exception:
+                                    _manual_recent2 = False
+                                _allow_provisional = (_in_post_seek or (_is_backing and ensure_line_visible) or _manual_recent2)
+                                if _mode == "普通模式" and not _allow_provisional:
                                     if hasattr(self, '_provisional_line') and self._provisional_line is not None:
                                         try:
                                             self._provisional_line.set_visible(False)
@@ -17029,6 +17295,16 @@ class ECGStylePitchVisualizer(QWidget):
                                 import time as _t
                                 ban_active = bool(getattr(self, '_ban_restore_provisional_until', 0.0)) and (_t.time() <= float(getattr(self, '_ban_restore_provisional_until', 0.0)))
                                 sup_active = bool(getattr(self, '_suppress_provisional_until', 0.0)) and (_t.time() <= float(getattr(self, '_suppress_provisional_until', 0.0)))
+                                # 放宽：若启用cap且当前视口完全位于cap左侧，则允许临时折线立即显示（不受禁令/抑制影响）
+                                try:
+                                    if getattr(self, '_cap_visible_time_enabled', False) and hasattr(self, 'ax') and self.ax is not None:
+                                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                        x0v, x1v = self.ax.get_xlim()
+                                        if x1v <= cap + 1e-6:
+                                            ban_active = False
+                                            sup_active = False
+                                except Exception:
+                                    pass
                                 if ban_active or sup_active:
                                     if hasattr(self, '_provisional_line') and self._provisional_line is not None:
                                         try:
@@ -17048,6 +17324,13 @@ class ECGStylePitchVisualizer(QWidget):
                                             arr = _np.asarray(fp, dtype=float)
                                             mask = _np.logical_and(arr[:, 0] >= x0, arr[:, 0] <= x1)
                                             arr = arr[mask]
+                                            # Cap过滤：杜绝回退后旧点通过临时折线回潮
+                                            if getattr(self, '_cap_visible_time_enabled', False):
+                                                try:
+                                                    _cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                    arr = arr[arr[:, 0] <= _cap]
+                                                except Exception:
+                                                    pass
                                             if arr.size > 0:
                                                 # 排序保证时间单调递增，避免后续连线倒退
                                                 order = _np.argsort(arr[:, 0])
@@ -17063,6 +17346,14 @@ class ECGStylePitchVisualizer(QWidget):
                                         if _ts and _ys and len(_ts) == len(_ys):
                                             for tt, yy in zip(_ts, _ys):
                                                 if x0 <= tt <= x1:
+                                                    # Cap过滤
+                                                    if getattr(self, '_cap_visible_time_enabled', False):
+                                                        try:
+                                                            _cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                            if tt > _cap:
+                                                                continue
+                                                        except Exception:
+                                                            pass
                                                     src_t.append(float(tt)); src_y.append(float(yy))
                                         # 排序保证时间单调递增
                                         if src_t:
@@ -17413,10 +17704,19 @@ class ECGStylePitchVisualizer(QWidget):
                 self._last_manual_scroll_time = now
                 force_redraw = True  # 强制重绘
             elif hasattr(self, '_last_update_state'):
-                last_size, last_window, last_y_center = self._last_update_state
+                # 防御：notify_seek 可能将其设为 None 以打破早退门控
+                if getattr(self, '_last_update_state', None) is None:
+                    last_size = last_window = last_y_center = None
+                else:
+                    try:
+                        last_size, last_window, last_y_center = self._last_update_state
+                    except Exception:
+                        # 若结构异常，放弃早退比较，强制继续更新
+                        last_size = last_window = last_y_center = None
                 # 若处于用户手动水平滚动的冻结期（2秒内），即便窗口未变也允许更新以维持细节点刷新
                 manual_freeze = (now - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
-                if (not manual_freeze and current_data_size == last_size and 
+                if (not manual_freeze and last_size is not None and last_window is not None and last_y_center is not None and
+                    current_data_size == last_size and 
                     current_time_window == last_window and
                     abs(current_y_center - last_y_center) < 0.01 and  # Y轴中心变化检查
                     current_data_size > 0):
@@ -17617,12 +17917,18 @@ class ECGStylePitchVisualizer(QWidget):
                 # 1) 试图基于当前xlim内的细节点构建“临时叠加主线”（线由点生成，保持与规则一致）
                 try:
                     if hasattr(self, 'ax') and self.ax is not None:
-                        # 普通模式彻底禁用临时叠加线（避免同窗双线/跨窗连线）
+                        # 普通模式默认禁用，但在 post-seek 窗口内短时允许以确保线条立即可见
                         try:
                             _mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
                         except Exception:
                             _mode = "普通模式"
-                        if _mode == "普通模式":
+                        _allow_provisional = True
+                        try:
+                            import time as _t
+                            _allow_provisional = bool(getattr(self, '_post_seek_until', 0.0) and (_t.time() < float(getattr(self, '_post_seek_until', 0.0))))
+                        except Exception:
+                            _allow_provisional = False
+                        if _mode == "普通模式" and not _allow_provisional:
                             if hasattr(self, '_provisional_line') and self._provisional_line is not None:
                                 try:
                                     self._provisional_line.set_visible(False)
@@ -17660,6 +17966,17 @@ class ECGStylePitchVisualizer(QWidget):
                                             src_t.append(float(tt)); src_y.append(float(yy))
                             except Exception:
                                 pass
+                        # 统一应用“可见时间上限”过滤，避免旧点（>cap）回潮进入临时折线
+                        try:
+                            if src_t and getattr(self, '_cap_visible_time_enabled', False):
+                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                _pairs = [(t, y) for t, y in zip(src_t, src_y) if float(t) <= cap]
+                                if _pairs:
+                                    src_t, src_y = [p[0] for p in _pairs], [p[1] for p in _pairs]
+                                else:
+                                    src_t, src_y = [], []
+                        except Exception:
+                            pass
                         # 仅在回听实际播放且启用覆盖过滤时，按覆盖过滤 src_t/src_y
                         try:
                             is_lb_playing = bool(getattr(getattr(self, 'audio_processor', None), '_lb_state', '') == 'playing')
@@ -17689,6 +18006,17 @@ class ECGStylePitchVisualizer(QWidget):
                                     except Exception: pass
                                 raise RuntimeError('provisional_blocked')
                             if src_t and src_y:
+                                # 统一应用“可见时间上限”过滤，避免旧点（>cap）回潮进入临时折线
+                                try:
+                                    if getattr(self, '_cap_visible_time_enabled', False):
+                                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                        _pairs = [(t, y) for t, y in zip(src_t, src_y) if float(t) <= cap]
+                                        if _pairs:
+                                            src_t, src_y = [p[0] for p in _pairs], [p[1] for p in _pairs]
+                                        else:
+                                            src_t, src_y = [], []
+                                except Exception:
+                                    pass
                                 # 排序并消除时间倒退；插入 dt<=0 或大间隔 的 NaN 断点
                                 try:
                                     pairs = sorted(zip(src_t, src_y), key=lambda p: float(p[0]))
@@ -22564,6 +22892,12 @@ class IntegratedRecordingInterface(QMainWindow):
                 self.audio_processor.set_save_base_dir(str(self.save_base_dir))
             except Exception:
                 pass
+        # 同步可视化器的 Details 持久化目录
+        try:
+            if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'set_save_base_dir'):
+                self.visualizer.set_save_base_dir(str(self.save_base_dir))
+        except Exception:
+            pass
     
     def _init_memory_pool(self):
         """初始化零拷贝内存池"""
@@ -22698,6 +23032,12 @@ class IntegratedRecordingInterface(QMainWindow):
             # 停止状态定时器
             if hasattr(self, 'status_timer'):
                 self.status_timer.stop()
+            # 关闭可视化器持久化
+            try:
+                if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'close_persistence'):
+                    self.visualizer.close_persistence()
+            except Exception:
+                pass
             
             print("✅ MindEcho已安全关闭")
             event.accept()
@@ -23744,15 +24084,27 @@ class IntegratedRecordingInterface(QMainWindow):
                 from PyQt6.QtCore import QTimer
                 self.backing_play_timer = QTimer()
                 self.backing_play_timer.timeout.connect(self._backing_play_chunk)
+            # 增大回退路径下的块，减少主线程唤醒次数
+            try:
+                self._backing_chunk = max(self._backing_chunk, int(self.backing_sample_rate // 20))  # ~50ms/块
+            except Exception:
+                pass
             interval_ms = int(self._backing_chunk / self.backing_sample_rate * 1000)
-            if interval_ms < 10:
-                interval_ms = 10
+            if interval_ms < 15:
+                interval_ms = 15
             self.backing_play_timer.start(interval_ms)
             # 打开一个普通写流
             if self._pyaudio_out is not None and self._backing_stream is None:
                 try:
                     import pyaudio  # type: ignore
-                    self._backing_stream = self._pyaudio_out.open(format=pyaudio.paFloat32, channels=1, rate=int(self.backing_sample_rate), output=True)
+                    # 为普通写流设置较大的内部缓冲，降低欠载概率
+                    self._backing_stream = self._pyaudio_out.open(
+                        format=pyaudio.paFloat32,
+                        channels=1,
+                        rate=int(self.backing_sample_rate),
+                        output=True,
+                        frames_per_buffer=max(self._backing_chunk, int(self.backing_sample_rate // 20))
+                    )
                 except Exception:
                     pass
             print("▶️ 伴奏播放启动(QTimer)")
@@ -23812,17 +24164,25 @@ class IntegratedRecordingInterface(QMainWindow):
                     mix = acc_chunk.astype(_np.float32) * acc_vol + orig_chunk.astype(_np.float32) * orig_vol
                 else:
                     mix = acc_chunk.astype(_np.float32) * acc_vol
-                # 简单限幅，避免 >1.0 失真
-                peak = _np.max(_np.abs(mix))
-                if peak > 1.0:
-                    mix = mix / peak
+                # 简单限幅，避免 >1.0 失真（软限幅更稳）
+                try:
+                    peak = float(_np.max(_np.abs(mix))) if mix.size else 0.0
+                    if peak > 1.0:
+                        mix = mix / peak
+                except Exception:
+                    pass
                 self.backing_play_position = end % len(acc)
             return (mix.tobytes(), 0)
         except Exception as e:
-            try:
-                print(f"⚠️ 回调混音异常: {e}")
-            except Exception:
-                pass
+            # 限制打印频率，避免影响实时性
+            if not hasattr(self, '_backing_err_count'):
+                self._backing_err_count = 0
+            self._backing_err_count += 1
+            if self._backing_err_count <= 3 or (self._backing_err_count % 200 == 0):
+                try:
+                    print(f"⚠️ 回调混音异常: {str(e)[:80]}...")
+                except Exception:
+                    pass
             import numpy as _np
             return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
 
