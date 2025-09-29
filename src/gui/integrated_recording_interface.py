@@ -1101,7 +1101,15 @@ class IntegratedAudioProcessor(QThread):
             
             # 3. 设备兼容性分析和智能过滤
             try:
-                devices = sd.query_devices()
+                # 防止旧版/异常环境触发深度递归：单次抓取，失败则放弃详细诊断
+                try:
+                    devices = sd.query_devices()
+                except RecursionError:
+                    print("❌ 设备查询发生递归错误，跳过设备兼容性分析")
+                    devices = []
+                except Exception as dev_err:
+                    print(f"⚠️ 无法查询设备列表: {dev_err}")
+                    devices = []
                 hecate_devices = []
                 problematic_devices = []
                 valid_input_devices = []
@@ -1286,17 +1294,28 @@ class IntegratedAudioProcessor(QThread):
                 print("   ├─ 3. 设置为'游戏模式'或'低延迟模式'")
                 print("   └─ 4. 重启计算机让设置生效")
                 
+            except RecursionError:
+                print("❌ 智能设备兼容性分析出现递归错误，已跳过详细追踪。")
             except Exception as diag_error:
                 print(f"❌ 智能设备兼容性分析失败: {diag_error}")
-                import traceback
-                traceback.print_exc()
+                # 降级打印，避免在异常对象生成时再次递归
+                try:
+                    import traceback
+                    traceback.print_exc()
+                except RecursionError:
+                    print("(traceback 省略，因递归错误)")
                 
             print("🔍 WASAPI智能诊断完成")
             
+        except RecursionError:
+            print("❌ WASAPI诊断失败：递归错误，已跳过详细追踪。")
         except Exception as e:
             print(f"❌ WASAPI诊断失败: {e}")
-            import traceback
-            traceback.print_exc()
+            try:
+                import traceback
+                traceback.print_exc()
+            except RecursionError:
+                print("(traceback 省略，因递归错误)")
     
     def _calculate_device_priority(self, device_info):
     # 计算设备优先级评分（用于智能设备选择）
@@ -1674,7 +1693,7 @@ class IntegratedAudioProcessor(QThread):
                         'channels': device['max_input_channels'],
                         'hostapi': sd.query_hostapis()[device['hostapi']]['name']
                     })
-            
+                
             # 🎯 特殊处理HECATE设备：验证可用性，过滤无效设备
             verified_devices = []
             for device in device_rankings:
@@ -1690,14 +1709,36 @@ class IntegratedAudioProcessor(QThread):
                     # 非HECATE设备使用简单验证
                     verified_devices.append(device)
             
+            # 提升蓝牙/语音类设备优先级（名称或低采样率 ≤22.05kHz）
+            bt_candidates = []
+            non_bt_candidates = []
+            for d in verified_devices:
+                if self._is_bluetooth_like_name(d['name']) or (int(d.get('sample_rate', 0)) > 0 and int(d.get('sample_rate', 0)) <= 22050):
+                    bt_candidates.append(d)
+                else:
+                    non_bt_candidates.append(d)
+
             # 按评分排序，HECATE设备优先
-            verified_devices.sort(key=lambda x: (1 if 'hecate' in x['name'].lower() else 0, x['score']), reverse=True)
-            top_devices = verified_devices[:3]
+            non_bt_candidates.sort(key=lambda x: (1 if 'hecate' in x['name'].lower() else 0, x['score']), reverse=True)
+            # 蓝牙设备保持相对顺序（通常只 1-2 个），放到前面
+            prioritized = bt_candidates + non_bt_candidates
+            top_devices = []
+            seen = set()
+            for d in prioritized:
+                if d['id'] in seen:
+                    continue
+                top_devices.append(d)
+                seen.add(d['id'])
+                if len(top_devices) >= 4:
+                    break
             
             print(f"🏆 发现 {len([d for d in top_devices if 'hecate' in d['name'].lower()])} 个可用HECATE设备:")
             for device in top_devices:
                 device_type = "🎧 HECATE G4 Pro" if 'hecate' in device['name'].lower() else "🎤 通用设备"
                 print(f"   {device_type}: {device['name']} (设备{device['id']}, 评分: {device['score']}/100)")
+            # 如前列包含蓝牙语音设备，打印提示
+            if any(self._is_bluetooth_like_name(d['name']) or (int(d.get('sample_rate', 0)) > 0 and int(d.get('sample_rate', 0)) <= 22050) for d in top_devices):
+                print("🎧 优先考虑蓝牙语音输入设备：将生成 16k/24k 共享模式配置，确保拾音与出点稳定")
             
             # 为每个验证通过的设备生成多种配置
             for device in top_devices:
@@ -1895,6 +1936,69 @@ class IntegratedAudioProcessor(QThread):
         
         return min(score, 100)
     
+    def _is_bluetooth_like_name(self, name: str) -> bool:
+        """判断设备名称是否像蓝牙语音/免提类输入。
+        仅基于名称关键字，供 WASAPI 配置阶段在未知采样率前做预判。
+        """
+        try:
+            n = str(name or '').upper()
+        except Exception:
+            n = ''
+        bt_keywords = (
+            'BLUETOOTH', 'HEADSET', 'HANDS-FREE', 'HANDSFREE', 'HFP', 'HSP', 'EARBUD', 'EARPHONE',
+            '耳机', '蓝牙', '免提'
+        )
+        return any(k in n for k in bt_keywords)
+
+    def _is_bt_config(self, cfg: dict) -> bool:
+        """判断一个监听/录音配置是否是蓝牙语音类（名称命中或低采样率<=22.05kHz）。
+        用于在监听模式下优先尝试蓝牙设备，避免被延迟评分排序挤到后面。
+        """
+        try:
+            import sounddevice as sd
+            dev_id = cfg.get('device', None)
+            sr = int(cfg.get('samplerate', 0) or 0)
+            # 无 device 时，依据采样率判断（典型HFP/HSP 8k/16k/24k）
+            if dev_id is None:
+                return sr > 0 and sr <= 22050
+            try:
+                dinfo = sd.query_devices(int(dev_id))
+                if self._is_bluetooth_like_name(dinfo.get('name', '')):
+                    return True
+            except Exception:
+                # 查询失败则仅按采样率判断
+                pass
+            return sr > 0 and sr <= 22050
+        except Exception:
+            return False
+
+    def _apply_bluetooth_tuning(self):
+        """在检测到蓝牙语音模式后，自动调整智能音量增强与若干阈值，提升拾音与出点稳定性。"""
+        try:
+            # 智能音量增强：放宽最大增益、降低噪声门限、略提高目标电平，保持温和响应
+            if hasattr(self, 'intelligent_volume_booster'):
+                booster = self.intelligent_volume_booster
+                booster['enabled'] = True
+                booster['max_gain'] = max(booster.get('max_gain', 1.2), 2.2)   # 蓝牙语音路径音量偏低
+                booster['noise_gate_threshold'] = min(booster.get('noise_gate_threshold', 0.002), 0.0012)
+                booster['target_level'] = max(booster.get('target_level', 0.18), 0.22)
+                booster['gain_smoothing'] = 0.975  # 维持平滑，避免“抽吸感”
+                booster['gain_change_limit'] = 0.015
+                booster['stability_buffer'] = 0.04
+                booster['quality_priority'] = True
+                booster['gentle_enhancement'] = True
+                # 轻微基础增益，帮助越过早期门限
+                booster['base_gain'] = max(booster.get('base_gain', 1.0), 1.15)
+
+            # 可选：电流音检测稍微调高阈值，避免低采样率下误报
+            if hasattr(self, 'electric_noise_detector') and isinstance(self.electric_noise_detector, dict):
+                self.electric_noise_detector['rms_threshold'] = max(self.electric_noise_detector.get('rms_threshold', 0.0008), 0.0010)
+                self.electric_noise_detector['high_freq_ratio_threshold'] = max(self.electric_noise_detector.get('high_freq_ratio_threshold', 0.95), 0.97)
+
+            print('🎧 已应用蓝牙语音模式自适应：启用智能增益、放宽门限、优化稳定性')
+        except Exception as _e:
+            print(f'⚠️ 蓝牙自适应应用失败: {_e}')
+
     def _generate_device_wasapi_configs(self, device):
         """为单个设备生成WASAPI配置"""
         import sounddevice as sd
@@ -1906,6 +2010,8 @@ class IntegratedAudioProcessor(QThread):
         
         # 🎧 针对HECATE G4 Pro的特殊优化配置
         is_hecate = 'hecate' in device_name.lower() and 'g4 pro' in device_name.lower()
+        # 🎧 蓝牙/语音类设备判断（名称或低采样率）
+        is_bluetooth_like = self._is_bluetooth_like_name(device_name) or (base_sample_rate and base_sample_rate <= 22050)
         
         if is_hecate:
             print(f"🎯 为HECATE G4 Pro生成优化配置...")
@@ -1938,32 +2044,42 @@ class IntegratedAudioProcessor(QThread):
             config_count = 0
             for config in hecate_configs:
                 # 先测试共享模式
-                if self._test_wasapi_compatibility(device_id, config['sr'], config['bs'], exclusive=False):
+                success, effective_settings, hostapi_name, mode_label, error_hint = self._test_wasapi_compatibility(
+                    device_id, config['sr'], config['bs'], exclusive=False
+                )
+                if success:
                     # WASAPI共享配置
                     shared_config = {
                         'name': f"WASAPI共享 - {config['name']}",
                         'device': device_id,
                         'samplerate': config['sr'],
                         'blocksize': config['bs'],
-                        'settings': sd.WasapiSettings(exclusive=False),
+                        'settings': effective_settings,
                         'expected_latency': 'ultra-low' if config['bs'] <= 64 else 'low',
                         'expected_latency_ms': config['bs'] / config['sr'] * 1000,
-                        'quality_score': device['score']
+                        'quality_score': device['score'],
+                        'driver': hostapi_name,
+                        'driver_mode': mode_label
                     }
                     configs.append(shared_config)
                     config_count += 1
                     
                     # 测试独占模式
-                    if self._test_wasapi_compatibility(device_id, config['sr'], config['bs'], exclusive=True):
+                    success_ex, settings_ex, hostapi_ex, mode_label_ex, _ = self._test_wasapi_compatibility(
+                        device_id, config['sr'], config['bs'], exclusive=True
+                    )
+                    if success_ex:
                         exclusive_config = {
                             'name': f"WASAPI独占 - {config['name']}",
                             'device': device_id,
                             'samplerate': config['sr'],
                             'blocksize': config['bs'],
-                            'settings': sd.WasapiSettings(exclusive=True),
+                            'settings': settings_ex,
                             'expected_latency': 'ultra-low' if config['bs'] <= 64 else 'low',
                             'expected_latency_ms': config['bs'] / config['sr'] * 1000,
-                            'quality_score': device['score']
+                            'quality_score': device['score'],
+                            'driver': hostapi_ex,
+                            'driver_mode': mode_label_ex
                         }
                         configs.append(exclusive_config)
                         config_count += 1
@@ -1971,8 +2087,67 @@ class IntegratedAudioProcessor(QThread):
                     # 限制配置数量，优先质量
                     if config_count >= 4:
                         break
+                else:
+                    if error_hint in {'unsupported_sample_rate', 'fatal_host_error', 'device_unavailable'}:
+                        break
             
             print(f"   📊 成功生成{len(configs)}个HECATE配置")
+        elif is_bluetooth_like:
+            # 蓝牙语音类设备（HFP/HSP 常见 16kHz），优先共享模式 + 稳定 blocksize
+            print(f"🎧 检测到蓝牙/语音类设备：{device_name}，优先生成 16k/24k 共享模式配置")
+            # 某些驱动只支持 16k；个别可 24k/32k，这里按可用性快速探测
+            hostapi_name_str = str(device.get('hostapi', '') or '')
+            hostapi_lower = hostapi_name_str.lower()
+            is_wdm_host = 'wdm' in hostapi_lower or 'kernel' in hostapi_lower
+            if is_wdm_host:
+                print(f"   ℹ️ {device_name} 当前使用 {device.get('hostapi')} 接口，限制测试组合以避免WDM-KS大量失败")
+
+            test_sample_rates = []
+            if base_sample_rate:
+                test_sample_rates.append(int(base_sample_rate))
+            preferred_rates = (16000, 24000, 32000, 44100)
+            if is_wdm_host:
+                preferred_rates = (16000, 24000)
+            for sr in preferred_rates:
+                if sr and sr not in test_sample_rates:
+                    test_sample_rates.append(int(sr))
+
+            test_block_sizes = [128, 256] if is_wdm_host else [128, 256, 384, 512]
+            added = 0
+            fatal_abort = False
+            for sample_rate in test_sample_rates:
+                for block_size in test_block_sizes:
+                    success, effective_settings, hostapi_name, mode_label, error_hint = self._test_wasapi_compatibility(
+                        device_id, sample_rate, block_size, exclusive=False
+                    )
+                    if success:
+                        shared_config = {
+                            'name': f'WASAPI共享 (蓝牙语音) - {device_name}',
+                            'device': device_id,
+                            'samplerate': sample_rate,
+                            'blocksize': block_size,
+                            'settings': effective_settings,
+                            'expected_latency': 'stable',
+                            'expected_latency_ms': block_size / sample_rate * 1000,
+                            'quality_score': device.get('score', 50),
+                            'driver': hostapi_name,
+                            'driver_mode': mode_label
+                        }
+                        configs.append(shared_config)
+                        added += 1
+                        break  # 该采样率找到一个稳定配置即止
+                    else:
+                        if error_hint in {'unsupported_sample_rate', 'device_unavailable'}:
+                            break
+                        if error_hint == 'fatal_host_error':
+                            fatal_abort = True
+                            break
+                if added >= 3:
+                    break
+                if fatal_abort:
+                    print("   ⚠️ 检测到底层主机接口不可恢复错误，提前结束蓝牙配置尝试")
+                    break
+
         else:
             # 通用设备配置
             test_sample_rates = [base_sample_rate]
@@ -1985,71 +2160,137 @@ class IntegratedAudioProcessor(QThread):
             
             for sample_rate in test_sample_rates[:2]:
                 for block_size in test_block_sizes[:2]:
-                    if self._test_wasapi_compatibility(device_id, sample_rate, block_size, exclusive=False):
+                    success, effective_settings, hostapi_name, mode_label, error_hint = self._test_wasapi_compatibility(
+                        device_id, sample_rate, block_size, exclusive=False
+                    )
+                    if success:
                         # 先尝试共享模式（更稳定）
                         shared_config = {
                             'name': f'WASAPI共享 ({device_name})',
                             'device': device_id,
                             'samplerate': sample_rate,
                             'blocksize': block_size,
-                            'settings': sd.WasapiSettings(exclusive=False),
+                            'settings': effective_settings,
                             'expected_latency': 'low',
                             'expected_latency_ms': block_size / sample_rate * 1000,
-                            'quality_score': device['score']
+                            'quality_score': device['score'],
+                            'driver': hostapi_name,
+                            'driver_mode': mode_label
                         }
                         configs.append(shared_config)
                         
                         # 对于高质量设备测试独占模式
-                        if device['score'] >= 70 and self._test_wasapi_compatibility(device_id, sample_rate, block_size, exclusive=True):
-                            exclusive_config = {
-                                'name': f'WASAPI独占 ({device_name})',
-                                'device': device_id,
-                                'samplerate': sample_rate,
-                                'blocksize': block_size,
-                                'settings': sd.WasapiSettings(exclusive=True),
-                                'expected_latency': 'ultra-low',
-                                'expected_latency_ms': block_size / sample_rate * 1000,
-                                'quality_score': device['score']
-                            }
-                            configs.append(exclusive_config)
+                        if device['score'] >= 70:
+                            success_ex, settings_ex, hostapi_ex, mode_label_ex, _ = self._test_wasapi_compatibility(
+                                device_id, sample_rate, block_size, exclusive=True
+                            )
+                            if success_ex:
+                                exclusive_config = {
+                                    'name': f'WASAPI独占 ({device_name})',
+                                    'device': device_id,
+                                    'samplerate': sample_rate,
+                                    'blocksize': block_size,
+                                    'settings': settings_ex,
+                                    'expected_latency': 'ultra-low',
+                                    'expected_latency_ms': block_size / sample_rate * 1000,
+                                    'quality_score': device['score'],
+                                    'driver': hostapi_ex,
+                                    'driver_mode': mode_label_ex
+                                }
+                                configs.append(exclusive_config)
                         break  # 找到一个稳定配置就停止
+                    else:
+                        if error_hint in {'unsupported_sample_rate', 'device_unavailable', 'fatal_host_error'}:
+                            break
         
         return configs[:3]  # 限制配置数量，避免过多选项
     
     def _test_wasapi_compatibility(self, device_id, sample_rate, block_size, exclusive=False):
-        """快速测试WASAPI设备兼容性（增强版）"""
+        """快速测试输入流兼容性，自动处理WASAPI/DirectSound等主机接口。
+
+        返回:
+            success (bool): 是否成功创建流
+            settings (object|None): 可复用的 extra_settings
+            host_name (str): 主机接口名称
+            mode_label (str|None): 当前尝试的模式标签
+            error_hint (str|None): 失败原因提示（如 unsupported_sample_rate / fatal_host_error）
+        """
         try:
             import sounddevice as sd
-            
-            # 创建WASAPI设置
-            settings = sd.WasapiSettings(exclusive=exclusive)
-            
-            print(f"   🧪 测试 {sample_rate}Hz/{block_size}样本/{'独占' if exclusive else '共享'}模式...", end='')
-            
-            # 创建测试流但不启动
-            stream = sd.InputStream(
-                device=device_id,
-                channels=1,
-                samplerate=sample_rate,
-                blocksize=block_size,
-                dtype=np.float32,
-                extra_settings=settings
-            )
-            stream.close()
-            print(" ✅")
-            return True
-            
-        except Exception as e:
-            error_str = str(e)
-            if "Invalid sample rate" in error_str or "PaErrorCode -9997" in error_str:
-                print(f" ❌ 不支持采样率{sample_rate}Hz")
-            elif "Invalid device" in error_str or "PaErrorCode -9996" in error_str:
-                print(f" ❌ 设备不可用")
-            elif "exclusive" in error_str.lower():
-                print(f" ❌ 独占模式不可用")
+
+            device_info = sd.query_devices(device_id)
+            hostapis = sd.query_hostapis()
+            host_name = hostapis[device_info['hostapi']]['name'] if device_info['hostapi'] < len(hostapis) else 'Unknown'
+            host_name_lower = host_name.lower()
+
+            attempts: list[tuple[str, object | None]] = []
+            # 针对WASAPI，优先尝试显式设置；若共享模式失败，可降级到“默认驱动”
+            if 'wasapi' in host_name_lower:
+                try:
+                    wasapi_settings = sd.WasapiSettings(exclusive=exclusive)
+                    attempts.append((f"{'独占' if exclusive else '共享'}模式 (WASAPI)", wasapi_settings))
+                except Exception as _wasapi_e:
+                    print(f"   ⚠️ 创建WASAPI设置失败: {_wasapi_e}")
+                if not exclusive:
+                    attempts.append(("系统默认共享模式", None))
             else:
-                print(f" ❌ {error_str[:50]}")
-            return False
+                label = f"{host_name} 默认模式" if host_name else "系统默认模式"
+                attempts.append((label, None))
+
+            last_error = None
+            error_hint = None
+            for attempt_label, settings in attempts:
+                print(f"   🧪 测试 {sample_rate}Hz/{block_size}样本/{attempt_label}...", end='')
+                try:
+                    stream_kwargs = dict(
+                        device=device_id,
+                        channels=1,
+                        samplerate=sample_rate,
+                        blocksize=block_size,
+                        dtype=np.float32
+                    )
+                    if settings is not None:
+                        stream_kwargs['extra_settings'] = settings
+                    stream = sd.InputStream(**stream_kwargs)
+                    stream.close()
+                    print(" ✅")
+                    return True, settings, host_name, attempt_label, None
+                except Exception as e:
+                    error_str = str(e)
+                    last_error = error_str
+                    error_lower = error_str.lower()
+                    if "Invalid sample rate" in error_str or "PaErrorCode -9997" in error_str:
+                        print(f" ❌ 不支持采样率{sample_rate}Hz")
+                        error_hint = 'unsupported_sample_rate'
+                        return False, None, host_name, attempt_label, error_hint
+                    elif "Invalid device" in error_str or "PaErrorCode -9996" in error_str:
+                        print(" ❌ 设备不可用")
+                        error_hint = 'device_unavailable'
+                        return False, None, host_name, attempt_label, error_hint
+                    elif "exclusive" in error_lower:
+                        print(" ❌ 独占模式不可用")
+                        error_hint = 'exclusive_not_available'
+                        return False, None, host_name, attempt_label, error_hint
+                    elif "incompatible host api" in error_lower and settings is not None and not exclusive:
+                        print(" ❌ 主机接口不兼容，尝试备用方案")
+                        error_hint = 'incompatible_hostapi'
+                        continue
+                    elif "unanticipated host error" in error_lower or "paerrorcode -9999" in error_lower:
+                        print(" ❌ 主机接口出现未预期错误")
+                        error_hint = 'fatal_host_error'
+                        return False, None, host_name, attempt_label, error_hint
+                    else:
+                        print(f" ❌ {error_str[:60]}")
+                        error_hint = 'other_error'
+                        continue
+
+            if last_error is not None:
+                print(f"   ❌ 流创建失败: {last_error[:60]}")
+            return False, None, host_name, None, error_hint or ('other_error' if last_error else None)
+
+        except Exception as outer_e:
+            print(f"   ❌ 测试失败: {outer_e}")
+            return False, None, 'Unknown', None, 'other_error'
         
     def _init_memory_pool(self):
         """初始化零拷贝内存池"""
@@ -3029,6 +3270,41 @@ class IntegratedAudioProcessor(QThread):
                     
                     # 创建音频流
                     self.audio_stream = sd.InputStream(**stream_params)
+
+                    # 记录当前输入设备信息并检测是否为蓝牙/低采样率语音通道
+                    try:
+                        self.active_input_device_id = int(stream_params.get('device')) if 'device' in stream_params else None
+                    except Exception:
+                        self.active_input_device_id = None
+                    try:
+                        if self.active_input_device_id is not None:
+                            _din = sd.query_devices(self.active_input_device_id)
+                            self.active_input_device_name = _din.get('name', '')
+                            self.active_input_hostapi = _din.get('hostapi', None)
+                            name_upper = str(self.active_input_device_name or '').upper()
+                            # 常见蓝牙/免提关键字；以及部分国产设备包含中文
+                            bt_keywords = (
+                                'BLUETOOTH', 'HEADSET', 'HANDS-FREE', 'HANDSFREE', 'HFP', 'HSP', 'EARBUD', 'EARPHONE',
+                                '耳机', '蓝牙', '免提'
+                            )
+                            # 低采样率（<=22.05kHz）通常意味着HFP/HSP语音通道
+                            _sr_guess = int(stream_params.get('samplerate', 0) or 0)
+                            low_sr_voice = (_sr_guess > 0 and _sr_guess <= 22050)
+                            self._bt_voice_mode = bool(any(k in name_upper for k in bt_keywords) or low_sr_voice)
+                        else:
+                            # 无法获取设备ID时，根据采样率做保守判断
+                            _sr_guess = int(stream_params.get('samplerate', 0) or 0)
+                            self._bt_voice_mode = (_sr_guess > 0 and _sr_guess <= 22050)
+                    except Exception:
+                        # 保守降级
+                        self._bt_voice_mode = False
+
+                    # 如检测到蓝牙语音模式，应用自适应调优
+                    try:
+                        if bool(getattr(self, '_bt_voice_mode', False)):
+                            self._apply_bluetooth_tuning()
+                    except Exception as _e:
+                        print(f"⚠️ 蓝牙模式调优失败: {_e}")
                     
                     # 计算实际延迟（使用实际参数）
                     actual_sample_rate = stream_params['samplerate']
@@ -3519,6 +3795,14 @@ class IntegratedAudioProcessor(QThread):
                         except Exception:
                             audio_for_level = raw_audio
 
+                    # 若启用了分离式耳返（独立输出流），将当前原始单声道数据推入耳返缓冲
+                    try:
+                        if bool(getattr(self, '_monitor_output_enabled', False)) and hasattr(self, '_append_to_monitor_outbuf'):
+                            # 使用原始raw_audio，输出端会负责必要的重采样与限幅
+                            self._append_to_monitor_outbuf(raw_audio)
+                    except Exception:
+                        pass
+
                     # 🎯 处理监听和录音（全局模式）— 合批入队（与录音一致），始终用raw_audio
                     try:
                         # 判断是否需要保存音频数据
@@ -3588,7 +3872,7 @@ class IntegratedAudioProcessor(QThread):
                     avg_monitoring_time = np.mean(self._monitoring_processing_times)
                     max_monitoring_time = np.max(self._monitoring_processing_times)
                     total_monitoring_latency = theoretical_latency + avg_monitoring_time
-                    need_report = (self._monitoring_callback_counter % 800 == 0) or (total_monitoring_latency > theoretical_latency + 0.5)
+                    need_report = (self._monitoring_callback_counter % 800 == 0) or (total_monitoring_latency > theoretical_latency + 0.8)
                     if need_report:
                         self._log_rate_limit('latency_report', f"🎧 延迟#{self._monitoring_callback_counter} 理论:{theoretical_latency:.2f}ms 处理:{avg_monitoring_time:.2f}/{max_monitoring_time:.2f}ms 总:{total_monitoring_latency:.2f}ms", interval=1.0, burst=1)
                         if total_monitoring_latency > 1.0:
@@ -3633,11 +3917,26 @@ class IntegratedAudioProcessor(QThread):
                     'latency_class': 'medium'
                 })
                 
-                # 基于真实设备跑分对配置进行智能排序（先快又稳）
+                # 如检测到蓝牙语音配置，优先尝试蓝牙配置，避免被延迟评分挤到后面
                 try:
-                    monitoring_configs = self._rank_monitoring_configs(monitoring_configs)
-                except Exception as _rank_e:
-                    print(f"⚠️ 监听配置排序跳过: {_rank_e}")
+                    bt_cfgs = [c for c in monitoring_configs if self._is_bt_config(c)]
+                    non_bt_cfgs = [c for c in monitoring_configs if not self._is_bt_config(c)]
+                    if bt_cfgs:
+                        print(f"🎧 检测到 {len(bt_cfgs)} 个蓝牙语音输入候选，将在监听中优先尝试它们")
+                        monitoring_configs = bt_cfgs + non_bt_cfgs
+                        _prefer_bt_for_monitor = True
+                    else:
+                        _prefer_bt_for_monitor = False
+                except Exception as _bt_e:
+                    print(f"⚠️ 蓝牙配置优先级处理失败，退回基准排序: {_bt_e}")
+                    _prefer_bt_for_monitor = False
+
+                # 在未强制优先蓝牙时，基于真实设备跑分对配置进行智能排序（先快又稳）
+                if not _prefer_bt_for_monitor:
+                    try:
+                        monitoring_configs = self._rank_monitoring_configs(monitoring_configs)
+                    except Exception as _rank_e:
+                        print(f"⚠️ 监听配置排序跳过: {_rank_e}")
 
                 for config in monitoring_configs:
                     try:
@@ -3664,8 +3963,379 @@ class IntegratedAudioProcessor(QThread):
                         if config['settings']:
                             stream_params['extra_settings'] = config['settings']
                         
-                        # 创建监听音频流
-                        self.audio_stream = sd.InputStream(**stream_params)
+                        # 优先尝试“带耳返”的全双工监听：为蓝牙耳机或外放设备提供回传
+                        def _find_matching_output_device(input_dev_id: int):
+                            try:
+                                if input_dev_id is None:
+                                    return None
+                                in_dev = sd.query_devices(input_dev_id)
+                                in_name = (in_dev.get('name') or '').strip().lower()
+                                devices = sd.query_devices()
+                                hostapis = None
+                                candidates = []
+                                for i, d in enumerate(devices):
+                                    try:
+                                        if d.get('max_output_channels', 0) <= 0:
+                                            continue
+                                        name = (d.get('name') or '').strip().lower()
+                                        score = 0
+                                        # 名称包含程度优先（同名耳机最优）
+                                        if in_name and in_name.split(' (')[0] in name:
+                                            score += 50
+                                        if 'bluetooth' in name or '耳机' in name or 'headphone' in name:
+                                            score += 10
+                                        if hostapis is None:
+                                            try:
+                                                hostapis = sd.query_hostapis()
+                                            except Exception:
+                                                hostapis = []
+                                        api_score = 0
+                                        try:
+                                            api_index = int(d.get('hostapi', -1))
+                                            if hostapis and 0 <= api_index < len(hostapis):
+                                                api_name = (hostapis[api_index].get('name') or '').lower()
+                                                if 'wasapi' in api_name:
+                                                    api_score += 8
+                                                elif 'asio' in api_name:
+                                                    api_score += 6
+                                                elif 'mme' in api_name or 'directsound' in api_name:
+                                                    api_score += 3
+                                                elif 'wdm' in api_name or 'kernel' in api_name:
+                                                    api_score -= 6
+                                        except Exception:
+                                            api_score = 0
+                                        score += api_score
+                                        # 立体声优先
+                                        if d.get('max_output_channels', 0) >= 2:
+                                            score += 4
+                                        candidates.append((score, i))
+                                    except Exception:
+                                        continue
+                                if not candidates:
+                                    return None
+                                candidates.sort(reverse=True)
+                                return candidates[0][1]
+                            except Exception:
+                                return None
+
+                        # 若可定位到合适的输出设备，则优先尝试全双工回传
+                        created_duplex = False
+                        try:
+                            input_dev_id = int(config['device']) if 'device' in config else None
+                            out_dev_id = _find_matching_output_device(input_dev_id)
+                            if out_dev_id is None:
+                                # 退回默认输出设备
+                                try:
+                                    _din, _dout = sd.default.device
+                                    out_dev_id = _dout
+                                except Exception:
+                                    out_dev_id = None
+                            if out_dev_id is not None:
+                                # 定义带回传的回调
+                                def monitoring_callback_duplex(indata, outdata, frames, time_info, status):
+                                    # 复用输入回调主体逻辑
+                                    monitoring_callback(indata, frames, time_info, status)
+                                    try:
+                                        # 原样直通 + 安全头房
+                                        if self.channels == 1 and indata.shape[1] > 1:
+                                            raw_audio = np.mean(indata, axis=1)
+                                        else:
+                                            raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata
+                                        audio_out = np.clip(raw_audio, -1.0, 1.0)
+                                        # 监听耳返轻量滤波（DC阻断 + 低通）
+                                        try:
+                                            audio_out = self._apply_monitor_output_filters(audio_out, int(stream_params.get('samplerate', self.sample_rate)))
+                                        except Exception:
+                                            pass
+                                        # 轻量限幅（如有实现）
+                                        if hasattr(self, '_apply_headroom_and_vrms'):
+                                            audio_out = self._apply_headroom_and_vrms(audio_out, key='monitor')
+                                        if outdata.shape[1] == 1:
+                                            outdata[:, 0] = audio_out
+                                        else:
+                                            outdata[:, 0] = audio_out
+                                            outdata[:, 1] = audio_out
+                                    except Exception:
+                                        try:
+                                            outdata.fill(0)
+                                        except Exception:
+                                            pass
+
+                                duplex_args = {
+                                    'device': (input_dev_id, out_dev_id),
+                                    'channels': (self.channels, 2),
+                                    'samplerate': stream_params.get('samplerate', self.sample_rate),
+                                    'blocksize': stream_params.get('blocksize', self.chunk_size),
+                                    'dtype': np.float32,
+                                    'latency': 'low',
+                                    # WASAPI共享模式：尽量让系统做重采样；为输入输出分别设置（若可用）
+                                }
+                                try:
+                                    import sounddevice as sd
+                                    _in_es = config.get('settings') if config.get('settings') else sd.WasapiSettings(exclusive=False)
+                                    _out_es = sd.WasapiSettings(exclusive=False)
+                                    duplex_args['extra_settings'] = (_in_es, _out_es)
+                                except Exception:
+                                    pass
+                                self.audio_stream = sd.Stream(callback=monitoring_callback_duplex, **duplex_args)
+                                created_duplex = True
+                                self.monitor_audio_passthrough = True
+                                print(f"🎚️ 已启用耳返回传: 输入设备{input_dev_id} -> 输出设备{out_dev_id}")
+                        except Exception as _duplex_e:
+                            created_duplex = False
+                            print(f"⚠️ 全双工耳返创建失败，改用仅输入: {_duplex_e}")
+
+                        # 若未创建双工，则创建仅输入监听流，并尝试“分离式耳返”（独立输出流+软件重采样）
+                        if not created_duplex:
+                            # 创建监听音频流（仅输入）
+                            self.audio_stream = sd.InputStream(**stream_params)
+                            self.monitor_audio_passthrough = False
+
+                            # —— 分离式耳返：当输出设备不支持输入采样率（如16k蓝牙语音）时，使用独立输出流并做软件重采样 ——
+                            try:
+                                # 复用上方匹配输出设备的逻辑
+                                _out_dev_id = _find_matching_output_device(int(config['device']) if 'device' in config else None)
+                                if _out_dev_id is None:
+                                    # 使用系统默认输出
+                                    try:
+                                        _din, _dout = sd.default.device
+                                        _out_dev_id = _dout
+                                    except Exception:
+                                        _out_dev_id = None
+
+                                if _out_dev_id is not None:
+                                    _out_dev_info = sd.query_devices(_out_dev_id)
+                                    _out_sr = int(_out_dev_info.get('default_samplerate', 48000) or 48000)
+                                    # 输出块大小按采样率比例匹配输入块大小，保证相似的时间粒度
+                                    try:
+                                        _in_sr = int(stream_params.get('samplerate', self.sample_rate))
+                                        _in_bs = int(stream_params.get('blocksize', self.chunk_size))
+                                    except Exception:
+                                        _in_sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                                        _in_bs = int(getattr(self, 'active_blocksize', self.chunk_size))
+                                    # 基于采样率比例的初始输出块大小（保持与输入接近的时间粒度）
+                                    _out_bs = max(64, int(round(_in_bs * (_out_sr / max(1, _in_sr)))))
+                                    # 如果启用独占输出，倾向较小的典型块大小以降低延迟
+                                    _enable_exclusive_out = bool(getattr(self, 'enable_exclusive_monitor_output', False))
+                                    if _enable_exclusive_out:
+                                        # 约束在更小的常见值以提升稳定性（独占下更易被采纳）
+                                        if _out_sr >= 96000:
+                                            _out_bs = min(128, max(64, _out_bs))
+                                        elif _out_sr >= 48000:
+                                            _out_bs = min(256, max(64, _out_bs))
+                                        else:
+                                            _out_bs = min(256, max(64, _out_bs))
+
+                                    # 共享模式输出，交给系统混音器；我们自行做一次重采样以避免“无效采样率”错误
+                                    _wasapi_out = None
+                                    try:
+                                        # 优先遵循用户开关：独占可显著降低系统混音延迟，但可能与其他软件冲突
+                                        _wasapi_out = sd.WasapiSettings(exclusive=_enable_exclusive_out)
+                                    except Exception:
+                                        _wasapi_out = None
+
+                                    # 线程安全输出缓冲区（单声道float32）；输出回调按需取样本
+                                    self._monitor_output_sr = _out_sr
+                                    self._monitor_output_channels = 2
+                                    self._monitor_output_enabled = True
+                                    self._monitor_outbuf = np.empty(0, dtype=np.float32)
+                                    self._monitor_outbuf_lock = threading.Lock()
+                                    # 轻量PLL状态：用于平滑varispeed，限制±0.3%
+                                    self._monitor_pll_err = 0.0
+                                    self._monitor_pll_scale = 1.0
+                                    # 提升响应速度，维持稳定
+                                    self._monitor_pll_alpha = 0.12  # 误差低通
+                                    self._monitor_pll_kp = 0.08      # 比例系数（小）
+                                    # 预充缓冲标志
+                                    self._monitor_warmup_done = False
+
+                                    # 优先使用高质量重采样；不可用则退回线性插值
+                                    def _resample_linear_local(x: np.ndarray, src_sr: int, dst_sr: int, override_n_out: int | None = None) -> np.ndarray:
+                                        try:
+                                            if src_sr == dst_sr or x.size == 0:
+                                                return x.astype(np.float32, copy=False)
+                                            # 当明确目标点数时，采用线性插值以降低计算开销，避免高频率resample_poly导致卡顿
+                                            if override_n_out is not None:
+                                                n_out = int(max(1, override_n_out))
+                                                xp = np.linspace(0.0, max(1.0, x.size - 1), num=x.size, dtype=np.float32)
+                                                fp = x.astype(np.float32, copy=False)
+                                                x_new = np.linspace(0.0, max(1.0, x.size - 1), num=n_out, dtype=np.float32)
+                                                y = np.interp(x_new, xp, fp).astype(np.float32, copy=False)
+                                                return y
+                                            # 否则，如果SciPy可用，使用resample_poly以更少伪影
+                                            try:
+                                                from scipy.signal import resample_poly
+                                                # 直接按采样率等比重采样（使用最大公约数规约以减少运算量）
+                                                from math import gcd
+                                                up_full = int(dst_sr)
+                                                down_full = int(max(1, src_sr))
+                                                g = gcd(up_full, down_full)
+                                                up = max(1, up_full // g)
+                                                down = max(1, down_full // g)
+                                                y = resample_poly(x.astype(np.float32, copy=False), up, down).astype(np.float32, copy=False)
+                                                return y
+                                            except Exception:
+                                                ratio = float(dst_sr) / float(max(1, src_sr))
+                                                n_out = max(1, int(round(x.size * ratio)))
+                                                xp = np.linspace(0.0, max(1.0, x.size - 1), num=x.size, dtype=np.float32)
+                                                fp = x.astype(np.float32, copy=False)
+                                                x_new = np.linspace(0.0, max(1.0, x.size - 1), num=n_out, dtype=np.float32)
+                                                y = np.interp(x_new, xp, fp).astype(np.float32, copy=False)
+                                                return y
+                                        except Exception:
+                                            return x.astype(np.float32, copy=False)
+
+                                    # 向输出缓冲区追加数据（带音量和限幅），由输入回调调用
+                                    def _append_to_monitor_outbuf(mono_block: np.ndarray):
+                                        try:
+                                            vol = float(getattr(self, 'monitor_volume', 1.0))
+                                        except Exception:
+                                            vol = 1.0
+                                        try:
+                                            # 先做轻量滤波，降低电流噪声与尖锐高频
+                                            try:
+                                                mono_block = self._apply_monitor_output_filters(mono_block, _in_sr)
+                                            except Exception:
+                                                pass
+                                            # 预充：启动初期填充20–30ms，减少开声爆音
+                                            with self._monitor_outbuf_lock:
+                                                _cur_len = int(self._monitor_outbuf.size)
+                                            if not self._monitor_warmup_done:
+                                                # 更短的预充长度，降低起始端到端延迟
+                                                _warm_ms = 0.018 if _out_sr >= 44100 else 0.028
+                                                _need = int(self._monitor_output_sr * _warm_ms) - _cur_len
+                                                if _need > 0:
+                                                    pad = np.zeros(min(_need, mono_block.size), dtype=np.float32)
+                                                    mono_block = np.concatenate((pad, mono_block))
+                                                if _cur_len + mono_block.size >= int(self._monitor_output_sr * _warm_ms):
+                                                    self._monitor_warmup_done = True
+
+                                            # 基于缓冲占用的PLL式微调，平滑变速抵消时钟漂移
+                                            with self._monitor_outbuf_lock:
+                                                _cur_len = int(self._monitor_outbuf.size)
+                                            # 降低目标缓冲以减少端到端延迟
+                                            _target_ms = 0.035 if _out_sr >= 44100 else 0.055
+                                            _target_len = int(self._monitor_output_sr * _target_ms)
+                                            if _target_len <= 0:
+                                                _target_len = int(self._monitor_output_sr * 0.05)
+                                            err = (_cur_len - _target_len) / float(max(1, _target_len))
+                                            # 误差低通，得到平滑误差
+                                            self._monitor_pll_err = (1.0 - self._monitor_pll_alpha) * self._monitor_pll_err + self._monitor_pll_alpha * err
+                                            # 一阶比例微调，限制±0.3%
+                                            delta = - self._monitor_pll_kp * self._monitor_pll_err
+                                            self._monitor_pll_scale = max(0.997, min(1.003, 1.0 + delta))
+                                            base_n_out = int(round(mono_block.size * (float(_out_sr) / float(max(1, _in_sr)))))
+                                            n_out_adj = int(round(base_n_out * self._monitor_pll_scale))
+                                            y = _resample_linear_local(mono_block, _in_sr, _out_sr, override_n_out=n_out_adj)
+                                            # 基本头房与电平保护
+                                            if hasattr(self, '_apply_headroom_and_vrms'):
+                                                y = self._apply_headroom_and_vrms(y, key='monitor')
+                                            y = np.clip(y * vol, -1.0, 1.0)
+                                            with self._monitor_outbuf_lock:
+                                                self._monitor_outbuf = np.concatenate((self._monitor_outbuf, y))
+                                                # 目标缓冲维持在 ~28–55ms 之间，避免“吞吐-饥饿”抖动
+                                                _target_ms = 0.035 if _out_sr >= 44100 else 0.055
+                                                _max_len = int(self._monitor_output_sr * (2.0 * _target_ms))
+                                                _max_len = max(_in_bs, max(1024, _max_len))
+                                                if self._monitor_outbuf.size > _max_len:
+                                                    self._monitor_outbuf = self._monitor_outbuf[-_max_len:]
+                                        except Exception:
+                                            pass
+
+                                    # 输出流回调：从缓冲区取样本，复制到立体声
+                                    def _monitor_output_callback(outdata, frames, time_info, status):
+                                        try:
+                                            with self._monitor_outbuf_lock:
+                                                buf = self._monitor_outbuf
+                                                if buf.size >= frames:
+                                                    chunk = buf[:frames]
+                                                    self._monitor_outbuf = buf[frames:]
+                                                else:
+                                                    # 欠供处理：使用短淡出+轻噪声整形，降低“咔嗒”
+                                                    if buf.size > 0:
+                                                        tail = buf.astype(np.float32, copy=False)
+                                                        self._monitor_outbuf = np.empty(0, dtype=np.float32)
+                                                        chunk = np.zeros(frames, dtype=np.float32)
+                                                        n = min(tail.size, frames)
+                                                        if n > 0:
+                                                            fade = np.linspace(1.0, 0.0, num=n, dtype=np.float32)
+                                                            chunk[:n] = tail[-n:] * fade
+                                                        # 余量填充极低幅白噪声，避免直流与死寂
+                                                        if frames > n:
+                                                            noise = (np.random.rand(frames - n).astype(np.float32) - 0.5) * 1e-4
+                                                            chunk[n:] = noise
+                                                    else:
+                                                        # 纯空缓冲，给出极低幅白噪声
+                                                        chunk = (np.random.rand(frames).astype(np.float32) - 0.5) * 1e-4
+                                                # 刚恢复供给时做短淡入，进一步降低接续噪点
+                                                if getattr(self, '_monitor_warmup_done', False) and buf.size < frames and chunk.size >= frames:
+                                                    m = min(frames, int(self._monitor_output_sr * 0.002))  # 约2ms
+                                                    if m > 1:
+                                                        fadein = np.linspace(0.0, 1.0, num=m, dtype=np.float32)
+                                                        chunk[:m] *= fadein
+                                            if outdata.shape[1] == 1:
+                                                outdata[:, 0] = chunk
+                                            else:
+                                                outdata[:, 0] = chunk
+                                                outdata[:, 1] = chunk
+                                        except Exception:
+                                            try:
+                                                outdata.fill(0)
+                                            except Exception:
+                                                pass
+
+                                    # 创建并启动输出流
+                                    self.monitor_output_stream = sd.OutputStream(
+                                        device=_out_dev_id,
+                                        samplerate=_out_sr,
+                                        blocksize=_out_bs,
+                                        channels=2,
+                                        callback=_monitor_output_callback,
+                                        dtype=np.float32,
+                                        latency='low',
+                                        **({'extra_settings': _wasapi_out} if _wasapi_out else {})
+                                    )
+                                    self.monitor_output_stream.start()
+                                    # 将追加函数暴露给输入回调使用
+                                    self._append_to_monitor_outbuf = _append_to_monitor_outbuf  # type: ignore[attr-defined]
+                                    _mode_txt = '独占' if (_wasapi_out and getattr(_wasapi_out, 'exclusive', False)) else '共享'
+                                    print(f"🎧 已启用分离式耳返: 输入{_in_sr}Hz -> 输出{_out_sr}Hz 设备{_out_dev_id}（{_mode_txt}，软件重采样）")
+                                else:
+                                    self._monitor_output_enabled = False
+                            except Exception as _sep_e:
+                                self._monitor_output_enabled = False
+                                print(f"⚠️ 分离式耳返创建失败: {_sep_e}")
+
+                        # 记录监听输入设备信息并检测是否为蓝牙/低采样率语音通道
+                        try:
+                            self.active_input_device_id = int(stream_params.get('device')) if 'device' in stream_params else None
+                        except Exception:
+                            self.active_input_device_id = None
+                        try:
+                            if self.active_input_device_id is not None:
+                                _din = sd.query_devices(self.active_input_device_id)
+                                self.active_input_device_name = _din.get('name', '')
+                                self.active_input_hostapi = _din.get('hostapi', None)
+                                name_upper = str(self.active_input_device_name or '').upper()
+                                bt_keywords = (
+                                    'BLUETOOTH', 'HEADSET', 'HANDS-FREE', 'HANDSFREE', 'HFP', 'HSP', 'EARBUD', 'EARPHONE',
+                                    '耳机', '蓝牙', '免提'
+                                )
+                                _sr_guess = int(stream_params.get('samplerate', 0) or 0)
+                                low_sr_voice = (_sr_guess > 0 and _sr_guess <= 22050)
+                                self._bt_voice_mode = bool(any(k in name_upper for k in bt_keywords) or low_sr_voice)
+                            else:
+                                _sr_guess = int(stream_params.get('samplerate', 0) or 0)
+                                self._bt_voice_mode = (_sr_guess > 0 and _sr_guess <= 22050)
+                        except Exception:
+                            self._bt_voice_mode = False
+
+                        # 如检测到蓝牙语音模式，应用自适应调优
+                        try:
+                            if bool(getattr(self, '_bt_voice_mode', False)):
+                                self._apply_bluetooth_tuning()
+                        except Exception as _e:
+                            print(f"⚠️ 蓝牙模式调优失败: {_e}")
                         
                         # 计算实际延迟（使用实际参数）
                         actual_sample_rate = stream_params['samplerate']
@@ -3683,10 +4353,11 @@ class IntegratedAudioProcessor(QThread):
                         _ver_lat = config.get('verified_latency', None)
                         verified_latency = _ver_lat if isinstance(_ver_lat, (int, float)) else theoretical_latency
                         
-                        print(f"✅ {config['name']}启动成功:")
+                        print(f"✅ {config['name']}{'监听' if not created_duplex else '（带耳返）'}启动成功:")
                         print(f"   ├─ 配置: {actual_sample_rate}Hz, {actual_blocksize}样本")
                         print(f"   ├─ 理论延迟: {theoretical_latency:.2f}ms")
-                        print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=f"{theoretical_latency:.2f}ms")} ⭐")
+                        _default_lat_txt = f"{theoretical_latency:.2f}ms"
+                        print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=_default_lat_txt)} ⭐")
                         print(f"   ├─ 性能级别: {config['latency_class']}")
                         print(f"   └─ 音频格式: float32")
                         
@@ -3806,6 +4477,29 @@ class IntegratedAudioProcessor(QThread):
                 self.monitoring_stream.stop()
                 self.monitoring_stream.close()
                 self.monitoring_stream = None
+
+            # 若有分离式耳返输出流，安全关闭
+            if getattr(self, 'monitor_output_stream', None):
+                try:
+                    self.monitor_output_stream.stop()
+                except Exception:
+                    pass
+                try:
+                    self.monitor_output_stream.close()
+                except Exception:
+                    pass
+                self.monitor_output_stream = None
+                print("🔇 已关闭耳返输出流: monitor_output_stream")
+            # 清理耳返缓冲与标志
+            try:
+                if hasattr(self, '_monitor_outbuf_lock'):
+                    with self._monitor_outbuf_lock:
+                        self._monitor_outbuf = np.empty(0, dtype=np.float32)
+                self._monitor_output_enabled = False
+                if hasattr(self, '_append_to_monitor_outbuf'):
+                    delattr(self, '_append_to_monitor_outbuf')
+            except Exception:
+                pass
             
             # 🎯 重置全局监听状态
             self.is_global_monitoring_active = False
@@ -3821,731 +4515,910 @@ class IntegratedAudioProcessor(QThread):
 
     def start_unified_monitoring(self):
         """启动HECATE G4 Pro优化监听：基于设备33最优配置"""
+        # 全局重入与频率节流保护：避免短时间内重复启动导致递归/状态错乱
         try:
-            import sounddevice as sd
-            
-            # 🎯 检查全局监听状态 - 如果已有监听运行，继续使用
-            if self.is_global_monitoring_active:
-                print("� 检测到全局监听模式已激活，跳过重复启动")
-                self.status_updated.emit("监听模式已运行中")
-                return True
-            
-            print("�🎧 正在启动HECATE G4 Pro优化监听...")
-            
-            # 启动WASAPI诊断系统
-            self.diagnose_wasapi_issues()
-            
-            # 🔧 HECATE监听模式配置（基于诊断结果优化）
-            self.monitoring_filename = None
-            self.monitoring_should_save = False
-            self.is_monitoring_only = True
-            self.audio_buffer = []
-            self.channels = 1  # HECATE优化：单声道
-            self.enable_pitch_visualization = False
-            
-            # 🎯 设置全局监听状态
-            self.is_global_monitoring_active = True
-            self.monitoring_mode = 'unified'
-            
-            # 清理历史数据
-            if hasattr(self, 'pitch_history'):
-                self.pitch_history.clear()
-            self.recording_start_time = time.time()
-
-            # 与录音路径保持一致的合批与限频参数（保证分析输入一致性）
-            try:
-                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
-                _pm = get_performance_manager()
-                _cfg = _pm.get_current_config() if _pm else None
-                _mode = _pm.get_current_mode() if _pm else None
-                base_chunk = int(getattr(_cfg, 'chunk_size', 128)) if _cfg else 128
-                if _mode == PerformanceMode.HIGH_PERFORMANCE:
-                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)
-                elif _mode == PerformanceMode.BALANCED:
-                    self._callback_min_enqueue_samples = max(96, base_chunk // 2)
-                else:
-                    self._callback_min_enqueue_samples = max(128, base_chunk // 2)
-            except Exception:
-                self._callback_min_enqueue_samples = 128
-            # 回调侧累积缓冲与电平节流
-            self._enqueue_accum = np.empty(0, dtype=np.float32)
-            self._last_level_emit_t = time.time()
-            self._level_emit_interval = 0.05
-            
-            # � HECATE优化监听回调：基于设备33测试结果
-            def hecate_optimized_callback(indata, outdata, frames, time_info, status):
-                """HECATE G4 Pro优化回调：192kHz/32样本/0.17ms延迟"""
+            now_ts = time.time()
+            last_ts = float(getattr(self, "_unified_monitoring_last_start_t", 0.0))
+            is_starting = bool(getattr(self, "_unified_monitoring_starting", False))
+            if is_starting and (now_ts - last_ts) < 4.0:
+                # 启动请求过于频繁，忽略此次请求
                 try:
-                    # 音频数据处理
-                    if self.channels == 1 and indata.shape[1] > 1:
-                        raw_audio = (indata[:, 0] + indata[:, 1]) * 0.5
+                    if hasattr(self, '_log_rate_limit'):
+                        self._log_rate_limit('unified_start_throttle', '⏳ 监听启动请求过于频繁，已忽略', interval=3.0, burst=1)
                     else:
-                        raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata.flatten()
+                        print('⏳ 监听启动请求过于频繁，已忽略')
+                except Exception:
+                    pass
+                return False
+            # 标记进入启动过程（任何返回路径均在finally中清理）
+            self._unified_monitoring_starting = True
+            self._unified_monitoring_last_start_t = now_ts
 
-                    # 👉 关键差异修复：录音直接模式与监听模式音高结果差异大的根源之一
-                    # 之前：监听路径对原始数据做了多步增益/平滑后才入队，导致波形被改写 => 音高不同
-                    # 现在：始终把“原始未处理”数据(raw_audio)送入分析队列，独立于监听增强处理
-                    audio_data = raw_audio.copy()
-                    
-                    # 智能音量增强（基于HECATE特性优化）
-                    if hasattr(self, 'hecate_volume_booster') and self.hecate_volume_booster['enabled']:
-                        rms = np.sqrt(np.mean(audio_data ** 2))
-                        
-                        if rms > self.hecate_volume_booster['noise_gate']:
-                            target_level = self.hecate_volume_booster['target_level']
-                            
-                            # HECATE专用增益算法（针对192kHz优化）
-                            if rms < target_level * 0.4:
-                                target_gain = min(1.6, target_level * 0.6 / max(rms, 0.002))
+            # 使用外层finally确保标志恢复
+            try:
+                import sounddevice as sd
+                # 🔎 早期环境判定：若不存在可用HECATE输入，但存在蓝牙语音输入候选，则直接走标准全局监听（带蓝牙优先）
+                try:
+                    devices = sd.query_devices()
+                    has_hecate_input = False
+                    has_bt_input = False
+                    for i, d in enumerate(devices):
+                        try:
+                            if d.get('max_input_channels', 0) <= 0:
+                                continue
+                            name = d.get('name', '')
+                            if 'hecate' in name.lower() and 'g4 pro' in name.lower():
+                                has_hecate_input = True
+                            sr = int(d.get('default_samplerate', 0) or 0)
+                            if self._is_bluetooth_like_name(name) or (sr > 0 and sr <= 22050):
+                                has_bt_input = True
+                        except Exception:
+                            continue
+                    if (not has_hecate_input) and has_bt_input:
+                        # 避免递归与日志风暴：添加重入保护与节流
+                        now = time.time()
+                        last = float(getattr(self, "_bt_fallback_last_t", 0.0))
+                        in_progress = bool(getattr(self, "_bt_fallback_in_progress", False))
+                        if (now - last) < 3.0 or in_progress:
+                            # 3秒冷却内或正在回退中，直接返回 False 防止反复触发
+                            return False
+                        try:
+                            self._bt_fallback_in_progress = True
+                            self._bt_fallback_last_t = now
+                            # 日志节流
+                            if hasattr(self, '_log_rate_limit'):
+                                self._log_rate_limit('bt_unified_fallback', "🎧 检测到蓝牙语音输入设备，且无HECATE输入；改用标准全局监听（蓝牙优先）", interval=5.0, burst=1)
                             else:
-                                target_gain = max(0.95, min(1.1, target_level / rms))
+                                print("🎧 检测到蓝牙语音输入设备，且无HECATE输入；改用标准全局监听（蓝牙优先）")
+                            # 避免递归与状态混乱：此处不设置 is_global_monitoring_active，直接调用标准监听
+                            return self.start_monitoring()
+                        finally:
+                            self._bt_fallback_in_progress = False
+                except Exception as _precheck_e:
+                    print(f"⚠️ 监听前置判定失败（回退到标准流程）: {_precheck_e}")
+                
+                # 🎯 检查全局监听状态 - 如果已有监听运行，继续使用
+                if self.is_global_monitoring_active:
+                    print("� 检测到全局监听模式已激活，跳过重复启动")
+                    self.status_updated.emit("监听模式已运行中")
+                    return True
+                
+                print("�🎧 正在启动HECATE G4 Pro优化监听...")
+                
+                # 启动WASAPI诊断系统（安全模式）：避免递归打印
+                try:
+                    self.diagnose_wasapi_issues()
+                except RecursionError:
+                    # 避免递归错误继续扩大
+                    print("❌ WASAPI诊断过程中出现递归错误，已跳过详细追踪。")
+                except Exception as _diag_e:
+                    print(f"❌ WASAPI诊断异常: {_diag_e}")
+                
+                # 🔧 HECATE监听模式配置（基于诊断结果优化）
+                self.monitoring_filename = None
+                self.monitoring_should_save = False
+                self.is_monitoring_only = True
+                self.audio_buffer = []
+                self.channels = 1  # HECATE优化：单声道
+                self.enable_pitch_visualization = False
+                
+                # 🎯 设置全局监听状态
+                self.is_global_monitoring_active = True
+                self.monitoring_mode = 'unified'
+                
+                # 清理历史数据
+                if hasattr(self, 'pitch_history'):
+                    self.pitch_history.clear()
+                self.recording_start_time = time.time()
+
+                # 与录音路径保持一致的合批与限频参数（保证分析输入一致性）
+                try:
+                    from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
+                    _pm = get_performance_manager()
+                    _cfg = _pm.get_current_config() if _pm else None
+                    _mode = _pm.get_current_mode() if _pm else None
+                    base_chunk = int(getattr(_cfg, 'chunk_size', 128)) if _cfg else 128
+                    if _mode == PerformanceMode.HIGH_PERFORMANCE:
+                        self._callback_min_enqueue_samples = max(96, base_chunk // 2)
+                    elif _mode == PerformanceMode.BALANCED:
+                        self._callback_min_enqueue_samples = max(96, base_chunk // 2)
+                    else:
+                        self._callback_min_enqueue_samples = max(128, base_chunk // 2)
+                except Exception:
+                    self._callback_min_enqueue_samples = 128
+                # 回调侧累积缓冲与电平节流
+                self._enqueue_accum = np.empty(0, dtype=np.float32)
+                self._last_level_emit_t = time.time()
+                self._level_emit_interval = 0.05
+                
+                # � HECATE优化监听回调：基于设备33测试结果
+                def hecate_optimized_callback(indata, outdata, frames, time_info, status):
+                    """HECATE G4 Pro优化回调：192kHz/32样本/0.17ms延迟"""
+                    try:
+                        # 音频数据处理
+                        if self.channels == 1 and indata.shape[1] > 1:
+                            raw_audio = (indata[:, 0] + indata[:, 1]) * 0.5
+                        else:
+                            raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata.flatten()
+
+                        # 👉 关键差异修复：录音直接模式与监听模式音高结果差异大的根源之一
+                        # 之前：监听路径对原始数据做了多步增益/平滑后才入队，导致波形被改写 => 音高不同
+                        # 现在：始终把“原始未处理”数据(raw_audio)送入分析队列，独立于监听增强处理
+                        audio_data = raw_audio.copy()
+                        
+                        # 智能音量增强（基于HECATE特性优化）
+                        if hasattr(self, 'hecate_volume_booster') and self.hecate_volume_booster['enabled']:
+                            rms = np.sqrt(np.mean(audio_data ** 2))
                             
-                            # 平滑增益变化
-                            current_gain = self.hecate_volume_booster.get('current_gain', 1.0)
-                            smooth_factor = 0.92  # HECATE快速响应
-                            new_gain = current_gain * smooth_factor + target_gain * (1 - smooth_factor)
-                            self.hecate_volume_booster['current_gain'] = new_gain
-                            
-                            if new_gain > 1.02:
-                                audio_data = audio_data * new_gain
-                                # 峰值保护
-                                peak = np.max(np.abs(audio_data))
-                                if peak > 0.94:
-                                    audio_data = audio_data * (0.92 / peak)
+                            if rms > self.hecate_volume_booster['noise_gate']:
+                                target_level = self.hecate_volume_booster['target_level']
+                                
+                                # HECATE专用增益算法（针对192kHz优化）
+                                if rms < target_level * 0.4:
+                                    target_gain = min(1.6, target_level * 0.6 / max(rms, 0.002))
+                                else:
+                                    target_gain = max(0.95, min(1.1, target_level / rms))
+                                
+                                # 平滑增益变化
+                                current_gain = self.hecate_volume_booster.get('current_gain', 1.0)
+                                smooth_factor = 0.92  # HECATE快速响应
+                                new_gain = current_gain * smooth_factor + target_gain * (1 - smooth_factor)
+                                self.hecate_volume_booster['current_gain'] = new_gain
+                                
+                                if new_gain > 1.02:
+                                    audio_data = audio_data * new_gain
+                                    # 峰值保护
+                                    peak = np.max(np.abs(audio_data))
+                                    if peak > 0.94:
+                                        audio_data = audio_data * (0.92 / peak)
                         else:
                             # 微弱信号处理
                             audio_data = audio_data * 0.8
                     
-                    # 高频稳定性处理（HECATE电流音优化）
-                    if len(audio_data) > 4:
-                        high_freq_diff = np.sum(np.abs(np.diff(audio_data, 2)))
-                        total_energy = np.sum(np.abs(audio_data))
-                        
-                        if total_energy > 1e-8:
-                            noise_ratio = high_freq_diff / total_energy
-                            if noise_ratio > 12.0:  # HECATE电流音检测阈值
-                                smoothed = np.copy(audio_data)
-                                smoothed[1:-1] = (audio_data[:-2] + audio_data[1:-1] + audio_data[2:]) / 3.0
-                                audio_data = audio_data * 0.75 + smoothed * 0.25
+                        # 高频稳定性处理（HECATE电流音优化）
+                        if len(audio_data) > 4:
+                            high_freq_diff = np.sum(np.abs(np.diff(audio_data, 2)))
+                            total_energy = np.sum(np.abs(audio_data))
+                            
+                            if total_energy > 1e-8:
+                                noise_ratio = high_freq_diff / total_energy
+                                if noise_ratio > 12.0:  # HECATE电流音检测阈值
+                                    smoothed = np.copy(audio_data)
+                                    smoothed[1:-1] = (audio_data[:-2] + audio_data[1:-1] + audio_data[2:]) / 3.0
+                                    audio_data = audio_data * 0.75 + smoothed * 0.25
                     
-                    # 🎯 处理录音需求（在全局监听模式下）+ 合批入队 raw 音频，保持与录音一致
-                    try:
-                        should_save_audio = self.is_recording and self.should_save
-                        # 保存录音原始/增强波形到缓冲，仅当需要保存
-                        if should_save_audio:
-                            self.audio_buffer.extend(audio_data)
-                        # 合批累积并按阈值吐包
-                        if self._enqueue_accum.size == 0:
-                            self._enqueue_accum = raw_audio.copy()
-                        else:
-                            self._enqueue_accum = np.concatenate((self._enqueue_accum, raw_audio))
-                        min_samples = int(self._callback_min_enqueue_samples)
-                        while self._enqueue_accum.size >= min_samples:
-                            packet = self._enqueue_accum[:min_samples]
-                            self._enqueue_accum = self._enqueue_accum[min_samples:]
-                            if not self.audio_buffer_queue.full():
-                                self.audio_buffer_queue.put_nowait({
-                                    'data': packet.copy(),
-                                    'timestamp': time.time(),
-                                    'should_save': should_save_audio
-                                })
+                        # 🎯 处理录音需求（在全局监听模式下）+ 合批入队 raw 音频，保持与录音一致
+                        try:
+                            should_save_audio = self.is_recording and self.should_save
+                            # 保存录音原始/增强波形到缓冲，仅当需要保存
+                            if should_save_audio:
+                                self.audio_buffer.extend(audio_data)
+                            # 合批累积并按阈值吐包
+                            if self._enqueue_accum.size == 0:
+                                self._enqueue_accum = raw_audio.copy()
                             else:
-                                try:
-                                    self.audio_buffer_queue.get_nowait()
+                                self._enqueue_accum = np.concatenate((self._enqueue_accum, raw_audio))
+                            min_samples = int(self._callback_min_enqueue_samples)
+                            while self._enqueue_accum.size >= min_samples:
+                                packet = self._enqueue_accum[:min_samples]
+                                self._enqueue_accum = self._enqueue_accum[min_samples:]
+                                if not self.audio_buffer_queue.full():
                                     self.audio_buffer_queue.put_nowait({
                                         'data': packet.copy(),
                                         'timestamp': time.time(),
                                         'should_save': should_save_audio
                                     })
-                                except queue.Empty:
-                                    pass
-                    except Exception as process_error:
-                        print(f"⚠️ HECATE音频处理错误: {process_error}")
-                    
-                    # 音频输出（仅在启用监听回传时）
-                    if self.monitor_audio_passthrough:
-                        # 若首次启用KTV后进入回调，结合实际输出声道做一次自适应
-                        try:
-                            if bool(getattr(self, 'monitor_ktv_mode', False)) and not getattr(self, '_ktv_adapted_once', False):
-                                self._ktv_adapt_to_device(out_channels=outdata.shape[1] if len(outdata.shape) > 1 else 1)
-                                self._ktv_adapted_once = True
-                        except Exception:
-                            pass
-                        # RAW直通：最小处理，仅保留安全头房+VRMS限幅
-                        if getattr(self, 'monitor_raw_mode', False):
-                            audio_out = raw_audio.copy()
-                        else:
-                            # 👉 默认（未开启KTV）走“纯净直通”：只做安全限幅，不做任何着色，保证原音质
-                            if not bool(getattr(self, 'monitor_ktv_mode', False)):
+                                else:
+                                    try:
+                                        self.audio_buffer_queue.get_nowait()
+                                        self.audio_buffer_queue.put_nowait({
+                                            'data': packet.copy(),
+                                            'timestamp': time.time(),
+                                            'should_save': should_save_audio
+                                        })
+                                    except queue.Empty:
+                                        pass
+                        except Exception as process_error:
+                            print(f"⚠️ HECATE音频处理错误: {process_error}")
+                        
+                        # 音频输出（仅在启用监听回传时）
+                        if self.monitor_audio_passthrough:
+                            # 若首次启用KTV后进入回调，结合实际输出声道做一次自适应
+                            try:
+                                if bool(getattr(self, 'monitor_ktv_mode', False)) and not getattr(self, '_ktv_adapted_once', False):
+                                    self._ktv_adapt_to_device(out_channels=outdata.shape[1] if len(outdata.shape) > 1 else 1)
+                                    self._ktv_adapted_once = True
+                            except Exception:
+                                pass
+                            # RAW直通：最小处理，仅保留安全头房+VRMS限幅
+                            if getattr(self, 'monitor_raw_mode', False):
                                 audio_out = raw_audio.copy()
                             else:
-                                # KTV隔离模式：使用原始raw_audio作为输入，绕过抑制/AGC/门限
-                                if bool(getattr(self, 'ktv_isolation', True)):
-                                    audio_src = raw_audio.copy()
+                                # 👉 默认（未开启KTV）走“纯净直通”：只做安全限幅，不做任何着色，保证原音质
+                                if not bool(getattr(self, 'monitor_ktv_mode', False)):
+                                    audio_out = raw_audio.copy()
                                 else:
-                                    # 仅在KTV且未隔离时，对耳返音频在低RMS呼吸段进行轻量抑制
-                                    audio_src = self._apply_breath_noise_suppress(audio_data, key='hecate')
-                                # 叠加KTV混响/回声
-                                audio_out = self._apply_ktv_effect(audio_src, key='hecate')
-                        # 若开启KTV且具备立体声输出，左右做轻微去相关
-                        if bool(getattr(self, 'monitor_ktv_mode', False)) and outdata.shape[1] > 1 and not getattr(self, 'monitor_raw_mode', False) and bool(getattr(self, 'ktv_stereo_widen', True)):
-                            # 仅应用一次KTV效果：以 KTV 前级源为输入，左右使用不同variant做扩散
-                            src = raw_audio.copy() if bool(getattr(self, 'ktv_isolation', True)) else audio_data
-                            l = self._apply_headroom_and_vrms(self._apply_ktv_effect(src, key='hecateL', stereo_variant=0), key='hecateL')
-                            r = self._apply_headroom_and_vrms(self._apply_ktv_effect(src, key='hecateR', stereo_variant=1), key='hecateR')
-                            outdata[:, 0] = l
-                            outdata[:, 1] = r
-                        else:
-                            # 安全头房 + VRMS限幅（无感）
-                            audio_out = self._apply_headroom_and_vrms(audio_out, key='hecate')
-                            if outdata.shape[1] == 1:
-                                outdata[:, 0] = audio_out  # 输出仍可用增强/平滑后的版本
+                                    # KTV隔离模式：使用原始raw_audio作为输入，绕过抑制/AGC/门限
+                                    if bool(getattr(self, 'ktv_isolation', True)):
+                                        audio_src = raw_audio.copy()
+                                    else:
+                                        # 仅在KTV且未隔离时，对耳返音频在低RMS呼吸段进行轻量抑制
+                                        audio_src = self._apply_breath_noise_suppress(audio_data, key='hecate')
+                                    # 叠加KTV混响/回声
+                                    audio_out = self._apply_ktv_effect(audio_src, key='hecate')
+                            # 若开启KTV且具备立体声输出，左右做轻微去相关
+                            if bool(getattr(self, 'monitor_ktv_mode', False)) and outdata.shape[1] > 1 and not getattr(self, 'monitor_raw_mode', False) and bool(getattr(self, 'ktv_stereo_widen', True)):
+                                # 仅应用一次KTV效果：以 KTV 前级源为输入，左右使用不同variant做扩散
+                                src = raw_audio.copy() if bool(getattr(self, 'ktv_isolation', True)) else audio_data
+                                l = self._apply_headroom_and_vrms(self._apply_ktv_effect(src, key='hecateL', stereo_variant=0), key='hecateL')
+                                r = self._apply_headroom_and_vrms(self._apply_ktv_effect(src, key='hecateR', stereo_variant=1), key='hecateR')
+                                outdata[:, 0] = l
+                                outdata[:, 1] = r
                             else:
-                                outdata[:, 0] = audio_out
-                                outdata[:, 1] = audio_out
-                    else:
+                                # 安全头房 + VRMS限幅（无感）
+                                audio_out = self._apply_headroom_and_vrms(audio_out, key='hecate')
+                                if outdata.shape[1] == 1:
+                                    outdata[:, 0] = audio_out  # 输出仍可用增强/平滑后的版本
+                                else:
+                                    outdata[:, 0] = audio_out
+                                    outdata[:, 1] = audio_out
+                        else:
+                            outdata.fill(0)
+                            
+                    except Exception as e:
                         outdata.fill(0)
-                        
-                except Exception as e:
-                    outdata.fill(0)
-                    print(f"⚠️ HECATE回调错误: {e}")
-            
-            # HECATE音量增强配置
-            self.hecate_volume_booster = {
-                'enabled': True,
-                'target_level': 0.25,
-                'noise_gate': 0.003,
-                'current_gain': 1.0
-            }
-            
-            # 🎯 HECATE设备配置：优先使用设备33最优配置
-            hecate_mapper = HecateDeviceMapper()
-            hecate_available = hecate_mapper.verify_hecate_available()
-            
-            if hecate_available:
-                print("🎯 检测到HECATE G4 Pro，使用专用优化配置")
-                optimal_config = hecate_mapper.get_working_hecate_config()
+                        print(f"⚠️ HECATE回调错误: {e}")
                 
-                if optimal_config:
-                    print(f"⭐ 使用最优HECATE配置：设备{optimal_config['device_id']}@{optimal_config['samplerate']}Hz/{optimal_config['blocksize']}样本")
+                # HECATE音量增强配置
+                self.hecate_volume_booster = {
+                    'enabled': True,
+                    'target_level': 0.25,
+                    'noise_gate': 0.003,
+                    'current_gain': 1.0
+                }
+                
+                # 🎯 HECATE设备配置：优先使用设备33最优配置
+                hecate_mapper = HecateDeviceMapper()
+                hecate_available = hecate_mapper.verify_hecate_available()
+                
+                if hecate_available:
+                    print("🎯 检测到HECATE G4 Pro，使用专用优化配置")
+                    optimal_config = hecate_mapper.get_working_hecate_config()
                     
-                    # 🔧 智能设备能力检测和配置优化
-                    try:
-                        device_info = sd.query_devices(optimal_config['device_id'])
-                        max_input_channels = device_info.get('max_input_channels', 2)
-                        default_samplerate = device_info.get('default_samplerate', 44100)
-                        device_name = device_info.get('name', 'Unknown')
-                        host_api = device_info.get('hostapi', -1)
+                    if optimal_config:
+                        print(f"⭐ 使用最优HECATE配置：设备{optimal_config['device_id']}@{optimal_config['samplerate']}Hz/{optimal_config['blocksize']}样本")
                         
-                        print(f"📊 设备{optimal_config['device_id']}智能分析:")
-                        print(f"   ├─ 设备名称: {device_name}")
-                        print(f"   ├─ 最大输入通道: {max_input_channels}")
-                        print(f"   ├─ 默认采样率: {default_samplerate}Hz")
-                        print(f"   ├─ 主机API: {host_api} ({'MME' if host_api == 0 else 'DirectSound' if host_api == 1 else 'WASAPI' if host_api == 2 else 'Unknown'})")
-                        print(f"   └─ 设备类型: {'输入设备' if max_input_channels > 0 else '输出设备'}")
-                        
-                        # 智能过滤：跳过无输入通道的设备
-                        if max_input_channels == 0:
-                            print(f"⚠️ 设备{optimal_config['device_id']}无输入通道，跳过HECATE优化")
-                            print("🔄 将尝试其他HECATE输入设备...")
-                            # 跳转到后续的备用设备搜索
-                        else:
-                            # 自动调整通道数到设备支持的最大值
-                            optimal_channels = min(self.channels, max_input_channels) if max_input_channels > 0 else 1
-                            if optimal_channels != self.channels:
-                                print(f"🔧 智能调整通道数: {self.channels} → {optimal_channels}")
-                                self.channels = optimal_channels
+                        # 🔧 智能设备能力检测和配置优化
+                        try:
+                            device_info = sd.query_devices(optimal_config['device_id'])
+                            max_input_channels = device_info.get('max_input_channels', 2)
+                            default_samplerate = device_info.get('default_samplerate', 44100)
+                            device_name = device_info.get('name', 'Unknown')
+                            host_api = device_info.get('hostapi', -1)
                             
-                            # ==== 改进的智能采样率探测（优先真实可用 + 原生速率）====
-                            def _probe_first_supported(rates, block_sizes=(64,128,256,512)):
-                                for sr in rates:
-                                    for bs in block_sizes:
-                                        try:
-                                            tmp = sd.InputStream(device=optimal_config['device_id'], channels=1, samplerate=sr, blocksize=bs, dtype=np.float32)
-                                            tmp.close()
-                                            return sr, bs
-                                        except Exception:
-                                            continue
-                                return None, None
+                            print(f"📊 设备{optimal_config['device_id']}智能分析:")
+                            print(f"   ├─ 设备名称: {device_name}")
+                            print(f"   ├─ 最大输入通道: {max_input_channels}")
+                            print(f"   ├─ 默认采样率: {default_samplerate}Hz")
+                            print(f"   ├─ 主机API: {host_api} ({'MME' if host_api == 0 else 'DirectSound' if host_api == 1 else 'WASAPI' if host_api == 2 else 'Unknown'})")
+                            print(f"   └─ 设备类型: {'输入设备' if max_input_channels > 0 else '输出设备'}")
+                            
+                            # 智能过滤：跳过无输入通道的设备
+                            if max_input_channels == 0:
+                                print(f"⚠️ 设备{optimal_config['device_id']}无输入通道，跳过HECATE优化")
+                                print("🔄 将尝试其他HECATE输入设备...")
+                                # 跳转到后续的备用设备搜索
+                            else:
+                                # 自动调整通道数到设备支持的最大值
+                                optimal_channels = min(self.channels, max_input_channels) if max_input_channels > 0 else 1
+                                if optimal_channels != self.channels:
+                                    print(f"🔧 智能调整通道数: {self.channels} → {optimal_channels}")
+                                    self.channels = optimal_channels
+                                
+                                # ==== 改进的智能采样率探测（优先真实可用 + 原生速率）====
+                                def _probe_first_supported(rates, block_sizes=(64,128,256,512)):
+                                    for sr in rates:
+                                        for bs in block_sizes:
+                                            try:
+                                                tmp = sd.InputStream(device=optimal_config['device_id'], channels=1, samplerate=sr, blocksize=bs, dtype=np.float32)
+                                                tmp.close()
+                                                return sr, bs
+                                            except Exception:
+                                                continue
+                                    return None, None
 
-                            # 优先顺序：设备默认 / 192k / 96k / 48k / 44.1k （去重）
-                            candidate_rates = []
-                            for r in [default_samplerate, 192000, 96000, 48000, 44100]:
-                                if isinstance(r, (int, float)) and r > 0 and r not in candidate_rates and r <= default_samplerate + 1:  # 允许默认略浮点
-                                    candidate_rates.append(int(r))
-                            probed_sr, probed_bs = _probe_first_supported(candidate_rates)
-                            if probed_sr is None:
-                                # 回退策略：再放宽一次，不限制 <= default_samplerate 逻辑
-                                for r in [192000, 96000, 48000, 44100]:
-                                    if r not in candidate_rates:
-                                        candidate_rates.append(r)
+                                # 优先顺序：设备默认 / 192k / 96k / 48k / 44.1k （去重）
+                                candidate_rates = []
+                                for r in [default_samplerate, 192000, 96000, 48000, 44100]:
+                                    if isinstance(r, (int, float)) and r > 0 and r not in candidate_rates and r <= default_samplerate + 1:  # 允许默认略浮点
+                                        candidate_rates.append(int(r))
                                 probed_sr, probed_bs = _probe_first_supported(candidate_rates)
-                            if probed_sr is None:
-                                optimal_samplerate = 48000
-                                probed_bs = 256
-                                print("⚠️ 采样率快速探测全部失败，使用保守 48kHz/256")
-                            else:
-                                optimal_samplerate = probed_sr
-                                print(f"🔧 智能采样率选择: {optimal_samplerate}Hz (探测块大小建议: {probed_bs})")
-                            
-                            # 基于主机API优化WASAPI设置
-                            wasapi_available = (host_api == 2)  # 只有WASAPI主机API才支持WASAPI设置
-                            
-                            if wasapi_available:
-                                # 测试WASAPI兼容性
-                                try:
-                                    test_stream = sd.InputStream(
-                                        device=optimal_config['device_id'],
-                                        channels=optimal_channels,
-                                        samplerate=optimal_samplerate,
-                                        blocksize=512,
-                                        dtype=np.float32,
-                                        extra_settings=sd.WasapiSettings(exclusive=False)
-                                    )
-                                    test_stream.close()
-                                    print("✅ WASAPI兼容性测试通过")
-                                except Exception as wasapi_test_error:
-                                    print(f"⚠️ WASAPI不兼容: {wasapi_test_error}")
-                                    wasapi_available = False
-                            else:
-                                print(f"ℹ️ 设备使用{['MME', 'DirectSound', 'WASAPI'][host_api]}主机API，跳过WASAPI测试")
+                                if probed_sr is None:
+                                    # 回退策略：再放宽一次，不限制 <= default_samplerate 逻辑
+                                    for r in [192000, 96000, 48000, 44100]:
+                                        if r not in candidate_rates:
+                                            candidate_rates.append(r)
+                                    probed_sr, probed_bs = _probe_first_supported(candidate_rates)
+                                if probed_sr is None:
+                                    optimal_samplerate = 48000
+                                    probed_bs = 256
+                                    print("⚠️ 采样率快速探测全部失败，使用保守 48kHz/256")
+                                else:
+                                    optimal_samplerate = probed_sr
+                                    print(f"🔧 智能采样率选择: {optimal_samplerate}Hz (探测块大小建议: {probed_bs})")
+                                
+                                # 基于主机API优化WASAPI设置
+                                wasapi_available = (host_api == 2)  # 只有WASAPI主机API才支持WASAPI设置
+                                
+                                if wasapi_available:
+                                    # 测试WASAPI兼容性
+                                    try:
+                                        test_stream = sd.InputStream(
+                                            device=optimal_config['device_id'],
+                                            channels=optimal_channels,
+                                            samplerate=optimal_samplerate,
+                                            blocksize=512,
+                                            dtype=np.float32,
+                                            extra_settings=sd.WasapiSettings(exclusive=False)
+                                        )
+                                        test_stream.close()
+                                        print("✅ WASAPI兼容性测试通过")
+                                    except Exception as wasapi_test_error:
+                                        print(f"⚠️ WASAPI不兼容: {wasapi_test_error}")
+                                        wasapi_available = False
+                                else:
+                                    print(f"ℹ️ 设备使用{['MME', 'DirectSound', 'WASAPI'][host_api]}主机API，跳过WASAPI测试")
                         
-                    except Exception as capability_error:
-                        print(f"⚠️ 设备能力检测失败: {capability_error}")
-                        # 使用保守的默认值
-                        max_input_channels = 1
-                        default_samplerate = 44100
-                        optimal_samplerate = 44100
-                        optimal_channels = 1
-                        wasapi_available = False
-                    
-                    # 构建智能配置序列：从最高性能到兼容（先尝试原生最佳）
-                    hecate_configs = []
+                        except Exception as capability_error:
+                            print(f"⚠️ 设备能力检测失败: {capability_error}")
+                            # 使用保守的默认值
+                            max_input_channels = 1
+                            default_samplerate = 44100
+                            optimal_samplerate = 44100
+                            optimal_channels = 1
+                            wasapi_available = False
+                        
+                        # 构建智能配置序列：从最高性能到兼容（先尝试原生最佳）
+                        hecate_configs = []
 
-                    # ==== 新增：输出设备自动匹配（用于全双工监听回传）====
-                    def _find_hecate_output_device():
-                        try:
-                            devices = sd.query_devices()
-                            candidates = []
-                            for idx, dev in enumerate(devices):
-                                name = dev.get('name','').lower()
-                                if dev.get('max_output_channels',0) > 0:
-                                    # 优先同品牌 + WASAPI
-                                    score = 0
-                                    if 'hecate' in name: score += 20
-                                    if 'g4 pro' in name: score += 10
-                                    if dev.get('hostapi') == 2: score += 15
-                                    candidates.append((score, idx, dev))
-                            if not candidates:
+                        # ==== 新增：输出设备自动匹配（用于全双工监听回传）====
+                        def _find_hecate_output_device():
+                            try:
+                                devices = sd.query_devices()
+                                candidates = []
+                                for idx, dev in enumerate(devices):
+                                    name = dev.get('name','').lower()
+                                    if dev.get('max_output_channels',0) > 0:
+                                        # 优先同品牌 + WASAPI
+                                        score = 0
+                                        if 'hecate' in name: score += 20
+                                        if 'g4 pro' in name: score += 10
+                                        if dev.get('hostapi') == 2: score += 15
+                                        candidates.append((score, idx, dev))
+                                if not candidates:
+                                    return None
+                                candidates.sort(reverse=True)
+                                return candidates[0][1]
+                            except Exception:
                                 return None
-                            candidates.sort(reverse=True)
-                            return candidates[0][1]
-                        except Exception:
-                            return None
 
-                    output_device_id = _find_hecate_output_device()
-                    if output_device_id is None:
-                        # 退回默认输出设备
-                        try:
-                            default_in, default_out = sd.default.device
-                            output_device_id = default_out
-                        except Exception:
-                            output_device_id = None
-                    if output_device_id is not None:
-                        print(f"🔎 绑定输出设备用于监听回传: {output_device_id}")
-                    else:
-                        print("⚠️ 未找到合适输出设备，回传监听将停用（仅采集输入）")
+                        output_device_id = _find_hecate_output_device()
+                        if output_device_id is None:
+                            # 退回默认输出设备
+                            try:
+                                default_in, default_out = sd.default.device
+                                output_device_id = default_out
+                            except Exception:
+                                output_device_id = None
+                        if output_device_id is not None:
+                            print(f"🔎 绑定输出设备用于监听回传: {output_device_id}")
+                        else:
+                            print("⚠️ 未找到合适输出设备，回传监听将停用（仅采集输入）")
 
-                    # 原生性能模式（若探测得出192k或设备默认值且已通过初步探测）
-                    if 'optimal_samplerate' in locals() and optimal_samplerate >= 96000 and default_samplerate >= optimal_samplerate:
+                        # 原生性能模式（若探测得出192k或设备默认值且已通过初步探测）
+                        if 'optimal_samplerate' in locals() and optimal_samplerate >= 96000 and default_samplerate >= optimal_samplerate:
+                            hecate_configs.append({
+                                'input_device': optimal_config['device_id'],
+                                'output_device': output_device_id,
+                                'input_channels': optimal_channels,
+                                'output_channels': 2 if output_device_id is not None else 0,
+                                'samplerate': optimal_samplerate,
+                                'blocksize': 64 if optimal_samplerate >= 96000 else 128,
+                                'callback': hecate_optimized_callback,
+                                'dtype': np.float32,
+                                'latency': 'low',
+                                'name': '原生性能模式'
+                            })
+                        
+                        # 配置1：最高兼容性模式（DirectSound/MME）
+                        hecate_configs.append({
+                            'input_device': optimal_config['device_id'],
+                            'output_device': output_device_id,
+                            'input_channels': 1,  # 强制单声道提高兼容性
+                            'output_channels': 2 if output_device_id is not None else 0,
+                            'samplerate': 44100,  # 最兼容的采样率
+                            'blocksize': 1024,  # 大缓冲区提高稳定性
+                            'callback': hecate_optimized_callback,
+                            'dtype': np.float32,
+                            'name': '最高兼容性模式'
+                        })
+                        
+                        # 配置2：平衡模式（使用探测到的 optimal_samplerate 与探测建议块）
                         hecate_configs.append({
                             'input_device': optimal_config['device_id'],
                             'output_device': output_device_id,
                             'input_channels': optimal_channels,
                             'output_channels': 2 if output_device_id is not None else 0,
                             'samplerate': optimal_samplerate,
-                            'blocksize': 64 if optimal_samplerate >= 96000 else 128,
+                            'blocksize': min(512, probed_bs if 'probed_bs' in locals() and probed_bs else 512),
                             'callback': hecate_optimized_callback,
                             'dtype': np.float32,
                             'latency': 'low',
-                            'name': '原生性能模式'
+                            'name': '平衡性能模式'
                         })
-                    
-                    # 配置1：最高兼容性模式（DirectSound/MME）
-                    hecate_configs.append({
-                        'input_device': optimal_config['device_id'],
-                        'output_device': output_device_id,
-                        'input_channels': 1,  # 强制单声道提高兼容性
-                        'output_channels': 2 if output_device_id is not None else 0,
-                        'samplerate': 44100,  # 最兼容的采样率
-                        'blocksize': 1024,  # 大缓冲区提高稳定性
-                        'callback': hecate_optimized_callback,
-                        'dtype': np.float32,
-                        'name': '最高兼容性模式'
-                    })
-                    
-                    # 配置2：平衡模式（使用探测到的 optimal_samplerate 与探测建议块）
-                    hecate_configs.append({
-                        'input_device': optimal_config['device_id'],
-                        'output_device': output_device_id,
-                        'input_channels': optimal_channels,
-                        'output_channels': 2 if output_device_id is not None else 0,
-                        'samplerate': optimal_samplerate,
-                        'blocksize': min(512, probed_bs if 'probed_bs' in locals() and probed_bs else 512),
-                        'callback': hecate_optimized_callback,
-                        'dtype': np.float32,
-                        'latency': 'low',
-                        'name': '平衡性能模式'
-                    })
-                    
-                    # 配置3：WASAPI共享模式（仅在WASAPI可用时）
-                    if wasapi_available:
-                        hecate_configs.append({
-                            'input_device': optimal_config['device_id'],
-                            'output_device': output_device_id,
-                            'input_channels': optimal_channels,
-                            'output_channels': 2 if output_device_id is not None else 0,
-                            'samplerate': optimal_samplerate,
-                            'blocksize': 256,
-                            'callback': hecate_optimized_callback,
-                            'dtype': np.float32,
-                            'latency': 'low',
-                            'extra_settings': sd.WasapiSettings(exclusive=False),
-                            'name': 'WASAPI共享模式'
-                        })
-                    
+                        
+                        # 配置3：WASAPI共享模式（仅在WASAPI可用时）
+                        if wasapi_available:
+                            hecate_configs.append({
+                                'input_device': optimal_config['device_id'],
+                                'output_device': output_device_id,
+                                'input_channels': optimal_channels,
+                                'output_channels': 2 if output_device_id is not None else 0,
+                                'samplerate': optimal_samplerate,
+                                'blocksize': 256,
+                                'callback': hecate_optimized_callback,
+                                'dtype': np.float32,
+                                'latency': 'low',
+                                'extra_settings': sd.WasapiSettings(exclusive=False),
+                                'name': 'WASAPI共享模式'
+                            })
+                        
             # 配置4：WASAPI独占模式（仅在WASAPI可用且是纯输入设备时）
-                    if wasapi_available and max_input_channels > 0:
-                        hecate_configs.append({
-                            'input_device': optimal_config['device_id'],
-                            'output_device': output_device_id,
-                            'input_channels': optimal_channels,
-                            'output_channels': 2 if output_device_id is not None else 0,
+                        if wasapi_available and max_input_channels > 0:
+                            hecate_configs.append({
+                                'input_device': optimal_config['device_id'],
+                                'output_device': output_device_id,
+                                'input_channels': optimal_channels,
+                                'output_channels': 2 if output_device_id is not None else 0,
                 'samplerate': min(max(optimal_samplerate, 44100), 192000),  # 放宽上限，若192k已探测通过则使用
                 'blocksize': 128 if optimal_samplerate < 96000 else 64,
-                            'callback': hecate_optimized_callback,
-                            'dtype': np.float32,
-                            'latency': 'low',
-                            'extra_settings': sd.WasapiSettings(exclusive=True),
-                            'name': 'WASAPI独占模式'
-                        })
-                    
-                    print(f"🔧 准备测试{len(hecate_configs)}种智能HECATE配置...")
-                    
-                    # 尝试每个配置
-                    for i, stream_params in enumerate(hecate_configs):
-                        try:
-                            print(f"🔧 尝试HECATE配置 {i+1}/{len(hecate_configs)}: {stream_params['name']}")
-                            
-                            # 移除name键用于创建stream
-                            config_name = stream_params.pop('name')
-                            build_copy = stream_params.copy()
-                            # 统一构造 sounddevice 参数
-                            def _construct_stream_args(cfg: dict):
-                                args = {}
-                                # samplerate / blocksize / dtype / latency / callback / extra_settings
-                                for k in ['samplerate','blocksize','dtype','latency','callback','extra_settings']:
-                                    if k in cfg and cfg[k] is not None:
-                                        # extra_settings 可能是 WasapiSettings/AsioSettings
-                                        if k == 'latency' and cfg[k] is None:
-                                            continue
-                                        if k == 'extra_settings':
-                                            args['extra_settings'] = cfg[k]
-                                        else:
-                                            args[k] = cfg[k]
-                                # 设备与通道
-                                in_dev = cfg.get('input_device')
-                                out_dev = cfg.get('output_device')
-                                in_ch = cfg.get('input_channels', 1)
-                                out_ch = cfg.get('output_channels', 0)
-                                if out_dev is not None and out_ch > 0:
-                                    args['device'] = (in_dev, out_dev)
-                                    args['channels'] = (in_ch, out_ch)
-                                else:
-                                    # 仅输入
-                                    args['device'] = in_dev
-                                    args['channels'] = in_ch
-                                return args, (out_dev is not None and out_ch > 0)
-
-                            sd_args, is_duplex = _construct_stream_args(build_copy)
-                            # 创建流
-                            self.monitoring_stream = sd.Stream(**sd_args)
-                            
-                            # 计算延迟
-                            theoretical_latency = stream_params['blocksize'] / stream_params['samplerate'] * 1000
-                            
-                            print(f"✅ HECATE G4 Pro优化监听启动成功:")
-                            print(f"   ├─ 设备: HECATE G4 Pro (设备{optimal_config['device_id']})")
-                            print(f"   ├─ 配置: {stream_params['samplerate']}Hz/{stream_params['blocksize']}样本")
-                            print(f"   ├─ 延迟: {theoretical_latency:.2f}ms")
-                            print(f"   ├─ 驱动: {config_name}")
-                            print(f"   └─ 特性: HECATE专用优化 / {'双工回传' if is_duplex else '仅输入'}")
-                            
-                            # 🎯 启动流并设为全局音频流
-                            self.monitoring_stream.start()
-                            # 启用监听回传
-                            self.monitor_audio_passthrough = True
-                            self.active_audio_stream = self.monitoring_stream
-                            print("🎧 HECATE G4 Pro全局监听已启动")
-                            print("✨ 特性: 192kHz原生采样 + 超低延迟 + 专业音质")
-                            
-                            # 🔥 重要修复：同步采样率/块大小/通道到处理器与活动参数
-                            actual_samplerate = stream_params['samplerate']
-                            actual_blocksize = stream_params['blocksize']
-                            try:
-                                # 记录活动参数（与recording路径一致字段名）
-                                self.active_input_samplerate = int(actual_samplerate)
-                                # HECATE路径 channels 可能为tuple，统一取输入通道
-                                _chs = stream_params.get('channels', 1)
-                                self.active_input_channels = int(_chs[0] if isinstance(_chs, tuple) else _chs)
-                                self.active_blocksize = int(actual_blocksize)
-                            except Exception:
-                                pass
-                            if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
-                                print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
-                                self.sample_rate = actual_samplerate
-                            # 同步到检测器/帧化（与录音路径保持一致）
-                            try:
-                                self._apply_actual_input_samplerate(int(actual_samplerate))
-                            except Exception:
-                                pass
-                            # 确保分析器可用（监听路径有时未初始化服务）
-                            try:
-                                if not getattr(self, 'pitch_service', None):
-                                    self.setup_analyzers()
-                            except Exception:
-                                pass
-                            
-                            # 🔥 关键修复：启动音频处理线程进行音高检测
-                            self.start_audio_processing_thread()
-                            print("🔥 HECATE音频处理线程已启动，音高检测功能激活")
-                            
-                            self.status_updated.emit("HECATE全局监听已启动")
-                            return True
-                            
-                        except Exception as e:
-                            error_msg = str(e)
-                            print(f"❌ {config_name}失败: {error_msg}")
-                            
-                            # 🔧 增强的WASAPI错误分析与处理
-                            if 'AUDCLNT_E_WRONG_ENDPOINT_TYPE' in error_msg or 'PaErrorCode -9999' in error_msg:
-                                print("🔍 WASAPI端点类型错误 - 输入/输出设备类型混淆")
-                                print("   解决方案: 检查设备是否为输入设备，或尝试WasapiLoopback")
-                                # 自动补救：若使用双工，尝试改为仅输入模式
-                                if 'input_device' in stream_params and output_device_id is not None:
-                                    try:
-                                        print("🔄 自动补救: 改为仅输入模式重新尝试...")
-                                        retry_args = stream_params.copy()
-                                        # 去掉输出相关
-                                        for k in ['output_device','output_channels']:
-                                            retry_args.pop(k, None)
-                                        input_only_args, _ = (lambda cfg: ( { 'device': cfg['input_device'], 'channels': cfg.get('input_channels',1), 'samplerate': cfg['samplerate'], 'blocksize': cfg['blocksize'], 'dtype': cfg['dtype'], 'latency': cfg.get('latency','low'), 'callback': cfg['callback'], **({'extra_settings': cfg['extra_settings']} if cfg.get('extra_settings') else {}) }, False))(retry_args)
-                                        self.monitoring_stream = sd.Stream(**input_only_args)
-                                        self.monitoring_stream.start()
-                                        print("✅ 端点类型问题通过仅输入模式解决")
-                                        self.monitor_audio_passthrough = False
-                                        self.active_audio_stream = self.monitoring_stream
-                                        if hasattr(self, 'sample_rate') and self.sample_rate != retry_args['samplerate']:
-                                            print(f"🔧 同步采样率: {self.sample_rate}Hz → {retry_args['samplerate']}Hz")
-                                            self.sample_rate = retry_args['samplerate']
-                                        self.start_audio_processing_thread()
-                                        self.status_updated.emit("HECATE监听(仅输入)已启动")
-                                        return True
-                                    except Exception as retry_err:
-                                        print(f"⚠️ 仅输入模式补救失败: {retry_err}")
-                                # 尝试自动修复：强制使用输入设备配置
-                                if hasattr(stream_params, 'extra_settings') and stream_params.get('extra_settings'):
-                                    print("🔄 尝试移除WASAPI专用设置...")
-                                    stream_params_fixed = stream_params.copy()
-                                    stream_params_fixed.pop('extra_settings', None)
-                                    try:
-                                        self.monitoring_stream = sd.Stream(**stream_params_fixed)
-                                        print("✅ 端点类型错误已修复 - 移除WASAPI专用设置")
-                                        break
-                                    except:
-                                        pass
-                            
-                            elif 'DEVICE_INVALIDATED' in error_msg or 'PaErrorCode -9996' in error_msg:
-                                print("🔍 设备已失效 - 设备被拔出、禁用或驱动重置")
-                                print("   解决方案: 重新枚举设备或切换到默认设备")
-                                # 尝试刷新设备列表
-                                try:
-                                    sd._terminate()
-                                    sd._initialize()
-                                    print("🔄 已重新初始化音频系统")
-                                except:
-                                    pass
-                            
-                            elif 'UNSUPPORTED_FORMAT' in error_msg or 'PaErrorCode -9997' in error_msg:
-                                print("🔍 采样率不支持 - 硬件不支持指定的采样率")
-                                print("   解决方案: 降级到设备支持的采样率")
-                                # 尝试自动降级采样率
-                                if stream_params['samplerate'] > 48000:
-                                    print("🔄 尝试降级到48kHz...")
-                                    stream_params_fixed = stream_params.copy()
-                                    stream_params_fixed['samplerate'] = 48000
-                                    stream_params_fixed['blocksize'] = 256
-                                    try:
-                                        if output_device_id is not None and stream_params_fixed.get('output_channels',0) > 0:
-                                            self.monitoring_stream = sd.Stream(**stream_params_fixed)
-                                        else:
-                                            self.monitoring_stream = sd.InputStream(device=stream_params_fixed['input_device'], channels=stream_params_fixed.get('input_channels',1), samplerate=stream_params_fixed['samplerate'], blocksize=stream_params_fixed['blocksize'], dtype=stream_params_fixed['dtype'], latency=stream_params_fixed.get('latency','low'), callback=stream_params_fixed['callback'], extra_settings=stream_params_fixed.get('extra_settings'))
-                                        print("✅ 采样率已自动降级到48kHz")
-                                        break
-                                    except:
-                                        pass
-                                elif stream_params['samplerate'] > 44100:
-                                    print("🔄 尝试降级到44.1kHz...")
-                                    stream_params_fixed = stream_params.copy()
-                                    stream_params_fixed['samplerate'] = 44100
-                                    stream_params_fixed['blocksize'] = 256
-                                    try:
-                                        if output_device_id is not None and stream_params_fixed.get('output_channels',0) > 0:
-                                            self.monitoring_stream = sd.Stream(**stream_params_fixed)
-                                        else:
-                                            self.monitoring_stream = sd.InputStream(device=stream_params_fixed['input_device'], channels=stream_params_fixed.get('input_channels',1), samplerate=stream_params_fixed['samplerate'], blocksize=stream_params_fixed['blocksize'], dtype=stream_params_fixed['dtype'], latency=stream_params_fixed.get('latency','low'), callback=stream_params_fixed['callback'], extra_settings=stream_params_fixed.get('extra_settings'))
-                                        print("✅ 采样率已自动降级到44.1kHz")
-                                        break
-                                    except:
-                                        pass
-                            
-                            elif 'INVALID_CHANNEL_COUNT' in error_msg or 'PaErrorCode -9998' in error_msg:
-                                print("🔍 通道数无效 - 单声道设备配置为立体声")
-                                print("   解决方案: 强制使用单声道配置")
-                                # 尝试强制单声道
-                                # 允许两种结构: 'channels' 或 'input_channels'
-                                ch_val = stream_params.get('channels', stream_params.get('input_channels', 1))
-                                if isinstance(ch_val, tuple):
-                                    in_ch = ch_val[0]
-                                else:
-                                    in_ch = ch_val
-                                if in_ch > 1:
-                                    print("🔄 尝试强制单声道配置...")
-                                    stream_params_fixed = stream_params.copy()
-                                    stream_params_fixed['input_channels'] = 1
-                                    if 'channels' in stream_params_fixed:
-                                        stream_params_fixed.pop('channels', None)
-                                    try:
-                                        fixed_args, is_duplex2 = (lambda cfg: _construct_stream_args(cfg))(stream_params_fixed)
-                                        # 如果双工且输出需要保持，仍提供原输出通道，但输入降为1
-                                        self.monitoring_stream = sd.Stream(**fixed_args)
-                                        print("✅ 已强制使用单声道配置")
-                                        self.channels = 1  # 更新全局输入通道
-                                        break
-                                    except:
-                                        pass
-                            
-                            elif 'INVALID_DEVICE' in error_msg or 'Invalid device' in error_msg:
-                                print("🔍 设备ID无效 - 设备不存在或已断开连接")
-                                print("   解决方案: 切换到默认输入设备")
-                            
-                            elif 'Unanticipated host error' in error_msg:
-                                print("🔍 主机音频系统错误 - Windows音频服务问题")
-                                print("   解决方案: 尝试DirectSound模式或重启音频服务")
-                            
-                            else:
-                                print(f"🔍 未知WASAPI错误: {error_msg}")
-                            
-                            # 继续尝试下一个配置
-                            continue
-                    
-                    # 所有HECATE配置都失败了
-                    print("❌ 所有HECATE配置都失败，将尝试通用配置")
-            
-            # 降级到通用配置：智能搜索有输入能力的HECATE设备
-            print("⚠️ 主HECATE设备不可用，搜索备用HECATE输入设备...")
-            
-            # 智能搜索所有HECATE设备，优先选择有输入能力的设备
-            hecate_input_devices = []
-            other_hecate_found = False
-            
-            try:
-                devices = sd.query_devices()
-                print("🔍 智能HECATE设备发现:")
-                
-                # 第一轮：搜索所有HECATE设备并分析输入能力
-                for device_id in range(len(devices)):
-                    try:
-                        device_info = devices[device_id]
-                        device_name = device_info.get('name', '')
-                        max_input_channels = device_info.get('max_input_channels', 0)
-                        max_output_channels = device_info.get('max_output_channels', 0)
-                        default_samplerate = device_info.get('default_samplerate', 44100)
-                        host_api = device_info.get('hostapi', -1)
+                                'callback': hecate_optimized_callback,
+                                'dtype': np.float32,
+                                'latency': 'low',
+                                'extra_settings': sd.WasapiSettings(exclusive=True),
+                                'name': 'WASAPI独占模式'
+                            })
                         
-                        # 识别HECATE设备
-                        if ('HECATE' in device_name or 'G4 Pro' in device_name):
-                            # 过滤有输入能力的设备
-                            if max_input_channels > 0:
-                                hecate_input_devices.append({
-                                    'device_id': device_id,
-                                    'device_info': device_info,
-                                    'name': device_name,
-                                    'input_channels': max_input_channels,
-                                    'samplerate': default_samplerate,
-                                    'host_api': host_api,
-                                    'priority_score': self._calculate_device_priority(device_info)
-                                })
-                                print(f"✅ 发现输入设备{device_id}: {device_name}")
-                                print(f"   ├─ 输入通道: {max_input_channels}")
-                                print(f"   ├─ 采样率: {default_samplerate}Hz")
-                                print(f"   ├─ 主机API: {host_api}")
-                                print(f"   └─ 优先级: {self._calculate_device_priority(device_info)}")
-                            else:
-                                print(f"⚠️ 跳过输出设备{device_id}: {device_name} (输入通道: {max_input_channels})")
+                        print(f"🔧 准备测试{len(hecate_configs)}种智能HECATE配置...")
+                        
+                        # 尝试每个配置
+                        for i, stream_params in enumerate(hecate_configs):
+                            try:
+                                print(f"🔧 尝试HECATE配置 {i+1}/{len(hecate_configs)}: {stream_params['name']}")
                                 
-                    except Exception as device_error:
-                        print(f"⚠️ 设备{device_id}检查失败: {device_error}")
-                        continue
+                                # 移除name键用于创建stream
+                                config_name = stream_params.pop('name')
+                                build_copy = stream_params.copy()
+                                # 统一构造 sounddevice 参数
+                                def _construct_stream_args(cfg: dict):
+                                    args = {}
+                                    # samplerate / blocksize / dtype / latency / callback / extra_settings
+                                    for k in ['samplerate','blocksize','dtype','latency','callback','extra_settings']:
+                                        if k in cfg and cfg[k] is not None:
+                                            # extra_settings 可能是 WasapiSettings/AsioSettings
+                                            if k == 'latency' and cfg[k] is None:
+                                                continue
+                                            if k == 'extra_settings':
+                                                args['extra_settings'] = cfg[k]
+                                            else:
+                                                args[k] = cfg[k]
+                                    # 设备与通道
+                                    in_dev = cfg.get('input_device')
+                                    out_dev = cfg.get('output_device')
+                                    in_ch = cfg.get('input_channels', 1)
+                                    out_ch = cfg.get('output_channels', 0)
+                                    if out_dev is not None and out_ch > 0:
+                                        args['device'] = (in_dev, out_dev)
+                                        args['channels'] = (in_ch, out_ch)
+                                    else:
+                                        # 仅输入
+                                        args['device'] = in_dev
+                                        args['channels'] = in_ch
+                                    return args, (out_dev is not None and out_ch > 0)
+
+                                sd_args, is_duplex = _construct_stream_args(build_copy)
+                                # 创建流
+                                self.monitoring_stream = sd.Stream(**sd_args)
+                                
+                                # 计算延迟
+                                theoretical_latency = stream_params['blocksize'] / stream_params['samplerate'] * 1000
+                                
+                                print(f"✅ HECATE G4 Pro优化监听启动成功:")
+                                print(f"   ├─ 设备: HECATE G4 Pro (设备{optimal_config['device_id']})")
+                                print(f"   ├─ 配置: {stream_params['samplerate']}Hz/{stream_params['blocksize']}样本")
+                                print(f"   ├─ 延迟: {theoretical_latency:.2f}ms")
+                                print(f"   ├─ 驱动: {config_name}")
+                                print(f"   └─ 特性: HECATE专用优化 / {'双工回传' if is_duplex else '仅输入'}")
+                                
+                                # 🎯 启动流并设为全局音频流
+                                self.monitoring_stream.start()
+                                # 启用监听回传
+                                self.monitor_audio_passthrough = True
+                                self.active_audio_stream = self.monitoring_stream
+                                print("🎧 HECATE G4 Pro全局监听已启动")
+                                print("✨ 特性: 192kHz原生采样 + 超低延迟 + 专业音质")
+                                
+                                # 🔥 重要修复：同步采样率/块大小/通道到处理器与活动参数
+                                actual_samplerate = stream_params['samplerate']
+                                actual_blocksize = stream_params['blocksize']
+                                try:
+                                    # 记录活动参数（与recording路径一致字段名）
+                                    self.active_input_samplerate = int(actual_samplerate)
+                                    # HECATE路径 channels 可能为tuple，统一取输入通道
+                                    _chs = stream_params.get('channels', 1)
+                                    self.active_input_channels = int(_chs[0] if isinstance(_chs, tuple) else _chs)
+                                    self.active_blocksize = int(actual_blocksize)
+                                except Exception:
+                                    pass
+                                if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
+                                    print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
+                                    self.sample_rate = actual_samplerate
+                                # 同步到检测器/帧化（与录音路径保持一致）
+                                try:
+                                    self._apply_actual_input_samplerate(int(actual_samplerate))
+                                except Exception:
+                                    pass
+                                # 确保分析器可用（监听路径有时未初始化服务）
+                                try:
+                                    if not getattr(self, 'pitch_service', None):
+                                        self.setup_analyzers()
+                                except Exception:
+                                    pass
+                                
+                                # 🔥 关键修复：启动音频处理线程进行音高检测
+                                self.start_audio_processing_thread()
+                                print("🔥 HECATE音频处理线程已启动，音高检测功能激活")
+                                
+                                self.status_updated.emit("HECATE全局监听已启动")
+                                return True
+                                
+                            except Exception as e:
+                                error_msg = str(e)
+                                print(f"❌ {config_name}失败: {error_msg}")
+                                
+                                # 🔧 增强的WASAPI错误分析与处理
+                                if 'AUDCLNT_E_WRONG_ENDPOINT_TYPE' in error_msg or 'PaErrorCode -9999' in error_msg:
+                                    print("🔍 WASAPI端点类型错误 - 输入/输出设备类型混淆")
+                                    print("   解决方案: 检查设备是否为输入设备，或尝试WasapiLoopback")
+                                    # 自动补救：若使用双工，尝试改为仅输入模式
+                                    if 'input_device' in stream_params and output_device_id is not None:
+                                        try:
+                                            print("🔄 自动补救: 改为仅输入模式重新尝试...")
+                                            retry_args = stream_params.copy()
+                                            # 去掉输出相关
+                                            for k in ['output_device','output_channels']:
+                                                retry_args.pop(k, None)
+                                            input_only_args, _ = (lambda cfg: ( { 'device': cfg['input_device'], 'channels': cfg.get('input_channels',1), 'samplerate': cfg['samplerate'], 'blocksize': cfg['blocksize'], 'dtype': cfg['dtype'], 'latency': cfg.get('latency','low'), 'callback': cfg['callback'], **({'extra_settings': cfg['extra_settings']} if cfg.get('extra_settings') else {}) }, False))(retry_args)
+                                            self.monitoring_stream = sd.Stream(**input_only_args)
+                                            self.monitoring_stream.start()
+                                            print("✅ 端点类型问题通过仅输入模式解决")
+                                            self.monitor_audio_passthrough = False
+                                            self.active_audio_stream = self.monitoring_stream
+                                            if hasattr(self, 'sample_rate') and self.sample_rate != retry_args['samplerate']:
+                                                print(f"🔧 同步采样率: {self.sample_rate}Hz → {retry_args['samplerate']}Hz")
+                                                self.sample_rate = retry_args['samplerate']
+                                            self.start_audio_processing_thread()
+                                            self.status_updated.emit("HECATE监听(仅输入)已启动")
+                                            return True
+                                        except Exception as retry_err:
+                                            print(f"⚠️ 仅输入模式补救失败: {retry_err}")
+                                    # 尝试自动修复：强制使用输入设备配置
+                                    if hasattr(stream_params, 'extra_settings') and stream_params.get('extra_settings'):
+                                        print("🔄 尝试移除WASAPI专用设置...")
+                                        stream_params_fixed = stream_params.copy()
+                                        stream_params_fixed.pop('extra_settings', None)
+                                        try:
+                                            self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                            print("✅ 端点类型错误已修复 - 移除WASAPI专用设置")
+                                            break
+                                        except:
+                                            pass
+                                
+                                elif 'DEVICE_INVALIDATED' in error_msg or 'PaErrorCode -9996' in error_msg:
+                                    print("🔍 设备已失效 - 设备被拔出、禁用或驱动重置")
+                                    print("   解决方案: 重新枚举设备或切换到默认设备")
+                                    # 尝试刷新设备列表
+                                    try:
+                                        sd._terminate()
+                                        sd._initialize()
+                                        print("🔄 已重新初始化音频系统")
+                                    except:
+                                        pass
+                                
+                                elif 'UNSUPPORTED_FORMAT' in error_msg or 'PaErrorCode -9997' in error_msg:
+                                    print("🔍 采样率不支持 - 硬件不支持指定的采样率")
+                                    print("   解决方案: 降级到设备支持的采样率")
+                                    # 尝试自动降级采样率
+                                    if stream_params['samplerate'] > 48000:
+                                        print("🔄 尝试降级到48kHz...")
+                                        stream_params_fixed = stream_params.copy()
+                                        stream_params_fixed['samplerate'] = 48000
+                                        stream_params_fixed['blocksize'] = 256
+                                        try:
+                                            if output_device_id is not None and stream_params_fixed.get('output_channels',0) > 0:
+                                                self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                            else:
+                                                self.monitoring_stream = sd.InputStream(device=stream_params_fixed['input_device'], channels=stream_params_fixed.get('input_channels',1), samplerate=stream_params_fixed['samplerate'], blocksize=stream_params_fixed['blocksize'], dtype=stream_params_fixed['dtype'], latency=stream_params_fixed.get('latency','low'), callback=stream_params_fixed['callback'], extra_settings=stream_params_fixed.get('extra_settings'))
+                                            print("✅ 采样率已自动降级到48kHz")
+                                            break
+                                        except:
+                                            pass
+                                    elif stream_params['samplerate'] > 44100:
+                                        print("🔄 尝试降级到44.1kHz...")
+                                        stream_params_fixed = stream_params.copy()
+                                        stream_params_fixed['samplerate'] = 44100
+                                        stream_params_fixed['blocksize'] = 256
+                                        try:
+                                            if output_device_id is not None and stream_params_fixed.get('output_channels',0) > 0:
+                                                self.monitoring_stream = sd.Stream(**stream_params_fixed)
+                                            else:
+                                                self.monitoring_stream = sd.InputStream(device=stream_params_fixed['input_device'], channels=stream_params_fixed.get('input_channels',1), samplerate=stream_params_fixed['samplerate'], blocksize=stream_params_fixed['blocksize'], dtype=stream_params_fixed['dtype'], latency=stream_params_fixed.get('latency','low'), callback=stream_params_fixed['callback'], extra_settings=stream_params_fixed.get('extra_settings'))
+                                            print("✅ 采样率已自动降级到44.1kHz")
+                                            break
+                                        except:
+                                            pass
+                                
+                                elif 'INVALID_CHANNEL_COUNT' in error_msg or 'PaErrorCode -9998' in error_msg:
+                                    print("🔍 通道数无效 - 单声道设备配置为立体声")
+                                    print("   解决方案: 强制使用单声道配置")
+                                    # 尝试强制单声道
+                                    # 允许两种结构: 'channels' 或 'input_channels'
+                                    ch_val = stream_params.get('channels', stream_params.get('input_channels', 1))
+                                    if isinstance(ch_val, tuple):
+                                        in_ch = ch_val[0]
+                                    else:
+                                        in_ch = ch_val
+                                    if in_ch > 1:
+                                        print("🔄 尝试强制单声道配置...")
+                                        stream_params_fixed = stream_params.copy()
+                                        stream_params_fixed['input_channels'] = 1
+                                        if 'channels' in stream_params_fixed:
+                                            stream_params_fixed.pop('channels', None)
+                                        try:
+                                            fixed_args, is_duplex2 = (lambda cfg: _construct_stream_args(cfg))(stream_params_fixed)
+                                            # 如果双工且输出需要保持，仍提供原输出通道，但输入降为1
+                                            self.monitoring_stream = sd.Stream(**fixed_args)
+                                            print("✅ 已强制使用单声道配置")
+                                            self.channels = 1  # 更新全局输入通道
+                                            break
+                                        except:
+                                            pass
+                                
+                                elif 'INVALID_DEVICE' in error_msg or 'Invalid device' in error_msg:
+                                    print("🔍 设备ID无效 - 设备不存在或已断开连接")
+                                    print("   解决方案: 切换到默认输入设备")
+                                
+                                elif 'Unanticipated host error' in error_msg:
+                                    print("🔍 主机音频系统错误 - Windows音频服务问题")
+                                    print("   解决方案: 尝试DirectSound模式或重启音频服务")
+                                
+                                else:
+                                    print(f"🔍 未知WASAPI错误: {error_msg}")
+                                
+                                # 继续尝试下一个配置
+                                continue
+                        
+                        # 所有HECATE配置都失败了
+                        print("❌ 所有HECATE配置都失败，将尝试通用配置")
                 
-                # 按优先级排序HECATE输入设备
-                hecate_input_devices.sort(key=lambda x: x['priority_score'], reverse=True)
-                print(f"📊 发现{len(hecate_input_devices)}个HECATE输入设备")
+                # 降级到通用配置：智能搜索有输入能力的HECATE设备
+                print("⚠️ 主HECATE设备不可用，搜索备用HECATE输入设备...")
                 
-                # 第二轮：尝试每个HECATE输入设备
-                for device_config in hecate_input_devices:
-                    device_id = device_config['device_id']
-                    device_name = device_config['name']
-                    max_channels = device_config['input_channels']
-                    device_samplerate = device_config['samplerate']
-                    host_api = device_config['host_api']
+                # 智能搜索所有HECATE设备，优先选择有输入能力的设备
+                hecate_input_devices = []
+                other_hecate_found = False
+                
+                try:
+                    devices = sd.query_devices()
+                    print("🔍 智能HECATE设备发现:")
                     
-                    print(f"🔍 测试设备{device_id}: {device_name}")
-                    
-                    # 为每个设备生成智能配置序列
-                    device_configs = self._generate_smart_device_configs(
-                        device_id, max_channels, device_samplerate, host_api, hecate_optimized_callback
-                    )
-                    
-                    # 尝试每个配置
-                    for config in device_configs:
+                    # 第一轮：搜索所有HECATE设备并分析输入能力
+                    for device_id in range(len(devices)):
                         try:
-                            config_name = config.pop('name')
+                            device_info = devices[device_id]
+                            device_name = device_info.get('name', '')
+                            max_input_channels = device_info.get('max_input_channels', 0)
+                            max_output_channels = device_info.get('max_output_channels', 0)
+                            default_samplerate = device_info.get('default_samplerate', 44100)
+                            host_api = device_info.get('hostapi', -1)
                             
-                            # 创建音频流
-                            self.monitoring_stream = sd.Stream(**config)
+                            # 识别HECATE设备
+                            if ('HECATE' in device_name or 'G4 Pro' in device_name):
+                                # 过滤有输入能力的设备
+                                if max_input_channels > 0:
+                                    hecate_input_devices.append({
+                                        'device_id': device_id,
+                                        'device_info': device_info,
+                                        'name': device_name,
+                                        'input_channels': max_input_channels,
+                                        'samplerate': default_samplerate,
+                                        'host_api': host_api,
+                                        'priority_score': self._calculate_device_priority(device_info)
+                                    })
+                                    print(f"✅ 发现输入设备{device_id}: {device_name}")
+                                    print(f"   ├─ 输入通道: {max_input_channels}")
+                                    print(f"   ├─ 采样率: {default_samplerate}Hz")
+                                    print(f"   ├─ 主机API: {host_api}")
+                                    print(f"   └─ 优先级: {self._calculate_device_priority(device_info)}")
+                                else:
+                                    print(f"⚠️ 跳过输出设备{device_id}: {device_name} (输入通道: {max_input_channels})")
+                                    
+                        except Exception as device_error:
+                            print(f"⚠️ 设备{device_id}检查失败: {device_error}")
+                            continue
+                    
+                    # 按优先级排序HECATE输入设备
+                    hecate_input_devices.sort(key=lambda x: x['priority_score'], reverse=True)
+                    print(f"📊 发现{len(hecate_input_devices)}个HECATE输入设备")
+                    
+                    # 第二轮：尝试每个HECATE输入设备
+                    for device_config in hecate_input_devices:
+                        device_id = device_config['device_id']
+                        device_name = device_config['name']
+                        max_channels = device_config['input_channels']
+                        device_samplerate = device_config['samplerate']
+                        host_api = device_config['host_api']
+                        
+                        print(f"🔍 测试设备{device_id}: {device_name}")
+                        
+                        # 为每个设备生成智能配置序列
+                        device_configs = self._generate_smart_device_configs(
+                            device_id, max_channels, device_samplerate, host_api, hecate_optimized_callback
+                        )
+                        
+                        # 尝试每个配置
+                        for config in device_configs:
+                            try:
+                                config_name = config.pop('name')
+                                
+                                # 创建音频流
+                                self.monitoring_stream = sd.Stream(**config)
+                                
+                                theoretical_latency = config['blocksize'] / config['samplerate'] * 1000 if 'blocksize' in config else config['block'] / config['samplerate'] * 1000
+                                
+                                print(f"✅ {config_name}成功:")
+                                print(f"   ├─ 设备: {device_name}")
+                                print(f"   ├─ 配置: {config['samplerate']}Hz/{config.get('blocksize', config.get('block', self.chunk_size))}样本")
+                                print(f"   ├─ 通道: {config['channels']}声道")
+                                print(f"   └─ 延迟: {theoretical_latency:.2f}ms")
+                                
+                                # 🎯 启动流并设为全局音频流
+                                self.monitoring_stream.start()
+                                self.monitor_audio_passthrough = True
+                                self.active_audio_stream = self.monitoring_stream
+                                self.channels = config['channels']  # 更新全局通道数
+                                print("🎧 HECATE备用设备全局监听已启动")
+                                
+                                # 🔥 重要修复：同步采样率/块大小/通道
+                                actual_samplerate = config['samplerate']
+                                actual_blocksize = config.get('blocksize', getattr(self, 'chunk_size', 128))
+                                try:
+                                    self.active_input_samplerate = int(actual_samplerate)
+                                    self.active_input_channels = int(config.get('channels', self.channels))
+                                    self.active_blocksize = int(actual_blocksize)
+                                except Exception:
+                                    pass
+                                if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
+                                    print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
+                                    self.sample_rate = actual_samplerate
+                                try:
+                                    self._apply_actual_input_samplerate(int(actual_samplerate))
+                                except Exception:
+                                    pass
+                                try:
+                                    if not getattr(self, 'pitch_service', None):
+                                        self.setup_analyzers()
+                                except Exception:
+                                    pass
+                                
+                                # 🔥 关键修复：启动音频处理线程进行音高检测
+                                self.start_audio_processing_thread()
+                                print("🔥 HECATE备用设备音频处理线程已启动，音高检测功能激活")
+                                
+                                self.status_updated.emit(f"HECATE备用设备全局监听已启动")
+                                other_hecate_found = True
+                                return True
+                                
+                            except Exception as e:
+                                # 使用增强的错误处理
+                                self._handle_device_error(e, config_name, device_id, config)
+                                continue
+                        
+                        # 如果设备的所有配置都失败
+                        print(f"❌ 设备{device_id}所有配置都失败")
+                        
+                except Exception as e:
+                    print(f"⚠️ HECATE输入设备搜索失败: {e}")
+                
+                # 如果没有找到备用HECATE设备，使用通用DirectSound/MME配置
+                if not other_hecate_found:
+                    print("🔧 使用通用音频驱动配置...")
+                    fallback_configs = [
+                        {
+                            'name': 'DirectSound高质量',
+                            'device': None,  # 使用默认输入设备
+                            'rate': 48000,
+                            'block': 128,
+                            'settings': None,
+                            'latency': 'low'
+                        },
+                        {
+                            'name': 'DirectSound标准',
+                            'device': None,
+                            'rate': 44100,
+                            'block': 256,
+                            'settings': None,
+                            'latency': 'low'
+                        },
+                        {
+                            'name': 'MME兼容模式', 
+                            'device': None,
+                            'rate': 44100,
+                            'block': 512,
+                            'settings': None,
+                            'latency': None
+                        },
+                        {
+                            'name': '最小兼容配置',
+                            'device': None,
+                            'rate': 22050,
+                            'block': 1024,
+                            'settings': None,
+                            'latency': None
+                        }
+                    ]
+                    
+                    # 尝试降级配置
+                    for config in fallback_configs:
+                        try:
+                            print(f"🔧 尝试{config['name']}...")
                             
-                            theoretical_latency = config['blocksize'] / config['samplerate'] * 1000
+                            stream_params = {
+                                'channels': self.channels,
+                                'samplerate': config['rate'],
+                                'blocksize': config['block'],
+                                'callback': hecate_optimized_callback,
+                                'dtype': np.float32
+                            }
                             
-                            print(f"✅ {config_name}成功:")
-                            print(f"   ├─ 设备: {device_name}")
-                            print(f"   ├─ 配置: {config['samplerate']}Hz/{config['blocksize']}样本")
-                            print(f"   ├─ 通道: {config['channels']}声道")
-                            print(f"   └─ 延迟: {theoretical_latency:.2f}ms")
+                            if config['device'] is not None:
+                                stream_params['device'] = config['device']
+                            if config['latency']:
+                                stream_params['latency'] = config['latency']
+                            if config['settings']:
+                                stream_params['extra_settings'] = config['settings']
+                            
+                            self.monitoring_stream = sd.Stream(**stream_params)
+                            
+                            theoretical_latency = config['block'] / config['rate'] * 1000
+                            
+                            print(f"✅ {config['name']}启动成功:")
+                            print(f"   ├─ 配置: {config['rate']}Hz/{config['block']}样本")
+                            print(f"   ├─ 延迟: {theoretical_latency:.2f}ms")
+                            print(f"   └─ 设备: 系统默认")
                             
                             # 🎯 启动流并设为全局音频流
                             self.monitoring_stream.start()
                             self.monitor_audio_passthrough = True
                             self.active_audio_stream = self.monitoring_stream
-                            self.channels = config['channels']  # 更新全局通道数
-                            print("🎧 HECATE备用设备全局监听已启动")
+                            print("🎧 通用全局监听已启动")
                             
-                            # 🔥 重要修复：同步采样率/块大小/通道
-                            actual_samplerate = config['samplerate']
-                            actual_blocksize = config.get('blocksize', getattr(self, 'chunk_size', 128))
+                            # 🔥 重要修复：同步采样率/块大小/通道到处理器
+                            actual_samplerate = config['rate']
+                            actual_blocksize = config['block']
                             try:
                                 self.active_input_samplerate = int(actual_samplerate)
-                                self.active_input_channels = int(config.get('channels', self.channels))
+                                self.active_input_channels = int(stream_params.get('channels', self.channels))
                                 self.active_blocksize = int(actual_blocksize)
                             except Exception:
                                 pass
@@ -4564,140 +5437,38 @@ class IntegratedAudioProcessor(QThread):
                             
                             # 🔥 关键修复：启动音频处理线程进行音高检测
                             self.start_audio_processing_thread()
-                            print("🔥 HECATE备用设备音频处理线程已启动，音高检测功能激活")
+                            print("🔥 通用音频处理线程已启动，音高检测功能激活")
                             
-                            self.status_updated.emit(f"HECATE备用设备全局监听已启动")
-                            other_hecate_found = True
+                            self.status_updated.emit("通用全局监听已启动")
                             return True
                             
                         except Exception as e:
-                            # 使用增强的错误处理
-                            self._handle_device_error(e, config_name, device_id, config)
+                            print(f"❌ {config['name']}失败: {e}")
                             continue
-                    
-                    # 如果设备的所有配置都失败
-                    print(f"❌ 设备{device_id}所有配置都失败")
-                    
-            except Exception as e:
-                print(f"⚠️ HECATE输入设备搜索失败: {e}")
-            
-            # 如果没有找到备用HECATE设备，使用通用DirectSound/MME配置
-            if not other_hecate_found:
-                print("🔧 使用通用音频驱动配置...")
-                fallback_configs = [
-                    {
-                        'name': 'DirectSound高质量',
-                        'device': None,  # 使用默认输入设备
-                        'rate': 48000,
-                        'block': 128,
-                        'settings': None,
-                        'latency': 'low'
-                    },
-                    {
-                        'name': 'DirectSound标准',
-                        'device': None,
-                        'rate': 44100,
-                        'block': 256,
-                        'settings': None,
-                        'latency': 'low'
-                    },
-                    {
-                        'name': 'MME兼容模式', 
-                        'device': None,
-                        'rate': 44100,
-                        'block': 512,
-                        'settings': None,
-                        'latency': None
-                    },
-                    {
-                        'name': '最小兼容配置',
-                        'device': None,
-                        'rate': 22050,
-                        'block': 1024,
-                        'settings': None,
-                        'latency': None
-                    }
-                ]
                 
-                # 尝试降级配置
-                for config in fallback_configs:
-                    try:
-                        print(f"🔧 尝试{config['name']}...")
-                        
-                        stream_params = {
-                            'channels': self.channels,
-                            'samplerate': config['rate'],
-                            'blocksize': config['block'],
-                            'callback': hecate_optimized_callback,
-                            'dtype': np.float32
-                        }
-                        
-                        if config['device'] is not None:
-                            stream_params['device'] = config['device']
-                        if config['latency']:
-                            stream_params['latency'] = config['latency']
-                        if config['settings']:
-                            stream_params['extra_settings'] = config['settings']
-                        
-                        self.monitoring_stream = sd.Stream(**stream_params)
-                        
-                        theoretical_latency = config['block'] / config['rate'] * 1000
-                        
-                        print(f"✅ {config['name']}启动成功:")
-                        print(f"   ├─ 配置: {config['rate']}Hz/{config['block']}样本")
-                        print(f"   ├─ 延迟: {theoretical_latency:.2f}ms")
-                        print(f"   └─ 设备: 系统默认")
-                        
-                        # 🎯 启动流并设为全局音频流
-                        self.monitoring_stream.start()
-                        self.monitor_audio_passthrough = True
-                        self.active_audio_stream = self.monitoring_stream
-                        print("🎧 通用全局监听已启动")
-                        
-                        # 🔥 重要修复：同步采样率/块大小/通道到处理器
-                        actual_samplerate = config['rate']
-                        actual_blocksize = config['block']
-                        try:
-                            self.active_input_samplerate = int(actual_samplerate)
-                            self.active_input_channels = int(stream_params.get('channels', self.channels))
-                            self.active_blocksize = int(actual_blocksize)
-                        except Exception:
-                            pass
-                        if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
-                            print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
-                            self.sample_rate = actual_samplerate
-                        try:
-                            self._apply_actual_input_samplerate(int(actual_samplerate))
-                        except Exception:
-                            pass
-                        try:
-                            if not getattr(self, 'pitch_service', None):
-                                self.setup_analyzers()
-                        except Exception:
-                            pass
-                        
-                        # 🔥 关键修复：启动音频处理线程进行音高检测
-                        self.start_audio_processing_thread()
-                        print("🔥 通用音频处理线程已启动，音高检测功能激活")
-                        
-                        self.status_updated.emit("通用全局监听已启动")
-                        return True
-                        
-                    except Exception as e:
-                        print(f"❌ {config['name']}失败: {e}")
-                        continue
-            
-            # 如果所有配置都失败
-            raise Exception("所有音频配置都失败，无法启动监听功能")
-        
-        except Exception as e:
-            error_msg = f"🔴 HECATE监听启动失败: {str(e)}"
-            print(error_msg)
-            # 🎯 重置全局监听状态
-            self.is_global_monitoring_active = False
-            self.monitoring_mode = None
-            self.error_occurred.emit(f"监听启动失败: {str(e)}")
-            return False
+                # 如果所有配置都失败
+                raise Exception("所有音频配置都失败，无法启动监听功能")
+            except Exception as e:
+                error_msg = f"🔴 HECATE监听启动失败: {str(e)}"
+                print(error_msg)
+                # 🎯 重置全局监听状态
+                self.is_global_monitoring_active = False
+                self.monitoring_mode = None
+                self.error_occurred.emit(f"监听启动失败: {str(e)}")
+                return False
+            finally:
+                # 无论成功与否，清除“正在启动”标志，避免下一次被误判为重入
+                try:
+                    self._unified_monitoring_starting = False
+                except Exception:
+                    pass
+        except Exception:
+            # 极端情况下的外层保护
+            try:
+                self._unified_monitoring_starting = False
+            except Exception:
+                pass
+            raise
     
     def start_professional_monitoring(self):
         """启动专业级监听模式"""
@@ -6166,7 +6937,16 @@ class IntegratedAudioProcessor(QThread):
                             print(f"🎯 分析帧诊断: 平均间隔={avg_pi*1000:.1f}ms, 最大={max_pi*1000:.1f}ms, p95={p95_pi*1000:.1f}ms, 估计FPS={est_fps:.1f}")
                             self._last_frame_diag_log = now
                         self._diag_pitch_last_report = current_time
-            audio_rms = np.sqrt(np.mean(audio_data ** 2))
+            # 针对蓝牙HFP/HSP语音通道的自适应处理：这类通道输入电平偏低
+            _bt_voice = bool(getattr(self, '_bt_voice_mode', False))
+            _proc_audio = audio_data
+            if _bt_voice:
+                try:
+                    # 适度预增益（x2.0，限幅）以提升RMS，避免被静音阈值误杀
+                    _proc_audio = np.clip(audio_data * 2.0, -1.0, 1.0)
+                except Exception:
+                    _proc_audio = audio_data
+            audio_rms = np.sqrt(np.mean(_proc_audio ** 2))
             # 保存本帧RMS供平滑阶段自适应使用（监听/录音分离）
             try:
                 lfr_name = '_mon_last_frame_rms' if preview_only else '_last_frame_rms'
@@ -6193,8 +6973,8 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 fast_path = True
 
-            processed_audio = audio_data
-            original_rms = np.sqrt(np.mean(audio_data ** 2))
+            processed_audio = _proc_audio
+            original_rms = np.sqrt(np.mean(_proc_audio ** 2))
             if not fast_path and self.noise_processor and self.noise_processor.noise_reduction_mode != "关闭":
                 try:
                     processed_audio = self.noise_processor.process_audio(audio_data)
@@ -6245,7 +7025,8 @@ class IntegratedAudioProcessor(QThread):
 
             breath_rms_threshold = 0.0025  # 更宽松：提升弱声段的检测机会
             # 进一步放宽静音阈值，减少安静高音被直接判无音高
-            min_voice_rms = 0.0005
+            # 蓝牙语音/HFP输入通常电平很低，进一步降低阈值
+            min_voice_rms = 0.00035 if _bt_voice else 0.0005
 
             # 若 RMS 极低，直接判定无音高（不更新平滑状态）
             if audio_rms < min_voice_rms:
@@ -6270,6 +7051,13 @@ class IntegratedAudioProcessor(QThread):
                     except Exception:
                         pass
                     self._last_no_pitch_emit_t = current_time
+                # 仅首次进入时打印一次诊断
+                try:
+                    if _bt_voice and not hasattr(self, '_bt_voice_no_pitch_logged'):
+                        print("🎧 蓝牙语音模式：RMS过低进入无音高节流；已启用自适应增益与更低阈值")
+                        self._bt_voice_no_pitch_logged = True
+                except Exception:
+                    pass
                 return
 
             # 🎯 统一检测服务优先；保持原有模式开关与回退
@@ -6313,12 +7101,13 @@ class IntegratedAudioProcessor(QThread):
             spurious_high = False
             if raw_frequency > 0:
                 # 条件1：超高频且能量低（典型呼吸尖峰）
-                if raw_frequency > 1700 and audio_rms < 0.015:
+                low_energy_thr = 0.02 if _bt_voice else 0.015
+                if raw_frequency > 1700 and audio_rms < low_energy_thr:
                     spurious_high = True
                 # 条件2：相对上一稳定频率跳变倍数过大且信号不强
                 _ls_for_jump = float(getattr(self, ('_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'), 0.0) or 0.0)
                 if not spurious_high and _ls_for_jump > 0:
-                    if raw_frequency > _ls_for_jump * 2.5 and audio_rms < 0.015:
+                    if raw_frequency > _ls_for_jump * 2.5 and audio_rms < low_energy_thr:
                         spurious_high = True
                 # 条件3：呼吸期（RMS 在静音与正常之间）且高频>1500
                 if not spurious_high and breath_rms_threshold > audio_rms >= min_voice_rms and raw_frequency > 1500:
@@ -6452,7 +7241,9 @@ class IntegratedAudioProcessor(QThread):
                     last_f0 = float(getattr(self, bj_last_f0_n, 0.0) or 0.0)
                     last_t = float(getattr(self, bj_last_t_n, 0.0) or 0.0)
                     # 仅在低能量（但不至于判静音）时启用换气检测
-                    breath_rms_upper = float(getattr(self, '_breath_rms_upper', 0.004))  # 更保守：仅更低能量才启用换气检测
+                    # 蓝牙语音模式下放宽低能量上限，避免一直被判为低能量
+                    _breath_upper_default = 0.005 if _bt_voice else 0.004
+                    breath_rms_upper = float(getattr(self, '_breath_rms_upper', _breath_upper_default))  # 更保守：仅更低能量才启用换气检测
                     if (min_voice_rms <= audio_rms <= breath_rms_upper) and last_f0 > 0 and (now_t - last_t) <= 0.14 and not (recent_voiced_guard and audio_rms >= 0.0040) and not stable_pitch_guard:
                         # 半音跨幅（避免除零）
                         semitone_jump = abs(12.0 * np.log2(max(1e-9, smooth_frequency / max(last_f0, 1e-9))))
@@ -6505,7 +7296,8 @@ class IntegratedAudioProcessor(QThread):
                         try:
                             zcr = zcr_once
                             # 强阈值：明显噪声，直接较长抑制（阈值更高且仅在更低能量下触发）
-                            if (audio_rms <= 0.0035) and (zcr >= float(getattr(self, '_breath_zcr_strong', 0.34))):
+                            _zcr_strong_thr = float(getattr(self, '_breath_zcr_strong', 0.34))
+                            if (audio_rms <= (0.004 if _bt_voice else 0.0035)) and (zcr >= _zcr_strong_thr):
                                 setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_zcr_strong', 0.14)))
                                 setattr(self, prevoice_wait_n, 1)
                                 # 重置参考
@@ -6514,7 +7306,8 @@ class IntegratedAudioProcessor(QThread):
                                 return
                             # 中阈值：疑似换气中段的零星细节点，仅在距离上次有效绘制较长时触发，抑制更短
                             last_draw_t = float(getattr(self, last_draw_t_n, getattr(self, '_last_drawn_t', 0.0)) or 0.0)
-                            if (audio_rms <= 0.0038) and (zcr >= float(getattr(self, '_breath_zcr_mid', 0.26))) and (now_t - last_draw_t) >= 0.20 and not stable_pitch_guard:
+                            _zcr_mid_thr = float(getattr(self, '_breath_zcr_mid', 0.26))
+                            if (audio_rms <= (0.0043 if _bt_voice else 0.0038)) and (zcr >= _zcr_mid_thr) and (now_t - last_draw_t) >= 0.20 and not stable_pitch_guard:
                                 setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_zcr_mid', 0.10)))
                                 setattr(self, prevoice_wait_n, 1)
                                 setattr(self, bj_last_f0_n, 0.0)
@@ -9053,6 +9846,57 @@ class IntegratedAudioProcessor(QThread):
             return out.astype(np.float32, copy=False)
         except Exception:
             return audio_data
+
+    # ========= 监听耳返轻量滤波（DC阻断 + 温和低通）=========
+    def _apply_monitor_output_filters(self, audio_data: np.ndarray, sr: int) -> np.ndarray:
+        """对耳返输出做最小化处理以降低电流噪声与高频毛刺。
+        - DC阻断：一阶高通，fc≈20Hz
+        - 低通：一阶低通，fc≈8kHz（对16k/24k蓝牙语音特别有效），在>=48kHz时放宽到14kHz
+        该处理非常轻量，几乎不增加延迟。
+        """
+        try:
+            if audio_data is None or audio_data.size == 0:
+                return audio_data
+            x = audio_data.astype(np.float32, copy=False)
+            fs = float(max(1, int(sr or getattr(self, 'sample_rate', 48000))))
+
+            # 1) DC阻断（HPF ~20Hz）: y[n] = x[n] - x[n-1] + a*y[n-1]
+            hpf_fc = 20.0
+            hpf_alpha = 1.0 - math.exp(-2.0 * math.pi * hpf_fc / fs)
+            if not hasattr(self, '_mon_dc_state'):
+                self._mon_dc_state = {'x1': 0.0, 'y1': 0.0}
+            x1 = float(self._mon_dc_state.get('x1', 0.0))
+            y1 = float(self._mon_dc_state.get('y1', 0.0))
+            y = np.empty_like(x)
+            a = 1.0 - hpf_alpha
+            for i in range(x.size):
+                xn = float(x[i])
+                yn = (xn - x1) + a * y1
+                y[i] = yn
+                x1, y1 = xn, yn
+            self._mon_dc_state['x1'] = x1
+            self._mon_dc_state['y1'] = y1
+
+            # 2) 轻度低通：对蓝牙语音采样率（<=24k）使用 ~8kHz；否则使用 ~14kHz，抑制尖锐高频噪点
+            if fs <= 24000:
+                lpf_fc = 8000.0
+            else:
+                lpf_fc = 14000.0
+            # 单极RC低通：y[n] = y[n-1] + alpha*(x[n]-y[n-1])
+            lpf_alpha = 1.0 - math.exp(-2.0 * math.pi * lpf_fc / fs)
+            if not hasattr(self, '_mon_lpf_state'):
+                self._mon_lpf_state = {'y1': 0.0}
+            yl = float(self._mon_lpf_state.get('y1', 0.0))
+            out = np.empty_like(y)
+            a2 = float(lpf_alpha)
+            for i in range(y.size):
+                yl = yl + a2 * (float(y[i]) - yl)
+                out[i] = yl
+            self._mon_lpf_state['y1'] = yl
+
+            return out.astype(np.float32, copy=False)
+        except Exception:
+            return audio_data
     
     def _apply_intelligent_smoothing(self, frequency, confidence):
         """
@@ -9299,23 +10143,14 @@ class IntegratedAudioProcessor(QThread):
         return vibrato_info
 
     # ============================================================================
-    # 🔧 向后兼容的监听方法接口（重定向到统一方法）
+    # 🔧 向后兼容的监听方法接口（保留 audio_* 别名；避免覆盖主实现）
     # ============================================================================
-    
     def start_audio_monitoring(self):
-        """启动音频监听（重定向到统一方法）"""
+        """启动音频监听（统一方法别名）"""
         return self.start_unified_monitoring()
     
     def stop_audio_monitoring(self):
-        """停止音频监听（重定向到统一方法）"""
-        return self.stop_unified_monitoring()
-    
-    def start_monitoring(self):
-        """启动监听（重定向到统一方法）"""
-        return self.start_unified_monitoring()
-    
-    def stop_monitoring(self):
-        """停止监听（重定向到统一方法）"""
+        """停止音频监听（统一方法别名）"""
         return self.stop_unified_monitoring()
     
     def stop_unified_monitoring(self):
@@ -9905,6 +10740,58 @@ class ECGStylePitchVisualizer(QWidget):
         - 记录回退方向用于后续策略微调（可选）。
         """
         try:
+            # 内部工具：检测是否处于无头/测试环境（例如回归脚本使用 Agg 后端）
+            def _is_headless_env_local() -> bool:
+                try:
+                    # 优先通过 matplotlib 后端判断
+                    import matplotlib
+                    backend = str(getattr(matplotlib, 'get_backend', lambda: '')()).lower()
+                    # 仅当后端确为纯 Agg/Template 时才视为无头；QtAgg/Qt5Agg/qtagg 属于交互后端，不应判为无头
+                    if backend in ('agg', 'template'):
+                        return True
+                except Exception:
+                    pass
+                # 无 Qt 应用实例或窗口不可见也按无头处理
+                # 动态导入 Qt 绑定，避免静态导入触发 Pylance 的 reportMissingImports 告警
+                _QtW = None
+                try:
+                    import importlib as _importlib  # 动态加载，避免静态依赖
+                    _qtpy_mod = _importlib.import_module('qtpy')  # type: ignore[reportMissingImports]
+                    _QtW = getattr(_qtpy_mod, 'QtWidgets', None)
+                except Exception:
+                    pass
+                if _QtW is None:
+                    try:
+                        import importlib as _importlib
+                        _pyqt6 = _importlib.import_module('PyQt6')  # type: ignore[reportMissingImports]
+                        _QtW = getattr(_pyqt6, 'QtWidgets', None)
+                    except Exception:
+                        try:
+                            _pyqt5 = _importlib.import_module('PyQt5')  # type: ignore[reportMissingImports]
+                            _QtW = getattr(_pyqt5, 'QtWidgets', None)
+                        except Exception:
+                            _QtW = None
+                try:
+                    if _QtW is None:
+                        return True
+                    app = _QtW.QApplication.instance()
+                    if app is None:
+                        return True
+                except Exception:
+                    return True
+                # 兜底：若显式标志位存在则使用之
+                try:
+                    if bool(getattr(self, '_force_headless_env', False)):
+                        return True
+                except Exception:
+                    pass
+                return False
+            # 将本地函数挂接到实例，便于其他路径重用
+            try:
+                if not hasattr(self, '_is_headless_env') or not callable(getattr(self, '_is_headless_env')):
+                    self._is_headless_env = _is_headless_env_local  # type: ignore
+            except Exception:
+                pass
             import time as _t
             now = _t.time()
             try:
@@ -9988,6 +10875,15 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 prev_t = float(getattr(self, 'current_global_time', 0.0))
                 self._last_seek_backward = bool(target_time < (prev_t - 0.02))
+                # 若上层为“回退重录”主动标记一次性回退语义，则强制按回退处理
+                try:
+                    if bool(getattr(self, '_force_retake_backward_once', False)):
+                        self._last_seek_backward = True
+                        # 一次性标记使用后即清除
+                        try: delattr(self, '_force_retake_backward_once')
+                        except Exception: setattr(self, '_force_retake_backward_once', False)
+                except Exception:
+                    pass
                 if self._last_seek_backward:
                     # 明显回退：进一步拉长窗口，确保首轮重帧稳定完成
                     self._post_seek_until = max(self._post_seek_until, now + 1.00)
@@ -10043,6 +10939,19 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if hasattr(self, '_last_visible_time_set'):
                     self._last_visible_time_set = set()
+            except Exception:
+                pass
+            # 记录本次 seek 初始 cap，供后向可见性强制刷新判断
+            try:
+                self._post_seek_initial_cap = float(target_time)
+                # 重置前向刷新标记
+                self._last_forward_refresh_cap = -1.0
+                # 新增：分析/伴奏模式立即解除严格锁
+                if bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing'):
+                    self._cap_strict_lock = False
+                    self._strict_cap_dirty = True
+                    if getattr(self,'debug_flags',{}).get('cap_diag'):
+                        print(f"[CAP_DBG] unlock_on_seek analyze/backing cap_init={self._post_seek_initial_cap:.3f}")
             except Exception:
                 pass
             # 过滤扁平点缓存，仅保留回退点之前的历史点，确保回退前细节点立即可见且不过度清空
@@ -10204,18 +11113,66 @@ class ECGStylePitchVisualizer(QWidget):
                 self._last_update_state = None
             except Exception:
                 pass
+            # 设置 FINE_LOSS 日志静默期：避免回退重新建窗口时的瞬时大量段重组触发误报
+            try:
+                import time as _t
+                self._suppress_fine_loss_until = _t.time() + 1.2  # 1.2 秒内不输出 FINE_LOSS
+            except Exception:
+                pass
             # 开启“可见时间上限”：仅在录音/分析活跃时启用；锁定到 seek 目标，直到新点产生逐步提升
             try:
                 if bool(getattr(self, 'is_recording_active', False)) or bool(getattr(self, 'is_recording', False)) or bool(getattr(self, 'is_analyzing', False)):
                     self._cap_visible_time_enabled = True
                     self._max_visible_time = float(max(0.0, target_time))
+                    # seek 后启动强制执行窗口（比 trim_after 稍长）
+                    try:
+                        self._cap_enforce_until = max(getattr(self, '_cap_enforce_until', 0.0), now + 3.0)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            # 关键：录音态回退时，立刻裁剪掉 target_time 之后的老数据，
-            # 以便后续在相同时间段重录时不会被“时间桶去重”(_added_time_bins)拦截，
+            # 追加后备保障：若上方条件未触发（例如 visualizer 内部未同步 is_recording/is_analyzing 标志），
+            # 但当前确认为“回退”场景或存在历史数据且 target_time 小于末尾时间，仍然强制启用 cap。
+            try:
+                if (not getattr(self, '_cap_visible_time_enabled', False)):
+                    is_backward_seek = bool(getattr(self, '_last_seek_backward', False))
+                    last_hist_t = None
+                    try:
+                        if self.time_data:
+                            last_hist_t = float(self.time_data[-1])
+                    except Exception:
+                        last_hist_t = None
+                    if is_backward_seek or (last_hist_t is not None and float(target_time) < last_hist_t - 1e-9):
+                        self._cap_visible_time_enabled = True
+                        self._max_visible_time = float(max(0.0, target_time))
+                        try:
+                            import time as _t
+                            now2 = _t.time()
+                            self._cap_enforce_until = max(getattr(self, '_cap_enforce_until', 0.0), now2 + 3.0)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # 关键：回退时立刻裁剪掉 target_time 之后的老数据，
+            # 以便后续在相同时间段重录/重绘时不会被“时间桶去重”(_added_time_bins)拦截，
             # 同时也能减少内存与避免后续路径误判。
             try:
+                # 在“录音中”或“实时分析中”（伴奏/仅伴奏）都执行裁剪
+                do_trim = False
                 if bool(getattr(self, 'is_recording_active', False)) or bool(getattr(self, 'is_recording', False)):
+                    do_trim = True
+                elif bool(getattr(self, 'is_analyzing', False)):
+                    do_trim = True
+                # 兜底：若检测到明显回退且缓冲中确有 > target_time 的旧数据，也执行裁剪
+                if not do_trim:
+                    try:
+                        if bool(getattr(self, '_last_seek_backward', False)) and self.time_data:
+                            last_buf_t = float(self.time_data[-1])
+                            if last_buf_t > float(target_time) + 1e-6:
+                                do_trim = True
+                    except Exception:
+                        pass
+                if do_trim:
                     # 写入持久化 trim 标记（用于后续加载过滤）
                     try:
                         if hasattr(self, '_persist_on_trim'):
@@ -10233,6 +11190,340 @@ class ECGStylePitchVisualizer(QWidget):
                 self._assume_unsorted_until = now + 2.0
             except Exception:
                 pass
+            # 立即强制执行一次 cap 过滤（防御：在首帧之前剔除潜在残留）
+            try:
+                self._enforce_cap_on_existing_artists()
+            except Exception:
+                pass
+            # ===== 实施B: 回退后即时补点（左侧密集可见） =====
+            try:
+                # 仅在启用cap且为回退场景触发；并且需要有历史数据
+                if getattr(self, '_cap_visible_time_enabled', False) and bool(getattr(self, '_last_seek_backward', False)):
+                    self._prefill_fallback_points_upto_cap(float(getattr(self, '_max_visible_time', target_time)))
+            except Exception:
+                pass
+            # ===== 3秒回录倒计时（用户体验：预卷显示旧点 + 伴奏，延迟新点写入） =====
+            try:
+                analyzing_mode = bool(getattr(self, 'is_analyzing', False)) or str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment','both','analysis','analyzing')
+                # 默认伴奏回录场景启用倒计时；在无头/测试环境（如 Agg 后端）自动关闭以保证回归测试快速通过
+                prefer_accomp_cd = bool(getattr(self, '_prefer_retake_countdown_in_accompaniment', True))
+                try:
+                    if self._is_headless_env():
+                        prefer_accomp_cd = False
+                except Exception:
+                    pass
+                # 将“回录场景”识别为：有录音上下文或外部暂停标记
+                retake_ctx = bool(getattr(self, 'is_recording', False) or getattr(self, 'is_recording_active', False) or getattr(self, '_external_paused', False))
+                # 仅在“伴奏回录场景且用户显式偏好”时启用倒计时，其余场景全部跳过
+                try:
+                    # 一次性强制倒计时标记（用于回退重录流程在重设 current_global_time 之后仍然触发倒计时）
+                    force_cd_once = bool(getattr(self, '_force_retake_countdown_once', False))
+                except Exception:
+                    force_cd_once = False
+                use_countdown = (
+                    bool(getattr(self, '_enable_retake_countdown', True))
+                    and (bool(getattr(self, '_last_seek_backward', False)) or force_cd_once)
+                    and retake_ctx
+                    and str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment','both')
+                    and prefer_accomp_cd
+                )
+                if use_countdown:
+                    # 消费一次性强制标记（若存在）
+                    try:
+                        if force_cd_once:
+                            try: delattr(self, '_force_retake_countdown_once')
+                            except Exception: setattr(self, '_force_retake_countdown_once', False)
+                    except Exception:
+                        pass
+                    # 分析/伴奏下默认跳过；但若处于回录场景且开启了伴奏倒计时偏好，则启用倒计时
+                    if analyzing_mode and not (retake_ctx and prefer_accomp_cd):
+                        # 分析/伴奏实时回看：跳过倒计时并直接允许前进
+                        self._retake_countdown_active = False
+                        self._retake_countdown_block_add = False
+                        self._post_retake_new_data_started = True
+                        self._cap_strict_lock = False
+                        self._strict_cap_dirty = True
+                        self._retake_countdown_skipped_for_analyzing = True
+                        try:
+                            if hasattr(self, '_current_epoch'):
+                                self._current_epoch = None
+                        except Exception:
+                            pass
+                        if getattr(self,'debug_flags',{}).get('cap_diag'):
+                            print(f"[CAP_DBG] skip_countdown(strict_unlock) analyze/backing t={float(target_time):.3f}")
+                    else:
+                        import time as _t
+                        self._retake_countdown_duration = float(getattr(self, '_retake_countdown_seconds', 3.0))
+                        if self._retake_countdown_duration > 0.05:
+                            self._retake_countdown_active = True
+                            self._retake_countdown_target_time = float(target_time)
+                            self._retake_countdown_start_wall = _t.time()
+                            self._retake_countdown_end_wall = self._retake_countdown_start_wall + self._retake_countdown_duration
+                            self._retake_countdown_block_add = True  # 阻止 add_pitch_data 写入
+                            # 严格cap锁：在倒计时结束并写入第一帧新点之前，绝不允许 >cap 旧点“回潮”
+                            self._cap_strict_lock = True
+                            self._post_retake_new_data_started = False
+                            self._strict_cap_dirty = True
+                            if getattr(self,'debug_flags',{}).get('cap_diag'):
+                                print(f"[CAP_DBG] strict_lock_set(countdown) t={float(target_time):.3f}")
+                else:
+                    # 没有倒计时但仍是回退：仅在非分析/伴奏模式启用一个短暂严格锁
+                    if bool(getattr(self, '_last_seek_backward', False)) and not analyzing_mode:
+                        self._cap_strict_lock = True
+                        self._post_retake_new_data_started = False
+                        self._strict_cap_dirty = True
+                        if getattr(self,'debug_flags',{}).get('cap_diag'):
+                            print(f"[CAP_DBG] strict_lock_set(no_countdown) t={float(target_time):.3f}")
+                    elif bool(getattr(self, '_last_seek_backward', False)) and analyzing_mode:
+                        # 分析/伴奏：保持解锁
+                        if getattr(self,'debug_flags',{}).get('cap_diag'):
+                            print(f"[CAP_DBG] no_countdown_skip_lock analyze/backing t={float(target_time):.3f}")
+            except Exception:
+                pass
+            # 快速段重建：仅第一次回退后且普通模式
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False) and bool(getattr(self, '_last_seek_backward', False)):
+                    self._quick_rebuild_segments_upto_cap()
+            except Exception:
+                pass
+            # ===== 回退后允许覆盖重写：重置已绘制覆盖与时间桶去重（>=target_time 部分） =====
+            try:
+                if bool(getattr(self, '_last_seek_backward', False)):
+                    # 重置覆盖（整表清空，下一帧重新覆盖）
+                    if hasattr(self, '_cov_reset'):
+                        self._cov_reset()
+                    # 重建 _added_time_bins 仅保留 <= target_time 的桶，允许目标点及其后新点再次写入
+                    if hasattr(self, '_added_time_bins') and isinstance(self._added_time_bins, (set, list)):
+                        eps = float(getattr(self, '_timebin_eps', 0.01))
+                        kept = set()
+                        try:
+                            for t in list(getattr(self, 'time_data', [])):
+                                if float(t) <= float(target_time) + 1e-6:
+                                    kept.add(int(round(float(t)/eps)))
+                        except Exception:
+                            pass
+                        self._added_time_bins = kept
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _prefill_fallback_points_upto_cap(self, cap: float):
+        """回退后即时补齐 <=cap 的历史细节点到 _flat_points，用于首帧立刻展示密集左侧历史。
+        设计原则:
+        - 仅追加当前 _flat_points 尚未覆盖的历史点，避免重复膨胀。
+        - 大量历史时进行下采样（均匀抽样），保证性能。
+        - 遵守可见时间上限（cap）并防止 >cap 点混入。
+        - 若当前 display_mode == 普通模式，则该补点仅为后续可能切换模式预热，不强制生成批量集合。
+        """
+        try:
+            if cap is None or cap < 0:
+                return
+            if not hasattr(self, 'time_data') or not hasattr(self, 'pitch_data'):
+                return
+            if not self.time_data or not self.pitch_data:
+                return
+            # 建立扁平缓冲容器
+            from collections import deque as _dq
+            if not hasattr(self, '_flat_points') or self._flat_points is None:
+                # 默认容量：覆盖一个可视窗 + 额外缓冲
+                maxlen = int(getattr(self, '_prefill_flat_cap', 6000))
+                try:
+                    self._flat_points = _dq(maxlen=maxlen)
+                except Exception:
+                    self._flat_points = []
+            # 已有点的末尾时间（用于增量补齐）
+            last_have_t = None
+            try:
+                if self._flat_points:
+                    last_have_t = float(self._flat_points[-1][0])
+            except Exception:
+                last_have_t = None
+            # 收集所有 <=cap 的原始时间/音高
+            try:
+                t_list = list(self.time_data)
+                p_list = list(self.pitch_data)
+            except Exception:
+                return
+            n = min(len(t_list), len(p_list))
+            if n == 0:
+                return
+            # 过滤到 <=cap 且 > last_have_t (若存在) 的区间
+            pairs = []
+            for i in range(n):
+                try:
+                    t = float(t_list[i])
+                except Exception:
+                    continue
+                if t > cap + 1e-9:
+                    break  # time_data 单调时可提前退出（若刚回退后可能存在非单调但我们前面设置了 _assume_unsorted_time_data）
+                if last_have_t is not None and t <= last_have_t + 1e-9:
+                    continue
+                try:
+                    y = float(p_list[i])
+                except Exception:
+                    continue
+                pairs.append((t, y))
+            if not pairs:
+                return
+            # 若数量巨大，则均匀抽样
+            import math as _m
+            max_prefill = int(getattr(self, '_prefill_max_points', 2500))
+            if len(pairs) > max_prefill:
+                step = _m.ceil(len(pairs) / max_prefill)
+                pairs = pairs[::step]
+            # 追加到 _flat_points（保持单调时间顺序）
+            try:
+                if isinstance(self._flat_points, list):
+                    self._flat_points.extend(pairs)
+                    # 控制容量
+                    cap_len = int(getattr(self, '_prefill_flat_cap', 6000))
+                    if len(self._flat_points) > cap_len:
+                        self._flat_points = self._flat_points[-cap_len:]
+                else:
+                    for pt in pairs:
+                        self._flat_points.append(pt)
+            except Exception:
+                pass
+            # 若启用批量点集合且当前模式非普通模式，立即刷新一次
+            try:
+                mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式')
+            except Exception:
+                mode = '普通模式'
+            if mode != '普通模式' and getattr(self, '_use_batched_points', False):
+                try:
+                    self._refresh_batched_points_for_current_xlim()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _purge_collections_beyond_cap(self):
+        """扫描所有散点集合，移除 t>cap 的点，防止右侧旧点回潮。"""
+        try:
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                return
+            cap = float(getattr(self, '_max_visible_time', float('inf')))
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            import numpy as _np
+            targets = []
+            try:
+                if hasattr(self, '_batched_points') and self._batched_points is not None:
+                    targets.append(self._batched_points)
+            except Exception:
+                pass
+            try:
+                for coll in list(getattr(self.ax, 'collections', [])):
+                    if hasattr(coll, 'get_offsets'):
+                        targets.append(coll)
+            except Exception:
+                pass
+            for c in targets:
+                try:
+                    offs = c.get_offsets()
+                    if offs is None:
+                        continue
+                    arr = _np.asarray(offs)
+                    if arr.size == 0 or arr.shape[1] < 2:
+                        continue
+                    mask = arr[:,0] <= cap + 1e-9
+                    if mask.all():
+                        continue
+                    arr2 = arr[mask]
+                    c.set_offsets(arr2)
+                    if arr2.size == 0:
+                        try: c.set_alpha(0.0)
+                        except Exception: pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _filter_mainline_to_cap(self):
+        """严格锁期间对主线 pitch_line 进行一次 <=cap 过滤，防止残留右侧数据复显。"""
+        try:
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                return
+            if not getattr(self, '_cap_strict_lock', False):
+                return
+            if not hasattr(self, 'pitch_line') or self.pitch_line is None:
+                return
+            xs, ys = None, None
+            try:
+                xs, ys = self.pitch_line.get_data()
+            except Exception:
+                return
+            if xs is None or ys is None:
+                return
+            try:
+                import numpy as _np
+                arr_x = _np.asarray(xs)
+                arr_y = _np.asarray(ys)
+                if arr_x.size == 0:
+                    return
+                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                mask = arr_x <= cap + 1e-9
+                if mask.all():
+                    return
+                self.pitch_line.set_data(arr_x[mask], arr_y[mask][:mask.sum()])
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # ===== 快速段重建（用于回退后普通模式立即显示历史主线，Todo16） =====
+    def _quick_rebuild_segments_upto_cap(self):
+        """在严格锁/回退后，快速为普通模式构建 <=cap 的单批分段（简化版）。
+        目标：避免等待完整重帧逻辑才看到历史主线，提升回退后“左侧连续性”体验。
+        策略：
+        - 仅在 display_mode == 普通模式 时执行；
+        - 从缓冲中截取 <=cap 的所有点；数量过大时可稀疏抽样（与预填充保持一致上限）；
+        - 不触发昂贵的段间合并/透明度/断点推断（交由后续重帧修正）；
+        - 在严格锁期间确保不包含 >cap 点；
+        - 直接调用 draw_segmented_pitch_line( [ (times, pitches) ] ) 形成一条连续段；
+        - 若后续完整重帧刷新，会覆盖 _segments，不影响一致性。
+        限制：忽略静音间隙造成的必要断开，这在重帧后被替换。"""
+        try:
+            try:
+                mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式')
+            except Exception:
+                mode = '普通模式'
+            if mode != '普通模式':
+                return
+            if not getattr(self, 'time_data', None) or not getattr(self, 'pitch_data', None):
+                return
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                return
+            cap = float(getattr(self, '_max_visible_time', 0.0))
+            times = []
+            pitches = []
+            try:
+                # 仅一次性遍历（队列较长时仍O(n)）
+                for t, p in zip(self.time_data, self.pitch_data):
+                    if t <= cap + 1e-9:
+                        times.append(float(t))
+                        pitches.append(float(p))
+                    else:
+                        break  # 时间递增队列，可提前结束
+            except Exception:
+                pass
+            if len(times) < 2:
+                return
+            # 稀疏限制：与预填充逻辑类似
+            max_pts = int(getattr(self, '_quick_segment_cap', 3000))
+            if len(times) > max_pts:
+                import math as _m
+                step = _m.ceil(len(times)/max_pts)
+                times = times[::step]
+                pitches = pitches[::step]
+            try:
+                # 直接绘制单段（后续重帧会替换）
+                self.draw_segmented_pitch_line([(times, pitches)])
+            except Exception:
+                pass
+            # 标记已完成一次快速重建，避免重复浪费；直到下一次 seek 再允许
+            self._quick_segments_rebuilt_at_cap = cap
         except Exception:
             pass
 
@@ -10313,6 +11604,225 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if hasattr(self, '_persist_on_trim'):
                     self._persist_on_trim(float(cutoff))
+            except Exception:
+                pass
+            # 启动一次短暂的 cap 强制执行窗口，防止极少数迟到图元越界
+            try:
+                import time as _t
+                self._cap_enforce_until = _t.time() + 2.5  # 裁剪后 2.5 秒内每帧强制过滤
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # ================= 统一 Cap 过滤工具 =================
+    def _cap_filter_offsets_array(self, arr):
+        """对 numpy 数组形式的 (N,2) offsets 统一应用 cap 过滤，返回过滤后的数组。
+        - 安全防御：任意异常直接返回原数组，不中断主流程。
+        """
+        try:
+            if arr is None:
+                return arr
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                return arr
+            import numpy as _np
+            if not hasattr(arr, 'shape'):
+                arr = _np.asarray(arr, dtype=float)
+            if arr.size == 0:
+                return arr
+            if arr.ndim != 2 or arr.shape[1] < 2:
+                return arr
+            cap = float(getattr(self, '_max_visible_time', float('inf')))
+            # 分析/伴奏模式下给予视觉前瞻（不改变真实cap，只是显示）
+            try:
+                if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','both','analysis','analyzing')) and not getattr(self,'_cap_strict_lock',False):
+                    ahead = float(getattr(self,'_cap_visual_ahead_sec',0.50))
+                    cap_eff = cap + max(0.0, ahead)
+                else:
+                    cap_eff = cap
+            except Exception:
+                cap_eff = cap
+            return arr[arr[:, 0] <= cap_eff + 1e-9]
+        except Exception:
+            return arr
+
+    def _cap_filter_times_pitches(self, times, pitches):
+        """对 times / pitches 序列应用 cap 过滤，返回 (ft, fp)。保持输入类型（list）语义。"""
+        try:
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                return times, pitches
+            if not times or not pitches or len(times) != len(pitches):
+                return times, pitches
+            cap = float(getattr(self, '_max_visible_time', float('inf')))
+            ft = []
+            fp = []
+            for t, p in zip(times, pitches):
+                try:
+                    if float(t) <= cap + 1e-9:
+                        ft.append(t); fp.append(p)
+                except Exception:
+                    pass
+            return ft, fp
+        except Exception:
+            return times, pitches
+
+    def _enforce_cap_on_existing_artists(self):
+        """对当前所有已存在的散点/线条对象做一次强制 cap 过滤，防止极端竞态(迟到更新、后台线程)引入 >cap 点。
+        - 仅在 _cap_visible_time_enabled 为 True 时执行。
+        - 若过滤后为空集合则尝试移除对象，减少后续遍历成本。
+        """
+        try:
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                return
+            import numpy as _np
+            cap = float(getattr(self, '_max_visible_time', float('inf')))
+            # 视觉前瞻仅用于显示，不触发清除
+            try:
+                if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','both','analysis','analyzing')) and not getattr(self,'_cap_strict_lock',False):
+                    cap_eff = cap + float(getattr(self,'_cap_visual_ahead_sec',0.50))
+                else:
+                    cap_eff = cap
+            except Exception:
+                cap_eff = cap
+            # -------- 早退优化 --------
+            # 若上次扫描记录的所有图元最大时间 <= cap 且未标记脏，则无需再遍历
+            try:
+                if (not getattr(self, '_artist_times_dirty', True)):
+                    last_max = float(getattr(self, '_last_artist_max_time', -1.0))
+                    if last_max <= cap + 1e-9:
+                        return
+            except Exception:
+                pass
+            removed = 0; trimmed = 0
+            new_global_max = -1.0  # 本轮扫描到的最大点时间
+            # 统一处理 scatter 列表/单对象集合
+            def _process_scatter(coll_attr):
+                nonlocal removed, trimmed
+                try:
+                    coll = getattr(self, coll_attr, None)
+                    if coll is None:
+                        return
+                    if hasattr(coll, 'get_offsets'):
+                        offs = coll.get_offsets()
+                        if offs is None:
+                            return
+                        try:
+                            arr = _np.asarray(offs, dtype=float)
+                        except Exception:
+                            return
+                        if arr.size == 0:
+                            return
+                        try:
+                            nonlocal new_global_max
+                            # 更新最大时间
+                            mx = float(_np.max(arr[:,0]))
+                            if mx > new_global_max:
+                                new_global_max = mx
+                        except Exception:
+                            pass
+                        m = (arr[:,0] <= cap_eff + 1e-9)
+                        if m.all():
+                            return
+                        arr2 = arr[m]
+                        if arr2.size == 0:
+                            # 全部被裁剪，移除对象
+                            try:
+                                if hasattr(self, 'ax') and coll in getattr(self.ax, 'collections', []):
+                                    coll.remove()
+                            except Exception:
+                                pass
+                            try: setattr(self, coll_attr, None)
+                            except Exception: pass
+                            removed += 1
+                        else:
+                            try:
+                                coll.set_offsets(arr2)
+                                trimmed += (len(arr) - len(arr2))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            # 单对象集合
+            for attr in ['_batched_points','_browse_points_fallback','_head_points_scatter','gradient_overlay_points','gradient_scatter','confidence_scatter']:
+                _process_scatter(attr)
+            # 段散点列表
+            try:
+                if hasattr(self, '_segment_points') and isinstance(self._segment_points, list):
+                    new_list = []
+                    for coll in list(self._segment_points):
+                        try:
+                            if coll is None:
+                                continue
+                            if hasattr(coll, 'get_offsets'):
+                                offs = coll.get_offsets()
+                                if offs is None:
+                                    continue
+                                arr = _np.asarray(offs, dtype=float)
+                                if arr.size == 0:
+                                    new_list.append(coll)
+                                    continue
+                                m = (arr[:,0] <= cap_eff + 1e-9)
+                                if not m.all():
+                                    arr2 = arr[m]
+                                    if arr2.size == 0:
+                                        try:
+                                            if hasattr(self, 'ax') and coll in getattr(self.ax, 'collections', []):
+                                                coll.remove()
+                                        except Exception:
+                                            pass
+                                        removed += 1
+                                    else:
+                                        try:
+                                            coll.set_offsets(arr2)
+                                            trimmed += (len(arr) - len(arr2))
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
+                        new_list.append(coll)
+                    self._segment_points = new_list
+            except Exception:
+                pass
+            # 渐变线集合( LineCollection )：尝试对其 segments 做 in-place 过滤
+            try:
+                if hasattr(self, 'gradient_lines') and self.gradient_lines:
+                    for gl in list(self.gradient_lines):
+                        try:
+                            segs = getattr(gl, 'get_segments', lambda: None)()
+                            if not segs:
+                                continue
+                            new_segs = []
+                            changed = False
+                            for seg in segs:
+                                try:
+                                    if seg is None or len(seg) == 0:
+                                        continue
+                                    arr = _np.asarray(seg, dtype=float)
+                                    m = (arr[:,0] <= cap_eff + 1e-9)
+                                    if not m.all():
+                                        changed = True
+                                    arr2 = arr[m]
+                                    if arr2.size > 1:
+                                        new_segs.append(arr2)
+                                except Exception:
+                                    pass
+                            if changed:
+                                try:
+                                    gl.set_segments(new_segs)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # 简要调试输出（节流）
+            try:
+                import time as _t
+                last = float(getattr(self, '_cap_enforce_last_log', 0.0))
+                now = _t.time()
+                if (removed or trimmed) and now - last > 0.5:
+                    print(f"[CAP_ENFORCE] removed={removed} trimmed_pts={trimmed} cap={cap:.3f}")
+                    self._cap_enforce_last_log = now
             except Exception:
                 pass
         except Exception:
@@ -15465,6 +16975,271 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _maybe_forward_inject_after_cap(self):
+        """方案C主动触发：cap 提升后立即检查是否需要前向散点注入。
+        条件与 draw_segmented_pitch_line 尾部一致，避免等待下一次重帧导致测试看不到 >cap 新点。"""
+        try:
+            if not (getattr(self, '_cap_visible_time_enabled', False) and not getattr(self, '_cap_strict_lock', False)):
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_INJECT] RET_A disabled_or_strict_lock')
+                return
+            if not (bool(getattr(self, 'is_analyzing', False)) or str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment','analysis','analyzing')):
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_INJECT] RET_B not analyzing/backing mode')
+                return
+            cap = float(getattr(self, '_max_visible_time', 0.0))
+            max_buf_t = None
+            try:
+                if hasattr(self, 'time_data') and self.time_data:
+                    max_buf_t = float(self.time_data[-1])
+            except Exception:
+                max_buf_t = None
+            # 需要至少已经写入当前 cap 对应的新点（或更远）
+            if max_buf_t is None or max_buf_t < cap - 1e-6:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print(f'[CAP_INJECT] RET_C insufficient buffer max_buf_t={max_buf_t} cap={cap}')
+                return
+            # 检查现有 segment_points 是否已有 >cap 点
+            has_forward_visible = False
+            try:
+                import numpy as _np
+                if hasattr(self, '_segment_points') and self._segment_points:
+                    for coll in self._segment_points:
+                        try:
+                            off = coll.get_offsets()
+                            if off is None: continue
+                            arr = _np.asarray(off, dtype=_np.float32)
+                            if arr.size and (arr[:,0].max(initial=-1.0) > cap + 1e-6):
+                                has_forward_visible = True
+                                break
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if has_forward_visible:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_INJECT] RET_D already has forward visible points')
+                return
+            # 当前已显示的最大时间（用于判断缺口区间）
+            cur_vis_max = -1.0
+            try:
+                import numpy as _np
+                if hasattr(self, '_segment_points') and self._segment_points:
+                    for coll in self._segment_points:
+                        try:
+                            off = coll.get_offsets();
+                            if off is None: continue
+                            arr = _np.asarray(off, dtype=_np.float32)
+                            if arr.size:
+                                mv = float(arr[:,0].max(initial=-1.0))
+                                if mv > cur_vis_max: cur_vis_max = mv
+                        except Exception: pass
+            except Exception:
+                pass
+            # 准备采集 >cap 新点
+            new_t, new_p = [], []
+            try:
+                import numpy as _np
+                tbuf = list(getattr(self, 'time_data', []))
+                pbuf = list(getattr(self, 'pitch_data', []))
+                if tbuf and pbuf and len(tbuf) == len(pbuf):
+                    for tt, pp in zip(tbuf, pbuf):
+                        ftt = float(tt)
+                        if ftt > cur_vis_max + 1e-6 and ftt <= cap + 1e-6:  # 填补 (cur_vis_max, cap]
+                            new_t.append(ftt); new_p.append(float(pp))
+                max_new_pts = int(getattr(self, '_forward_inject_points_cap', 600))
+                if len(new_t) > max_new_pts:
+                    step = int(_np.ceil(len(new_t)/max_new_pts))
+                    new_t = new_t[::step]; new_p = new_p[::step]
+            except Exception:
+                new_t, new_p = [], []
+            if not new_t:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print(f'[CAP_INJECT] RET_E no new points cur_vis_max={cur_vis_max} cap={cap}')
+                return
+            # 注入逻辑（与 draw_segmented_pitch_line 保持一致）
+            try:
+                import numpy as _np
+                detail_rgb = (1.0, 1.0, 1.0)
+                arr = _np.column_stack((new_t, new_p))
+                try:
+                    arr = arr[arr[:,0] <= float(getattr(self,'_max_visible_time', float('inf')))]  # 防御：不越界
+                    arr = self._cap_filter_offsets_array(arr)  # 再走一次 cap 过滤（去除边界浮点）
+                except Exception:
+                    pass
+                # 计算尺寸
+                try:
+                    if hasattr(self, '_segment_points') and self._segment_points:
+                        s_existing = None
+                        try:
+                            s_existing = self._segment_points[0].get_sizes()
+                        except Exception:
+                            s_existing = None
+                        if s_existing is not None and len(s_existing):
+                            s_val = float(s_existing[0])
+                        else:
+                            base_w = float(getattr(self, 'current_linewidth', 0.6))
+                            zoom = float(getattr(self, 'zoom_level', 1.0))
+                            diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                            s_val = diameter ** 2
+                    else:
+                        base_w = float(getattr(self, 'current_linewidth', 0.6))
+                        zoom = float(getattr(self, 'zoom_level', 1.0))
+                        diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                        s_val = diameter ** 2
+                except Exception:
+                    s_val = 9.0
+                pts = self.ax.scatter(arr[:,0], arr[:,1], s=s_val, color=detail_rgb, alpha=0.96, linewidths=0, edgecolors='none', zorder=14)
+                try: pts.set_visible(True)
+                except Exception: pass
+                if not hasattr(self, '_segment_points') or self._segment_points is None:
+                    self._segment_points = []
+                self._segment_points.append(pts)
+                self._forward_segment_last_inject_cap = float(cap)
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    try:
+                        import numpy as _np
+                        print(f"[CAP_INJECT] injected pts={arr.shape[0]} range=({arr[:,0].min():.3f},{arr[:,0].max():.3f}) cur_vis_max_prev={cur_vis_max:.3f} cap={cap:.3f}")
+                    except Exception:
+                        print('[CAP_INJECT] injected')
+                # 强制调度一次绘制
+                try:
+                    if hasattr(self, 'canvas'):
+                        self.canvas.draw_idle()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _force_forward_segment_refresh(self):
+        """在分析/伴奏模式下：若 seek 后 cap 已向前推进但仍无 > 初始cap 可见点，强制一次前向段刷新/注入。
+        触发条件：
+          1) _post_seek_initial_cap 存在
+          2) 当前 cap > initial_cap + 阈值 (默认0.08s)
+          3) _segment_points / 兜底点 中仍不存在 > initial_cap 的点
+          4) 避免重复：同一 cap 区间只强制一次 (记录 _last_forward_refresh_cap)
+        """
+        try:
+            if not (getattr(self, '_cap_visible_time_enabled', False) and not getattr(self, '_cap_strict_lock', False)):
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_FWD_REFRESH] RET_A disabled_or_strict_lock')
+                return
+            if not (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_FWD_REFRESH] RET_B not analyzing/backing')
+                return
+            init_cap = float(getattr(self, '_post_seek_initial_cap', -1.0))
+            if init_cap < 0:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_FWD_REFRESH] RET_C no initial cap')
+                return
+            cur_cap = float(getattr(self, '_max_visible_time', 0.0))
+            thr = float(getattr(self, '_forward_refresh_threshold', 0.08))
+            if cur_cap <= init_cap + thr:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print(f'[CAP_FWD_REFRESH] RET_D cur_cap({cur_cap:.3f}) <= init_cap+thr({init_cap+thr:.3f})')
+                return
+            # 若已有 > initial cap 的可见点则无需刷新
+            has_forward = False
+            try:
+                import numpy as _np
+                if hasattr(self,'_segment_points') and self._segment_points:
+                    for coll in self._segment_points:
+                        try:
+                            off = coll.get_offsets();
+                            if off is None: continue
+                            arr = _np.asarray(off, dtype=_np.float32)
+                            if arr.size and (arr[:,0].max(initial=-1.0) > init_cap + 1e-6):
+                                has_forward = True; break
+                        except Exception:
+                            pass
+                if (not has_forward) and hasattr(self,'_browse_points_fallback') and self._browse_points_fallback is not None:
+                    try:
+                        off = self._browse_points_fallback.get_offsets()
+                        if off is not None:
+                            arr2 = _np.asarray(off, dtype=_np.float32)
+                            if arr2.size and (arr2[:,0].max(initial=-1.0) > init_cap + 1e-6):
+                                has_forward = True
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if has_forward:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_FWD_REFRESH] RET_E already has forward points')
+                return
+            last_ref = float(getattr(self, '_last_forward_refresh_cap', -1.0))
+            if last_ref >= 0 and cur_cap <= last_ref + 1e-9:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_FWD_REFRESH] RET_F already refreshed at this cap')
+                return
+            # 收集 > initial_cap 的点（受cap过滤后仍应包含部分）
+            new_t, new_p = [], []
+            try:
+                tbuf = list(getattr(self,'time_data', [])); pbuf = list(getattr(self,'pitch_data', []))
+                if tbuf and pbuf and len(tbuf)==len(pbuf):
+                    for tt, pp in zip(tbuf, pbuf):
+                        if float(tt) > init_cap + 1e-6:
+                            if float(tt) <= cur_cap + 1e-6:  # 只取当前cap内，保持一致
+                                new_t.append(float(tt)); new_p.append(float(pp))
+            except Exception:
+                new_t, new_p = [], []
+            if not new_t:
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print('[CAP_FWD_REFRESH] RET_G no candidate points in buffer')
+                return
+            # 注入逻辑与方案C一致（不重复计算尺寸，如无size则自算）
+            try:
+                import numpy as _np
+                arr = _np.column_stack((new_t, new_p))
+                # 第二层 cap 过滤（防御）
+                try:
+                    arr = arr[arr[:,0] <= float(getattr(self,'_max_visible_time', float('inf')))]
+                    arr = self._cap_filter_offsets_array(arr)
+                except Exception:
+                    pass
+                if arr.size == 0:
+                    if getattr(self,'debug_flags',{}).get('cap_diag'):
+                        print('[CAP_FWD_REFRESH] RET_H filtered empty after cap filter')
+                    return
+                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                    print(f"[CAP_FWD_REFRESH] inject {arr.shape[0]} pts range=({arr[:,0].min():.3f},{arr[:,0].max():.3f}) init_cap={init_cap:.3f} cur_cap={cur_cap:.3f}")
+                # 计算尺寸
+                try:
+                    if hasattr(self,'_segment_points') and self._segment_points:
+                        s_existing = None
+                        try: s_existing = self._segment_points[0].get_sizes()
+                        except Exception: s_existing = None
+                        if s_existing is not None and len(s_existing):
+                            s_val = float(s_existing[0])
+                        else:
+                            base_w = float(getattr(self,'current_linewidth',0.6)); zoom = float(getattr(self,'zoom_level',1.0))
+                            diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom,3.0)), 5.0))
+                            s_val = diameter**2
+                    else:
+                        base_w = float(getattr(self,'current_linewidth',0.6)); zoom = float(getattr(self,'zoom_level',1.0))
+                        diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom,3.0)), 5.0))
+                        s_val = diameter**2
+                except Exception:
+                    s_val = 9.0
+                detail_rgb = (1.0,1.0,1.0)
+                pts = self.ax.scatter(arr[:,0], arr[:,1], s=s_val, color=detail_rgb, alpha=0.96, linewidths=0, edgecolors='none', zorder=14)
+                try: pts.set_visible(True)
+                except Exception: pass
+                if not hasattr(self,'_segment_points') or self._segment_points is None:
+                    self._segment_points = []
+                self._segment_points.append(pts)
+                self._last_forward_refresh_cap = float(cur_cap)
+                try:
+                    if hasattr(self,'canvas'): self.canvas.draw_idle()
+                except Exception: pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def add_pitch_data(self, pitch_data):
         """添加音高数据（支持历史数据存储和断续音调曲线）"""
         try:
@@ -15475,6 +17250,86 @@ class ECGStylePitchVisualizer(QWidget):
             note_info = pitch_data.get('note_info', {})
             has_pitch = pitch_data.get('has_pitch', frequency > 0)
             audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+            # ===== 迟到旧点过滤（回退后防回潮核心） =====
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    gt_test = None
+                    if 'global_time' in pitch_data:
+                        try:
+                            gt_test = float(pitch_data.get('global_time'))
+                        except Exception:
+                            gt_test = None
+                    if gt_test is not None:
+                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                        # 分析/伴奏模式下：若不在严格锁且新点时间已超出现有cap，提前直接提升cap，避免被“迟到点”逻辑挡住
+                        try:
+                            if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')) \
+                               and not getattr(self,'_cap_strict_lock',False) and gt_test > cap + 1e-9:
+                                self._max_visible_time = float(gt_test)
+                                self._post_retake_new_data_started = True
+                                self._strict_cap_dirty = True
+                        except Exception:
+                            pass
+                        if gt_test > cap + 1e-9:
+                            # 严格锁情况下：将第一个“向前”新点视为正式起点，解除锁并推进cap
+                            if getattr(self, '_cap_strict_lock', False) and not getattr(self, '_retake_countdown_active', False):
+                                try:
+                                    if getattr(self,'debug_flags',{}).get('cap_diag'):
+                                        print(f"[CAP_DBG] strict_unlock advance cap {cap:.3f}->{gt_test:.3f}")
+                                    self._cap_strict_lock = False
+                                    self._post_retake_new_data_started = True
+                                    self._max_visible_time = float(gt_test)
+                                    self._strict_cap_dirty = True
+                                    # 强制一次重帧，立即生成包含新点的段
+                                    self._force_redraw_on_next_update = True
+                                    self._artist_times_dirty = True
+                                    try:
+                                        self._last_heavy_redraw_time = 0.0
+                                    except Exception:
+                                        pass
+                                    # 回退→前进首个新点：若是分析/伴奏模式，立即重建一次段，确保>cap新点可见
+                                    try:
+                                        if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')) and hasattr(self,'_quick_rebuild_segments_upto_cap'):
+                                            self._quick_rebuild_segments_upto_cap()
+                                        # 立即尝试方案C注入
+                                        try:
+                                            if hasattr(self, '_maybe_forward_inject_after_cap'):
+                                                self._maybe_forward_inject_after_cap()
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
+                            else:
+                                # 非严格锁：如果是分析/伴奏模式或已经开始新数据段，则视为合法新点，直接前进提升cap
+                                if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing') or getattr(self,'_post_retake_new_data_started',False)):
+                                    try:
+                                        if gt_test > cap:
+                                            if getattr(self,'debug_flags',{}).get('cap_diag'):
+                                                print(f"[CAP_DBG] forward advance cap {cap:.3f}->{gt_test:.3f}")
+                                            self._max_visible_time = float(gt_test)
+                                            self._strict_cap_dirty = True
+                                            self._artist_times_dirty = True
+                                            # 尝试立即注入
+                                            try:
+                                                if hasattr(self, '_maybe_forward_inject_after_cap'):
+                                                    self._maybe_forward_inject_after_cap()
+                                                if hasattr(self, '_force_forward_segment_refresh'):
+                                                    self._force_forward_segment_refresh()
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                                else:
+                                    # 仍认为是迟到旧点（seek后右侧残留回潮），丢弃
+                                    try:
+                                        self._dropped_late_points = int(getattr(self, '_dropped_late_points', 0)) + 1
+                                    except Exception:
+                                        pass
+                                    return
+            except Exception:
+                pass
             # 回退Epoch过滤：若当前可视化器存在_epoch机制，则仅接受匹配的epoch；缺失_epoch将被丢弃
             try:
                 cur_epoch_attr = getattr(self, '_current_epoch', None)
@@ -15482,10 +17337,48 @@ class ECGStylePitchVisualizer(QWidget):
                     cur_epoch = int(cur_epoch_attr)
                     pkt_epoch_raw = pitch_data.get('_epoch', None)
                     if pkt_epoch_raw is None:
-                        return
+                        # 分析/伴奏模式下放宽：允许无 _epoch 包通过（测试 / 离线回放场景）
+                        if not (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
+                            return
                     pkt_epoch = int(pkt_epoch_raw)
                     if pkt_epoch != cur_epoch:
                         return
+            except Exception:
+                pass
+            # 回录倒计时：阻断新点写入（保持旧点显示 + 伴奏播放）
+            try:
+                if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False):
+                    import time as _t
+                    if _t.time() < float(getattr(self, '_retake_countdown_end_wall', 0.0)):
+                        # 仅更新时间与返回
+                        if not hasattr(self, 'start_time') or self.start_time is None:
+                            self.start_time = timestamp
+                        try:
+                            # 将 current_global_time 暂时锁定在 target_time - (剩余) 区域左侧边界，避免视觉跳跃
+                            tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
+                            dur = float(getattr(self, '_retake_countdown_duration', 3.0))
+                            rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - _t.time()
+                            if rem < 0: rem = 0.0
+                            self.current_global_time = max(0.0, tgt - rem)
+                        except Exception:
+                            pass
+                        return
+                    else:
+                        # 结束：允许写入并推进cap至目标（保持 cap==目标直到新点超过它）
+                        self._retake_countdown_block_add = False
+                        self._retake_countdown_active = False
+                        # 结束瞬间将播放指针对齐到 cap，避免视觉落后
+                        try:
+                            _capx = float(getattr(self, '_retake_countdown_target_time', getattr(self, '_max_visible_time', 0.0)))
+                            if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                                self._lb_playhead.set_xdata([_capx, _capx])
+                                if hasattr(self, 'canvas') and self.canvas is not None:
+                                    self.canvas.draw_idle()
+                        except Exception:
+                            pass
+                        # 倒计时刚结束，不立即释放严格锁，等待首个新点真正落地后再释放
+                        if getattr(self, '_cap_strict_lock', False):
+                            self._post_retake_new_data_started = False
             except Exception:
                 pass
             
@@ -15532,7 +17425,46 @@ class ECGStylePitchVisualizer(QWidget):
                 if getattr(self, '_cap_visible_time_enabled', False):
                     cur_cap = float(getattr(self, '_max_visible_time', 0.0))
                     if global_time > cur_cap:
+                        if getattr(self,'debug_flags',{}).get('cap_diag'):
+                            print(f"[CAP_DBG] global_time advance cap {cur_cap:.3f}->{global_time:.3f}")
                         self._max_visible_time = float(global_time)
+                        try:
+                            if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
+                                # 标记脏并立即执行一次cap应用+段重建，确保新时间点立刻可见
+                                self._strict_cap_dirty = True
+                                if hasattr(self,'_enforce_cap_on_existing_artists'):
+                                    self._enforce_cap_on_existing_artists()
+                                if hasattr(self,'_quick_rebuild_segments_upto_cap'):
+                                    self._quick_rebuild_segments_upto_cap()
+                                # 兜底注入
+                                try:
+                                    if hasattr(self, '_maybe_forward_inject_after_cap'):
+                                        self._maybe_forward_inject_after_cap()
+                                    if hasattr(self,'_force_forward_segment_refresh'):
+                                        self._force_forward_segment_refresh()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        # 前向推进：分析/伴奏模式下在cap刚提升时做一次轻量段重建，让新点立即可见
+                        try:
+                            if getattr(self,'_post_retake_new_data_started', False):
+                                if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')) and hasattr(self,'_quick_rebuild_segments_upto_cap'):
+                                    # 节流：至少每提升0.05s或50ms时间间隔才重建一次
+                                    do_rebuild = True
+                                    try:
+                                        last_t = float(getattr(self,'_last_quick_forward_rebuild_t', -1.0))
+                                        if last_t >= 0 and (global_time - last_t) < 0.049:
+                                            do_rebuild = False
+                                    except Exception:
+                                        pass
+                                    if do_rebuild:
+                                        try:
+                                            self._quick_rebuild_segments_upto_cap()
+                                        finally:
+                                            self._last_quick_forward_rebuild_t = float(global_time)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -15556,6 +17488,43 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
 
             if has_pitch and frequency > 0:
+                # 分析/伴奏模式：在主流程中再次兜底确保 cap 前进（防御上方 early 逻辑未执行）
+                try:
+                    if getattr(self,'_cap_visible_time_enabled', False) and (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
+                        # 新增：严格锁自动解锁逻辑
+                        try:
+                            if getattr(self,'_cap_strict_lock',False):
+                                init_cap = float(getattr(self,'_post_seek_initial_cap', -1.0))
+                                lat = float(getattr(self,'_last_added_time', -1.0))
+                                if init_cap >= 0 and lat > init_cap + 0.02:
+                                    self._cap_strict_lock = False
+                                    self._strict_cap_dirty = True
+                                    if getattr(self,'debug_flags',{}).get('cap_diag'):
+                                        print(f"[CAP_DBG] unlock_force(late_main) lat={lat:.3f} init_cap={init_cap:.3f}")
+                        except Exception:
+                            pass
+                        cur_cap2 = float(getattr(self,'_max_visible_time',0.0))
+                        if 'global_time' in pitch_data:
+                            try:
+                                _gt2 = float(pitch_data.get('global_time'))
+                            except Exception:
+                                _gt2 = None
+                            if _gt2 is not None and _gt2 > cur_cap2 + 1e-6:
+                                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                                    print(f"[CAP_DBG] late_main advance cap {cur_cap2:.3f}->{_gt2:.3f}")
+                                self._max_visible_time = float(_gt2)
+                                self._strict_cap_dirty = True
+                                self._artist_times_dirty = True
+                                self._force_redraw_on_next_update = True
+                                try:
+                                    if hasattr(self, '_maybe_forward_inject_after_cap'):
+                                        self._maybe_forward_inject_after_cap()
+                                    if hasattr(self,'_force_forward_segment_refresh'):
+                                        self._force_forward_segment_refresh()
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
                 # —— 静音/噪声门控（普通模式，带起止“缓冲区”裁剪）——
                 try:
                     skip_gate = bool(pitch_data.get('_skip_gate', False))
@@ -15769,6 +17738,14 @@ class ECGStylePitchVisualizer(QWidget):
                 self.time_data.append(global_time)
                 self.confidence_data.append(confidence)
                 self.note_data.append(note_info)
+                # 首个新点写入：解除严格cap锁，允许 cap 递增
+                try:
+                    if getattr(self, '_cap_strict_lock', False) and not getattr(self, '_post_retake_new_data_started', False):
+                        self._post_retake_new_data_started = True
+                        self._cap_strict_lock = False
+                        self._strict_cap_dirty = True
+                except Exception:
+                    pass
                 # 持久化：写入一个点记录（NDJSON 缓冲）
                 try:
                     if hasattr(self, '_persist_on_point'):
@@ -16246,6 +18223,15 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             # 读取数据
             pts = _np.asarray(list(getattr(self, '_head_points', []) or []), dtype=float)
+            # 应用cap过滤：任何散点更新均不得越过 _max_visible_time
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False) and pts.size > 0:
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    if pts.ndim == 2 and pts.shape[1] >= 2:
+                        m = (pts[:, 0] <= cap + 1e-9)
+                        pts = pts[m]
+            except Exception:
+                pass
             if pts.size == 0:
                 try:
                     self._head_points_scatter.set_offsets(_np.empty((0, 2)))
@@ -16469,75 +18455,21 @@ class ECGStylePitchVisualizer(QWidget):
             # 高倍缩放下节制重绘频率，避免频繁 draw_idle 造成卡顿（仅节流重绘，不中断位置更新）
             now = time.time()
             zoom = float(getattr(self, 'zoom_level', 1.0))
-            # 性能模式联动参数（仅对 2.5x/5.0x 施加更强配置）
-            try:
-                from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
-                _pm = get_performance_manager()
-                _mode = _pm.get_current_mode() if _pm else None
-            except Exception:
-                _pm = None
-                _mode = None
-            # 默认（适中）参数（更快更淡的基调）
+            # 统一参数（保持原有默认值，避免复杂的性能模式分支引入不确定性）
             params = {
-                'min_redraw': 0.0,
+                'min_redraw': 0.0 if zoom < 2.0 else (0.045 if zoom < 4.5 else 0.030),
                 'base_alpha': 0.28,
                 'base_max_step': 0.16,
                 'snap_eps': 0.009,
-                't1': 0.04,  # 小/中位移阈
-                't2': 0.10,  # 中/大位移阈
+                't1': 0.04,
+                't2': 0.10,
                 'motion_div': 0.12,
                 'glow_base': 0.40,
                 'glow_span': 0.10,
                 'lw_span': 0.12,
-                'v_main_alpha': 0.55,  # 纵向主线的不透明度（更淡）
+                'v_main_alpha': 0.55,
             }
-            if zoom >= 4.5 or zoom >= 2.0:
-                # 按性能模式调参
-                try:
-                    if _mode == PerformanceMode.HIGH_PERFORMANCE:
-                        params.update({
-                            'min_redraw': 0.040 if zoom >= 4.5 else 0.030,
-                            'base_alpha': 0.32,
-                            'base_max_step': 0.20,
-                            'snap_eps': 0.012,
-                            't1': 0.05,
-                            't2': 0.12,
-                            'motion_div': 0.10,
-                            'glow_base': 0.45,
-                            'glow_span': 0.12,
-                            'lw_span': 0.14,
-                        })
-                    elif _mode == PerformanceMode.BALANCED or _mode is None:
-                        params.update({
-                            'min_redraw': 0.060 if zoom >= 4.5 else 0.045,
-                            'base_alpha': 0.28,
-                            'base_max_step': 0.16,
-                            'snap_eps': 0.010,
-                            't1': 0.04,
-                            't2': 0.10,
-                            'motion_div': 0.12,
-                            'glow_base': 0.40,
-                            'glow_span': 0.10,
-                            'lw_span': 0.12,
-                            'v_main_alpha': 0.55,
-                        })
-                    else:  # 视为 QUIET
-                        params.update({
-                            'min_redraw': 0.080 if zoom >= 4.5 else 0.060,
-                            'base_alpha': 0.22,
-                            'base_max_step': 0.14,
-                            'snap_eps': 0.008,
-                            't1': 0.03,
-                            't2': 0.08,
-                            'motion_div': 0.16,
-                            'glow_base': 0.35,
-                            'glow_span': 0.08,
-                            'lw_span': 0.10,
-                            'v_main_alpha': 0.50,
-                        })
-                except Exception:
-                    pass
-            call_min = params['min_redraw'] if zoom >= 2.0 else 0.0
+            call_min = params['min_redraw']
             last_call = getattr(self, '_last_guides_update_time', 0.0)
             # 不再提前 return，继续更新数据以保证灵敏；仅记录时间用于后续 draw_idle 节流
             if call_min > 0 and (now - last_call) < call_min:
@@ -16552,7 +18484,32 @@ class ECGStylePitchVisualizer(QWidget):
             want_center = (cur_t > getattr(self, 'center_display_time', 8.0) and
                            getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True))
             # 计算目标 x（数据坐标）
-            if want_center:
+            # 优先：如果存在“播放指针”(_lb_playhead)且可见，则以其 x 作为目标；
+            # 同时在录音/分析活跃时，如检测到其明显落后 current_global_time，则立刻追齐
+            _ph_x = None
+            try:
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None and getattr(self._lb_playhead, 'get_visible', lambda: False)():
+                    _xdata = self._lb_playhead.get_xdata()
+                    if _xdata is not None and len(_xdata) >= 1:
+                        _ph_x = float(_xdata[0])
+                        try:
+                            _cgx = float(getattr(self, 'current_global_time', 0.0))
+                            _active = bool(getattr(self, 'is_recording_active', False) or getattr(self, 'is_recording', False) or getattr(self, 'is_analyzing', False))
+                            if _active and (_cgx - _ph_x) > 0.20:
+                                xlim = self.ax.get_xlim() if hasattr(self, 'ax') else (0.0, 0.0)
+                                x0, x1 = float(xlim[0]), float(xlim[1])
+                                _newx = max(x0, min(x1, _cgx))
+                                self._lb_playhead.set_xdata([_newx, _newx])
+                                if hasattr(self, 'canvas') and self.canvas is not None:
+                                    self.canvas.draw_idle()
+                                _ph_x = _newx
+                        except Exception:
+                            pass
+            except Exception:
+                _ph_x = None
+            if _ph_x is not None:
+                v_target = min(max(time_start, _ph_x), time_end)
+            elif want_center:
                 # 优先用像素中心反变换得到的数据坐标，确保辅助线始终位于图表正中像素
                 try:
                     bbox = self.ax.bbox  # 像素坐标系
@@ -16844,6 +18801,7 @@ class ECGStylePitchVisualizer(QWidget):
                     # 模式联动
                     try:
                         from src.audio_processing.performance_manager import PerformanceMode
+                        _mode = getattr(self, '_pm_mode', None)
                         if _mode == PerformanceMode.HIGH_PERFORMANCE:
                             band_half *= 0.85
                             band_alpha = 0.14
@@ -17026,6 +18984,102 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_update_timer.stop()
         print("⏹️ 停止时间轴追踪")
 
+    def _render_retake_countdown_overlay(self):
+        """渲染回录倒计时覆盖层（若激活）。独立出来便于在无数据早退前也能渲染。"""
+        try:
+            if not getattr(self, '_retake_countdown_active', False):
+                return False
+            import time as _t, math as _m
+            rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - _t.time()
+            if rem < 0: rem = 0.0
+            if not (hasattr(self, 'ax') and self.ax is not None):
+                return False
+            # 背景遮罩
+            try:
+                if (not hasattr(self, '_retake_countdown_bg')) or self._retake_countdown_bg is None:
+                    self._retake_countdown_bg = self.ax.add_patch(__import__('matplotlib').patches.Rectangle(
+                        (0,0),1,1, transform=self.ax.transAxes, color='black', alpha=0.18, zorder=180))
+                else:
+                    self._retake_countdown_bg.set_alpha(0.18 if rem>0 else 0.0)
+            except Exception:
+                pass
+            # 文本
+            if not hasattr(self, '_retake_countdown_text') or self._retake_countdown_text is None:
+                try:
+                    self._retake_countdown_text = self.ax.text(0.5, 0.55, '', transform=self.ax.transAxes,
+                                                                ha='center', va='center', fontsize=42,
+                                                                color='#FFDD55', alpha=0.0, zorder=200, weight='bold')
+                except Exception:
+                    self._retake_countdown_text = None
+            if self._retake_countdown_text is not None:
+                try:
+                    if rem > 0:
+                        self._retake_countdown_text.set_text(str(int(_m.ceil(rem))))
+                        self._retake_countdown_text.set_alpha(0.88)
+                    else:
+                        self._retake_countdown_text.set_alpha(0.0)
+                except Exception:
+                    pass
+            # 提示
+            if rem > 0:
+                if not hasattr(self, '_retake_countdown_hint') or self._retake_countdown_hint is None:
+                    try:
+                        self._retake_countdown_hint = self.ax.text(0.5, 0.40, '准备回录…', transform=self.ax.transAxes,
+                                                                   ha='center', va='center', fontsize=16,
+                                                                   color='#FFEEAA', alpha=0.85, zorder=200, weight='bold')
+                    except Exception:
+                        self._retake_countdown_hint = None
+                else:
+                    try: self._retake_countdown_hint.set_alpha(0.85)
+                    except Exception: pass
+            else:
+                if hasattr(self, '_retake_countdown_hint') and self._retake_countdown_hint is not None:
+                    try: self._retake_countdown_hint.set_alpha(0.0)
+                    except Exception: pass
+            # 扫描线
+            try:
+                tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
+                dur = float(getattr(self, '_retake_countdown_duration', 3.0))
+                start_line_t = max(0.0, tgt - dur)
+                if rem > 0 and dur > 0:
+                    frac = 1.0 - rem / dur
+                    cur_t = start_line_t + frac * (tgt - start_line_t)
+                else:
+                    cur_t = tgt
+                if not hasattr(self, '_retake_countdown_line') or self._retake_countdown_line is None:
+                    self._retake_countdown_line = self.ax.axvline(cur_t, color='#FFDD55', linewidth=2.0, alpha=0.85, zorder=190)
+                else:
+                    try: self._retake_countdown_line.set_xdata([cur_t, cur_t])
+                    except Exception: pass
+                if rem <= 0:
+                    try:
+                        if self._retake_countdown_line in getattr(self.ax, 'lines', []):
+                            self._retake_countdown_line.remove()
+                    except Exception:
+                        pass
+                    self._retake_countdown_line = None
+                    self._retake_countdown_text = None
+                    # 清除背景与提示
+                    try:
+                        if hasattr(self, '_retake_countdown_bg') and self._retake_countdown_bg is not None:
+                            self._retake_countdown_bg.set_alpha(0.0)
+                    except Exception: pass
+                    try:
+                        if hasattr(self, '_retake_countdown_hint') and self._retake_countdown_hint is not None:
+                            self._retake_countdown_hint.set_alpha(0.0)
+                    except Exception: pass
+            except Exception:
+                pass
+            # 轻量触发重绘
+            try:
+                if hasattr(self, 'canvas') and self.canvas is not None:
+                    self.canvas.draw_idle()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
     def update_display(self):
         """更新显示（支持历史数据查看和断续音调曲线）"""
         # 重入保护：多定时器可能同时触发，避免并发重绘造成状态不一致/抖动
@@ -17035,7 +19089,52 @@ class ECGStylePitchVisualizer(QWidget):
         if getattr(self, '_suppress_updates_until_new_data', False):
             self._in_update_display = False
             return
+        # 若在 seek / trim 后的强制执行窗口内，先对所有现有对象执行一次 cap 过滤
+        try:
+            if getattr(self, '_cap_visible_time_enabled', False):
+                import time as _t
+                now_cap = _t.time()
+                enforce = False
+                if now_cap <= float(getattr(self, '_cap_enforce_until', 0.0)):
+                    enforce = True
+                # 严格锁期间无条件强制过滤（避免运动中回潮）
+                if getattr(self, '_cap_strict_lock', False):
+                    enforce = True
+                if enforce:
+                    # 严格锁下的 dirty 节流：若无新数据改动且距离上次应用<150ms则跳过重过滤
+                    apply_now = True
+                    if getattr(self, '_cap_strict_lock', False):
+                        import time as _t2
+                        last_apply = float(getattr(self, '_last_strict_cap_apply', 0.0))
+                        if (not getattr(self, '_strict_cap_dirty', True)) and (_t2.time() - last_apply) < 0.15:
+                            apply_now = False
+                    if apply_now:
+                        self._enforce_cap_on_existing_artists()
+                        try:
+                            if hasattr(self, '_purge_collections_beyond_cap'):
+                                self._purge_collections_beyond_cap()
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self, '_filter_mainline_to_cap'):
+                                self._filter_mainline_to_cap()
+                        except Exception:
+                            pass
+                        try:
+                            if getattr(self, '_cap_strict_lock', False):
+                                import time as _t3
+                                self._last_strict_cap_apply = _t3.time()
+                                self._strict_cap_dirty = False
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         if len(self.pitch_data) == 0:
+            # 即使无任何点，也应优先渲染倒计时覆盖层
+            try:
+                self._render_retake_countdown_overlay()
+            except Exception:
+                pass
             # ✅ 无任何音调点时仍需推进时间轴与中心辅助线，避免卡在 8 秒
             try:
                 # 依据当前自动滚动 offset 与窗口宽度刷新可视区域
@@ -17107,6 +19206,11 @@ class ECGStylePitchVisualizer(QWidget):
                 self._aggressive_mode = True  # 激进平滑模式开关
             if not hasattr(self, '_heavy_redraw_base'):
                 self._heavy_redraw_base = 0.030
+            # 回录倒计时（若激活）：渲染数字与扫描线（早期执行保证后续平滑逻辑考虑到 playhead）
+            try:
+                self._render_retake_countdown_overlay()
+            except Exception:
+                pass
             # 激进模式进一步压缩基线
             base_target = 0.018 if self._aggressive_mode else 0.028
             # 若存在最近的自适应压缩历史则平滑过渡
@@ -18285,6 +20389,45 @@ class ECGStylePitchVisualizer(QWidget):
                         confidences = confidences[::step]
             except Exception:
                 pass
+            # ===== 分析/伴奏模式 cap 同步兜底：若长批量喂入后第一次重帧仍使用旧 cap 截断，强制提升 =====
+            try:
+                if getattr(self,'_cap_visible_time_enabled',False) and not getattr(self,'_cap_strict_lock',False) \
+                   and (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
+                    # 当前缓冲尾时间
+                    tail_t = None
+                    try:
+                        if hasattr(self,'time_data') and self.time_data:
+                            tail_t = float(self.time_data[-1])
+                    except Exception:
+                        tail_t = None
+                    if tail_t is not None:
+                        cur_cap = float(getattr(self,'_max_visible_time',0.0))
+                        # 若 tail 明显领先 cap 且 本次重帧前段集合中还没有 >cap 的点，则提升 cap
+                        if tail_t > cur_cap + 0.05:  # 跳过极小噪声
+                            has_forward = False
+                            try:
+                                if hasattr(self,'_segment_points') and self._segment_points:
+                                    import numpy as _np
+                                    for coll in self._segment_points:
+                                        try:
+                                            off = coll.get_offsets()
+                                            if off is None: continue
+                                            arr = _np.asarray(off)
+                                            if arr.size and arr[:,0].max(initial=-1.0) > cur_cap + 1e-6:
+                                                has_forward = True
+                                                break
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            if not has_forward:
+                                if getattr(self,'debug_flags',{}).get('cap_diag'):
+                                    print(f"[CAP_DBG] sync_cap redraw {cur_cap:.3f}->{tail_t:.3f}")
+                                self._max_visible_time = float(tail_t)
+                                self._strict_cap_dirty = True
+                                self._artist_times_dirty = True
+            except Exception:
+                pass
             segments = []
             recompute_needed = False
             if len(times) > 1:
@@ -18399,7 +20542,15 @@ class ECGStylePitchVisualizer(QWidget):
                                 if missing_in_window:
                                     loss_ratio = len(missing_in_window) / max(1, len(self._last_visible_time_set))
                                     if loss_ratio > 0.15:  # 阈值：可见点骤减>15%
-                                        print(f"⚠️ [FINE_LOSS] abrupt loss ratio={loss_ratio*100:.1f}% lost={len(missing_in_window)} prev_total={len(self._last_visible_time_set)} axisWin=({axis_start:.2f},{axis_end:.2f}) dataWin=({data_start:.2f},{data_end:.2f}) segs={len(segments)} single_seg={single_point_segs}")
+                                        # 静默期：seek 后短时间内抑制误报
+                                        try:
+                                            import time as _t
+                                            if getattr(self, '_suppress_fine_loss_until', 0.0) > _t.time():
+                                                pass
+                                            else:
+                                                print(f"⚠️ [FINE_LOSS] abrupt loss ratio={loss_ratio*100:.1f}% lost={len(missing_in_window)} prev_total={len(self._last_visible_time_set)} axisWin=({axis_start:.2f},{axis_end:.2f}) dataWin=({data_start:.2f},{data_end:.2f}) segs={len(segments)} single_seg={single_point_segs}")
+                                        except Exception:
+                                            print(f"⚠️ [FINE_LOSS] abrupt loss ratio={loss_ratio*100:.1f}% lost={len(missing_in_window)} prev_total={len(self._last_visible_time_set)} axisWin=({axis_start:.2f},{axis_end:.2f}) dataWin=({data_start:.2f},{data_end:.2f}) segs={len(segments)} single_seg={single_point_segs}")
                                         # 触发一次强制重绘标志，便于后续定位
                                         self._force_redraw_on_next_update = True
 
@@ -18896,6 +21047,8 @@ class ECGStylePitchVisualizer(QWidget):
                                 if arr.size > 0 and getattr(self, '_cap_visible_time_enabled', False):
                                     cap = float(getattr(self, '_max_visible_time', float('inf')))
                                     arr = arr[arr[:, 0] <= cap]
+                                # 二次统一过滤：集中工具（防御遗漏）
+                                arr = self._cap_filter_offsets_array(arr)
                             except Exception:
                                 pass
                             # 使用与分段点一致的感知大小
@@ -18944,6 +21097,7 @@ class ECGStylePitchVisualizer(QWidget):
                                     try:
                                         cap = float(getattr(self, '_max_visible_time', float('inf')))
                                         arr = arr[arr[:, 0] <= cap]
+                                        arr = self._cap_filter_offsets_array(arr)
                                     except Exception:
                                         pass
                             # 2) 若为空，则直接从原始缓冲构建兜底点（保证实时播放时也立即可见）
@@ -19495,6 +21649,8 @@ class ECGStylePitchVisualizer(QWidget):
                                 cap = float(getattr(self, '_max_visible_time', float('inf')))
                                 mcap = (ta <= cap)
                                 seg_times = ta[mcap].tolist(); seg_pitches = ya[mcap].tolist()
+                                # 统一再过滤一次
+                                seg_times, seg_pitches = self._cap_filter_times_pitches(seg_times, seg_pitches)
                     except Exception:
                         pass
                     pts = self.ax.scatter(seg_times, seg_pitches,
@@ -19568,6 +21724,11 @@ class ECGStylePitchVisualizer(QWidget):
                                         cap = float(getattr(self, '_max_visible_time', float('inf')))
                                         mcap = (t_vis <= cap)
                                         t_vis = t_vis[mcap]; y_vis = y_vis[mcap]
+                                        # 统一过滤
+                                        arr_tmp = np.column_stack((t_vis, y_vis)) if t_vis.size>0 else np.empty((0,2))
+                                        arr_tmp = self._cap_filter_offsets_array(arr_tmp)
+                                        if arr_tmp.size>0:
+                                            t_vis = arr_tmp[:,0]; y_vis = arr_tmp[:,1]
                                     except Exception:
                                         pass
                                 max_pts_seg = int(getattr(self, '_segment_points_cap_in_view', 450))
@@ -19589,6 +21750,7 @@ class ECGStylePitchVisualizer(QWidget):
                                             mcap = (ta <= cap)
                                             ta = ta[mcap]; ya = ya[mcap]
                                             offs = np.column_stack((ta, ya))
+                                            offs = self._cap_filter_offsets_array(offs)
                                         else:
                                             offs = np.column_stack((seg_times, seg_pitches))
                                     except Exception:
@@ -19699,6 +21861,10 @@ class ECGStylePitchVisualizer(QWidget):
                                                 cap = float(getattr(self, '_max_visible_time', float('inf')))
                                                 mcap = (t_vis <= cap)
                                                 t_vis = t_vis[mcap]; y_vis = y_vis[mcap]
+                                                arr_tmp = _np.column_stack((t_vis, y_vis)) if t_vis.size>0 else _np.empty((0,2))
+                                                arr_tmp = self._cap_filter_offsets_array(arr_tmp)
+                                                if arr_tmp.size>0:
+                                                    t_vis = arr_tmp[:,0]; y_vis = arr_tmp[:,1]
                                             except Exception:
                                                 pass
                                         arr = _np.column_stack((t_vis, y_vis))
@@ -19715,6 +21881,132 @@ class ECGStylePitchVisualizer(QWidget):
                             self._batched_points.set_visible(True)
                         except Exception:
                             pass
+            except Exception:
+                pass
+
+            # ===== 方案C：前向段注入（分析/伴奏模式回退后，新 >cap 点迟迟未进入 _segment_points 时的兜底） =====
+            try:
+                # 触发条件：
+                #   1) 启用 cap 且 非严格锁 (_cap_strict_lock == False)
+                #   2) 处于分析 / 伴奏模式 (is_analyzing/backing_mode)
+                #   3) time_data/pitch_data 中存在 > cap 的新点
+                #   4) 当前所有 _segment_points (offsets) 的最大时间 <= cap + 微小容差 —— 即没有任何前向可见点
+                #   5) 避免重复：上次注入后 cap 未再前进到更高值 (用 _forward_segment_last_inject_cap 比较)
+                import time as _t
+                if getattr(self, '_cap_visible_time_enabled', False) \
+                   and not getattr(self, '_cap_strict_lock', False) \
+                   and (bool(getattr(self, 'is_analyzing', False)) or str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment','analysis','analyzing')):
+                    cap = float(getattr(self, '_max_visible_time', 0.0))
+                    # 快速获取缓冲最大时间
+                    max_buf_t = None
+                    try:
+                        if hasattr(self, 'time_data') and self.time_data:
+                            max_buf_t = float(self.time_data[-1])
+                    except Exception:
+                        max_buf_t = None
+                    if max_buf_t is not None and max_buf_t > cap + 1e-6:
+                        # 检查当前段集合是否已经包含前向点
+                        has_forward_visible = False
+                        try:
+                            if hasattr(self, '_segment_points') and self._segment_points:
+                                import numpy as _np
+                                for coll in self._segment_points:
+                                    try:
+                                        off = coll.get_offsets()
+                                        if off is None: continue
+                                        if hasattr(off, 'size') and off.size == 0: continue
+                                        arr = _np.asarray(off, dtype=_np.float32)
+                                        if arr.size and (arr[:,0].max(initial=-1.0) > cap + 1e-6):
+                                            has_forward_visible = True
+                                            break
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                        if not has_forward_visible:
+                            # 重复注入保护
+                            last_inject_cap = float(getattr(self, '_forward_segment_last_inject_cap', -1.0))
+                            if cap > last_inject_cap - 1e-9:
+                                # 采集一批 cap 之后的新点（window：cap..max_buf_t，限制最多 N 点）
+                                new_t = []
+                                new_p = []
+                                try:
+                                    import numpy as _np
+                                    tbuf = list(getattr(self, 'time_data', []))
+                                    pbuf = list(getattr(self, 'pitch_data', []))
+                                    if tbuf and pbuf and len(tbuf) == len(pbuf):
+                                        # 选取 >cap 的部分
+                                        for tt, pp in zip(tbuf, pbuf):
+                                            if float(tt) > cap + 1e-9:
+                                                new_t.append(float(tt))
+                                                new_p.append(float(pp))
+                                    # 下采样：确保不超过 600 点（可配置）
+                                    max_new_pts = int(getattr(self, '_forward_inject_points_cap', 600))
+                                    if len(new_t) > max_new_pts:
+                                        step = int(_np.ceil(len(new_t) / max_new_pts))
+                                        new_t = new_t[::step]
+                                        new_p = new_p[::step]
+                                except Exception:
+                                    new_t, new_p = [], []
+                                if new_t:
+                                    # 提升 cap 到当前缓冲尾部，确保后续正常段重建会覆盖这些点
+                                    try:
+                                        self._max_visible_time = float(max_buf_t)
+                                        self._strict_cap_dirty = True
+                                        self._artist_times_dirty = True
+                                    except Exception:
+                                        pass
+                                    # 构造一个临时“前向段”散点集合（不创建线，避免跨 gaps 的错误连线）
+                                    try:
+                                        detail_rgb = (1.0, 1.0, 1.0)
+                                        import numpy as _np
+                                        arr = _np.column_stack((new_t, new_p))
+                                        # Cap 过滤再走一遍（防御）
+                                        try:
+                                            arr = arr[arr[:,0] <= float(getattr(self,'_max_visible_time', float('inf')))]
+                                            arr = self._cap_filter_offsets_array(arr)
+                                        except Exception:
+                                            pass
+                                        # 尺寸沿用已有计算方式：如果已有段点，用第一段点尺寸；否则计算一次
+                                        try:
+                                            if hasattr(self, '_segment_points') and self._segment_points:
+                                                s_existing = None
+                                                try:
+                                                    s_existing = self._segment_points[0].get_sizes()
+                                                except Exception:
+                                                    s_existing = None
+                                                if s_existing is not None and len(s_existing):
+                                                    s_val = float(s_existing[0])
+                                                else:
+                                                    # 回退计算
+                                                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                                                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                                                    diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                                                    s_val = diameter ** 2
+                                            else:
+                                                base_w = float(getattr(self, 'current_linewidth', 0.6))
+                                                zoom = float(getattr(self, 'zoom_level', 1.0))
+                                                diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                                                s_val = diameter ** 2
+                                        except Exception:
+                                            s_val = 9.0
+                                        pts = self.ax.scatter(arr[:,0], arr[:,1], s=s_val, color=detail_rgb, alpha=0.96, linewidths=0, edgecolors='none', zorder=14)
+                                        try:
+                                            pts.set_visible(True)
+                                        except Exception:
+                                            pass
+                                        if not hasattr(self, '_segment_points') or self._segment_points is None:
+                                            self._segment_points = []
+                                        self._segment_points.append(pts)
+                                        # 标记：后续第一次常规重帧后允许移除该临时注入（由段重建覆盖）
+                                        self._forward_segment_last_inject_cap = float(self._max_visible_time)
+                                        self._force_redraw_on_next_update = True
+                                        try:
+                                            self._last_heavy_redraw_time = 0.0
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
             except Exception:
                 pass
 
@@ -19896,6 +22188,17 @@ class ECGStylePitchVisualizer(QWidget):
                 # 使用插值后的轨迹作为叠加点坐标（若无插值则为原始数据）
                 overlay_times = interp_times if 'interp_times' in locals() else times
                 overlay_pitches = interp_pitches if 'interp_pitches' in locals() else pitches
+                # cap过滤，避免回退后右侧叠加点回潮
+                try:
+                    if getattr(self, '_cap_visible_time_enabled', False):
+                        import numpy as _np
+                        ta = _np.asarray(list(overlay_times), dtype=float)
+                        ya = _np.asarray(list(overlay_pitches), dtype=float)
+                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                        m = (ta <= cap + 1e-9)
+                        overlay_times = ta[m].tolist(); overlay_pitches = ya[m].tolist()
+                except Exception:
+                    pass
                 white = (1.0, 1.0, 1.0)
                 self.gradient_overlay_points = self.ax.scatter(overlay_times, overlay_pitches,
                                                                s=marker_s, color=white, alpha=0.98,
@@ -20078,6 +22381,17 @@ class ECGStylePitchVisualizer(QWidget):
     def update_gradient_mode(self, times, pitches, confidences):
         """彩色渐变模式 - 修复版本，避免artist错误"""
         if len(times) > 1:
+            # cap过滤：不允许超过可见时间上限
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    import numpy as _np
+                    ta = _np.asarray(list(times), dtype=float)
+                    ya = _np.asarray(list(pitches), dtype=float)
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    m = (ta <= cap + 1e-9)
+                    times = ta[m].tolist(); pitches = ya[m].tolist()
+            except Exception:
+                pass
             # 安全地清除旧的散点
             if hasattr(self, 'gradient_scatter') and self.gradient_scatter is not None:
                 try:
@@ -24365,6 +26679,18 @@ class IntegratedRecordingInterface(QMainWindow):
                         return
                 except Exception as _dlg:
                     print(f"⚠️ 回退确认弹窗失败: {_dlg}")
+            # 若进行了回退重录或识别为回退，且需要在可视化器中触发“回退语义/倒计时”，
+            # 则设置一次性标志，避免因 current_global_time 已被重置而丢失“向后”判定。
+            try:
+                v = getattr(self, 'visualizer', None)
+                if v is not None and (backward or cur_before == target_sec):
+                    # 在回退场景（含回退重录确认路径）设置一次性标志
+                    setattr(v, '_force_retake_backward_once', True)
+                    # 仅伴奏相关模式下尝试一次性倒计时
+                    if getattr(self, 'backing_mode', 'off') in ('accompaniment','both'):
+                        setattr(v, '_force_retake_countdown_once', True)
+            except Exception:
+                pass
             if backward and trim_if_backward and bool(getattr(self, 'is_recording', False)) and bool(getattr(self, 'is_analyzing', False)):
                 # 回退 -> 裁剪未来点
                 try:
@@ -26155,6 +28481,12 @@ class IntegratedRecordingInterface(QMainWindow):
     def set_monitoring_volume(self, volume_percent):
         """设置监听音量的便捷方法"""
         try:
+            # 同步保存到本实例，供监听耳返路径直接使用
+            try:
+                v = float(volume_percent) / 100.0
+            except Exception:
+                v = 1.0
+            self.monitor_volume = max(0.0, min(2.0, float(v)))
             if hasattr(self.audio_processor, 'set_manual_volume'):
                 success = self.audio_processor.set_manual_volume(volume_percent)
                 if success:
@@ -26163,6 +28495,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 else:
                     print("⚠️ 音量设置失败")
                     return False
+            # 若无外部音量处理器，也视为设置成功（走内置monitor_volume）
+            return True
         except Exception as e:
             print(f"❌ 设置监听音量错误: {e}")
             return False
@@ -26646,8 +28980,17 @@ class IntegratedRecordingInterface(QMainWindow):
     
     def on_error_occurred(self, error_msg):
         """错误处理"""
-        QMessageBox.critical(self, "错误", error_msg)
-        self.system_status_label.setText(f"错误: {error_msg}")
+        try:
+            QMessageBox.critical(self, "错误", error_msg)
+        except RecursionError:
+            print(f"[ERROR](recursion) {error_msg}")
+        except Exception as _dlg_e:
+            print(f"[ERROR] {error_msg} (dialog failed: {_dlg_e})")
+        try:
+            if hasattr(self, 'system_status_label') and self.system_status_label:
+                self.system_status_label.setText(f"错误: {error_msg}")
+        except Exception:
+            pass
     
     def update_status_display(self):
         """更新状态显示"""
