@@ -2452,6 +2452,9 @@ class IntegratedAudioProcessor(QThread):
             # 换气/边界/绘制参考
             "_bj_streak", "_bj_last_f0", "_bj_last_t", "_breath_suppress_until", "_prevoice_wait_frames",
             "_last_drawn_t", "_last_drawn_f0",
+            # 门控/缓存状态
+            "_voice_gate_state", "_gate_consec_voiced", "_gate_consec_silent",
+            "_vg_onset_buf", "_vg_tail_buf",
             # 诊断与节流
             "_diag_last_pitch_time", "_diag_pitch_intervals", "_diag_pitch_last_report",
             "_last_no_pitch_emit_t", "_ui_last_emit_t",
@@ -3706,6 +3709,9 @@ class IntegratedAudioProcessor(QThread):
     def start_monitoring(self):
         """启动监听功能（只分析，不录音）- 全局监听模式"""
         try:
+            mode_override = getattr(self, '_monitoring_mode_override', None)
+            status_override = getattr(self, '_monitoring_status_override', None)
+            preferred_configs = getattr(self, '_preferred_monitoring_configs', None)
             # 🎯 如果已经有监听在运行，先停止
             if self.is_global_monitoring_active:
                 print("🔄 检测到已有监听模式运行，先停止现有监听...")
@@ -3721,7 +3727,7 @@ class IntegratedAudioProcessor(QThread):
             
             # 🎯 设置全局监听状态
             self.is_global_monitoring_active = True
-            self.monitoring_mode = 'basic'
+            self.monitoring_mode = mode_override or 'basic'
             # 🔥 关键设置：纯监听模式，不生成音调线
             self.is_monitoring_only = True
             self.enable_pitch_visualization = False
@@ -3916,6 +3922,29 @@ class IntegratedAudioProcessor(QThread):
                     'settings': None,
                     'latency_class': 'medium'
                 })
+
+                if preferred_configs:
+                    try:
+                        merged_configs = list(preferred_configs) + monitoring_configs
+                        deduped = []
+                        seen_keys = set()
+                        for cfg in merged_configs:
+                            key = (
+                                cfg.get('device'),
+                                cfg.get('samplerate'),
+                                cfg.get('blocksize'),
+                                str(cfg.get('settings')),
+                                cfg.get('name')
+                            )
+                            if key in seen_keys:
+                                continue
+                            deduped.append(cfg)
+                            seen_keys.add(key)
+                        monitoring_configs = deduped
+                        if getattr(self, 'debug_flags', {}).get('monitoring_pref_debug'):
+                            print(f"🎯 优先尝试预选监听配置 {len(preferred_configs)} 个，已合并去重为 {len(monitoring_configs)} 个候选")
+                    except Exception as _pref_e:
+                        print(f"⚠️ 预选监听配置合并失败，将使用默认排序: {_pref_e}")
                 
                 # 如检测到蓝牙语音配置，优先尝试蓝牙配置，避免被延迟评分挤到后面
                 try:
@@ -4080,6 +4109,13 @@ class IntegratedAudioProcessor(QThread):
                                 self.audio_stream = sd.Stream(callback=monitoring_callback_duplex, **duplex_args)
                                 created_duplex = True
                                 self.monitor_audio_passthrough = True
+                                try:
+                                    _out_sr = float(duplex_args.get('samplerate', stream_params.get('samplerate', self.sample_rate)))
+                                except Exception:
+                                    _out_sr = float(getattr(self, 'sample_rate', 48000))
+                                self._monitor_hifi_mode = bool(not getattr(self, '_bt_voice_mode', False) and _out_sr >= 44100)
+                                if self._monitor_hifi_mode:
+                                    self._monitor_output_sr = _out_sr
                                 print(f"🎚️ 已启用耳返回传: 输入设备{input_dev_id} -> 输出设备{out_dev_id}")
                         except Exception as _duplex_e:
                             created_duplex = False
@@ -4093,6 +4129,7 @@ class IntegratedAudioProcessor(QThread):
 
                             # —— 分离式耳返：当输出设备不支持输入采样率（如16k蓝牙语音）时，使用独立输出流并做软件重采样 ——
                             try:
+                                self._monitor_hifi_mode = False
                                 # 复用上方匹配输出设备的逻辑
                                 _out_dev_id = _find_matching_output_device(int(config['device']) if 'device' in config else None)
                                 if _out_dev_id is None:
@@ -4105,16 +4142,60 @@ class IntegratedAudioProcessor(QThread):
 
                                 if _out_dev_id is not None:
                                     _out_dev_info = sd.query_devices(_out_dev_id)
-                                    _out_sr = int(_out_dev_info.get('default_samplerate', 48000) or 48000)
-                                    # 输出块大小按采样率比例匹配输入块大小，保证相似的时间粒度
                                     try:
                                         _in_sr = int(stream_params.get('samplerate', self.sample_rate))
                                         _in_bs = int(stream_params.get('blocksize', self.chunk_size))
                                     except Exception:
                                         _in_sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
                                         _in_bs = int(getattr(self, 'active_blocksize', self.chunk_size))
+                                    _candidate_channels = int(max(1, min(2, _out_dev_info.get('max_output_channels', 2) or 2)))
+                                    _out_default_sr = int(float(_out_dev_info.get('default_samplerate', 0) or 0))
+
+                                    def _append_unique_sr(seq: list[int], value: int | float | None):
+                                        try:
+                                            if value is None:
+                                                return
+                                            v = int(round(float(value)))
+                                            if v <= 0:
+                                                return
+                                            if v not in seq:
+                                                seq.append(v)
+                                        except Exception:
+                                            return
+
+                                    _sr_candidates: list[int] = []
+                                    _append_unique_sr(_sr_candidates, _in_sr)
+                                    _append_unique_sr(_sr_candidates, _out_default_sr)
+                                    for _pref_sr in (96000, 88200, 48000, 44100):
+                                        _append_unique_sr(_sr_candidates, _pref_sr)
+
+                                    _selected_sr = None
+                                    for _cand_sr in _sr_candidates:
+                                        try:
+                                            sd.check_output_settings(
+                                                device=_out_dev_id,
+                                                samplerate=_cand_sr,
+                                                channels=_candidate_channels,
+                                                dtype=np.float32
+                                            )
+                                            _selected_sr = int(_cand_sr)
+                                            break
+                                        except Exception:
+                                            continue
+
+                                    if _selected_sr is None:
+                                        _selected_sr = _out_default_sr if _out_default_sr > 0 else 48000
+
+                                    _out_sr = int(max(8000, _selected_sr))
+
+                                    if _out_sr >= 88200:
+                                        _min_out_bs = 32
+                                    elif _out_sr >= 44100:
+                                        _min_out_bs = 48
+                                    else:
+                                        _min_out_bs = 64
                                     # 基于采样率比例的初始输出块大小（保持与输入接近的时间粒度）
-                                    _out_bs = max(64, int(round(_in_bs * (_out_sr / max(1, _in_sr)))))
+                                    _out_bs = max(_min_out_bs, int(round(_in_bs * (_out_sr / max(1, _in_sr)))))
                                     # 如果启用独占输出，倾向较小的典型块大小以降低延迟
                                     _enable_exclusive_out = bool(getattr(self, 'enable_exclusive_monitor_output', False))
                                     if _enable_exclusive_out:
@@ -4130,13 +4211,35 @@ class IntegratedAudioProcessor(QThread):
                                     _wasapi_out = None
                                     try:
                                         # 优先遵循用户开关：独占可显著降低系统混音延迟，但可能与其他软件冲突
-                                        _wasapi_out = sd.WasapiSettings(exclusive=_enable_exclusive_out)
+                                        _out_hostapi_idx = int(_out_dev_info.get('hostapi', -1))
+                                        _out_hostapi_name = ''
+                                        try:
+                                            hostapis = sd.query_hostapis()
+                                            if 0 <= _out_hostapi_idx < len(hostapis):
+                                                _out_hostapi_name = str(hostapis[_out_hostapi_idx].get('name', '') or '')
+                                        except Exception:
+                                            hostapis = []
+                                        is_wasapi_host = 'wasapi' in _out_hostapi_name.lower()
+                                        if is_wasapi_host:
+                                            try:
+                                                _wasapi_out = sd.WasapiSettings(exclusive=_enable_exclusive_out)
+                                            except Exception as _es_err:
+                                                _wasapi_out = None
+                                                if getattr(self, 'debug_flags', {}).get('monitoring_pref_debug'):
+                                                    print(f"⚠️ WASAPI输出设置创建失败，将使用默认共享模式: {_es_err}")
+                                        else:
+                                            _wasapi_out = None
+                                            if getattr(self, 'debug_flags', {}).get('monitoring_pref_debug'):
+                                                api_txt = _out_hostapi_name or 'Unknown host API'
+                                                print(f"ℹ️ 输出设备使用 {api_txt}，跳过WASAPI专用设置")
                                     except Exception:
                                         _wasapi_out = None
 
                                     # 线程安全输出缓冲区（单声道float32）；输出回调按需取样本
                                     self._monitor_output_sr = _out_sr
-                                    self._monitor_output_channels = 2
+                                    self._monitor_output_channels = _candidate_channels
+                                    if not bool(getattr(self, '_bt_voice_mode', False)) and _out_sr >= 44100:
+                                        self._monitor_hifi_mode = True
                                     self._monitor_output_enabled = True
                                     self._monitor_outbuf = np.empty(0, dtype=np.float32)
                                     self._monitor_outbuf_lock = threading.Lock()
@@ -4154,6 +4257,31 @@ class IntegratedAudioProcessor(QThread):
                                         try:
                                             if src_sr == dst_sr or x.size == 0:
                                                 return x.astype(np.float32, copy=False)
+                                            hi_fi_branch = bool(getattr(self, '_monitor_hifi_mode', False)) and src_sr >= 32000 and dst_sr >= 32000
+                                            if hi_fi_branch:
+                                                target_n = override_n_out if override_n_out is not None else int(round(x.size * (float(dst_sr) / float(max(1, src_sr)))))
+                                                target_n = max(1, target_n)
+                                                try:
+                                                    from scipy.signal import resample_poly
+                                                    from math import gcd
+                                                    up_full = int(dst_sr)
+                                                    down_full = int(max(1, src_sr))
+                                                    g = gcd(up_full, down_full)
+                                                    up = max(1, up_full // g)
+                                                    down = max(1, down_full // g)
+                                                    y = resample_poly(x.astype(np.float32, copy=False), up, down).astype(np.float32, copy=False)
+                                                    if y.size != target_n:
+                                                        xp = np.linspace(0.0, max(1.0, y.size - 1), num=y.size, dtype=np.float32)
+                                                        x_new = np.linspace(0.0, max(1.0, y.size - 1), num=target_n, dtype=np.float32)
+                                                        y = np.interp(x_new, xp, y).astype(np.float32, copy=False)
+                                                    return y.astype(np.float32, copy=False)
+                                                except Exception:
+                                                    try:
+                                                        from scipy.signal import resample
+                                                        y = resample(x.astype(np.float32, copy=False), target_n)
+                                                        return y.astype(np.float32, copy=False)
+                                                    except Exception:
+                                                        pass
                                             # 当明确目标点数时，采用线性插值以降低计算开销，避免高频率resample_poly导致卡顿
                                             if override_n_out is not None:
                                                 n_out = int(max(1, override_n_out))
@@ -4202,7 +4330,10 @@ class IntegratedAudioProcessor(QThread):
                                                 _cur_len = int(self._monitor_outbuf.size)
                                             if not self._monitor_warmup_done:
                                                 # 更短的预充长度，降低起始端到端延迟
-                                                _warm_ms = 0.018 if _out_sr >= 44100 else 0.028
+                                                if getattr(self, '_monitor_hifi_mode', False):
+                                                    _warm_ms = 0.012
+                                                else:
+                                                    _warm_ms = 0.018 if _out_sr >= 44100 else 0.028
                                                 _need = int(self._monitor_output_sr * _warm_ms) - _cur_len
                                                 if _need > 0:
                                                     pad = np.zeros(min(_need, mono_block.size), dtype=np.float32)
@@ -4214,7 +4345,10 @@ class IntegratedAudioProcessor(QThread):
                                             with self._monitor_outbuf_lock:
                                                 _cur_len = int(self._monitor_outbuf.size)
                                             # 降低目标缓冲以减少端到端延迟
-                                            _target_ms = 0.035 if _out_sr >= 44100 else 0.055
+                                            if getattr(self, '_monitor_hifi_mode', False):
+                                                _target_ms = 0.022
+                                            else:
+                                                _target_ms = 0.035 if _out_sr >= 44100 else 0.055
                                             _target_len = int(self._monitor_output_sr * _target_ms)
                                             if _target_len <= 0:
                                                 _target_len = int(self._monitor_output_sr * 0.05)
@@ -4234,7 +4368,10 @@ class IntegratedAudioProcessor(QThread):
                                             with self._monitor_outbuf_lock:
                                                 self._monitor_outbuf = np.concatenate((self._monitor_outbuf, y))
                                                 # 目标缓冲维持在 ~28–55ms 之间，避免“吞吐-饥饿”抖动
-                                                _target_ms = 0.035 if _out_sr >= 44100 else 0.055
+                                                if getattr(self, '_monitor_hifi_mode', False):
+                                                    _target_ms = 0.022
+                                                else:
+                                                    _target_ms = 0.035 if _out_sr >= 44100 else 0.055
                                                 _max_len = int(self._monitor_output_sr * (2.0 * _target_ms))
                                                 _max_len = max(_in_bs, max(1024, _max_len))
                                                 if self._monitor_outbuf.size > _max_len:
@@ -4289,7 +4426,7 @@ class IntegratedAudioProcessor(QThread):
                                         device=_out_dev_id,
                                         samplerate=_out_sr,
                                         blocksize=_out_bs,
-                                        channels=2,
+                                        channels=self._monitor_output_channels,
                                         callback=_monitor_output_callback,
                                         dtype=np.float32,
                                         latency='low',
@@ -4359,6 +4496,8 @@ class IntegratedAudioProcessor(QThread):
                         _default_lat_txt = f"{theoretical_latency:.2f}ms"
                         print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=_default_lat_txt)} ⭐")
                         print(f"   ├─ 性能级别: {config['latency_class']}")
+                        if config.get('quality_score') is not None:
+                            print(f"   ├─ 设备评分: {config['quality_score']}/100")
                         print(f"   └─ 音频格式: float32")
                         
                         monitoring_stream_created = True
@@ -4398,7 +4537,8 @@ class IntegratedAudioProcessor(QThread):
                 self.start_audio_processing_thread()
                 
                 print("✅ 全局监听模式已激活，优先级最高")
-                self.status_updated.emit("全局监听模式已启动")
+                status_message = status_override or "全局监听模式已启动"
+                self.status_updated.emit(status_message)
                 return True
                 
             except Exception as e:
@@ -4411,6 +4551,13 @@ class IntegratedAudioProcessor(QThread):
             self.is_global_monitoring_active = False
             self.error_occurred.emit(f"启动监听失败: {e}")
             return False
+        finally:
+            for attr_name in ('_preferred_monitoring_configs', '_monitoring_mode_override', '_monitoring_status_override'):
+                if hasattr(self, attr_name):
+                    try:
+                        delattr(self, attr_name)
+                    except Exception:
+                        pass
 
     # =============== 暂停/恢复（处理器侧） ===============
     def pause_recording(self):
@@ -4498,6 +4645,7 @@ class IntegratedAudioProcessor(QThread):
                 self._monitor_output_enabled = False
                 if hasattr(self, '_append_to_monitor_outbuf'):
                     delattr(self, '_append_to_monitor_outbuf')
+                self._monitor_hifi_mode = False
             except Exception:
                 pass
             
@@ -4554,26 +4702,69 @@ class IntegratedAudioProcessor(QThread):
                                 has_bt_input = True
                         except Exception:
                             continue
-                    if (not has_hecate_input) and has_bt_input:
-                        # 避免递归与日志风暴：添加重入保护与节流
+                    if not has_hecate_input:
                         now = time.time()
-                        last = float(getattr(self, "_bt_fallback_last_t", 0.0))
-                        in_progress = bool(getattr(self, "_bt_fallback_in_progress", False))
+                        last = float(getattr(self, "_universal_monitor_last_t", 0.0))
+                        in_progress = bool(getattr(self, "_universal_monitor_in_progress", False))
                         if (now - last) < 3.0 or in_progress:
-                            # 3秒冷却内或正在回退中，直接返回 False 防止反复触发
+                            # 冷却时间内避免重复触发
                             return False
+                        self._universal_monitor_in_progress = True
+                        self._universal_monitor_last_t = now
                         try:
-                            self._bt_fallback_in_progress = True
-                            self._bt_fallback_last_t = now
-                            # 日志节流
                             if hasattr(self, '_log_rate_limit'):
-                                self._log_rate_limit('bt_unified_fallback', "🎧 检测到蓝牙语音输入设备，且无HECATE输入；改用标准全局监听（蓝牙优先）", interval=5.0, burst=1)
+                                self._log_rate_limit(
+                                    'universal_monitor_fallback',
+                                    "🎧 未检测到HECATE输入设备，启用智能通用监听模式",
+                                    interval=4.0,
+                                    burst=1
+                                )
                             else:
-                                print("🎧 检测到蓝牙语音输入设备，且无HECATE输入；改用标准全局监听（蓝牙优先）")
-                            # 避免递归与状态混乱：此处不设置 is_global_monitoring_active，直接调用标准监听
-                            return self.start_monitoring()
+                                print("🎧 未检测到HECATE输入设备，启用智能通用监听模式")
+
+                            optimal_configs = []
+                            try:
+                                optimal_configs = self._get_optimal_wasapi_configs()
+                            except Exception as _cfg_e:
+                                print(f"⚠️ 获取智能监听配置失败，将使用基础监听流程: {_cfg_e}")
+
+                            if optimal_configs:
+                                best_cfg = optimal_configs[0]
+                                try:
+                                    import sounddevice as sd
+                                    dev_id = best_cfg.get('device')
+                                    dev_label = f"设备{dev_id}" if dev_id is not None else "默认设备"
+                                    dev_name = '系统默认'
+                                    if dev_id is not None:
+                                        dev_info = sd.query_devices(dev_id)
+                                        dev_name = dev_info.get('name', dev_name)
+                                    latency_ms = best_cfg.get('expected_latency_ms')
+                                    latency_txt = _format_latency_ms(latency_ms)
+                                    score = best_cfg.get('quality_score')
+                                    quality_txt = f"，评分{score}/100" if score is not None else ''
+                                    samplerate = best_cfg.get('samplerate', '未知')
+                                    blocksize = best_cfg.get('blocksize', '未知')
+                                    print(f"🎯 优先监听设备: {dev_name} ({dev_label}) {samplerate}Hz/{blocksize}样本 {latency_txt}{quality_txt}")
+                                except Exception as _best_info_e:
+                                    print(f"⚠️ 监听优先设备信息获取失败: {_best_info_e}")
+                            else:
+                                print("ℹ️ 未能自动生成最优监听配置，将使用默认监听流程")
+
+                            if has_bt_input:
+                                print("🎧 检测到蓝牙语音输入候选，将优先优化蓝牙监听链路")
+
+                            if optimal_configs:
+                                self._preferred_monitoring_configs = optimal_configs[:5]
+                            self._monitoring_mode_override = 'unified'
+                            self._monitoring_status_override = "智能全局监听已启动"
+                            success = self.start_monitoring()
+                            if success:
+                                print("✨ 智能通用监听模式已启动（非HECATE耳机）")
+                            else:
+                                print("⚠️ 智能通用监听模式启动失败，建议检查设备或驱动配置")
+                            return success
                         finally:
-                            self._bt_fallback_in_progress = False
+                            self._universal_monitor_in_progress = False
                 except Exception as _precheck_e:
                     print(f"⚠️ 监听前置判定失败（回退到标准流程）: {_precheck_e}")
                 
@@ -6913,6 +7104,19 @@ class IntegratedAudioProcessor(QThread):
             self._pitch_analysis_counter += 1
             # 先记录当前时间
             current_time = time.time()
+            # 回退后抑制窗口：在指定时间内直接跳过分析结果，等待新音频进入
+            try:
+                backoff_until = float(getattr(self, '_analysis_backoff_until', 0.0) or 0.0)
+            except Exception:
+                backoff_until = 0.0
+            if backoff_until > 0.0:
+                if current_time < backoff_until:
+                    return
+                try:
+                    self._analysis_backoff_until = 0.0
+                    self._analysis_backoff_reason = ''
+                except Exception:
+                    pass
             # 诊断：帧间隔统计（仅在启用调试时计算，避免热路径开销）
             if getattr(self, 'debug_flags', {}).get('queue_log', False):
                 if not hasattr(self, '_diag_last_pitch_time'):
@@ -9785,7 +9989,10 @@ class IntegratedAudioProcessor(QThread):
                 return audio_data
             x = audio_data.astype(np.float32, copy=False)
             # 头房预增益（线性）
-            headroom_db = float(getattr(self, 'headroom_db', -6.0))
+            if key == 'monitor' and getattr(self, '_monitor_hifi_mode', False):
+                headroom_db = float(getattr(self, 'monitor_headroom_db', -3.0))
+            else:
+                headroom_db = float(getattr(self, 'headroom_db', -6.0))
             headroom_lin = 10.0 ** (headroom_db / 20.0)
             y = x * headroom_lin
 
@@ -9799,9 +10006,14 @@ class IntegratedAudioProcessor(QThread):
             # 估计块RMS
             rms = float(np.sqrt(np.mean(y * y)) + 1e-12)
             # 平滑RMS包络（Attack快，Release慢）
-            sr = float(getattr(self, 'sample_rate', 48000))
-            atk_t = 0.10  # 100ms
-            rel_t = 4.0   # 4s
+            if key == 'monitor' and getattr(self, '_monitor_hifi_mode', False):
+                sr = float(getattr(self, '_monitor_output_sr', getattr(self, 'sample_rate', 48000)))
+                atk_t = 0.04
+                rel_t = 1.5
+            else:
+                sr = float(getattr(self, 'sample_rate', 48000))
+                atk_t = 0.10  # 100ms
+                rel_t = 4.0   # 4s
             atk_a = np.exp(-1.0 / max(1.0, atk_t * sr))
             rel_a = np.exp(-1.0 / max(1.0, rel_t * sr))
             env = st['env']
@@ -9877,22 +10089,29 @@ class IntegratedAudioProcessor(QThread):
             self._mon_dc_state['x1'] = x1
             self._mon_dc_state['y1'] = y1
 
-            # 2) 轻度低通：对蓝牙语音采样率（<=24k）使用 ~8kHz；否则使用 ~14kHz，抑制尖锐高频噪点
+            # 2) 轻度低通：蓝牙语音保留强抑制；HiFi模式尽量开放带宽
+            hifi_mode = bool(getattr(self, '_monitor_hifi_mode', False))
             if fs <= 24000:
                 lpf_fc = 8000.0
+            elif hifi_mode and fs >= 44100:
+                lpf_fc = min(fs * 0.45, 20000.0)  # 保留大部分频段，仅做极轻抑制
             else:
                 lpf_fc = 14000.0
-            # 单极RC低通：y[n] = y[n-1] + alpha*(x[n]-y[n-1])
-            lpf_alpha = 1.0 - math.exp(-2.0 * math.pi * lpf_fc / fs)
-            if not hasattr(self, '_mon_lpf_state'):
-                self._mon_lpf_state = {'y1': 0.0}
-            yl = float(self._mon_lpf_state.get('y1', 0.0))
-            out = np.empty_like(y)
-            a2 = float(lpf_alpha)
-            for i in range(y.size):
-                yl = yl + a2 * (float(y[i]) - yl)
-                out[i] = yl
-            self._mon_lpf_state['y1'] = yl
+
+            if hifi_mode and lpf_fc >= (fs * 0.49):
+                out = y.astype(np.float32, copy=False)
+            else:
+                # 单极RC低通：y[n] = y[n-1] + alpha*(x[n]-y[n-1])
+                lpf_alpha = 1.0 - math.exp(-2.0 * math.pi * lpf_fc / fs)
+                if not hasattr(self, '_mon_lpf_state'):
+                    self._mon_lpf_state = {'y1': 0.0}
+                yl = float(self._mon_lpf_state.get('y1', 0.0))
+                out = np.empty_like(y)
+                a2 = float(lpf_alpha)
+                for i in range(y.size):
+                    yl = yl + a2 * (float(y[i]) - yl)
+                    out[i] = yl
+                self._mon_lpf_state['y1'] = yl
 
             return out.astype(np.float32, copy=False)
         except Exception:
@@ -10397,7 +10616,7 @@ class ECGStylePitchVisualizer(QWidget):
         # ================== 轻量持久化（NDJSON） ==================
         # 目标：将绘制点按时间流式写入 recordings/Details 下的 .ndjson 文件；
         # - 在回退时写入 trim 标记用于后续加载过滤  
-        # - 自动清理 7 天前旧文件（轻量、低干扰）
+        # - 自动清理 15 分钟前的旧文件（轻量、低干扰）
         try:
             self._persist_enabled = True
             self._persist_dir = None            # Path to recordings/Details
@@ -10408,7 +10627,7 @@ class ECGStylePitchVisualizer(QWidget):
             self._persist_flush_every_s = 1.0   # flush by time
             import time as _t
             self._persist_session_id = _t.strftime("%Y%m%d_%H%M%S")
-            self._persist_cleanup_days = 7
+            self._persist_retention_seconds = 15 * 60  # 15 分钟
             self._persist_cleanup_timer = None
         except Exception:
             # 任何异常都不影响主流程
@@ -10539,13 +10758,15 @@ class ECGStylePitchVisualizer(QWidget):
             pass
 
     def _persist_cleanup_old_files(self):
-        """删除 7 天前的 Details 持久化文件。"""
+        """删除早于配置窗口（默认15分钟）的 Details 持久化文件。"""
         try:
             if self._persist_dir is None:
                 return
             from pathlib import Path as _P
             import time as _t
-            keep_seconds = max(1, int(getattr(self, '_persist_cleanup_days', 7))) * 86400
+            keep_seconds = float(getattr(self, '_persist_retention_seconds', 15 * 60))
+            if keep_seconds <= 0:
+                keep_seconds = 15 * 60
             now = _t.time()
             for fp in _P(self._persist_dir).glob('*.ndjson'):
                 try:
@@ -10946,12 +11167,26 @@ class ECGStylePitchVisualizer(QWidget):
                 self._post_seek_initial_cap = float(target_time)
                 # 重置前向刷新标记
                 self._last_forward_refresh_cap = -1.0
-                # 新增：分析/伴奏模式立即解除严格锁
+                # 在伴奏/分析模式下根据方向调整严格锁策略
                 if bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing'):
-                    self._cap_strict_lock = False
-                    self._strict_cap_dirty = True
-                    if getattr(self,'debug_flags',{}).get('cap_diag'):
-                        print(f"[CAP_DBG] unlock_on_seek analyze/backing cap_init={self._post_seek_initial_cap:.3f}")
+                    if getattr(self, '_last_seek_backward', False):
+                        # 回退：保持严格锁，防止旧点越界；同时重置可见上限
+                        try:
+                            self._cap_visible_time_enabled = True
+                        except Exception:
+                            pass
+                        self._max_visible_time = float(target_time)
+                        self._cap_strict_lock = True
+                        self._post_retake_new_data_started = False
+                        self._strict_cap_dirty = True
+                        if getattr(self,'debug_flags',{}).get('cap_diag'):
+                            print(f"[CAP_DBG] lock_on_backward cap={self._max_visible_time:.3f}")
+                    else:
+                        # 前向/跳转：解除严格锁，允许cap按新点推进
+                        self._cap_strict_lock = False
+                        self._strict_cap_dirty = True
+                        if getattr(self,'debug_flags',{}).get('cap_diag'):
+                            print(f"[CAP_DBG] unlock_on_seek cap_init={self._post_seek_initial_cap:.3f}")
             except Exception:
                 pass
             # 过滤扁平点缓存，仅保留回退点之前的历史点，确保回退前细节点立即可见且不过度清空
@@ -11245,6 +11480,11 @@ class ECGStylePitchVisualizer(QWidget):
                         self._strict_cap_dirty = True
                         self._retake_countdown_skipped_for_analyzing = True
                         try:
+                            self._retake_countdown_pause_started_at = 0.0
+                            self._retake_countdown_freeze_time = None
+                        except Exception:
+                            pass
+                        try:
                             if hasattr(self, '_current_epoch'):
                                 self._current_epoch = None
                         except Exception:
@@ -11260,6 +11500,42 @@ class ECGStylePitchVisualizer(QWidget):
                             self._retake_countdown_start_wall = _t.time()
                             self._retake_countdown_end_wall = self._retake_countdown_start_wall + self._retake_countdown_duration
                             self._retake_countdown_block_add = True  # 阻止 add_pitch_data 写入
+                            # 为后续恢复补偿暂停时长
+                            self._retake_countdown_pause_started_at = self._retake_countdown_start_wall
+                            self._retake_countdown_freeze_time = float(target_time)
+                            # 回录倒计时期间立即冻结可视化进度于目标点
+                            try:
+                                self.current_global_time = float(target_time)
+                                # 确保最后一个音高时间不领先于冻结点
+                                if hasattr(self, 'last_pitch_time') and self.last_pitch_time > float(target_time):
+                                    self.last_pitch_time = float(target_time)
+                            except Exception:
+                                pass
+                            # 在自动跟随场景下同步时间偏移，以免界面回拉
+                            try:
+                                if getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
+                                    center_t = float(getattr(self, 'center_display_time', 8.0))
+                                    if float(target_time) <= center_t:
+                                        self.time_offset = 0.0
+                                    else:
+                                        max_offset = max(0.0, float(getattr(self, 'max_history_time', float(target_time))) - float(getattr(self, 'time_window', 16.0)))
+                                        self.time_offset = max(0.0, min(float(target_time) - center_t, max_offset))
+                            except Exception:
+                                pass
+                            # 重置倒计时覆盖相关对象，确保重新创建
+                            for _attr in ('_retake_countdown_bg', '_retake_countdown_text', '_retake_countdown_hint', '_retake_countdown_line'):
+                                try:
+                                    setattr(self, _attr, None)
+                                except Exception:
+                                    pass
+                            # 清空UI节流待发，避免旧帧在倒计时结束后冲入
+                            try:
+                                if hasattr(self, '_ui_pending'):
+                                    self._ui_pending = None
+                                if hasattr(self, '_ui_last_emit_t'):
+                                    self._ui_last_emit_t = _t.time()
+                            except Exception:
+                                pass
                             # 严格cap锁：在倒计时结束并写入第一帧新点之前，绝不允许 >cap 旧点“回潮”
                             self._cap_strict_lock = True
                             self._post_retake_new_data_started = False
@@ -11278,6 +11554,11 @@ class ECGStylePitchVisualizer(QWidget):
                         # 分析/伴奏：保持解锁
                         if getattr(self,'debug_flags',{}).get('cap_diag'):
                             print(f"[CAP_DBG] no_countdown_skip_lock analyze/backing t={float(target_time):.3f}")
+                    try:
+                        self._retake_countdown_pause_started_at = 0.0
+                        self._retake_countdown_freeze_time = None
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # 快速段重建：仅第一次回退后且普通模式
@@ -17349,7 +17630,8 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False):
                     import time as _t
-                    if _t.time() < float(getattr(self, '_retake_countdown_end_wall', 0.0)):
+                    now_wall = _t.time()
+                    if now_wall < float(getattr(self, '_retake_countdown_end_wall', 0.0)):
                         # 仅更新时间与返回
                         if not hasattr(self, 'start_time') or self.start_time is None:
                             self.start_time = timestamp
@@ -17357,9 +17639,27 @@ class ECGStylePitchVisualizer(QWidget):
                             # 将 current_global_time 暂时锁定在 target_time - (剩余) 区域左侧边界，避免视觉跳跃
                             tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
                             dur = float(getattr(self, '_retake_countdown_duration', 3.0))
-                            rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - _t.time()
-                            if rem < 0: rem = 0.0
-                            self.current_global_time = max(0.0, tgt - rem)
+                            rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - now_wall
+                            if rem < 0:
+                                rem = 0.0
+                            freeze_t = float(getattr(self, '_retake_countdown_freeze_time', tgt) or tgt)
+                            self.current_global_time = freeze_t
+                            try:
+                                if hasattr(self, 'last_pitch_time') and self.last_pitch_time > freeze_t:
+                                    self.last_pitch_time = freeze_t
+                            except Exception:
+                                pass
+                            # 冻结自动跟随的时间偏移，保持播放指针同步
+                            try:
+                                if getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
+                                    center_t = float(getattr(self, 'center_display_time', 8.0))
+                                    if freeze_t <= center_t:
+                                        self.time_offset = 0.0
+                                    else:
+                                        max_offset = max(0.0, float(getattr(self, 'max_history_time', freeze_t)) - float(getattr(self, 'time_window', 16.0)))
+                                        self.time_offset = max(0.0, min(freeze_t - center_t, max_offset))
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                         return
@@ -17367,6 +17667,7 @@ class ECGStylePitchVisualizer(QWidget):
                         # 结束：允许写入并推进cap至目标（保持 cap==目标直到新点超过它）
                         self._retake_countdown_block_add = False
                         self._retake_countdown_active = False
+                        self._retake_countdown_freeze_time = None
                         # 结束瞬间将播放指针对齐到 cap，避免视觉落后
                         try:
                             _capx = float(getattr(self, '_retake_countdown_target_time', getattr(self, '_max_visible_time', 0.0)))
@@ -17374,6 +17675,18 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._lb_playhead.set_xdata([_capx, _capx])
                                 if hasattr(self, 'canvas') and self.canvas is not None:
                                     self.canvas.draw_idle()
+                        except Exception:
+                            pass
+                        # 将倒计时等待视为一次暂停，补偿出去除跳跃
+                        try:
+                            anchor = float(getattr(self, '_retake_countdown_pause_started_at', 0.0))
+                            if anchor > 0:
+                                extra = max(0.0, now_wall - anchor)
+                                self._accumulated_pause_dur = float(getattr(self, '_accumulated_pause_dur', 0.0)) + extra
+                        except Exception:
+                            pass
+                        try:
+                            self._retake_countdown_pause_started_at = 0.0
                         except Exception:
                             pass
                         # 倒计时刚结束，不立即释放严格锁，等待首个新点真正落地后再释放
@@ -18877,8 +19190,18 @@ class ECGStylePitchVisualizer(QWidget):
             current_time = time.time()
             if self.start_time is None:
                 self.start_time = current_time
-            
-            self.current_global_time = current_time - self.start_time
+
+            countdown_freeze = bool(getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False))
+            if countdown_freeze:
+                freeze_t = float(getattr(self, '_retake_countdown_freeze_time', getattr(self, '_retake_countdown_target_time', 0.0)))
+                self.current_global_time = max(0.0, float(freeze_t))
+                try:
+                    if getattr(self, 'last_pitch_time', None) is None or self.last_pitch_time > self.current_global_time:
+                        self.last_pitch_time = self.current_global_time
+                except Exception:
+                    pass
+            else:
+                self.current_global_time = current_time - self.start_time
             
             # 如果有新音高数据，记录最后音高时间
             if len(self.pitch_data) > 0:
@@ -18911,20 +19234,29 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         pass
                 else:
-                    if self.current_global_time <= self.center_display_time:
-                        self.time_offset = 0.0
+                    if countdown_freeze:
+                        # 倒计时冻结期间保持时间偏移锁定在目标点
+                        center_t = float(getattr(self, 'center_display_time', 8.0))
+                        if self.current_global_time <= center_t:
+                            self.time_offset = 0.0
+                        else:
+                            max_offset = max(0.0, self.max_history_time - self.time_window)
+                            self.time_offset = max(0.0, min(self.current_global_time - center_t, max_offset))
                     else:
-                        if not hasattr(self, '_auto_scroll_started'):
-                            print(f"▶ 自动滚动启动: t={self.current_global_time:.2f}s (center={self.center_display_time}s)")
-                            self._auto_scroll_started = True
-                        try:
-                            latest_time = self.time_data[-1] if self.time_data else self.current_global_time
-                            target_t = float(self._get_follow_target_time(latest_time=latest_time))
-                        except Exception:
-                            target_t = self.current_global_time
-                        self.time_offset = max(0.0, target_t - self.center_display_time)
-                        max_offset = max(0, self.max_history_time - self.time_window)
-                        self.time_offset = min(self.time_offset, max_offset)
+                        if self.current_global_time <= self.center_display_time:
+                            self.time_offset = 0.0
+                        else:
+                            if not hasattr(self, '_auto_scroll_started'):
+                                print(f"▶ 自动滚动启动: t={self.current_global_time:.2f}s (center={self.center_display_time}s)")
+                                self._auto_scroll_started = True
+                            try:
+                                latest_time = self.time_data[-1] if self.time_data else self.current_global_time
+                                target_t = float(self._get_follow_target_time(latest_time=latest_time))
+                            except Exception:
+                                target_t = self.current_global_time
+                            self.time_offset = max(0.0, target_t - self.center_display_time)
+                            max_offset = max(0, self.max_history_time - self.time_window)
+                            self.time_offset = min(self.time_offset, max_offset)
                     try:
                         self.update_scrollbars()
                     except Exception:
@@ -26763,6 +27095,23 @@ class IntegratedRecordingInterface(QMainWindow):
                     setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
             except Exception:
                 pass
+            # 清空节流待发缓存，防止旧帧在回退后被补发
+            try:
+                if hasattr(self, '_ui_pending'):
+                    self._ui_pending = None
+                if hasattr(self, '_ui_last_emit_t'):
+                    import time as _time
+                    self._ui_last_emit_t = _time.time()
+            except Exception:
+                pass
+            # 设置短暂的分析抑制窗口，确保回退前的帧完全清空
+            try:
+                import time as _time
+                guard_window = max(0.12, min(0.6, (end_t - start_t) + 0.05))
+                self._analysis_backoff_until = _time.time() + guard_window
+                self._analysis_backoff_reason = 'rollback'
+            except Exception:
+                pass
             # 1) 删除可视化区间（采用 remove_range 保留前后，但我们还会截掉后半音频，因此相当于截断）
             if v is not None:
                 try:
@@ -26803,6 +27152,47 @@ class IntegratedRecordingInterface(QMainWindow):
                     cutoff_samples = int(start_t * sr)
                     if cutoff_samples < total_samples:
                         self.audio_buffer = self.audio_buffer[:cutoff_samples]
+                # 清空仍在排队的旧采样，防止迟到包在回退后重新绘制
+                try:
+                    buf_q = getattr(self, 'audio_buffer_queue', None)
+                    if buf_q is not None:
+                        from queue import Empty as _Empty
+                        drained = 0
+                        while drained < 512:
+                            try:
+                                buf_q.get_nowait()
+                                drained += 1
+                            except _Empty:
+                                break
+                except Exception as _qerr:
+                    if getattr(self, 'debug_flags', {}).get('queue_log', False):
+                        print(f"⚠️ 回退清空 audio_buffer_queue 失败: {_qerr}")
+                # 同步清理主线程消费队列
+                try:
+                    main_q = getattr(self, 'audio_queue', None)
+                    if main_q is not None:
+                        from queue import Empty as _Empty2
+                        drained = 0
+                        while drained < 64:
+                            try:
+                                main_q.get_nowait()
+                                drained += 1
+                            except _Empty2:
+                                break
+                except Exception:
+                    pass
+                # 重置累积缓冲，避免旧采样残留影响下一帧拼接
+                try:
+                    if hasattr(self, '_enqueue_accum'):
+                        import numpy as _np
+                        self._enqueue_accum = _np.empty(0, dtype=_np.float32)
+                except Exception:
+                    self._enqueue_accum = None
+                try:
+                    if hasattr(self, '_frame_buffer') and isinstance(self._frame_buffer, list):
+                        self._frame_buffer.clear()
+                except Exception:
+                    self._frame_buffer = []
             except Exception as _ab:
                 print(f"⚠️ 音频缓冲截断失败: {_ab}")
             # 4) 重置时长与时间轴参考（并设置回退后新的起始时间基准）
@@ -26873,6 +27263,11 @@ class IntegratedRecordingInterface(QMainWindow):
                     try:
                         setattr(viz, '_cap_visible_time_enabled', True)
                         setattr(viz, '_max_visible_time', float(start_t))
+                    except Exception:
+                        pass
+                    try:
+                        setattr(viz, '_cap_strict_lock', True)
+                        setattr(viz, '_post_retake_new_data_started', False)
                     except Exception:
                         pass
                     try:
