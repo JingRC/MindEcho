@@ -21,6 +21,16 @@ except NameError:
     except Exception:
         project_root = Path.cwd()
 
+# 确保项目根目录与 src 包在Python路径中，解决作为脚本直接运行时的导入问题
+try:
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    src_path = project_root / "src"
+    if src_path.exists() and str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+except Exception as _path_err:
+    print(f"⚠️ 初始化模块搜索路径失败: {_path_err}")
+
 PYQT_VERSION = 0
 try:
     from PyQt6 import QtCore as _QC6  # type: ignore
@@ -2802,6 +2812,206 @@ class IntegratedAudioProcessor(QThread):
             metrics['error'] = str(e)
         return metrics
 
+    # ---------- 监听配置工具 ----------
+    def _resolve_extra_settings_obj(self, settings_value):
+        """将序列化配置中的 settings 字段转换为 sounddevice 的设置对象。"""
+        if settings_value is None:
+            return None
+        try:
+            import sounddevice as sd
+            # 已经是 sounddevice 对象
+            if isinstance(settings_value, (sd.WasapiSettings, sd.AsioSettings)):
+                return settings_value
+            # 序列化后的描述
+            if isinstance(settings_value, dict):
+                stype = str(settings_value.get('type', '')).lower()
+                if stype == 'wasapi':
+                    return sd.WasapiSettings(exclusive=bool(settings_value.get('exclusive', False)))
+                if stype == 'asio':
+                    selectors = settings_value.get('channel_selectors')
+                    try:
+                        return sd.AsioSettings(channel_selectors=selectors)
+                    except Exception:
+                        return sd.AsioSettings()
+            # 其它可序列化文本描述
+            if isinstance(settings_value, str):
+                text = settings_value.lower()
+                if 'wasapi' in text:
+                    return sd.WasapiSettings(exclusive='exclusive' in text)
+        except Exception as _setting_err:
+            print(f"⚠️ 监听设置解析失败: {_setting_err}")
+        return None
+
+    def _describe_settings_signature(self, settings_obj) -> str:
+        """用于去重的设置签名"""
+        if settings_obj is None:
+            return 'none'
+        try:
+            import sounddevice as sd
+            if isinstance(settings_obj, sd.WasapiSettings):
+                return f"wasapi:{getattr(settings_obj, 'exclusive', False)}"
+            if isinstance(settings_obj, sd.AsioSettings):
+                selectors = getattr(settings_obj, 'channel_selectors', None)
+                return f"asio:{selectors}"
+        except Exception:
+            pass
+        return f"{settings_obj.__class__.__name__}:{getattr(settings_obj, 'exclusive', None)}"
+
+    def _normalize_monitoring_candidate(self, candidate: dict) -> dict:
+        """规范化监听配置字段，填充默认值并解析settings。"""
+        normalized = dict(candidate or {})
+        normalized['name'] = normalized.get('name') or '未命名配置'
+        try:
+            normalized['samplerate'] = int(normalized.get('samplerate') or getattr(self, 'sample_rate', 48000))
+        except Exception:
+            normalized['samplerate'] = int(getattr(self, 'sample_rate', 48000))
+        try:
+            blocksize_default = int(getattr(self, 'chunk_size', 256))
+            normalized['blocksize'] = int(normalized.get('blocksize') or blocksize_default)
+            if normalized['blocksize'] <= 0:
+                normalized['blocksize'] = blocksize_default
+        except Exception:
+            normalized['blocksize'] = int(getattr(self, 'chunk_size', 256))
+        normalized['device'] = normalized.get('device', None)
+        normalized['settings'] = self._resolve_extra_settings_obj(normalized.get('settings'))
+        normalized['expected_latency'] = normalized.get('expected_latency', 'auto')
+        normalized['verified_latency'] = normalized.get('verified_latency')
+        normalized['quality_score'] = normalized.get('quality_score')
+        normalized['_settings_signature'] = self._describe_settings_signature(normalized['settings'])
+        return normalized
+
+    def _deduplicate_monitoring_configs(self, configs: list) -> list:
+        """对监听配置去重，保持原有顺序。"""
+        deduped = []
+        seen = set()
+        for cfg in configs or []:
+            norm = self._normalize_monitoring_candidate(cfg)
+            key = (
+                norm.get('device'),
+                norm.get('samplerate'),
+                norm.get('blocksize'),
+                norm.get('_settings_signature')
+            )
+            if key in seen:
+                continue
+            norm.pop('_settings_signature', None)
+            deduped.append(norm)
+            seen.add(key)
+        return deduped
+
+    def _collect_monitoring_configs(self) -> list:
+        """构建多级监听配置优先级链，兼容所有耳机场景。"""
+        configs: list[dict] = []
+
+        # 1) 临时优先配置（来自上游逻辑或监听重试）
+        preferred_chain = getattr(self, '_preferred_monitoring_configs', None)
+        if preferred_chain:
+            configs.extend(preferred_chain if isinstance(preferred_chain, list) else [preferred_chain])
+
+        # 2) 用户首选配置
+        user_cfg = getattr(self, '_selected_device_config', None)
+        if user_cfg:
+            cfg_copy = dict(user_cfg)
+            cfg_copy.setdefault('name', f"首选设备 {user_cfg.get('name', '')}")
+            cfg_copy.setdefault('expected_latency', 'preferred')
+            configs.append(cfg_copy)
+
+        # 3) 智能分析出的WASAPI最佳配置
+        try:
+            smart_configs = self._get_optimal_wasapi_configs()
+            for cfg in smart_configs:
+                cfg_copy = dict(cfg)
+                cfg_copy.setdefault('expected_latency', cfg_copy.get('expected_latency', 'analyzed'))
+                configs.append(cfg_copy)
+        except Exception as _smart_err:
+            print(f"⚠️ 智能WASAPI配置加载失败，稍后将使用通用策略: {_smart_err}")
+
+        # 4) ASIO优先（若环境支持）
+        try:
+            import sounddevice as sd
+            configs.append({
+                'name': 'ASIO专业模式',
+                'device': None,
+                'samplerate': getattr(self, 'sample_rate', 48000),
+                'blocksize': getattr(self, 'chunk_size', 256),
+                'settings': sd.AsioSettings(channel_selectors=[0]),
+                'expected_latency': 'ultra-low'
+            })
+        except Exception:
+            pass
+
+        # 5) DirectSound 和默认系统输入（兼容性层）
+        try:
+            fallback_rate = int(getattr(self, 'sample_rate', 48000))
+            fallback_block = int(getattr(self, 'chunk_size', 256))
+        except Exception:
+            fallback_rate, fallback_block = 48000, 256
+        configs.append({
+            'name': 'DirectSound兼容模式',
+            'device': None,
+            'samplerate': fallback_rate,
+            'blocksize': fallback_block,
+            'settings': None,
+            'expected_latency': 'balanced'
+        })
+        try:
+            import sounddevice as sd
+            default_input = None
+            try:
+                default_input, _ = sd.default.device
+            except Exception:
+                default_input = None
+            configs.append({
+                'name': '系统默认输入(安全)',
+                'device': default_input,
+                'samplerate': 44100,
+                'blocksize': 512,
+                'settings': None,
+                'expected_latency': 'safe'
+            })
+        except Exception:
+            configs.append({
+                'name': '系统默认输入(安全)',
+                'device': None,
+                'samplerate': 44100,
+                'blocksize': 512,
+                'settings': None,
+                'expected_latency': 'safe'
+            })
+
+        # 6) 应急兜底配置
+        configs.append({
+            'name': '应急兼容模式',
+            'device': None,
+            'samplerate': 44100,
+            'blocksize': 1024,
+            'settings': None,
+            'expected_latency': 'fallback'
+        })
+
+        return self._deduplicate_monitoring_configs(configs)
+
+    def _start_general_monitoring_fallback(self, status_text: str | None = None, preferred_configs: list | None = None):
+        """在专项监听失败时回退到通用监听链路。"""
+        try:
+            # 清理当前监听状态，避免 start_monitoring 直接返回
+            self.is_global_monitoring_active = False
+            self.monitoring_mode = None
+            if status_text:
+                self._monitoring_status_override = status_text
+            if preferred_configs is not None:
+                try:
+                    self._preferred_monitoring_configs = list(preferred_configs)
+                except Exception:
+                    self._preferred_monitoring_configs = preferred_configs
+            else:
+                # 预先生成优先级链，便于 start_monitoring 首轮就用到
+                self._preferred_monitoring_configs = self._collect_monitoring_configs()
+            return self.start_monitoring()
+        finally:
+            # start_monitoring 内部会清理这些属性，此处无需额外处理
+            pass
+
     def _rank_monitoring_configs(self, monitoring_configs: list) -> list:
         """对候选监听配置进行基准测试并按得分排序，优先无XRUN且延迟低的配置。
         返回新的排序列表（包含原字段）。失败的配置会被排至末尾。
@@ -3196,40 +3406,24 @@ class IntegratedAudioProcessor(QThread):
             
             # 启动音频流 - 专业级超低延迟配置（智能设备选择）
             audio_stream_created = False
-            
-            # 🚀 专业音频配置序列（按延迟性能排序）- 修复lambda闭包问题
-            audio_configs = [
-                # 第一优先级：ASIO专业驱动（最低延迟）
-                {
-                    'name': 'ASIO专业模式',
-                    'settings': sd.AsioSettings(channel_selectors=[0]),  # 🔧 修复：直接创建对象
-                    'expected_latency': 'ultra-low'
-                },
-                # 第二优先级：DirectSound模式（最兼容）
-                {
-                    'name': 'DirectSound兼容模式',
-                    'settings': None,  # 🔧 修复：直接使用None
-                    'expected_latency': 'medium'  
-                }
-            ]
-            
-            # 🔧 动态添加WASAPI配置（使用动态设备发现）
-            try:
-                wasapi_configs = self._get_optimal_wasapi_configs()
-                # 在ASIO后、DirectSound前插入WASAPI配置
-                for i, config in enumerate(wasapi_configs):
-                    audio_configs.insert(1 + i, {
-                        'name': config['name'],
-                        'device': config['device'],
-                        'samplerate': config['samplerate'],
-                        'blocksize': config['blocksize'],
-                        'settings': config['settings'],  # 已经是对象，不是lambda
-                        'expected_latency': config['expected_latency'],
-                        'verified_latency': config.get('verified_latency')
-                    })
-                print(f"✅ 动态添加了 {len(wasapi_configs)} 个WASAPI配置")
-            except Exception as e:
-                print(f"⚠️ WASAPI动态配置失败，使用基础配置: {e}")
+
+            audio_configs = self._collect_monitoring_configs()
+            if audio_configs:
+                try:
+                    preview = ", ".join(str(cfg.get('name', '未命名')) for cfg in audio_configs[:5])
+                    print(f"🎛️ 监听配置优先级链: {preview}")
+                except Exception:
+                    pass
+            else:
+                print("⚠️ 未能自动生成监听配置，使用默认监听参数")
+                audio_configs = [{
+                    'name': '默认监听',
+                    'device': None,
+                    'samplerate': getattr(self, 'sample_rate', 48000),
+                    'blocksize': getattr(self, 'chunk_size', 256),
+                    'settings': None,
+                    'expected_latency': 'auto'
+                }]
             
             for config in audio_configs:
                 try:
@@ -3255,7 +3449,10 @@ class IntegratedAudioProcessor(QThread):
                         except Exception:
                             stream_params['blocksize'] = config.get('blocksize', self.chunk_size)
                         verified_latency = config.get('verified_latency', None)
-                        print(f"🎯 使用WASAPI设备{config['device']}@{config['samplerate']}Hz (测试验证延迟: {_format_latency_ms(verified_latency)})")
+                        config_name = config.get('name', '监听配置')
+                        device_label = config.get('device', '')
+                        device_txt = '默认输入' if device_label in (None, '') else device_label
+                        print(f"🎯 使用{config_name}: 设备{device_txt} @ {config['samplerate']}Hz (验证延迟: {_format_latency_ms(verified_latency)})")
                     else:
                         stream_params['samplerate'] = self.sample_rate
                         try:
@@ -3266,6 +3463,7 @@ class IntegratedAudioProcessor(QThread):
                             stream_params['blocksize'] = mode_block
                         except Exception:
                             stream_params['blocksize'] = self.chunk_size
+                        print(f"🎯 使用{config.get('name', '监听配置')} (默认输入) @ {stream_params['samplerate']}Hz")
                     
                     # 🔧 修复：添加特定驱动设置（避免lambda调用错误）
                     if config['settings'] is not None:
@@ -3273,6 +3471,7 @@ class IntegratedAudioProcessor(QThread):
                     
                     # 创建音频流
                     self.audio_stream = sd.InputStream(**stream_params)
+                    self._active_monitoring_config = dict(config)
 
                     # 记录当前输入设备信息并检测是否为蓝牙/低采样率语音通道
                     try:
@@ -3711,7 +3910,6 @@ class IntegratedAudioProcessor(QThread):
         try:
             mode_override = getattr(self, '_monitoring_mode_override', None)
             status_override = getattr(self, '_monitoring_status_override', None)
-            preferred_configs = getattr(self, '_preferred_monitoring_configs', None)
             # 🎯 如果已经有监听在运行，先停止
             if self.is_global_monitoring_active:
                 print("🔄 检测到已有监听模式运行，先停止现有监听...")
@@ -3731,6 +3929,7 @@ class IntegratedAudioProcessor(QThread):
             # 🔥 关键设置：纯监听模式，不生成音调线
             self.is_monitoring_only = True
             self.enable_pitch_visualization = False
+            self._active_monitoring_config = None
 
             # 监听回调的合批与限频设置（与录音回调保持一致，降低队列压力、减少卡顿）
             try:
@@ -3894,58 +4093,24 @@ class IntegratedAudioProcessor(QThread):
                 monitoring_stream_created = False
                 
                 # 🚀 监听模式专业音频配置（动态WASAPI设备发现版本）
-                monitoring_configs = [
-                    # 第一优先级：ASIO专业驱动（监听专用）
-                    {
-                        'name': 'ASIO专业监听',
-                        'settings': sd.AsioSettings(channel_selectors=[0]),
-                        'latency_class': 'ultra-low'
-                    }
-                ]
-                
-                # 动态添加WASAPI监听配置
-                wasapi_configs = self._get_optimal_wasapi_configs()
-                for config in wasapi_configs:
-                    monitoring_configs.append({
-                        'name': f"{config['name']}监听",
-                        'device': config['device'],
-                        'samplerate': config['samplerate'],
-                        'blocksize': config['blocksize'],
-                        'settings': config['settings'],  # 🔧 修复：直接使用对象，不调用
-                        'latency_class': config['expected_latency'],
-                        'verified_latency': config.get('verified_latency')
-                    })
-                
-                # 添加DirectSound兼容配置
-                monitoring_configs.append({
-                    'name': 'DirectSound监听',
-                    'settings': None,
-                    'latency_class': 'medium'
-                })
-
-                if preferred_configs:
+                monitoring_configs = self._collect_monitoring_configs()
+                if monitoring_configs:
                     try:
-                        merged_configs = list(preferred_configs) + monitoring_configs
-                        deduped = []
-                        seen_keys = set()
-                        for cfg in merged_configs:
-                            key = (
-                                cfg.get('device'),
-                                cfg.get('samplerate'),
-                                cfg.get('blocksize'),
-                                str(cfg.get('settings')),
-                                cfg.get('name')
-                            )
-                            if key in seen_keys:
-                                continue
-                            deduped.append(cfg)
-                            seen_keys.add(key)
-                        monitoring_configs = deduped
-                        if getattr(self, 'debug_flags', {}).get('monitoring_pref_debug'):
-                            print(f"🎯 优先尝试预选监听配置 {len(preferred_configs)} 个，已合并去重为 {len(monitoring_configs)} 个候选")
-                    except Exception as _pref_e:
-                        print(f"⚠️ 预选监听配置合并失败，将使用默认排序: {_pref_e}")
-                
+                        preview = ", ".join(str(cfg.get('name', '未命名')) for cfg in monitoring_configs[:5])
+                        print(f"🎛️ 监听配置优先级链: {preview}")
+                    except Exception:
+                        pass
+                else:
+                    print("⚠️ 未能自动生成监听配置，使用默认监听参数")
+                    monitoring_configs = [{
+                        'name': '默认监听',
+                        'device': None,
+                        'samplerate': getattr(self, 'sample_rate', 48000),
+                        'blocksize': getattr(self, 'chunk_size', 256),
+                        'settings': None,
+                        'expected_latency': 'auto'
+                    }]
+
                 # 如检测到蓝牙语音配置，优先尝试蓝牙配置，避免被延迟评分挤到后面
                 try:
                     bt_cfgs = [c for c in monitoring_configs if self._is_bt_config(c)]
@@ -4495,11 +4660,22 @@ class IntegratedAudioProcessor(QThread):
                         print(f"   ├─ 理论延迟: {theoretical_latency:.2f}ms")
                         _default_lat_txt = f"{theoretical_latency:.2f}ms"
                         print(f"   ├─ 验证延迟: {_format_latency_ms(verified_latency, default_text=_default_lat_txt)} ⭐")
-                        print(f"   ├─ 性能级别: {config['latency_class']}")
+                        latency_label = config.get('expected_latency', config.get('latency_class', 'unknown'))
+                        print(f"   ├─ 性能级别: {latency_label}")
                         if config.get('quality_score') is not None:
                             print(f"   ├─ 设备评分: {config['quality_score']}/100")
                         print(f"   └─ 音频格式: float32")
                         
+                        try:
+                            cfg_snapshot = dict(config)
+                            cfg_snapshot['actual_samplerate'] = actual_sample_rate
+                            cfg_snapshot['actual_blocksize'] = actual_blocksize
+                            cfg_snapshot['created_duplex'] = created_duplex
+                            cfg_snapshot['verified_latency_ms'] = verified_latency
+                            self._active_monitoring_config = cfg_snapshot
+                        except Exception:
+                            self._active_monitoring_config = dict(config)
+
                         monitoring_stream_created = True
                         break
                         
@@ -4544,11 +4720,13 @@ class IntegratedAudioProcessor(QThread):
             except Exception as e:
                 print(f"❌ 启动监听音频流失败: {e}")
                 self.is_global_monitoring_active = False
+                self._active_monitoring_config = None
                 return False
                 
         except Exception as e:
             print(f"❌ 启动监听功能失败: {e}")
             self.is_global_monitoring_active = False
+            self._active_monitoring_config = None
             self.error_occurred.emit(f"启动监听失败: {e}")
             return False
         finally:
@@ -4653,6 +4831,7 @@ class IntegratedAudioProcessor(QThread):
             self.is_global_monitoring_active = False
             self.monitoring_mode = None
             self.is_monitoring_only = False  # 🔥 重置监听标志
+            self._active_monitoring_config = None
             
             print("✅ 全局监听模式已停止")
             self.status_updated.emit("监听已停止")
@@ -4753,11 +4932,12 @@ class IntegratedAudioProcessor(QThread):
                             if has_bt_input:
                                 print("🎧 检测到蓝牙语音输入候选，将优先优化蓝牙监听链路")
 
-                            if optimal_configs:
-                                self._preferred_monitoring_configs = optimal_configs[:5]
+                            preferred_chain = optimal_configs[:5] if optimal_configs else None
                             self._monitoring_mode_override = 'unified'
-                            self._monitoring_status_override = "智能全局监听已启动"
-                            success = self.start_monitoring()
+                            success = self._start_general_monitoring_fallback(
+                                status_text="智能全局监听已启动",
+                                preferred_configs=preferred_chain
+                            )
                             if success:
                                 print("✨ 智能通用监听模式已启动（非HECATE耳机）")
                             else:
@@ -5537,111 +5717,69 @@ class IntegratedAudioProcessor(QThread):
                     fallback_configs = [
                         {
                             'name': 'DirectSound高质量',
-                            'device': None,  # 使用默认输入设备
-                            'rate': 48000,
-                            'block': 128,
+                            'device': None,
+                            'samplerate': 48000,
+                            'blocksize': 128,
                             'settings': None,
-                            'latency': 'low'
+                            'expected_latency': 'low'
                         },
                         {
                             'name': 'DirectSound标准',
                             'device': None,
-                            'rate': 44100,
-                            'block': 256,
+                            'samplerate': 44100,
+                            'blocksize': 256,
                             'settings': None,
-                            'latency': 'low'
+                            'expected_latency': 'balanced'
                         },
                         {
-                            'name': 'MME兼容模式', 
+                            'name': 'MME兼容模式',
                             'device': None,
-                            'rate': 44100,
-                            'block': 512,
+                            'samplerate': 44100,
+                            'blocksize': 512,
                             'settings': None,
-                            'latency': None
+                            'expected_latency': 'compat'
                         },
                         {
                             'name': '最小兼容配置',
                             'device': None,
-                            'rate': 22050,
-                            'block': 1024,
+                            'samplerate': 22050,
+                            'blocksize': 1024,
                             'settings': None,
-                            'latency': None
+                            'expected_latency': 'fallback'
                         }
                     ]
-                    
-                    # 尝试降级配置
-                    for config in fallback_configs:
-                        try:
-                            print(f"🔧 尝试{config['name']}...")
-                            
-                            stream_params = {
-                                'channels': self.channels,
-                                'samplerate': config['rate'],
-                                'blocksize': config['block'],
-                                'callback': hecate_optimized_callback,
-                                'dtype': np.float32
-                            }
-                            
-                            if config['device'] is not None:
-                                stream_params['device'] = config['device']
-                            if config['latency']:
-                                stream_params['latency'] = config['latency']
-                            if config['settings']:
-                                stream_params['extra_settings'] = config['settings']
-                            
-                            self.monitoring_stream = sd.Stream(**stream_params)
-                            
-                            theoretical_latency = config['block'] / config['rate'] * 1000
-                            
-                            print(f"✅ {config['name']}启动成功:")
-                            print(f"   ├─ 配置: {config['rate']}Hz/{config['block']}样本")
-                            print(f"   ├─ 延迟: {theoretical_latency:.2f}ms")
-                            print(f"   └─ 设备: 系统默认")
-                            
-                            # 🎯 启动流并设为全局音频流
-                            self.monitoring_stream.start()
-                            self.monitor_audio_passthrough = True
-                            self.active_audio_stream = self.monitoring_stream
-                            print("🎧 通用全局监听已启动")
-                            
-                            # 🔥 重要修复：同步采样率/块大小/通道到处理器
-                            actual_samplerate = config['rate']
-                            actual_blocksize = config['block']
-                            try:
-                                self.active_input_samplerate = int(actual_samplerate)
-                                self.active_input_channels = int(stream_params.get('channels', self.channels))
-                                self.active_blocksize = int(actual_blocksize)
-                            except Exception:
-                                pass
-                            if hasattr(self, 'sample_rate') and self.sample_rate != actual_samplerate:
-                                print(f"🔧 同步采样率: {self.sample_rate}Hz → {actual_samplerate}Hz")
-                                self.sample_rate = actual_samplerate
-                            try:
-                                self._apply_actual_input_samplerate(int(actual_samplerate))
-                            except Exception:
-                                pass
-                            try:
-                                if not getattr(self, 'pitch_service', None):
-                                    self.setup_analyzers()
-                            except Exception:
-                                pass
-                            
-                            # 🔥 关键修复：启动音频处理线程进行音高检测
-                            self.start_audio_processing_thread()
-                            print("🔥 通用音频处理线程已启动，音高检测功能激活")
-                            
-                            self.status_updated.emit("通用全局监听已启动")
+
+                    try:
+                        self._monitoring_mode_override = 'unified-fallback'
+                        success = self._start_general_monitoring_fallback(
+                            status_text="通用全局监听已启动",
+                            preferred_configs=fallback_configs
+                        )
+                        if success:
+                            print("✨ 通用音频驱动监听已启用（HECATE兜底链）")
                             return True
-                            
-                        except Exception as e:
-                            print(f"❌ {config['name']}失败: {e}")
-                            continue
+                        else:
+                            print("⚠️ 通用监听兜底失败，后续将抛出异常")
+                    except Exception as _fallback_err:
+                        print(f"⚠️ 通用兜底监听启动异常: {_fallback_err}")
                 
                 # 如果所有配置都失败
                 raise Exception("所有音频配置都失败，无法启动监听功能")
             except Exception as e:
                 error_msg = f"🔴 HECATE监听启动失败: {str(e)}"
                 print(error_msg)
+                fallback_success = False
+                try:
+                    self._monitoring_mode_override = 'unified-fallback'
+                    fallback_success = bool(self._start_general_monitoring_fallback(
+                        status_text="监听已回退到通用模式"
+                    ))
+                except Exception as _fallback_exc:
+                    print(f"⚠️ 通用监听回退也失败: {_fallback_exc}")
+                    fallback_success = False
+                if fallback_success:
+                    print("✨ 已在HECATE监听失败后自动启用通用监听模式")
+                    return True
                 # 🎯 重置全局监听状态
                 self.is_global_monitoring_active = False
                 self.monitoring_mode = None
