@@ -382,7 +382,7 @@ except Exception:
 # 说明：外部可能存在不同签名的 PitchFrame，这里统一使用本地兼容类，
 # 接受 f0_raw/f0_smooth 等关键字并提供 to_dict()，避免关键字不匹配导致运行时异常。
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 @dataclass
 class PitchFrame:
@@ -12291,6 +12291,75 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def purge_artists_in_range(self, start: float, end: float):
+        """移除缓存的线段/散点等图元，确保区间 [start,end) 的细节点不会残留。"""
+        try:
+            start = float(max(0.0, start)); end = float(max(start, end))
+        except Exception:
+            return
+        try:
+            ax = getattr(self, 'ax', None)
+        except Exception:
+            ax = None
+        # 单对象散点集合
+        for attr in ('_batched_points', '_browse_points_fallback', '_head_points_scatter',
+                     'gradient_overlay_points', 'gradient_scatter', 'confidence_scatter'):
+            try:
+                obj = getattr(self, attr, None)
+            except Exception:
+                obj = None
+            if obj is None:
+                continue
+            try:
+                if ax is not None and hasattr(ax, 'collections') and obj in getattr(ax, 'collections', []):
+                    obj.remove()
+            except Exception:
+                pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+        # 分段散点/线条集合
+        try:
+            if hasattr(self, '_segment_points') and isinstance(self._segment_points, list):
+                for coll in list(self._segment_points):
+                    try:
+                        if ax is not None and hasattr(ax, 'collections') and coll in getattr(ax, 'collections', []):
+                            coll.remove()
+                    except Exception:
+                        pass
+                self._segment_points = []
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_segment_lines') and isinstance(self._segment_lines, list):
+                for ln in list(self._segment_lines):
+                    try:
+                        if ax is not None and hasattr(ax, 'lines') and ln in getattr(ax, 'lines', []):
+                            ln.remove()
+                    except Exception:
+                        pass
+                self._segment_lines = []
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'gradient_lines') and isinstance(self.gradient_lines, list):
+                for gl in list(self.gradient_lines):
+                    try:
+                        if hasattr(gl, 'remove'):
+                            gl.remove()
+                        elif ax is not None and hasattr(ax, 'collections') and gl in getattr(ax, 'collections', []):
+                            gl.remove()
+                    except Exception:
+                        pass
+                self.gradient_lines = []
+        except Exception:
+            pass
+        try:
+            self._force_redraw_on_next_update = True
+        except Exception:
+            pass
+
     def _estimate_pitch_y_at_time(self, t: float):
         """基于一次性绘制的段缓存(_segments)估计时刻 t 的八度坐标。
         返回 None 表示不可得。"""
@@ -19329,10 +19398,23 @@ class ECGStylePitchVisualizer(QWidget):
             if self.start_time is None:
                 self.start_time = current_time
 
+            manual_freeze = bool(getattr(self, '_external_paused', False) or getattr(self, 'is_backing_paused', False))
             countdown_freeze = bool(getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False))
-            if countdown_freeze:
-                freeze_t = float(getattr(self, '_retake_countdown_freeze_time', getattr(self, '_retake_countdown_target_time', 0.0)))
+            freeze_active = bool(manual_freeze or countdown_freeze)
+            if freeze_active:
+                if manual_freeze:
+                    try:
+                        freeze_t = float(getattr(self, '_manual_freeze_time', getattr(self, '_retake_countdown_target_time', getattr(self, 'current_global_time', 0.0))))
+                    except Exception:
+                        freeze_t = float(getattr(self, 'current_global_time', 0.0)) if hasattr(self, 'current_global_time') else 0.0
+                else:
+                    freeze_t = float(getattr(self, '_retake_countdown_freeze_time', getattr(self, '_retake_countdown_target_time', 0.0)))
                 self.current_global_time = max(0.0, float(freeze_t))
+                try:
+                    if self.start_time is not None:
+                        self.start_time = current_time - self.current_global_time
+                except Exception:
+                    pass
                 try:
                     if getattr(self, 'last_pitch_time', None) is None or self.last_pitch_time > self.current_global_time:
                         self.last_pitch_time = self.current_global_time
@@ -19372,7 +19454,7 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         pass
                 else:
-                    if countdown_freeze:
+                    if freeze_active:
                         # 倒计时冻结期间保持时间偏移锁定在目标点
                         center_t = float(getattr(self, 'center_display_time', 8.0))
                         if self.current_global_time <= center_t:
@@ -25548,6 +25630,23 @@ class IntegratedRecordingInterface(QMainWindow):
         self.should_save_recording = True
         self._pitch_precision_debug_counter = 0
 
+        # 回退/倒计时与伴奏预卷状态
+        self._retake_countdown_seconds = 3.0
+        self._pending_retake_resume = False
+        self._pending_retake_resume_time = 0.0
+        self._pending_retake_payload = None  # (filename, should_save)
+        self._retake_countdown_in_progress = False
+        self._retake_countdown_timer = None
+        self._retake_countdown_started_at = 0.0
+        self._retake_countdown_deadline = 0.0
+        self._retake_countdown_preroll_start = 0.0
+        self._retake_countdown_target = 0.0
+        self._retake_countdown_duration = float(self._retake_countdown_seconds)
+        self._retake_countdown_pending_resume = False
+        self._backing_preview_active = False
+        self._backing_start_position_override = None
+        self._retake_should_auto_resume = True
+
         # 当前音高交互状态
         self.current_pitch_y = 4.0
         self.current_pitch_active = False
@@ -26823,8 +26922,10 @@ class IntegratedRecordingInterface(QMainWindow):
     def _maybe_start_backing_playback(self):
         """在录音/分析开始时启动伴奏播放。"""
         try:
+            if getattr(self, '_backing_paused', False) or getattr(self, 'is_paused', False):
+                return
             # 仅当处于录音或实时分析状态才允许播放伴奏/原唱
-            if not (self.is_recording or self.is_analyzing):
+            if not (self.is_recording or self.is_analyzing or getattr(self, '_backing_preview_active', False)):
                 # 防御：如果误调用且当前正在播放，立即停止
                 self._stop_backing_playback()
                 return
@@ -26842,7 +26943,14 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception as _ie:
                     print(f"⚠️ PyAudio 初始化失败，回退 QTimer: {_ie}")
                     self._backing_callback_enabled = False
-            self.backing_play_position = 0
+            start_override = getattr(self, '_backing_start_position_override', None)
+            if start_override is not None:
+                try:
+                    self.backing_play_position = int(start_override)
+                except Exception:
+                    self.backing_play_position = start_override
+            else:
+                self.backing_play_position = 0
             if self._backing_callback_enabled and self._pyaudio_out is not None:
                 # 回调方式（低延迟稳定）
                 import pyaudio  # type: ignore
@@ -26859,6 +26967,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     )
                     self._backing_stream.start_stream()
                     print("▶️ 伴奏播放启动(回调模式)")
+                    try:
+                        self._backing_start_position_override = None
+                    except Exception:
+                        pass
                     return
                 except Exception as _open_err:
                     print(f"⚠️ 打开回调流失败，回退 QTimer: {_open_err}")
@@ -26892,6 +27004,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception:
                     pass
             print("▶️ 伴奏播放启动(QTimer)")
+            try:
+                self._backing_start_position_override = None
+            except Exception:
+                pass
         except Exception as e:
             print(f"❌ 启动伴奏播放失败: {e}")
 
@@ -27046,6 +27162,7 @@ class IntegratedRecordingInterface(QMainWindow):
             self.lyrics_enabled = False
             self._backing_callback_enabled = True
             self._backing_paused = False
+            self._backing_pause_position_sec = None
             # 音量（线性倍数，GUI 显示百分比）；保持已有值避免覆盖用户设置
             if not hasattr(self, 'backing_volume_accompaniment'):
                 self.backing_volume_accompaniment = 0.30
@@ -27080,41 +27197,100 @@ class IntegratedRecordingInterface(QMainWindow):
         - 驱动可视化时间轴跳转；
         - 若处于录音+分析，并回退，则裁剪可视化与内部缓存（仅 UI 层）。
         """
+        # 通用“回退重录”判定：针对任何启用 trim_if_backward 的向后跳转
+        # 满足以下条件即触发确认或自动裁剪：
+        #  - 目标时间早于当前播放指针（backward=True）
+        #  - 存在可被裁剪的音频/可视化数据
+        #  - 与上次提示的间隔超过节流阈值
         try:
             if target_sec < 0:
                 target_sec = 0.0
-            # 1) 伴奏样本定位（有伴奏才执行）
-            if self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
-                self._seek_backing_audio(target_sec)
-            # 2) 可视化 seek（无伴奏时也可用：允许跳过前奏/回退重录）
             v = getattr(self, 'visualizer', None)
-            if v is None:
-                return
-            cur_before = float(getattr(v, 'current_global_time', 0.0))
-            # 统一向后判断：当前时间比目标时间大就视为向后
+            cur_candidates: List[float] = []
+
+            def _collect_time(val):
+                try:
+                    if val is None:
+                        return
+                    as_float = float(val)
+                    if not math.isfinite(as_float):
+                        return
+                    cur_candidates.append(max(0.0, as_float))
+                except Exception:
+                    return
+
+            # 录音/播放过程中的多来源时间，优先取最大的一个代表“当前指针”
+            _collect_time(getattr(self, 'recording_duration', None))
+            _collect_time(getattr(self, 'current_duration', None))
+            if self.backing_sample_rate and getattr(self, 'backing_pcm_accompaniment', None) is not None:
+                try:
+                    play_pos = getattr(self, 'backing_play_position', None)
+                    backing_time = float(play_pos) / float(self.backing_sample_rate) if play_pos is not None else None
+                except Exception:
+                    backing_time = None
+                _collect_time(backing_time)
+            if v is not None:
+                _collect_time(getattr(v, 'current_global_time', None))
+                _collect_time(getattr(v, 'last_pitch_time', None))
+
+            cur_before = max(cur_candidates) if cur_candidates else 0.0
             backward = cur_before > target_sec + 1e-6
-            # 新增：伴奏模式下的“回退重录”交互
-            # 触发条件：
-            #  - 伴奏模式 (backing_mode in {'accompaniment','both'})
-            #  - 当前录音与分析已启动且处于暂停状态（用户通常暂停后回听）
-            #  - 本次 seek 为向后并且跨度 >= 1.0 秒 (避免微调频繁弹窗)
-            #  - 目标时间 > 0
-            #  - 已经累计录制时长超过目标时间至少 1 秒（确保不是初始化跳转）
+            has_visual_data = False
+            has_pitch_history = False
+            has_audio_buffer = False
+            span = max(0.0, cur_before - target_sec)
+            enable_retake = False
             try:
-                mode = getattr(self, 'backing_mode', 'off')
-                is_backing_mode = mode in {'accompaniment', 'both'}
-                # 不再强制需要暂停；实时回退也允许触发
-                paused = bool(getattr(self, 'is_recording_paused', False)) or bool(getattr(self, 'is_paused', False))
-                active_session = bool(getattr(self, 'is_analyzing', False)) or bool(getattr(self, 'is_recording', False))
-                span = cur_before - target_sec  # 向后时 span>0
-                enable_retake = (is_backing_mode and active_session and backward and span >= 0.4 and target_sec >= 0.0)
+                mode_txt = str(getattr(self, 'backing_mode', 'off')).lower()
+                time_series = getattr(v, 'time_data', None) if v is not None else None
+                if time_series is not None:
+                    try:
+                        has_visual_data = len(time_series) > 0  # type: ignore[arg-type]
+                    except Exception:
+                        try:
+                            has_visual_data = float(getattr(v, 'current_global_time', 0.0)) > 0.0
+                        except Exception:
+                            has_visual_data = True
+                pitch_hist = getattr(self, 'pitch_history', None)
+                if pitch_hist is not None:
+                    try:
+                        has_pitch_history = len(pitch_hist) > 0  # type: ignore[arg-type]
+                    except Exception:
+                        has_pitch_history = True
+                audio_buf = getattr(self, 'audio_buffer', None)
+                if audio_buf is not None:
+                    try:
+                        has_audio_buffer = len(audio_buf) > 0  # type: ignore[arg-type]
+                    except Exception:
+                        has_audio_buffer = True
+                active_session = bool(
+                    getattr(self, 'is_analyzing', False)
+                    or getattr(self, 'is_recording', False)
+                    or has_visual_data
+                    or has_pitch_history
+                    or has_audio_buffer
+                )
+                enable_retake = (
+                    trim_if_backward
+                    and backward
+                    and span >= 0.2
+                    and target_sec >= 0.0
+                    and active_session
+                    and (has_visual_data or has_pitch_history or has_audio_buffer)
+                )
                 import time as _t
                 now_ts = _t.time()
                 last_prompt = float(getattr(self, '_last_retake_prompt_time', 0.0))
-                if now_ts - last_prompt < 0.8:  # 略缩短节流窗口
+                if now_ts - last_prompt < 0.8:
                     enable_retake = False
                 if getattr(self, '_debug_retake', True):
-                    print(f"[RETAKE_CHECK] backing={is_backing_mode} paused={paused} analyzing={getattr(self,'is_analyzing',None)} recording={getattr(self,'is_recording',None)} backward={backward} span={span:.2f} target={target_sec:.2f} enable={enable_retake}")
+                    cur_debug = ",".join(f"{c:.3f}" for c in cur_candidates) if cur_candidates else "empty"
+                    print(
+                        f"[RETAKE_CHECK] mode={mode_txt} analyzing={getattr(self,'is_analyzing',None)} "
+                        f"recording={getattr(self,'is_recording',None)} has_visual={has_visual_data} "
+                        f"backward={backward} span={span:.2f} target={target_sec:.2f} cur={cur_before:.2f} "
+                        f"candidates=[{cur_debug}] enable={enable_retake}"
+                    )
             except Exception:
                 enable_retake = False
             if enable_retake:
@@ -27125,7 +27301,12 @@ class IntegratedRecordingInterface(QMainWindow):
                     start_t = target_sec
                     end_t = cur_before
                     msg.setWindowTitle("回退重录确认")
-                    msg.setText(f"确认回退到 {start_t:.2f} 秒？\n将清除区间 {start_t:.2f} – {end_t:.2f} 秒 的:\n  • 录制音频缓冲(若保存模式下最终文件会截断)\n  • 已绘制的音调线与细节点\n回退后可继续从 {start_t:.2f} 秒重新录制。")
+                    msg.setText(
+                        f"确认回退到 {start_t:.2f} 秒？\n将清除区间 {start_t:.2f} – {end_t:.2f} 秒 的:\n"
+                        "  • 录制音频缓冲(若保存模式下最终文件会截断)\n"
+                        "  • 已绘制的音调线与细节点\n"
+                        f"回退后可继续从 {start_t:.2f} 秒重新录制。"
+                    )
                     msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                     msg.setDefaultButton(QMessageBox.StandardButton.No)
                     ret = msg.exec()
@@ -27137,18 +27318,54 @@ class IntegratedRecordingInterface(QMainWindow):
                     if ret == QMessageBox.StandardButton.Yes:
                         try:
                             self.rollback_to_time(start_t, end_t)
-                            # 回退后当前 seek 目标即为新的末尾
                             cur_before = start_t
                             backward = False
-                            # 直接覆盖 target_sec 以驱动后续刷新逻辑
                             target_sec = start_t
                         except Exception as _re:
                             print(f"⚠️ 回退执行失败: {_re}")
                     else:
-                        # 用户取消：不执行后续 seek（保持原位置）
+                        try:
+                            ctrl = getattr(self, '_backing_control_win', None)
+                            if ctrl and hasattr(ctrl, 'position_slider'):
+                                try:
+                                    ctrl.position_slider.blockSignals(True)
+                                except Exception:
+                                    pass
+                                try:
+                                    ctrl.position_slider.setValue(int(cur_before * 1000))
+                                finally:
+                                    try:
+                                        ctrl.position_slider.blockSignals(False)
+                                    except Exception:
+                                        pass
+                                try:
+                                    ctrl.time_label.setText(ctrl._fmt_time(cur_before))
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                         return
                 except Exception as _dlg:
                     print(f"⚠️ 回退确认弹窗失败: {_dlg}")
+                    enable_retake = False
+            # 1) 伴奏样本定位（有伴奏才执行）
+            if getattr(self, '_backing_paused', False):
+                try:
+                    self._stop_backing_playback()
+                except Exception:
+                    pass
+            if self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
+                self._seek_backing_audio(target_sec)
+            # 2) 可视化 seek（无伴奏时也可用：允许跳过前奏/回退重录）
+            if v is None:
+                return
+            if backward and trim_if_backward and not enable_retake and (has_visual_data or has_pitch_history or has_audio_buffer):
+                try:
+                    self.rollback_to_time(target_sec, cur_before)
+                    cur_before = target_sec
+                    backward = False
+                except Exception as _fallback_re:
+                    print(f"⚠️ 自动回退失败: {_fallback_re}")
             # 若进行了回退重录或识别为回退，且需要在可视化器中触发“回退语义/倒计时”，
             # 则设置一次性标志，避免因 current_global_time 已被重置而丢失“向后”判定。
             try:
@@ -27161,10 +27378,21 @@ class IntegratedRecordingInterface(QMainWindow):
                         setattr(v, '_force_retake_countdown_once', True)
             except Exception:
                 pass
-            if backward and trim_if_backward and bool(getattr(self, 'is_recording', False)) and bool(getattr(self, 'is_analyzing', False)):
+            should_trim = backward and trim_if_backward and (
+                bool(getattr(self, 'is_recording', False))
+                or bool(getattr(self, 'is_analyzing', False))
+                or has_visual_data
+                or has_pitch_history
+                or has_audio_buffer
+            )
+            if should_trim and backward:
                 # 回退 -> 裁剪未来点
                 try:
                     v.trim_after(target_sec)
+                    try:
+                        v.purge_artists_in_range(target_sec, cur_before)
+                    except Exception:
+                        pass
                     self._record_trim_point = float(target_sec)
                     # 递增录制Epoch，丢弃任何旧Epoch的迟到点
                     try:
@@ -27256,6 +27484,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     # 先删除区间，再强制将 end_t 之后全部裁掉，形成真正截断
                     v.remove_range(start_t, end_t)
                     v.trim_after(start_t)
+                    try:
+                        v.purge_artists_in_range(start_t, end_t)
+                    except Exception:
+                        pass
                 except Exception as _e:
                     print(f"⚠️ 可视化区间删除失败: {_e}")
             # 2) 截断 pitch_history (其元素包含 timestamp 字段)
@@ -27704,6 +27936,26 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             print(f"✅ 已回退到 {start_t:.2f}s，清除区间 [{start_t:.2f},{end_t:.2f}) 数据，等待继续录制。")
+            # 标记回录目标点并为伴奏预卷/倒计时做准备
+            try:
+                self._pending_retake_resume = True
+                self._pending_retake_resume_time = float(start_t)
+                try:
+                    global_paused = bool(getattr(self, 'is_paused', False))
+                    backing_paused = bool(getattr(self, '_backing_paused', False))
+                    self._retake_should_auto_resume = not (global_paused or backing_paused)
+                except Exception:
+                    self._retake_should_auto_resume = True
+                # 倒计时准备：伴奏模式下预卷，其余场景则仅取消旧倒计时
+                if str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both'):
+                    self._prepare_retake_preroll(float(start_t))
+                else:
+                    self._cancel_retake_countdown()
+            except Exception as _prep_err:
+                try:
+                    print(f"⚠️ 回退预卷准备失败: {_prep_err}")
+                except Exception:
+                    pass
         except Exception as e:
             print(f"⚠️ 回退处理失败: {e}")
 
@@ -27737,6 +27989,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     except Exception: pass
             else:
                 self.backing_play_position = new_pos
+            try:
+                self._backing_start_position_override = int(new_pos)
+            except Exception:
+                self._backing_start_position_override = new_pos
             # 若使用回调流，轻量“冲刷”缓冲使下一 callback 立即从新位置出声
             try:
                 if (self._backing_stream is not None and
@@ -27749,6 +28005,11 @@ class IntegratedRecordingInterface(QMainWindow):
                     except Exception:
                         pass
                 self._last_seek_audio_sec = float(target_sec)
+            except Exception:
+                pass
+            try:
+                if getattr(self, '_backing_paused', False) or getattr(self, 'is_paused', False):
+                    self._backing_pause_position_sec = float(max(0.0, target_sec))
             except Exception:
                 pass
         except Exception as e:
@@ -27764,8 +28025,15 @@ class IntegratedRecordingInterface(QMainWindow):
             if not win or not win.isVisible():
                 return
             # 当前时间 = 伴奏位置（秒）
+            paused = bool(getattr(self, '_backing_paused', False) or getattr(self, 'is_paused', False))
+            pause_snapshot = getattr(self, '_backing_pause_position_sec', None)
             pos_sec = 0.0
-            if self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
+            if paused and pause_snapshot is not None:
+                try:
+                    pos_sec = float(pause_snapshot)
+                except Exception:
+                    pos_sec = 0.0
+            elif self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
                 try:
                     pos_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
                 except Exception:
@@ -27786,10 +28054,405 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
 
+    def _prepare_retake_preroll(self, target_time: float):
+        """在伴奏模式下为回录倒计时准备伴奏预卷与定时器。"""
+        try:
+            countdown = float(getattr(self, '_retake_countdown_seconds', 3.0))
+        except Exception:
+            countdown = 3.0
+        if countdown < 0.0:
+            countdown = 0.0
+        try:
+            self._cancel_retake_countdown(keep_pending=True)
+        except Exception:
+            pass
+        self._retake_countdown_duration = float(countdown)
+        self._retake_countdown_started_at = 0.0
+        self._retake_countdown_deadline = 0.0
+        self._retake_countdown_target = float(target_time)
+        self._retake_countdown_pending_resume = False
+        should_auto_resume = bool(getattr(self, '_retake_should_auto_resume', True))
+        if should_auto_resume:
+            backing_paused = bool(getattr(self, '_backing_paused', False))
+            global_paused = bool(getattr(self, 'is_paused', False))
+            if backing_paused or global_paused:
+                should_auto_resume = False
+        has_backing = bool(self.backing_pcm_accompaniment is not None and self.backing_sample_rate)
+        preroll_start = float(target_time)
+        if has_backing:
+            try:
+                preroll_start = max(0.0, float(target_time) - countdown)
+            except Exception:
+                preroll_start = max(0.0, float(target_time))
+            self._retake_countdown_preroll_start = float(preroll_start)
+            try:
+                self._seek_backing_audio(preroll_start)
+                if should_auto_resume:
+                    self._backing_preview_active = True
+                    try:
+                        self._set_backing_paused(False)
+                    except Exception:
+                        self._backing_paused = False
+                    self._maybe_start_backing_playback()
+                else:
+                    self._backing_preview_active = False
+                    try:
+                        self._stop_backing_playback()
+                    except Exception:
+                        pass
+                    try:
+                        self._set_backing_paused(True)
+                    except Exception:
+                        self._backing_paused = True
+                    try:
+                        viz = getattr(self, 'visualizer', None)
+                        if viz is not None:
+                            freeze_t = float(target_time)
+                            try:
+                                setattr(viz, '_manual_freeze_time', freeze_t)
+                            except Exception:
+                                pass
+                            try:
+                                viz.current_global_time = freeze_t
+                            except Exception:
+                                pass
+                            try:
+                                setattr(viz, 'is_backing_paused', True)
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(viz, '_enforce_cap_on_existing_artists'):
+                                    viz._enforce_cap_on_existing_artists()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception as _pr_err:
+                try:
+                    print(f"⚠️ 预卷伴奏失败: {_pr_err}")
+                except Exception:
+                    pass
+        else:
+            self._retake_countdown_preroll_start = float(preroll_start)
+            if not should_auto_resume:
+                self._backing_preview_active = False
+        if not should_auto_resume:
+            self._retake_countdown_pending_resume = True
+            self._retake_countdown_in_progress = False
+            return
+        self._start_retake_countdown_timer(float(countdown))
+
+    def _start_retake_countdown_timer(self, countdown: float):
+        """启动回录倒计时定时器（可多次调用以在恢复后重新触发）。"""
+        if countdown < 0.0:
+            countdown = 0.0
+        self._retake_countdown_pending_resume = False
+        try:
+            import time as _time
+            self._retake_countdown_started_at = _time.time()
+            self._retake_countdown_deadline = self._retake_countdown_started_at + countdown
+        except Exception:
+            self._retake_countdown_started_at = 0.0
+            self._retake_countdown_deadline = 0.0
+        if countdown <= 0.05:
+            self._retake_countdown_in_progress = False
+            self._complete_retake_preroll()
+            return
+        self._retake_countdown_in_progress = True
+        try:
+            from PyQt6.QtCore import QTimer
+            if self._retake_countdown_timer is None:
+                self._retake_countdown_timer = QTimer(self)
+                try:
+                    self._retake_countdown_timer.setInterval(60)
+                except Exception:
+                    pass
+                self._retake_countdown_timer.timeout.connect(self._on_retake_countdown_tick)
+            interval = 60
+            if countdown < 1.5:
+                interval = 40
+            try:
+                self._retake_countdown_timer.setInterval(int(interval))
+            except Exception:
+                pass
+            self._retake_countdown_timer.start()
+        except Exception as _tm_err:
+            try:
+                print(f"⚠️ 倒计时定时器启动失败: {_tm_err}")
+            except Exception:
+                pass
+            self._retake_countdown_in_progress = False
+            self._complete_retake_preroll()
+
+    def _process_pending_retake_countdown_on_resume(self):
+        """恢复录音时若存在延迟的倒计时，则在此处启动。"""
+        if not getattr(self, '_retake_countdown_pending_resume', False):
+            return
+        countdown = float(getattr(self, '_retake_countdown_duration', getattr(self, '_retake_countdown_seconds', 3.0)))
+        preroll_start = float(getattr(self, '_retake_countdown_preroll_start', getattr(self, '_retake_countdown_target', 0.0)))
+        has_backing = bool(self.backing_pcm_accompaniment is not None and self.backing_sample_rate)
+        try:
+            self._retake_should_auto_resume = True
+        except Exception:
+            pass
+        if has_backing:
+            try:
+                self._backing_preview_active = True
+                self._seek_backing_audio(preroll_start)
+            except Exception:
+                pass
+        else:
+            self._backing_preview_active = False
+        self._start_retake_countdown_timer(float(countdown))
+
+    def _cancel_retake_countdown(self, *, keep_pending: bool = False):
+        """取消当前倒计时与预卷，供复位或异常情况下调用。"""
+        try:
+            if self._retake_countdown_timer is not None and self._retake_countdown_timer.isActive():
+                self._retake_countdown_timer.stop()
+        except Exception:
+            pass
+        self._retake_countdown_in_progress = False
+        if not keep_pending:
+            self._pending_retake_resume = False
+            self._pending_retake_resume_time = 0.0
+        self._retake_countdown_started_at = 0.0
+        self._retake_countdown_deadline = 0.0
+        if not keep_pending:
+            self._retake_countdown_pending_resume = False
+        if not keep_pending:
+            self._retake_countdown_target = 0.0
+            self._retake_countdown_preroll_start = 0.0
+            self._retake_should_auto_resume = True
+        self._backing_preview_active = False if not keep_pending else self._backing_preview_active
+
+    def _on_retake_countdown_tick(self):
+        """倒计时时钟：到时自动恢复录音。"""
+        if not getattr(self, '_retake_countdown_in_progress', False):
+            try:
+                if self._retake_countdown_timer is not None and self._retake_countdown_timer.isActive():
+                    self._retake_countdown_timer.stop()
+            except Exception:
+                pass
+            return
+        try:
+            import time as _time
+            now = _time.time()
+        except Exception:
+            now = 0.0
+        deadline = float(getattr(self, '_retake_countdown_deadline', 0.0))
+        if deadline and now >= deadline:
+            self._complete_retake_preroll()
+            return
+        # 伴奏预卷期间若流中断，尝试重新启动
+        if getattr(self, '_backing_preview_active', False):
+            try:
+                active = False
+                if self._backing_stream is not None:
+                    active = bool(getattr(self._backing_stream, 'is_active', lambda: False)())
+                if not active:
+                    self._maybe_start_backing_playback()
+            except Exception:
+                pass
+
+    def _complete_retake_preroll(self):
+        """倒计时完成：恢复录音并结束预卷。"""
+        try:
+            if self._retake_countdown_timer is not None and self._retake_countdown_timer.isActive():
+                self._retake_countdown_timer.stop()
+        except Exception:
+            pass
+        self._retake_countdown_in_progress = False
+        self._retake_countdown_started_at = 0.0
+        self._retake_countdown_deadline = 0.0
+        self._retake_countdown_preroll_start = 0.0
+        target_time = float(getattr(self, '_retake_countdown_target', getattr(self, '_pending_retake_resume_time', 0.0)))
+        self._retake_countdown_target = 0.0
+        self._backing_preview_active = False
+        self._retake_countdown_pending_resume = False
+        should_auto_resume = bool(getattr(self, '_retake_should_auto_resume', True))
+        # 保证伴奏继续播放
+        if should_auto_resume and str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both') and self.backing_pcm_accompaniment is not None and self.backing_sample_rate is not None:
+            try:
+                self._backing_paused = False
+                self._maybe_start_backing_playback()
+            except Exception:
+                pass
+        resumed = True
+        if getattr(self, 'is_paused', False) and should_auto_resume:
+            resumed = True
+            if hasattr(self, 'audio_processor') and self.audio_processor:
+                try:
+                    resumed = bool(self.audio_processor.resume_recording())
+                except Exception as _resume_err:
+                    resumed = False
+                    try:
+                        print(f"⚠️ 回录恢复录音失败: {_resume_err}")
+                    except Exception:
+                        pass
+            if resumed:
+                self.is_paused = False
+                try:
+                    import time as _time
+                    self._detection_rate_smoothing_active = True
+                    self._detection_rate_smoothing_start = _time.time()
+                    self._detection_rate_baseline_pitches = int(getattr(self, 'total_pitches_detected', 0))
+                except Exception:
+                    pass
+                if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'resume_time_tracking'):
+                    try:
+                        self.visualizer.resume_time_tracking()
+                    except Exception:
+                        pass
+                if hasattr(self, 'visualizer'):
+                    try:
+                        self.visualizer._external_paused = False
+                    except Exception:
+                        pass
+                try:
+                    if hasattr(self, 'pause_button') and self.pause_button.text() != "暂停":
+                        self.pause_button.setText("暂停")
+                    if hasattr(self, 'pause_button'):
+                        self.pause_button.setEnabled(True)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText("录音继续")
+                except Exception:
+                    pass
+        if not should_auto_resume:
+            try:
+                if str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both'):
+                    self._set_backing_paused(True)
+            except Exception:
+                pass
+        self._pending_retake_resume = False
+        self._pending_retake_resume_time = 0.0
+        if target_time > 0:
+            try:
+                self.current_duration = float(target_time)
+                self.recording_duration = float(target_time)
+            except Exception:
+                pass
+        try:
+            self._sync_visualizer_after_retake_countdown(float(target_time))
+        except Exception:
+            pass
+        try:
+            self._retake_should_auto_resume = True
+        except Exception:
+            pass
+
+    def _sync_visualizer_after_retake_countdown(self, target_time: float):
+        """倒计时结束后确保可视化器时间轴/覆盖状态与回录起点同步。"""
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return
+        try:
+            import time as _time
+            now_wall = _time.time()
+        except Exception:
+            now_wall = 0.0
+        try:
+            tgt = float(max(0.0, target_time))
+        except Exception:
+            tgt = 0.0
+        for attr, value in (
+            ('_retake_countdown_active', False),
+            ('_retake_countdown_block_add', False),
+            ('_retake_countdown_freeze_time', None),
+            ('_retake_countdown_pause_started_at', 0.0),
+            ('_retake_countdown_start_wall', 0.0),
+            ('_retake_countdown_end_wall', now_wall),
+        ):
+            try:
+                setattr(viz, attr, value)
+            except Exception:
+                pass
+        try:
+            setattr(viz, '_retake_countdown_target_time', tgt)
+        except Exception:
+            pass
+        try:
+            viz.current_global_time = tgt
+            if hasattr(viz, 'last_pitch_time') and float(getattr(viz, 'last_pitch_time', tgt)) > tgt:
+                viz.last_pitch_time = tgt
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, 'follow_playback_time'):
+                viz.follow_playback_time(tgt)
+        except Exception:
+            pass
+        try:
+            if getattr(viz, '_cap_visible_time_enabled', False):
+                cur_cap = float(getattr(viz, '_max_visible_time', 0.0))
+                if cur_cap < tgt - 1e-9:
+                    viz._max_visible_time = tgt
+                viz._strict_cap_dirty = True
+        except Exception:
+            pass
+        for attr in ('_retake_countdown_bg', '_retake_countdown_hint', '_retake_countdown_text'):
+            try:
+                overlay = getattr(viz, attr, None)
+                if overlay is not None and hasattr(overlay, 'set_alpha'):
+                    overlay.set_alpha(0.0)
+            except Exception:
+                pass
+        try:
+            line = getattr(viz, '_retake_countdown_line', None)
+            if line is not None:
+                try:
+                    ax = getattr(viz, 'ax', None)
+                    if ax is not None and line in getattr(ax, 'lines', []):
+                        line.remove()
+                except Exception:
+                    pass
+                viz._retake_countdown_line = None
+        except Exception:
+            pass
+        try:
+            viz._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, 'update_display'):
+                viz.update_display()
+        except Exception:
+            pass
+
     def _set_backing_paused(self, paused: bool):
         """设置伴奏/原唱及可视化暂停状态（暂停时不推进时间轴/不绘制新点）。"""
         try:
             self._backing_paused = bool(paused)
+            if paused:
+                try:
+                    self._stop_backing_playback()
+                except Exception:
+                    pass
+            try:
+                if paused:
+                    pause_sec = None
+                    try:
+                        if self.backing_sample_rate and self.backing_sample_rate > 0 and self.backing_pcm_accompaniment is not None:
+                            pause_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
+                    except Exception:
+                        pause_sec = None
+                    if pause_sec is None:
+                        try:
+                            pause_sec = float(getattr(self, '_pending_retake_resume_time', getattr(self, 'recording_duration', 0.0)))
+                        except Exception:
+                            pause_sec = float(getattr(self, 'recording_duration', 0.0))
+                    self._backing_pause_position_sec = float(max(0.0, pause_sec))
+                else:
+                    self._backing_pause_position_sec = None
+            except Exception:
+                try:
+                    if not paused:
+                        self._backing_pause_position_sec = None
+                except Exception:
+                    pass
             # 冻结录音时长（用户期望：暂停时录音时长停表）
             if paused and not self._is_duration_frozen:
                 self._freeze_recording_duration = float(getattr(self, 'recording_duration', 0.0))
@@ -27800,6 +28463,33 @@ class IntegratedRecordingInterface(QMainWindow):
             if hasattr(self, 'visualizer') and self.visualizer is not None:
                 try:
                     self.visualizer._external_paused = bool(paused)
+                    try:
+                        self.visualizer.is_backing_paused = bool(paused)
+                    except Exception:
+                        pass
+                    if paused:
+                        try:
+                            freeze_t = float(getattr(self, '_pending_retake_resume_time', getattr(self.visualizer, 'current_global_time', 0.0)))
+                        except Exception:
+                            freeze_t = float(getattr(self.visualizer, 'current_global_time', 0.0)) if hasattr(self.visualizer, 'current_global_time') else 0.0
+                        try:
+                            setattr(self.visualizer, '_manual_freeze_time', freeze_t)
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self.visualizer, 'current_global_time'):
+                                self.visualizer.current_global_time = float(freeze_t)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            if hasattr(self.visualizer, '_manual_freeze_time'):
+                                delattr(self.visualizer, '_manual_freeze_time')
+                        except Exception:
+                            try:
+                                setattr(self.visualizer, '_manual_freeze_time', None)
+                            except Exception:
+                                pass
                     if paused and hasattr(self.visualizer, 'pause_time_tracking'):
                         self.visualizer.pause_time_tracking()
                     elif (not paused) and hasattr(self.visualizer, 'resume_time_tracking'):
@@ -27812,6 +28502,14 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._detection_rate_smoothing_active = True
                     self._detection_rate_smoothing_start = time.time()
                     self._detection_rate_baseline_pitches = int(getattr(self, 'total_pitches_detected', 0))
+                except Exception:
+                    pass
+                try:
+                    self._process_pending_retake_countdown_on_resume()
+                except Exception:
+                    pass
+                try:
+                    self._maybe_start_backing_playback()
                 except Exception:
                     pass
         except Exception:
@@ -28783,6 +29481,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 if ok:
                     # 标记全局暂停，供检测/显示层早退
                     self.is_paused = True
+                    try:
+                        self._set_backing_paused(True)
+                    except Exception:
+                        pass
                     # 可视化冻结：停止时间推进 + 禁止新增点
                     # 冻结可视化时间推进
                     if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'pause_time_tracking'):
@@ -28811,6 +29513,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 if ok:
                     # 恢复标志
                     self.is_paused = False
+                    try:
+                        self._set_backing_paused(False)
+                    except Exception:
+                        pass
                     # 重置检测频率平滑基线（防止跨越暂停）
                     try:
                         self._detection_rate_smoothing_active = True
