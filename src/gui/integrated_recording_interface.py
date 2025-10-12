@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QGroupBox, QHBoxLayout,
     QSlider, QLabel, QPushButton, QMainWindow,
     QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
-    QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QFrame, QMenu, QApplication
+    QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 
@@ -93,258 +93,10 @@ try:
     QThread
 except NameError:
     class QThread:  # type: ignore
-        def __init__(self,*a,**k): pass
-        def start(self): pass
-        def quit(self): pass
-        def wait(self, *a, **k): pass
-
-
-class _BackingControlWindow(QDialog):
-    """平行伴奏/原唱控制窗口。
-    提供: 进度跳转(回退裁剪/前向偏移)、区间重录、伴奏/原唱/监听音量调节、暂停/继续/结束。"""
-
-    def __init__(self, main: 'IntegratedRecordingInterface'):
-        super().__init__(main)
-        self.main = main
-        self.setWindowTitle("伴奏/原唱控制")
-        self.setMinimumWidth(430)
-        self.setStyleSheet(
-            "QDialog { background:#202020; color:#ffffff; } "
-            "QLabel{color:white;} "
-            "QSlider::groove:horizontal{height:6px;background:#404040;border-radius:3px;} "
-            "QSlider::handle:horizontal{background:#4A90E2;width:14px;margin:-4px 0;border-radius:7px;} "
-            "QSlider::sub-page:horizontal{background:#66BB6A;border-radius:3px;}"
-        )
-
-        layout = QVBoxLayout(self)
-
-        # ---- 播放进度 ----
-        progress_group = QGroupBox("播放进度")
-        progress_group.setStyleSheet("QGroupBox { border:1px solid #444; margin-top:10px; padding-top:12px; }")
-        pg_layout = QVBoxLayout(progress_group)
-        self.position_slider = QSlider(Qt.Orientation.Horizontal)
-        self.position_slider.setRange(0, 0)
-        self.position_slider.sliderPressed.connect(self._on_slider_pressed)
-        self.position_slider.sliderReleased.connect(self._on_slider_released)
-        self.position_slider.valueChanged.connect(self._on_slider_changed)
-        pg_layout.addWidget(self.position_slider)
-        time_row = QHBoxLayout()
-        self.time_label = QLabel("00:00.000")
-        self.total_label = QLabel("/ 00:00.000")
-        time_row.addWidget(self.time_label)
-        time_row.addStretch()
-        time_row.addWidget(self.total_label)
-        pg_layout.addLayout(time_row)
-        layout.addWidget(progress_group)
-
-        # ---- 音量控制 ----
-        vol_group = QGroupBox("音量控制")
-        vol_group.setStyleSheet("QGroupBox { border:1px solid #444; margin-top:10px; padding-top:12px; }")
-        vg_layout = QVBoxLayout(vol_group)
-        vg_layout.addLayout(self._make_volume_slider("伴奏", getattr(main, 'backing_volume_accompaniment', 0.30), self._on_accomp_volume))
-        vg_layout.addLayout(self._make_volume_slider("原唱", getattr(main, 'backing_volume_original', 0.50), self._on_orig_volume))
-        vg_layout.addLayout(self._make_volume_slider("监听(人声)", getattr(main, 'monitor_volume', 1.0), self._on_vocal_volume))
-        layout.addWidget(vol_group)
-
-        # ---- 控制按钮 ----
-        ctrl_layout = QHBoxLayout()
-        self.pause_btn = QPushButton("暂停")
-        self.resume_btn = QPushButton("开始")  # 原“恢复”更名
-        self.stop_btn = QPushButton("结束")
-        self.redo_btn = QPushButton("区间重录")
-        self.resume_btn.setEnabled(False)
-        self.pause_btn.clicked.connect(self._on_pause)
-        self.resume_btn.clicked.connect(self._on_resume)
-        self.stop_btn.clicked.connect(self._on_stop)
-        self.redo_btn.clicked.connect(self._on_redo)
-        for b in (self.pause_btn, self.resume_btn, self.stop_btn, self.redo_btn):
-            ctrl_layout.addWidget(b)
-        ctrl_layout.addStretch()
-        layout.addLayout(ctrl_layout)
-
-        # ---- 定时同步 ----
-        self.sync_timer = QTimer(self)
-        self.sync_timer.setInterval(120)
-        self.sync_timer.timeout.connect(self._tick_sync)
-        self.sync_timer.start()
-        self.is_user_dragging = False
-        self._refresh_total_duration()
-        self._update_enabled_state()
-
-    # ---------- 工具 ----------
-    def _fmt_time(self, sec: float) -> str:
-        try:
-            m = int(sec // 60); s = sec - m * 60
-            return f"{m:02d}:{s:06.3f}"
-        except Exception:
-            return "00:00.000"
-
-    def _refresh_total_duration(self):
-        try:
-            dur = 0.0
-            if self.main.backing_sample_rate and self.main.backing_pcm_accompaniment is not None:
-                # 使用真实伴奏长度
-                dur = len(self.main.backing_pcm_accompaniment)/self.main.backing_sample_rate
-            else:
-                # 无伴奏：使用当前可视化时间或历史末尾时间作为“虚拟长度”
-                try:
-                    vis = getattr(self.main, 'visualizer', None)
-                    last_t = 0.0
-                    if vis is not None:
-                        try:
-                            if getattr(vis, 'time_data', None):
-                                last_t = float(vis.time_data[-1])
-                        except Exception:
-                            pass
-                        cur_t = float(getattr(vis, 'current_global_time', 0.0))
-                        dur = max(cur_t, last_t)
-                    dur = max(dur, self.position_slider.maximum()/1000.0)
-                    # 预留 2 秒缓冲，便于拖到稍后的时间直接建立偏移
-                    dur = dur + 2.0
-                except Exception:
-                    dur = max(10.0, dur)
-            self.position_slider.setRange(0, int(max(0.0, dur) * 1000))
-            self.total_label.setText(f"/ {self._fmt_time(max(0.0, dur))}")
-        except Exception:
+        def __init__(self,*a,**k):
             pass
-
-    def _update_enabled_state(self):
-        try:
-            # 未加载伴奏也允许拖动，用于纯时间轴跳转（前奏跳过/区间回退）
-            enabled = (self.main.backing_mode != 'off') or (self.main.backing_pcm_accompaniment is not None)
-            self.position_slider.setEnabled(enabled)
-        except Exception:
+        def start(self):
             pass
-
-    def _make_volume_slider(self, label: str, value: float, cb):
-        from PyQt6.QtWidgets import QSlider, QLabel
-        from PyQt6.QtCore import Qt
-        row = QHBoxLayout()
-        row.addWidget(QLabel(label + ":"))
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(0, 200)
-        slider.setValue(int(value * 100))
-        slider.valueChanged.connect(cb)
-        val_lbl = QLabel(f"{int(value * 100)}%")
-        def _upd(v):
-            val_lbl.setText(f"{v}%"); cb(v)
-        slider.valueChanged.connect(_upd)
-        row.addWidget(slider); row.addWidget(val_lbl)
-        return row
-
-    # ---------- 进度滑块 ----------
-    def _on_slider_pressed(self):
-        self.is_user_dragging = True
-
-    def _on_slider_released(self):
-        try:
-            val_ms = self.position_slider.value()
-            self.is_user_dragging = False
-            self.main._apply_backing_seek(val_ms / 1000.0, trim_if_backward=True)
-        except Exception:
-            pass
-
-    def _on_slider_changed(self, v):
-        if self.is_user_dragging:
-            try:
-                self.time_label.setText(self._fmt_time(v / 1000.0))
-            except Exception:
-                pass
-
-    # ---------- 音量 ----------
-    def _on_accomp_volume(self, val):
-        try:
-            self.main.backing_volume_accompaniment = max(0.0, min(2.0, float(val) / 100.0))
-        except Exception:
-            pass
-
-    def _on_orig_volume(self, val):
-        try:
-            self.main.backing_volume_original = max(0.0, min(2.0, float(val) / 100.0))
-        except Exception:
-            pass
-
-    def _on_vocal_volume(self, val):
-        try:
-            if hasattr(self.main, 'set_monitoring_volume'):
-                self.main.set_monitoring_volume(float(val))
-        except Exception:
-            pass
-
-    # ---------- 控制按钮 ----------
-    def _on_pause(self):
-        try:
-            self.main._set_backing_paused(True)
-            self.pause_btn.setEnabled(False)
-            self.resume_btn.setEnabled(True)
-        except Exception:
-            pass
-
-    def _on_resume(self):
-        try:
-            self.main._set_backing_paused(False)
-            self.pause_btn.setEnabled(True)
-            self.resume_btn.setEnabled(False)
-        except Exception:
-            pass
-
-    def _on_stop(self):
-        try:
-            if self.main.is_recording:
-                try:
-                    self.main.stop_recording()
-                except Exception:
-                    pass
-            self.main._stop_backing_playback()
-            self.close()
-        except Exception:
-            pass
-
-    def _on_redo(self):
-        """区间重录：删除当前选区数据并跳回区间开始。"""
-        try:
-            v = getattr(self.main, 'visualizer', None)
-            if v is None or not getattr(v, 'selection_active', False):
-                try:
-                    QMessageBox.information(self, "区间重录", "请先在主界面拖动建立一个时间选区（两条竖线）。")
-                except Exception:
-                    pass
-                return
-            start = float(getattr(v, 'sel_start', 0.0))
-            end = float(getattr(v, 'sel_end', start))
-            if end <= start + 1e-6:
-                return
-            try:
-                v.remove_range(start, end)
-            except Exception:
-                pass
-            try:
-                self.main._apply_backing_seek(start, trim_if_backward=False)
-            except Exception:
-                pass
-            # 对于区间重录：允许在 start 之前的旧点继续存在，因此不扩大 trim_point，只在不存在时设置
-            try:
-                if not hasattr(self.main, '_record_trim_point'):
-                    self.main._record_trim_point = start
-            except Exception:
-                pass
-            if not self.main.is_recording:
-                try:
-                    self.main.start_recording()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    # ---------- 同步 ----------
-    def _tick_sync(self):
-        try:
-            self._refresh_total_duration()
-            self._update_enabled_state()
-            self.main._backing_control_tick_sync()
-        except Exception:
-            pass
-
 # 导入scipy用于线条平滑插值
 SCIPY_AVAILABLE = False
 try:
@@ -382,7 +134,7 @@ except Exception:
 # 说明：外部可能存在不同签名的 PitchFrame，这里统一使用本地兼容类，
 # 接受 f0_raw/f0_smooth 等关键字并提供 to_dict()，避免关键字不匹配导致运行时异常。
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 @dataclass
 class PitchFrame:
@@ -486,6 +238,7 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             pass
         self.pitch_history = deque(maxlen=1000)
+        self._ui_epoch = 0
 
         # 频率范围与算法阈值（供 PitchDetectionService 及其它模块使用）
         self.min_frequency = 80.0
@@ -7787,9 +7540,29 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 pass  # 忽略错误情况下的信号发送失败
 
+    def set_ui_epoch(self, epoch: int):
+        try:
+            self._ui_epoch = int(epoch)
+        except Exception:
+            self._ui_epoch = 0
+
+    def _prepare_ui_payload(self, pitch_dict: dict) -> dict:
+        try:
+            payload = dict(pitch_dict)
+        except Exception:
+            payload = {'payload': pitch_dict}
+        try:
+            epoch = int(getattr(self, '_ui_epoch', 0))
+        except Exception:
+            epoch = 0
+        if payload.get('_epoch') is None:
+            payload['_epoch'] = epoch
+        return payload
+
     # ========= UI发射节流，防止Qt事件队列拥塞 ========= #
     def _emit_pitch_data_throttled(self, pitch_dict: dict):
         try:
+            payload = self._prepare_ui_payload(pitch_dict)
             now = time.time()
             if not hasattr(self, '_ui_emit_min_interval'):
                 # 缺省最小间隔 30ms，可由模式调整 elsewhere
@@ -7799,7 +7572,7 @@ class IntegratedAudioProcessor(QThread):
             # 到达最小间隔则发射，否则合并为待发，保留最新
             if (now - getattr(self, '_ui_last_emit_t', 0.0)) >= self._ui_emit_min_interval:
                 try:
-                    self.pitch_detected.emit(pitch_dict)
+                    self.pitch_detected.emit(payload)
                 finally:
                     self._ui_last_emit_t = now
                     self._ui_pending = None
@@ -7808,15 +7581,15 @@ class IntegratedAudioProcessor(QThread):
                 tail_ratio = (now - getattr(self, '_ui_last_emit_t', 0.0)) / max(self._ui_emit_min_interval, 1e-6)
                 if tail_ratio >= 0.70 and (self._ui_pending is None):
                     try:
-                        self.pitch_detected.emit(pitch_dict)
+                        self.pitch_detected.emit(payload)
                     finally:
                         self._ui_last_emit_t = now
                         self._ui_pending = None
                 else:
-                    self._ui_pending = pitch_dict
+                    self._ui_pending = payload
         except Exception:
             try:
-                self.pitch_detected.emit(pitch_dict)
+                self.pitch_detected.emit(self._prepare_ui_payload(pitch_dict))
             except Exception:
                 pass
     
@@ -11661,7 +11434,9 @@ class ECGStylePitchVisualizer(QWidget):
                             except Exception:
                                 pass
                             # 重置倒计时覆盖相关对象，确保重新创建
-                            for _attr in ('_retake_countdown_bg', '_retake_countdown_text', '_retake_countdown_hint', '_retake_countdown_line'):
+                            for _attr in ('_retake_countdown_bg', '_retake_countdown_text', '_retake_countdown_hint',
+                                           '_retake_countdown_line', '_retake_countdown_progress',
+                                           '_retake_countdown_start_line', '_retake_countdown_goal_line'):
                                 try:
                                     setattr(self, _attr, None)
                                 except Exception:
@@ -12014,6 +11789,31 @@ class ECGStylePitchVisualizer(QWidget):
                         self._flat_points = _dq2(tmp, maxlen=self._flat_points.maxlen)  # type: ignore
             except Exception:
                 pass
+            # 清除裁剪区间内的已绘制图元与缓存，防止旧细节点残留
+            try:
+                self.purge_artists_in_range(float(cutoff) - 1e-6, float('inf'))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_segments'):
+                    self._segments = [seg for seg in getattr(self, '_segments', []) if seg and seg[0] and float(seg[0][-1]) <= cutoff + 1e-9]
+                    if not self._segments:
+                        self._segments = []
+            except Exception:
+                try:
+                    self._segments = []
+                except Exception:
+                    pass
+            for attr in ('_segments_cache', '_segments_cache_window', '_segments_cache_key'):
+                if hasattr(self, attr):
+                    try:
+                        delattr(self, attr)
+                    except Exception:
+                        setattr(self, attr, None)
+            try:
+                self._artist_times_dirty = True
+            except Exception:
+                pass
             # 标记强制重绘（下帧重建曲线）
             try:
                 self._force_redraw_on_next_update = True
@@ -12357,6 +12157,36 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         try:
             self._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        # 更新主线与临时线，避免裁剪后仍显示旧段
+        try:
+            if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                xs, ys = self.pitch_line.get_data()
+                if xs is not None and ys is not None:
+                    kept_x = []
+                    kept_y = []
+                    for x_val, y_val in zip(xs, ys):
+                        try:
+                            xv = float(x_val)
+                        except Exception:
+                            continue
+                        if xv < start - 1e-9 or xv >= end - 1e-9:
+                            kept_x.append(x_val)
+                            kept_y.append(y_val)
+                    self.pitch_line.set_data(kept_x, kept_y)
+                    if not kept_x:
+                        try:
+                            self.pitch_line.set_alpha(0.0)
+                        except Exception:
+                            pass
+            prov_line = getattr(self, '_provisional_line', None)
+            if prov_line is not None:
+                try:
+                    prov_line.set_data([], [])
+                    prov_line.set_visible(False)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -17731,6 +17561,11 @@ class ECGStylePitchVisualizer(QWidget):
     def add_pitch_data(self, pitch_data):
         """添加音高数据（支持历史数据存储和断续音调曲线）"""
         try:
+            try:
+                if getattr(self, '_cleanup_block_add', False):
+                    return
+            except Exception:
+                pass
             add_receive_time = time.time()
             frequency = pitch_data.get('frequency', 0)
             confidence = pitch_data.get('confidence', 0)
@@ -17849,7 +17684,8 @@ class ECGStylePitchVisualizer(QWidget):
                             rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - now_wall
                             if rem < 0:
                                 rem = 0.0
-                            freeze_t = float(getattr(self, '_retake_countdown_freeze_time', tgt) or tgt)
+                            pos = self._get_retake_countdown_position()
+                            freeze_t = float(pos if pos is not None else getattr(self, '_retake_countdown_freeze_time', tgt) or tgt)
                             self.current_global_time = freeze_t
                             try:
                                 if hasattr(self, 'last_pitch_time') and self.last_pitch_time > freeze_t:
@@ -19408,7 +19244,11 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         freeze_t = float(getattr(self, 'current_global_time', 0.0)) if hasattr(self, 'current_global_time') else 0.0
                 else:
-                    freeze_t = float(getattr(self, '_retake_countdown_freeze_time', getattr(self, '_retake_countdown_target_time', 0.0)))
+                    pos = self._get_retake_countdown_position()
+                    if pos is not None:
+                        freeze_t = float(pos)
+                    else:
+                        freeze_t = float(getattr(self, '_retake_countdown_freeze_time', getattr(self, '_retake_countdown_target_time', 0.0)))
                 self.current_global_time = max(0.0, float(freeze_t))
                 try:
                     if self.start_time is not None:
@@ -19536,92 +19376,264 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_update_timer.stop()
         print("⏹️ 停止时间轴追踪")
 
+    # ===== 回录倒计时外观辅助 =====
+    def _apply_retake_countdown_highlight(self):
+        try:
+            if getattr(self, '_retake_countdown_highlight_active', False):
+                return
+            prev = {
+                'guide_v_color': getattr(self, 'guide_v_color', '#e0e0e0'),
+                'guide_h_color': getattr(self, 'guide_h_color', '#e0e0e0'),
+                'guide_alpha_main': getattr(self, 'guide_alpha_main', 0.65),
+                'guide_alpha_glow': getattr(self, 'guide_alpha_glow', 0.22),
+                'guide_linewidth_main': getattr(self, 'guide_linewidth_main', 1.1),
+                'guide_linewidth_glow': getattr(self, 'guide_linewidth_glow', 2.4),
+            }
+            setattr(self, '_retake_prev_guide_style', prev)
+            self.guide_v_color = '#FFD166'
+            self.guide_h_color = '#FFD166'
+            self.guide_alpha_main = max(0.88, float(prev['guide_alpha_main']))
+            self.guide_alpha_glow = max(0.36, float(prev['guide_alpha_glow']))
+            self.guide_linewidth_main = max(1.35, float(prev['guide_linewidth_main']))
+            self.guide_linewidth_glow = max(3.0, float(prev['guide_linewidth_glow']))
+            try:
+                if not getattr(self, 'guides_enabled', True):
+                    self.guides_enabled = True
+            except Exception:
+                pass
+            self._retake_countdown_highlight_active = True
+            try:
+                self.update_guides()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _restore_retake_countdown_highlight(self):
+        try:
+            if not getattr(self, '_retake_countdown_highlight_active', False):
+                return
+            prev = getattr(self, '_retake_prev_guide_style', None)
+            if isinstance(prev, dict):
+                for key, value in prev.items():
+                    try:
+                        setattr(self, key, value)
+                    except Exception:
+                        pass
+            self._retake_countdown_highlight_active = False
+            try:
+                self.update_guides()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _get_retake_countdown_position(self) -> Optional[float]:
+        try:
+            if not getattr(self, '_retake_countdown_active', False):
+                return None
+            import time as _t
+            start_wall = float(getattr(self, '_retake_countdown_start_wall', getattr(self, '_retake_countdown_pause_started_at', 0.0)))
+            end_wall = float(getattr(self, '_retake_countdown_end_wall', start_wall))
+            now = _t.time()
+            start_t = float(getattr(self, '_retake_countdown_preroll_start', getattr(self, '_retake_countdown_target_time', 0.0)))
+            target_t = float(getattr(self, '_retake_countdown_target_time', 0.0))
+            if end_wall <= start_wall + 1e-6:
+                return target_t
+            if now <= start_wall:
+                return start_t
+            if now >= end_wall:
+                return target_t
+            frac = (now - start_wall) / (end_wall - start_wall)
+            frac = max(0.0, min(1.0, frac))
+            cur = start_t + (target_t - start_t) * frac
+            return max(min(cur, target_t), start_t)
+        except Exception:
+            return None
+
     def _render_retake_countdown_overlay(self):
         """渲染回录倒计时覆盖层（若激活）。独立出来便于在无数据早退前也能渲染。"""
         try:
             if not getattr(self, '_retake_countdown_active', False):
                 return False
             import time as _t, math as _m
-            rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - _t.time()
-            if rem < 0: rem = 0.0
+            now = _t.time()
+            rem = float(getattr(self, '_retake_countdown_end_wall', 0.0)) - now
+            if rem < 0:
+                rem = 0.0
             if not (hasattr(self, 'ax') and self.ax is not None):
                 return False
+
+            # 计算时间轴位置（用于同步播放线与进度条）
+            tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
+            dur = float(getattr(self, '_retake_countdown_duration', 3.0))
+            start_line_t = max(0.0, tgt - max(0.0, dur))
+            pos = self._get_retake_countdown_position()
+            if pos is not None:
+                cur_t = float(max(start_line_t, min(tgt, pos)))
+            else:
+                if rem > 0.0 and dur > 1e-6:
+                    frac = 1.0 - rem / dur
+                    cur_t = start_line_t + frac * (tgt - start_line_t)
+                else:
+                    cur_t = tgt
+                cur_t = max(start_line_t, min(tgt, cur_t))
+
+            # 同步可视化冻结时间，保证时间轴跟随倒计时推进
+            try:
+                self._retake_countdown_freeze_time = float(cur_t)
+                self.current_global_time = float(cur_t)
+            except Exception:
+                pass
+
             # 背景遮罩
             try:
                 if (not hasattr(self, '_retake_countdown_bg')) or self._retake_countdown_bg is None:
-                    self._retake_countdown_bg = self.ax.add_patch(__import__('matplotlib').patches.Rectangle(
-                        (0,0),1,1, transform=self.ax.transAxes, color='black', alpha=0.18, zorder=180))
+                    self._retake_countdown_bg = self.ax.add_patch(patches.Rectangle(
+                        (0, 0), 1, 1, transform=self.ax.transAxes, color='black', alpha=0.22, zorder=180))
                 else:
-                    self._retake_countdown_bg.set_alpha(0.18 if rem>0 else 0.0)
+                    self._retake_countdown_bg.set_alpha(0.22 if rem > 0 else 0.0)
             except Exception:
                 pass
-            # 文本
+
+            # 进度填充（整幅区域红色渐变条）
+            try:
+                width = max(1e-6, cur_t - start_line_t)
+                if (not hasattr(self, '_retake_countdown_progress')) or self._retake_countdown_progress is None:
+                    self._retake_countdown_progress = self.ax.add_patch(patches.Rectangle(
+                        (start_line_t, 0.0), width, 1.0,
+                        transform=self.ax.get_xaxis_transform(), facecolor='#FF4C4C',
+                        alpha=0.30, zorder=186, linewidth=0))
+                else:
+                    rect = self._retake_countdown_progress
+                    rect.set_x(start_line_t)
+                    rect.set_width(width)
+                    rect.set_alpha(0.30 if rem > 0 else 0.0)
+                    rect.set_visible(rem > 0)
+            except Exception:
+                pass
+
+            # 起点/目标指示线
+            try:
+                if (not hasattr(self, '_retake_countdown_start_line')) or self._retake_countdown_start_line is None:
+                    self._retake_countdown_start_line = self.ax.axvline(start_line_t, color='#FF6F61',
+                                                                         linewidth=1.6, linestyle='--',
+                                                                         alpha=0.60, zorder=188)
+                else:
+                    self._retake_countdown_start_line.set_xdata([start_line_t, start_line_t])
+                    self._retake_countdown_start_line.set_visible(rem > 0)
+                if (not hasattr(self, '_retake_countdown_goal_line')) or self._retake_countdown_goal_line is None:
+                    self._retake_countdown_goal_line = self.ax.axvline(tgt, color='#FFC857', linewidth=2.4,
+                                                                       alpha=0.92, zorder=191)
+                else:
+                    self._retake_countdown_goal_line.set_xdata([tgt, tgt])
+                    self._retake_countdown_goal_line.set_visible(True)
+            except Exception:
+                pass
+
+            # 倒计时文本
             if not hasattr(self, '_retake_countdown_text') or self._retake_countdown_text is None:
                 try:
                     self._retake_countdown_text = self.ax.text(0.5, 0.55, '', transform=self.ax.transAxes,
-                                                                ha='center', va='center', fontsize=42,
-                                                                color='#FFDD55', alpha=0.0, zorder=200, weight='bold')
+                                                                ha='center', va='center', fontsize=44,
+                                                                color='#FFE066', alpha=0.0, zorder=200, weight='bold')
                 except Exception:
                     self._retake_countdown_text = None
             if self._retake_countdown_text is not None:
                 try:
                     if rem > 0:
-                        self._retake_countdown_text.set_text(str(int(_m.ceil(rem))))
-                        self._retake_countdown_text.set_alpha(0.88)
+                        if rem <= 1.0:
+                            display_val = f"{rem:.1f}s"
+                        elif rem <= 2.0:
+                            display_val = f"{rem:.1f}"
+                        else:
+                            display_val = str(int(max(1, _m.ceil(rem))))
+                        self._retake_countdown_text.set_text(display_val)
+                        self._retake_countdown_text.set_alpha(0.92)
                     else:
                         self._retake_countdown_text.set_alpha(0.0)
                 except Exception:
                     pass
-            # 提示
+
+            # 提示文字
+            hint_text = "准备回录…" if rem > 0 else ""
+            try:
+                segment_hint = f"{cur_t:0.2f}s → {tgt:0.2f}s"
+            except Exception:
+                segment_hint = ''
             if rem > 0:
                 if not hasattr(self, '_retake_countdown_hint') or self._retake_countdown_hint is None:
                     try:
-                        self._retake_countdown_hint = self.ax.text(0.5, 0.40, '准备回录…', transform=self.ax.transAxes,
+                        self._retake_countdown_hint = self.ax.text(0.5, 0.40,
+                                                                   f"{hint_text} {segment_hint}".strip(),
+                                                                   transform=self.ax.transAxes,
                                                                    ha='center', va='center', fontsize=16,
-                                                                   color='#FFEEAA', alpha=0.85, zorder=200, weight='bold')
+                                                                   color='#FFEEDD', alpha=0.88, zorder=200, weight='bold')
                     except Exception:
                         self._retake_countdown_hint = None
                 else:
-                    try: self._retake_countdown_hint.set_alpha(0.85)
-                    except Exception: pass
-            else:
-                if hasattr(self, '_retake_countdown_hint') and self._retake_countdown_hint is not None:
-                    try: self._retake_countdown_hint.set_alpha(0.0)
-                    except Exception: pass
-            # 扫描线
-            try:
-                tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
-                dur = float(getattr(self, '_retake_countdown_duration', 3.0))
-                start_line_t = max(0.0, tgt - dur)
-                if rem > 0 and dur > 0:
-                    frac = 1.0 - rem / dur
-                    cur_t = start_line_t + frac * (tgt - start_line_t)
-                else:
-                    cur_t = tgt
-                if not hasattr(self, '_retake_countdown_line') or self._retake_countdown_line is None:
-                    self._retake_countdown_line = self.ax.axvline(cur_t, color='#FFDD55', linewidth=2.0, alpha=0.85, zorder=190)
-                else:
-                    try: self._retake_countdown_line.set_xdata([cur_t, cur_t])
-                    except Exception: pass
-                if rem <= 0:
                     try:
-                        if self._retake_countdown_line in getattr(self.ax, 'lines', []):
-                            self._retake_countdown_line.remove()
+                        self._retake_countdown_hint.set_text(f"{hint_text} {segment_hint}".strip())
+                        self._retake_countdown_hint.set_alpha(0.88)
                     except Exception:
                         pass
-                    self._retake_countdown_line = None
-                    self._retake_countdown_text = None
-                    # 清除背景与提示
+            else:
+                if hasattr(self, '_retake_countdown_hint') and self._retake_countdown_hint is not None:
                     try:
-                        if hasattr(self, '_retake_countdown_bg') and self._retake_countdown_bg is not None:
-                            self._retake_countdown_bg.set_alpha(0.0)
-                    except Exception: pass
-                    try:
-                        if hasattr(self, '_retake_countdown_hint') and self._retake_countdown_hint is not None:
-                            self._retake_countdown_hint.set_alpha(0.0)
-                    except Exception: pass
+                        self._retake_countdown_hint.set_alpha(0.0)
+                    except Exception:
+                        pass
+
+            # 动态进度指示线
+            try:
+                if not hasattr(self, '_retake_countdown_line') or self._retake_countdown_line is None:
+                    self._retake_countdown_line = self.ax.axvline(cur_t, color='#FFF4A3', linewidth=2.8,
+                                                                  alpha=0.95, zorder=193)
+                else:
+                    self._retake_countdown_line.set_xdata([cur_t, cur_t])
+                    self._retake_countdown_line.set_visible(rem > 0)
             except Exception:
                 pass
+
+            if rem <= 0:
+                # 倒计时结束：移除叠加元素
+                try:
+                    if self._retake_countdown_line is not None and self._retake_countdown_line in getattr(self.ax, 'lines', []):
+                        self._retake_countdown_line.remove()
+                except Exception:
+                    pass
+                self._retake_countdown_line = None
+                for attr_name in ('_retake_countdown_progress', '_retake_countdown_start_line', '_retake_countdown_goal_line'):
+                    try:
+                        obj = getattr(self, attr_name, None)
+                    except Exception:
+                        obj = None
+                    if obj is not None:
+                        try:
+                            if hasattr(obj, 'remove'):
+                                obj.remove()
+                        except Exception:
+                            pass
+                    try:
+                        setattr(self, attr_name, None)
+                    except Exception:
+                        pass
+                try:
+                    if hasattr(self, '_retake_countdown_bg') and self._retake_countdown_bg is not None:
+                        self._retake_countdown_bg.set_alpha(0.0)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, '_retake_countdown_hint') and self._retake_countdown_hint is not None:
+                        self._retake_countdown_hint.set_alpha(0.0)
+                except Exception:
+                    pass
+                self._retake_countdown_text = None
+                try:
+                    self._restore_retake_countdown_highlight()
+                except Exception:
+                    pass
+
             # 轻量触发重绘
             try:
                 if hasattr(self, 'canvas') and self.canvas is not None:
@@ -19631,6 +19643,143 @@ class ECGStylePitchVisualizer(QWidget):
             return True
         except Exception:
             return False
+
+    def activate_retake_countdown(self, target_time: float, duration: float,
+                                  *, start_wall: Optional[float] = None,
+                                  end_wall: Optional[float] = None,
+                                  preroll_start: Optional[float] = None):
+        """为回录倒计时手动注入可视化状态，保证伴奏预卷阶段立即可见。"""
+        try:
+            target = float(max(0.0, target_time))
+        except Exception:
+            target = 0.0
+        try:
+            span = float(max(0.0, duration))
+        except Exception:
+            span = 0.0
+        if span <= 0.05:
+            try:
+                self._retake_countdown_active = False
+                self._retake_countdown_block_add = False
+            except Exception:
+                pass
+            try:
+                self._restore_retake_countdown_highlight()
+            except Exception:
+                pass
+            return False
+        try:
+            import time as _time
+            now_wall = _time.time()
+        except Exception:
+            now_wall = 0.0
+        if start_wall is None:
+            start_wall = now_wall
+        if end_wall is None:
+            end_wall = float(start_wall) + span
+        if preroll_start is None:
+            preroll_start = max(0.0, target - span)
+
+        for attr, val in (
+            ('_retake_countdown_duration', span),
+            ('_retake_countdown_target_time', target),
+            ('_retake_countdown_start_wall', float(start_wall)),
+            ('_retake_countdown_end_wall', float(end_wall)),
+            ('_retake_countdown_pause_started_at', float(start_wall)),
+            ('_retake_countdown_freeze_time', target),
+            ('_retake_countdown_preroll_start', float(preroll_start)),
+            ('_retake_countdown_active', True),
+            ('_retake_countdown_block_add', True),
+            ('_retake_countdown_skipped_for_analyzing', False),
+        ):
+            try:
+                setattr(self, attr, val)
+            except Exception:
+                pass
+        try:
+            self._apply_retake_countdown_highlight()
+        except Exception:
+            pass
+        try:
+            self._retake_countdown_active_since = float(start_wall)
+        except Exception:
+            pass
+
+        # 冻结时间轴并阻止新点写入
+        try:
+            self.current_global_time = target
+            if hasattr(self, 'last_pitch_time') and self.last_pitch_time > target:
+                self.last_pitch_time = target
+        except Exception:
+            pass
+        try:
+            setattr(self, '_manual_freeze_time', target)
+        except Exception:
+            pass
+
+        # 自适应窗口偏移，避免倒计时期间发生回拉
+        try:
+            if getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
+                center_t = float(getattr(self, 'center_display_time', 8.0))
+                if target <= center_t:
+                    self.time_offset = 0.0
+                else:
+                    max_offset = max(0.0, float(getattr(self, 'max_history_time', target)) - float(getattr(self, 'time_window', 16.0)))
+                    self.time_offset = max(0.0, min(target - center_t, max_offset))
+        except Exception:
+            pass
+
+        # 倒计时期间保持严格 cap，阻止旧点回潮
+        try:
+            self._cap_strict_lock = True
+            self._post_retake_new_data_started = False
+            self._strict_cap_dirty = True
+        except Exception:
+            pass
+
+        # 重置叠加元素以强制重新创建，顺便移除遗留对象
+        for attr in ('_retake_countdown_bg', '_retake_countdown_line', '_retake_countdown_progress',
+                     '_retake_countdown_start_line', '_retake_countdown_goal_line',
+                     '_retake_countdown_text', '_retake_countdown_hint'):
+            try:
+                obj = getattr(self, attr, None)
+            except Exception:
+                obj = None
+            if obj is not None:
+                try:
+                    if hasattr(obj, 'remove'):
+                        obj.remove()
+                except Exception:
+                    pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+
+        # 清空 UI 节流缓存，防止倒计时结束时旧帧冲入
+        try:
+            if hasattr(self, '_ui_pending'):
+                self._ui_pending = None
+            if hasattr(self, '_ui_last_emit_t'):
+                self._ui_last_emit_t = float(start_wall)
+        except Exception:
+            pass
+
+        try:
+            self._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'update_display'):
+                self.update_display()
+        except Exception:
+            pass
+        return True
 
     def update_display(self):
         """更新显示（支持历史数据查看和断续音调曲线）"""
@@ -25621,6 +25770,48 @@ class ECGStylePitchVisualizer(QWidget):
 class IntegratedRecordingInterface(QMainWindow):
     """集成录音与分析界面主窗口"""
     
+    class _CleanupProgressHandle:
+        def __init__(self, owner: QWidget | None, title: str, message: str, steps: int):
+            self._steps = max(1, int(steps))
+            self._value = 0
+            self._dialog: Optional[QProgressDialog] = None
+            try:
+                parent = owner if isinstance(owner, QWidget) else None
+                self._dialog = QProgressDialog(message, None, 0, self._steps, parent)
+                self._dialog.setWindowTitle(title)
+                self._dialog.setCancelButton(None)
+                self._dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+                self._dialog.setMinimumDuration(0)
+                self._dialog.setAutoReset(False)
+                self._dialog.setAutoClose(False)
+                self._dialog.setValue(0)
+                QApplication.processEvents()
+            except Exception:
+                self._dialog = None
+
+        def step(self, label: Optional[str] = None):
+            self._value = min(self._value + 1, self._steps)
+            if self._dialog is not None:
+                try:
+                    if label:
+                        self._dialog.setLabelText(label)
+                    self._dialog.setValue(self._value)
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+
+        def finish(self, final_label: Optional[str] = None):
+            if self._dialog is not None:
+                try:
+                    if final_label:
+                        self._dialog.setLabelText(final_label)
+                    self._dialog.setValue(self._steps)
+                    QApplication.processEvents()
+                    self._dialog.close()
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+
     def __init__(self):
         super().__init__()
 
@@ -25629,6 +25820,8 @@ class IntegratedRecordingInterface(QMainWindow):
         self.is_analyzing = False
         self.should_save_recording = True
         self._pitch_precision_debug_counter = 0
+        self._record_epoch = 0
+        self._ui_epoch = 0
 
         # 回退/倒计时与伴奏预卷状态
         self._retake_countdown_seconds = 3.0
@@ -25646,6 +25839,15 @@ class IntegratedRecordingInterface(QMainWindow):
         self._backing_preview_active = False
         self._backing_start_position_override = None
         self._retake_should_auto_resume = True
+        self._retake_cleanup_in_progress = False
+        self._retake_cleanup_guard_window = 0.55
+        self._enable_cleanup_progress = True
+        self._retake_cleanup_timer = None
+        self._retake_cleanup_deadline = 0.0
+        self._retake_cleanup_target = 0.0
+        self._retake_cleanup_span_hint = 0.0
+        self._retake_cleanup_consecutive_clean = 0
+        self._retake_cleanup_last_dirty = 0.0
 
         # 当前音高交互状态
         self.current_pitch_y = 4.0
@@ -25654,6 +25856,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         # 音频处理器
         self.audio_processor = IntegratedAudioProcessor()
+        self._sync_audio_processor_epoch()
 
         # 降噪处理器（可选）
         try:
@@ -26829,7 +27032,7 @@ class IntegratedRecordingInterface(QMainWindow):
         self.backing_button.setStyleSheet(style)
 
     def _load_local_backing(self, is_original: bool):
-        """选择本地 WAV/FLAC，解码至 float32 PCM mono 缓存。"""
+        """选择本地 WAV/FLAC，解码至 fl  oat32 PCM mono 缓存。"""
         try:
             from PyQt6.QtWidgets import QFileDialog, QMessageBox
             import numpy as np
@@ -27176,6 +27379,15 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
 
+    def _sync_audio_processor_epoch(self):
+        try:
+            if hasattr(self, 'audio_processor') and hasattr(self.audio_processor, 'set_ui_epoch'):
+                current_epoch = int(getattr(self, '_record_epoch', 0))
+                self.audio_processor.set_ui_epoch(current_epoch)
+                self._ui_epoch = current_epoch
+        except Exception:
+            pass
+
     # ======================= 新增：伴奏/原唱控制平行窗口 =======================
     def open_backing_control_window(self):
         """打开或聚焦伴奏/原唱控制窗口。
@@ -27400,6 +27612,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     except Exception:
                         self._record_epoch = 1
                     try:
+                        self._sync_audio_processor_epoch()
+                    except Exception:
+                        pass
+                    try:
                         setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
                     except Exception:
                         pass
@@ -27439,6 +27655,322 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception as e:
             print(f"⚠️ 应用回放跳转失败: {e}")
 
+    def _enter_retake_cleanup(self, *, steps: int, title: str, message: str, guard_hint: float) -> Optional['_CleanupProgressHandle']:
+        progress_handle: Optional[IntegratedRecordingInterface._CleanupProgressHandle] = None
+        try:
+            if getattr(self, '_enable_cleanup_progress', True):
+                progress_handle = IntegratedRecordingInterface._CleanupProgressHandle(self if isinstance(self, QWidget) else None, title, message, steps)
+        except Exception:
+            progress_handle = None
+        try:
+            self._retake_cleanup_in_progress = True
+        except Exception:
+            pass
+        viz = getattr(self, 'visualizer', None)
+        if viz is not None:
+            try:
+                setattr(viz, '_cleanup_block_add', True)
+            except Exception:
+                pass
+        try:
+            import time as _time
+            guard_base = max(guard_hint, float(getattr(self, '_retake_cleanup_guard_window', 0.55)))
+            now = _time.time()
+            existing_until = float(getattr(self, '_analysis_backoff_until', 0.0))
+            if guard_base > 0.0 and now + guard_base > existing_until:
+                self._analysis_backoff_until = now + guard_base
+                self._analysis_backoff_reason = 'cleanup_guard'
+        except Exception:
+            pass
+        if hasattr(self, 'status_label'):
+            try:
+                self.status_label.setText("正在清理回退数据，请稍候…")
+            except Exception:
+                pass
+        return progress_handle
+
+    def _leave_retake_cleanup(self, progress_handle: Optional['_CleanupProgressHandle'], guard_extra: float):
+        import time as _time
+        try:
+            if progress_handle is not None:
+                progress_handle.finish("回退清理完成")
+        except Exception:
+            pass
+        viz = getattr(self, 'visualizer', None)
+        if viz is not None:
+            try:
+                setattr(viz, '_cleanup_block_add', False)
+            except Exception:
+                pass
+        try:
+            self._retake_cleanup_in_progress = False
+        except Exception:
+            pass
+        try:
+            guard_base = max(guard_extra, float(getattr(self, '_retake_cleanup_guard_window', 0.55)))
+            now = _time.time()
+            existing_until = float(getattr(self, '_analysis_backoff_until', 0.0))
+            new_until = now + guard_base
+            if guard_base > 0.0 and new_until > existing_until:
+                self._analysis_backoff_until = new_until
+                self._analysis_backoff_reason = 'cleanup_guard'
+        except Exception:
+            pass
+        if hasattr(self, 'status_label'):
+            try:
+                self.status_label.setText("回退清理完成，可继续录音")
+            except Exception:
+                pass
+
+    def _schedule_retake_cleanup_watch(self, target_time: float, *, span_hint: float = 0.0, enforce_duration: Optional[float] = None):
+        """回退后启动一个短期监控，反复清理旧细节点直至稳定。"""
+        try:
+            target = float(max(0.0, target_time))
+        except Exception:
+            target = 0.0
+        try:
+            span = float(max(0.0, span_hint))
+        except Exception:
+            span = 0.0
+        import time as _time
+        now = _time.time()
+        duration_raw = enforce_duration if isinstance(enforce_duration, (int, float)) else (span * 1.35 + 0.9)
+        try:
+            if not isinstance(duration_raw, (int, float)) or not math.isfinite(float(duration_raw)):
+                duration_raw = 1.2
+        except Exception:
+            duration_raw = 1.2
+        duration = max(0.9, min(4.5, float(duration_raw)))
+        deadline = now + duration
+        self._retake_cleanup_target = target
+        self._retake_cleanup_span_hint = span
+        self._retake_cleanup_deadline = deadline
+        self._retake_cleanup_consecutive_clean = 0
+        self._retake_cleanup_last_dirty = now
+        if self._retake_cleanup_timer is None:
+            try:
+                timer = QTimer(self)
+                timer.setSingleShot(False)
+                timer.setInterval(130)
+                timer.timeout.connect(self._retake_cleanup_watchdog)
+                self._retake_cleanup_timer = timer
+            except Exception:
+                self._retake_cleanup_timer = None
+        else:
+            try:
+                if self._retake_cleanup_timer.interval() > 260 or self._retake_cleanup_timer.interval() < 70:
+                    self._retake_cleanup_timer.setInterval(130)
+            except Exception:
+                pass
+        if self._retake_cleanup_timer is not None and not self._retake_cleanup_timer.isActive():
+            try:
+                self._retake_cleanup_timer.start()
+            except Exception:
+                pass
+        try:
+            existing_until = float(getattr(self, '_analysis_backoff_until', 0.0))
+        except Exception:
+            existing_until = 0.0
+        try:
+            if deadline > existing_until:
+                self._analysis_backoff_until = deadline
+                self._analysis_backoff_reason = 'cleanup_watch'
+        except Exception:
+            pass
+
+    def _retake_cleanup_has_future_artifacts(self, viz, target: float) -> bool:
+        if viz is None:
+            return False
+        cutoff = float(target) + max(1e-6, float(getattr(self, '_retake_cleanup_eps', 1e-6)))
+        try:
+            times = getattr(viz, 'time_data', None)
+            if times:
+                for tt in list(times):
+                    try:
+                        if float(tt) > cutoff:
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            flat = getattr(viz, '_flat_points', None)
+            if flat:
+                for pt in list(flat):
+                    try:
+                        if float(pt[0]) > cutoff:
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            segments = getattr(viz, '_segments', None)
+            if segments:
+                for seg in list(segments):
+                    if not seg:
+                        continue
+                    try:
+                        times_arr = seg[0]
+                    except Exception:
+                        times_arr = None
+                    if not times_arr:
+                        continue
+                    for tt in list(times_arr):
+                        try:
+                            if float(tt) > cutoff:
+                                return True
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        try:
+            line = getattr(viz, 'pitch_line', None)
+            if line is not None:
+                xs, _ys = line.get_data()
+                if xs is not None:
+                    for xv in xs:
+                        try:
+                            if float(xv) > cutoff:
+                                return True
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        def _has_offsets(obj) -> bool:
+            try:
+                if obj is None or not hasattr(obj, 'get_offsets'):
+                    return False
+                offs = obj.get_offsets()
+                if offs is None:
+                    return False
+                import numpy as _np
+                arr = _np.asarray(offs)
+                if arr.size == 0:
+                    return False
+                return float(_np.max(arr[:, 0], initial=-1.0)) > cutoff
+            except Exception:
+                return False
+
+        for attr in ('_batched_points', '_browse_points_fallback', '_head_points_scatter', 'gradient_overlay_points', 'gradient_scatter', 'confidence_scatter'):
+            try:
+                if _has_offsets(getattr(viz, attr, None)):
+                    return True
+            except Exception:
+                continue
+        try:
+            seg_points = getattr(viz, '_segment_points', None)
+            if seg_points:
+                for coll in list(seg_points):
+                    if _has_offsets(coll):
+                        return True
+        except Exception:
+            pass
+        try:
+            ax = getattr(viz, 'ax', None)
+            if ax is not None and hasattr(ax, 'collections'):
+                for coll in list(getattr(ax, 'collections', [])):
+                    if _has_offsets(coll):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def _retake_cleanup_run_pass(self, viz, target: float):
+        try:
+            if hasattr(viz, 'trim_after'):
+                viz.trim_after(float(target))
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, 'purge_artists_in_range'):
+                viz.purge_artists_in_range(float(max(0.0, target)) - 1e-6, float('inf'))
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, '_filter_mainline_to_cap'):
+                viz._filter_mainline_to_cap()
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, '_purge_collections_beyond_cap'):
+                viz._purge_collections_beyond_cap()
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, '_enforce_cap_on_existing_artists'):
+                viz._enforce_cap_on_existing_artists()
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, '_artist_times_dirty'):
+                viz._artist_times_dirty = True
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, 'update_display'):
+                viz.update_display()
+        except Exception:
+            pass
+
+    def _retake_cleanup_watchdog(self):
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            self._stop_retake_cleanup_watch()
+            return
+        try:
+            target = float(getattr(self, '_retake_cleanup_target', 0.0))
+        except Exception:
+            target = 0.0
+        import time as _time
+        now = _time.time()
+        dirty = self._retake_cleanup_has_future_artifacts(viz, target)
+        if dirty:
+            self._retake_cleanup_run_pass(viz, target)
+            dirty = self._retake_cleanup_has_future_artifacts(viz, target)
+        if dirty:
+            self._retake_cleanup_last_dirty = now
+            self._retake_cleanup_consecutive_clean = 0
+        else:
+            self._retake_cleanup_consecutive_clean = int(getattr(self, '_retake_cleanup_consecutive_clean', 0)) + 1
+        deadline = float(getattr(self, '_retake_cleanup_deadline', 0.0))
+        required_clean = 3
+        if dirty and deadline - now < 0.45:
+            new_deadline = now + 0.75
+            self._retake_cleanup_deadline = new_deadline
+            try:
+                existing_until = float(getattr(self, '_analysis_backoff_until', 0.0))
+                if new_deadline > existing_until:
+                    self._analysis_backoff_until = new_deadline
+                    self._analysis_backoff_reason = 'cleanup_watch'
+            except Exception:
+                pass
+            return
+        if now >= deadline or self._retake_cleanup_consecutive_clean >= required_clean:
+            self._stop_retake_cleanup_watch()
+
+    def _stop_retake_cleanup_watch(self):
+        try:
+            timer = getattr(self, '_retake_cleanup_timer', None)
+            if timer is not None and timer.isActive():
+                timer.stop()
+        except Exception:
+            pass
+        self._retake_cleanup_deadline = 0.0
+        self._retake_cleanup_consecutive_clean = 0
+        self._retake_cleanup_last_dirty = 0.0
+        try:
+            if getattr(self, '_analysis_backoff_reason', '') == 'cleanup_watch':
+                import time as _time
+                self._analysis_backoff_until = _time.time() + 0.05
+                self._analysis_backoff_reason = ''
+        except Exception:
+            try:
+                self._analysis_backoff_until = 0.0
+            except Exception:
+                pass
+
     # ================= 回退重录核心实现 =================
     def rollback_to_time(self, start_t: float, end_t: float):
         """回退到 start_t，删除区间 [start_t, end_t) 的：
@@ -27448,14 +27980,28 @@ class IntegratedRecordingInterface(QMainWindow):
         4. 重置 current_duration / current_global_time / time_offset
         5. 清理段缓存/平滑状态
         注意：不立即写文件，最终保存时自然得到截断结果。"""
+        progress_handle: Optional[IntegratedRecordingInterface._CleanupProgressHandle] = None
+        cleanup_guard_hint = 0.6
         try:
             start_t = float(max(0.0, start_t)); end_t = float(max(start_t, end_t))
+            cleanup_span = max(0.0, end_t - start_t)
+            cleanup_guard_hint = max(0.55, min(1.4, cleanup_span * 0.8 + 0.45))
+            progress_handle = self._enter_retake_cleanup(
+                steps=12,
+                title="区间回退清理",
+                message="正在准备回退清理…",
+                guard_hint=cleanup_guard_hint
+            )
             v = getattr(self, 'visualizer', None)
             # 提升录制Epoch：所有旧Epoch的迟到数据在UI层被丢弃
             try:
                 self._record_epoch = int(getattr(self, '_record_epoch', 0)) + 1
             except Exception:
                 self._record_epoch = 1
+            try:
+                self._sync_audio_processor_epoch()
+            except Exception:
+                pass
             try:
                 if v is not None:
                     setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
@@ -27473,11 +28019,16 @@ class IntegratedRecordingInterface(QMainWindow):
             # 设置短暂的分析抑制窗口，确保回退前的帧完全清空
             try:
                 import time as _time
-                guard_window = max(0.12, min(0.6, (end_t - start_t) + 0.05))
-                self._analysis_backoff_until = _time.time() + guard_window
-                self._analysis_backoff_reason = 'rollback'
+                guard_window = max(cleanup_guard_hint, min(cleanup_guard_hint + 0.25, (end_t - start_t) + 0.45))
+                existing_until = float(getattr(self, '_analysis_backoff_until', 0.0))
+                new_until = _time.time() + guard_window
+                if new_until > existing_until:
+                    self._analysis_backoff_until = new_until
+                    self._analysis_backoff_reason = 'rollback'
             except Exception:
                 pass
+            if progress_handle is not None:
+                progress_handle.step("冻结回退上下文…")
             # 1) 删除可视化区间（采用 remove_range 保留前后，但我们还会截掉后半音频，因此相当于截断）
             if v is not None:
                 try:
@@ -27490,6 +28041,8 @@ class IntegratedRecordingInterface(QMainWindow):
                         pass
                 except Exception as _e:
                     print(f"⚠️ 可视化区间删除失败: {_e}")
+            if progress_handle is not None:
+                progress_handle.step("清理可视化数据…")
             # 2) 截断 pitch_history (其元素包含 timestamp 字段)
             try:
                 if hasattr(self, 'pitch_history') and self.pitch_history:
@@ -27505,6 +28058,8 @@ class IntegratedRecordingInterface(QMainWindow):
                     self.pitch_history = _dq(kept, maxlen=getattr(self.pitch_history, 'maxlen', 1000))
             except Exception as _ph:
                 print(f"⚠️ pitch_history 截断失败: {_ph}")
+            if progress_handle is not None:
+                progress_handle.step("截断历史音高缓存…")
             # 3) 截断录音音频缓冲
             try:
                 # 清空覆盖集合，避免旧覆盖影响新点
@@ -27565,6 +28120,8 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._frame_buffer = []
             except Exception as _ab:
                 print(f"⚠️ 音频缓冲截断失败: {_ab}")
+            if progress_handle is not None:
+                progress_handle.step("同步音频缓冲…")
             # 4) 重置时长与时间轴参考（并设置回退后新的起始时间基准）
             try:
                 self.current_duration = start_t
@@ -27625,6 +28182,8 @@ class IntegratedRecordingInterface(QMainWindow):
                     pass
             except Exception:
                 pass
+            if progress_handle is not None:
+                progress_handle.step("重置时间轴基准…")
             # 5) 清理段缓存、平滑辅助结构 + 过滤已存在 PathCollection 中超过截断点的旧细节点
             try:
                 viz = getattr(self, 'visualizer', None)
@@ -27874,6 +28433,8 @@ class IntegratedRecordingInterface(QMainWindow):
                     print(f"[ROLLBACK_DEBUG] truncated<= {start_t:.2f}s remain_time_pts={remaining_time_pts} filtered_visual_points={filtered_total}")
             except Exception:
                 pass
+            if progress_handle is not None:
+                progress_handle.step("刷新可视化缓存…")
             # 6) 触发一次刷新
             try:
                 if self.visualizer is not None:
@@ -27935,6 +28496,8 @@ class IntegratedRecordingInterface(QMainWindow):
                         pass
             except Exception:
                 pass
+            if progress_handle is not None:
+                progress_handle.step("重建显示状态…")
             print(f"✅ 已回退到 {start_t:.2f}s，清除区间 [{start_t:.2f},{end_t:.2f}) 数据，等待继续录制。")
             # 标记回录目标点并为伴奏预卷/倒计时做准备
             try:
@@ -27956,8 +28519,21 @@ class IntegratedRecordingInterface(QMainWindow):
                     print(f"⚠️ 回退预卷准备失败: {_prep_err}")
                 except Exception:
                     pass
+            try:
+                self._schedule_retake_cleanup_watch(
+                    float(start_t),
+                    span_hint=float(cleanup_span),
+                    enforce_duration=max(1.2, cleanup_guard_hint * 1.75)
+                )
+            except Exception:
+                pass
         except Exception as e:
             print(f"⚠️ 回退处理失败: {e}")
+        finally:
+            try:
+                self._leave_retake_cleanup(progress_handle, guard_extra=max(0.35, cleanup_guard_hint * 0.5))
+            except Exception:
+                pass
 
     # ---- 新增：伴奏内部跳转封装 ----
     def _seek_backing_audio(self, target_sec: float):
@@ -28038,17 +28614,78 @@ class IntegratedRecordingInterface(QMainWindow):
                     pos_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
                 except Exception:
                     pos_sec = 0.0
-            # 若未在拖动中则更新 slider
+            display_pos_sec = float(pos_sec)
+            countdown_active = False
+            countdown_start = None
+            countdown_target = None
+            countdown_remaining = None
+            try:
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None and hasattr(win, 'set_countdown_indicator'):
+                    active = bool(getattr(viz, '_retake_countdown_active', False))
+                    if active:
+                        countdown_active = True
+                        import time as _time
+                        countdown_start = float(getattr(viz, '_retake_countdown_preroll_start', getattr(self, '_retake_countdown_preroll_start', display_pos_sec)))
+                        countdown_target = float(getattr(viz, '_retake_countdown_target_time', getattr(self, '_retake_countdown_target', countdown_start)))
+                        end_wall = float(getattr(viz, '_retake_countdown_end_wall', getattr(self, '_retake_countdown_deadline', 0.0)))
+                        countdown_remaining = max(0.0, end_wall - _time.time()) if end_wall else None
+                        override_pos = None
+                        try:
+                            getter = getattr(viz, '_get_retake_countdown_position', None)
+                        except Exception:
+                            getter = None
+                        if callable(getter):
+                            try:
+                                override_pos = getter()
+                            except Exception:
+                                override_pos = None
+                        if override_pos is None:
+                            try:
+                                span = float(countdown_target) - float(countdown_start)
+                            except Exception:
+                                span = 0.0
+                            if span > 1e-6 and countdown_remaining is not None:
+                                try:
+                                    override_pos = float(countdown_target) - min(span, float(countdown_remaining))
+                                    override_pos = max(float(countdown_start), min(float(countdown_target), float(override_pos)))
+                                except Exception:
+                                    override_pos = None
+                        if override_pos is not None:
+                            try:
+                                display_pos_sec = float(override_pos)
+                            except Exception:
+                                pass
+                    else:
+                        countdown_active = False
+            except Exception:
+                countdown_active = False
+            try:
+                if hasattr(win, 'set_countdown_indicator'):
+                    if countdown_active:
+                        if countdown_start is None:
+                            countdown_start = display_pos_sec
+                        if countdown_target is None:
+                            countdown_target = countdown_start
+                        win.set_countdown_indicator(True, countdown_start, countdown_target, countdown_remaining)
+                    else:
+                        win.set_countdown_indicator(False, None, None, None)
+            except Exception:
+                pass
+            # 若未在拖动中则更新 slider（依据倒计时覆盖后的位置）
             if not win.is_user_dragging:
                 try:
                     win.position_slider.blockSignals(True)
-                    win.position_slider.setValue(int(pos_sec * 1000))  # ms 精度
-                    win.position_slider.blockSignals(False)
-                except Exception:
-                    pass
-            # 时间标签
+                    win.position_slider.setValue(int(max(0.0, display_pos_sec) * 1000))  # ms 精度
+                finally:
+                    try:
+                        win.position_slider.blockSignals(False)
+                    except Exception:
+                        pass
+            # 时间标签：倒计时期间也以覆盖时间显示
             try:
-                win.time_label.setText(win._fmt_time(pos_sec))
+                if countdown_active or not win.is_user_dragging:
+                    win.time_label.setText(win._fmt_time(display_pos_sec))
             except Exception:
                 pass
         except Exception:
@@ -28160,6 +28797,42 @@ class IntegratedRecordingInterface(QMainWindow):
             return
         self._retake_countdown_in_progress = True
         try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                target = float(getattr(self, '_retake_countdown_target', getattr(self, '_pending_retake_resume_time', 0.0)))
+            except Exception:
+                target = float(getattr(self, '_pending_retake_resume_time', 0.0)) if hasattr(self, '_pending_retake_resume_time') else 0.0
+            try:
+                start_wall = float(getattr(self, '_retake_countdown_started_at', 0.0))
+            except Exception:
+                start_wall = 0.0
+            try:
+                end_wall = float(getattr(self, '_retake_countdown_deadline', start_wall + float(countdown)))
+            except Exception:
+                end_wall = start_wall + float(countdown)
+            try:
+                preroll_start = float(getattr(self, '_retake_countdown_preroll_start', max(0.0, target - float(countdown))))
+            except Exception:
+                preroll_start = max(0.0, target - float(countdown))
+            activate_cb = None
+            try:
+                activate_cb = getattr(viz, 'activate_retake_countdown', None)
+            except Exception:
+                activate_cb = None
+            if callable(activate_cb):
+                try:
+                    activate_cb(target, float(countdown), start_wall=start_wall, end_wall=end_wall, preroll_start=preroll_start)
+                except Exception:
+                    pass
+            else:
+                try:
+                    setattr(viz, '_retake_countdown_active', True)
+                except Exception:
+                    pass
+        try:
             from PyQt6.QtCore import QTimer
             if self._retake_countdown_timer is None:
                 self._retake_countdown_timer = QTimer(self)
@@ -28225,6 +28898,65 @@ class IntegratedRecordingInterface(QMainWindow):
             self._retake_countdown_preroll_start = 0.0
             self._retake_should_auto_resume = True
         self._backing_preview_active = False if not keep_pending else self._backing_preview_active
+        # 移除界面叠加元素，防止取消后残留
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            for attr in ('_retake_countdown_bg', '_retake_countdown_hint', '_retake_countdown_text'):
+                try:
+                    overlay = getattr(viz, attr, None)
+                except Exception:
+                    overlay = None
+                if overlay is not None and hasattr(overlay, 'set_alpha'):
+                    try:
+                        overlay.set_alpha(0.0)
+                    except Exception:
+                        pass
+            for attr in ('_retake_countdown_line', '_retake_countdown_progress', '_retake_countdown_start_line', '_retake_countdown_goal_line'):
+                try:
+                    obj = getattr(viz, attr, None)
+                except Exception:
+                    obj = None
+                if obj is not None:
+                    try:
+                        if hasattr(obj, 'remove'):
+                            obj.remove()
+                    except Exception:
+                        pass
+                try:
+                    setattr(viz, attr, None)
+                except Exception:
+                    pass
+            try:
+                viz._retake_countdown_active = False
+                viz._retake_countdown_block_add = False
+            except Exception:
+                pass
+            for attr in ('_retake_countdown_freeze_time', '_retake_countdown_preroll_start'):
+                try:
+                    setattr(viz, attr, None)
+                except Exception:
+                    pass
+            try:
+                if hasattr(viz, '_manual_freeze_time'):
+                    delattr(viz, '_manual_freeze_time')
+            except Exception:
+                try:
+                    setattr(viz, '_manual_freeze_time', None)
+                except Exception:
+                    pass
+            try:
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_restore_retake_countdown_highlight'):
+                    viz._restore_retake_countdown_highlight()
+            except Exception:
+                pass
 
     def _on_retake_countdown_tick(self):
         """倒计时时钟：到时自动恢复录音。"""
@@ -28349,6 +29081,8 @@ class IntegratedRecordingInterface(QMainWindow):
         viz = getattr(self, 'visualizer', None)
         if viz is None:
             return
+        progress_handle: Optional[IntegratedRecordingInterface._CleanupProgressHandle] = None
+        cleanup_guard_hint = 0.45
         try:
             import time as _time
             now_wall = _time.time()
@@ -28358,69 +29092,196 @@ class IntegratedRecordingInterface(QMainWindow):
             tgt = float(max(0.0, target_time))
         except Exception:
             tgt = 0.0
-        for attr, value in (
-            ('_retake_countdown_active', False),
-            ('_retake_countdown_block_add', False),
-            ('_retake_countdown_freeze_time', None),
-            ('_retake_countdown_pause_started_at', 0.0),
-            ('_retake_countdown_start_wall', 0.0),
-            ('_retake_countdown_end_wall', now_wall),
-        ):
-            try:
-                setattr(viz, attr, value)
-            except Exception:
-                pass
         try:
-            setattr(viz, '_retake_countdown_target_time', tgt)
+            progress_handle = self._enter_retake_cleanup(
+                steps=9,
+                title="回录清理",
+                message="正在同步回录清理…",
+                guard_hint=cleanup_guard_hint
+            )
         except Exception:
-            pass
+            progress_handle = None
         try:
-            viz.current_global_time = tgt
-            if hasattr(viz, 'last_pitch_time') and float(getattr(viz, 'last_pitch_time', tgt)) > tgt:
-                viz.last_pitch_time = tgt
-        except Exception:
-            pass
-        try:
-            if hasattr(viz, 'follow_playback_time'):
-                viz.follow_playback_time(tgt)
-        except Exception:
-            pass
-        try:
-            if getattr(viz, '_cap_visible_time_enabled', False):
-                cur_cap = float(getattr(viz, '_max_visible_time', 0.0))
-                if cur_cap < tgt - 1e-9:
-                    viz._max_visible_time = tgt
-                viz._strict_cap_dirty = True
-        except Exception:
-            pass
-        for attr in ('_retake_countdown_bg', '_retake_countdown_hint', '_retake_countdown_text'):
-            try:
-                overlay = getattr(viz, attr, None)
-                if overlay is not None and hasattr(overlay, 'set_alpha'):
-                    overlay.set_alpha(0.0)
-            except Exception:
-                pass
-        try:
-            line = getattr(viz, '_retake_countdown_line', None)
-            if line is not None:
+            for attr, value in (
+                ('_retake_countdown_active', False),
+                ('_retake_countdown_block_add', False),
+                ('_retake_countdown_freeze_time', None),
+                ('_retake_countdown_pause_started_at', 0.0),
+                ('_retake_countdown_start_wall', 0.0),
+                ('_retake_countdown_end_wall', now_wall),
+            ):
                 try:
-                    ax = getattr(viz, 'ax', None)
-                    if ax is not None and line in getattr(ax, 'lines', []):
-                        line.remove()
+                    setattr(viz, attr, value)
                 except Exception:
                     pass
-                viz._retake_countdown_line = None
-        except Exception:
-            pass
-        try:
-            viz._force_redraw_on_next_update = True
-        except Exception:
-            pass
-        try:
-            if hasattr(viz, 'update_display'):
-                viz.update_display()
-        except Exception:
-            pass
+            if progress_handle is not None:
+                progress_handle.step("重置倒计时状态…")
+            try:
+                setattr(viz, '_retake_countdown_target_time', tgt)
+            except Exception:
+                pass
+            try:
+                viz.current_global_time = tgt
+                if hasattr(viz, 'last_pitch_time') and float(getattr(viz, 'last_pitch_time', tgt)) > tgt:
+                    viz.last_pitch_time = tgt
+            except Exception:
+                pass
+            if progress_handle is not None:
+                progress_handle.step("对齐播放指针…")
+            try:
+                if hasattr(viz, 'follow_playback_time'):
+                    viz.follow_playback_time(tgt)
+            except Exception:
+                pass
+            if progress_handle is not None:
+                progress_handle.step("刷新播放跟随…")
+            try:
+                if getattr(viz, '_cap_visible_time_enabled', False):
+                    cur_cap = float(getattr(viz, '_max_visible_time', 0.0))
+                    if cur_cap < tgt - 1e-9:
+                        viz._max_visible_time = tgt
+                    viz._strict_cap_dirty = True
+            except Exception:
+                pass
+            for attr in ('_retake_countdown_bg', '_retake_countdown_hint', '_retake_countdown_text'):
+                try:
+                    overlay = getattr(viz, attr, None)
+                    if overlay is not None and hasattr(overlay, 'set_alpha'):
+                        overlay.set_alpha(0.0)
+                except Exception:
+                    pass
+            try:
+                line = getattr(viz, '_retake_countdown_line', None)
+                if line is not None:
+                    try:
+                        ax = getattr(viz, 'ax', None)
+                        if ax is not None and line in getattr(ax, 'lines', []):
+                            line.remove()
+                    except Exception:
+                        pass
+                    viz._retake_countdown_line = None
+            except Exception:
+                pass
+            for attr in ('_retake_countdown_progress', '_retake_countdown_start_line', '_retake_countdown_goal_line'):
+                try:
+                    obj = getattr(viz, attr, None)
+                except Exception:
+                    obj = None
+                if obj is not None:
+                    try:
+                        if hasattr(obj, 'remove'):
+                            obj.remove()
+                    except Exception:
+                        pass
+                try:
+                    setattr(viz, attr, None)
+                except Exception:
+                    pass
+            if progress_handle is not None:
+                progress_handle.step("移除倒计时叠加…")
+            try:
+                if hasattr(viz, 'trim_after'):
+                    viz.trim_after(tgt)
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, 'purge_artists_in_range'):
+                    viz.purge_artists_in_range(float(max(0.0, tgt - 1e-6)), float('inf'))
+            except Exception:
+                pass
+            if progress_handle is not None:
+                progress_handle.step("裁剪尾部数据…")
+            try:
+                if hasattr(self, 'pitch_history') and self.pitch_history:
+                    from collections import deque as _dq
+                    kept_items = []
+                    maxlen = getattr(self.pitch_history, 'maxlen', len(self.pitch_history))
+                    for item in self.pitch_history:
+                        ts_val = None
+                        try:
+                            if isinstance(item, dict):
+                                ts_val = item.get('timestamp', item.get('time'))
+                            elif hasattr(item, 'get'):
+                                ts_val = item.get('timestamp', item.get('time', None))  # type: ignore[arg-type]
+                        except Exception:
+                            ts_val = None
+                        if ts_val is None:
+                            try:
+                                ts_val = getattr(item, 'timestamp', getattr(item, 'time', None))
+                            except Exception:
+                                ts_val = None
+                        if ts_val is None and isinstance(item, (list, tuple)) and len(item) > 0:
+                            try:
+                                ts_val = item[0]
+                            except Exception:
+                                ts_val = None
+                        try:
+                            ts = float(ts_val) if ts_val is not None else None
+                        except Exception:
+                            ts = None
+                        if ts is None or ts <= tgt + 1e-6:
+                            kept_items.append(item)
+                    self.pitch_history = _dq(kept_items, maxlen=maxlen)
+            except Exception:
+                pass
+            if progress_handle is not None:
+                progress_handle.step("同步历史缓存…")
+            try:
+                if hasattr(self, 'audio_buffer') and self.audio_buffer and hasattr(self, 'active_input_samplerate'):
+                    sr = int(getattr(self, 'active_input_samplerate', getattr(self, 'sample_rate', 44100)))
+                    cutoff = int(max(0.0, tgt) * max(1, sr))
+                    if cutoff < len(self.audio_buffer):
+                        self.audio_buffer = self.audio_buffer[:cutoff]
+            except Exception:
+                pass
+            try:
+                self._record_trim_point = float(tgt)
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_cap_strict_lock'):
+                    viz._cap_strict_lock = False
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_post_retake_new_data_started'):
+                    viz._post_retake_new_data_started = False
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_quick_rebuild_segments_upto_cap'):
+                    viz._quick_rebuild_segments_upto_cap()
+            except Exception:
+                pass
+            try:
+                viz._force_redraw_on_next_update = True
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_restore_retake_countdown_highlight'):
+                    viz._restore_retake_countdown_highlight()
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, 'update_display'):
+                    viz.update_display()
+            except Exception:
+                pass
+            if progress_handle is not None:
+                progress_handle.step("刷新可视化…")
+            try:
+                self._schedule_retake_cleanup_watch(
+                    tgt,
+                    span_hint=float(getattr(self, '_retake_countdown_duration', 0.0)),
+                    enforce_duration=max(1.1, cleanup_guard_hint * 1.6)
+                )
+            except Exception:
+                pass
+        finally:
+            try:
+                self._leave_retake_cleanup(progress_handle, guard_extra=max(0.3, cleanup_guard_hint * 0.6))
+            except Exception:
+                pass
 
     def _set_backing_paused(self, paused: bool):
         """设置伴奏/原唱及可视化暂停状态（暂停时不推进时间轴/不绘制新点）。"""
@@ -30006,10 +30867,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     # 仍更新文本/统计，但跳过绘制，平衡CPU与流畅度
                     pass
                 else:
-                    data_for_draw = pitch_data
+                    base_payload = dict(pitch_data)
                     # 可选：使用SciPy作轻量平滑以减少细抖动（仅影响显示）
                     try:
-                        f = float(pitch_data.get('frequency', 0.0))
+                        f = float(base_payload.get('frequency', 0.0))
                     except Exception:
                         f = 0.0
                     if f > 0:
@@ -30048,22 +30909,17 @@ class IntegratedRecordingInterface(QMainWindow):
                                 else:
                                     f_smooth = f
                             self._plot_freq_prev = float(f_smooth)
-                            # 用于绘制的频率替换为平滑值（不影响其他逻辑）
-                            data_for_draw = dict(pitch_data)
-                            data_for_draw['frequency'] = float(f_smooth)
+                            base_payload['frequency'] = float(f_smooth)
                         except Exception:
                             # 平滑失败时直接使用原值
-                            data_for_draw = pitch_data
+                            base_payload = dict(pitch_data)
                     # 录音分析模式：显示音调线
                     try:
-                        # 附带当前录制epoch，供可视化器过滤迟到旧点
-                        cur_epoch = int(getattr(self, '_record_epoch', 0))
-                        if isinstance(data_for_draw, dict):
-                            data_for_draw = dict(data_for_draw)
-                            data_for_draw['_epoch'] = cur_epoch
+                        if base_payload.get('_epoch') is None:
+                            base_payload['_epoch'] = int(getattr(self, '_record_epoch', 0))
                     except Exception:
                         pass
-                    self.visualizer.add_pitch_data(data_for_draw)
+                    self.visualizer.add_pitch_data(base_payload)
                     self._vis_last_draw_wall = now_wall
             else:
                 # 纯监听模式：跳过音调线绘制
@@ -30389,6 +31245,309 @@ def _enter_local_file_realtime_mode(self, file_path: str):
         print("[Info] 本地文件实时分析入口已调用：功能尚未实现。")
 
 # ========================= 本地音高检测：纯人声·实时分析 实现 ========================= #
+class _BackingControlWindow(QDialog):
+    """伴奏/原唱辅助控制窗口：提供进度拖动、音量调节与倒计时提示。"""
+
+    def __init__(self, main: 'IntegratedRecordingInterface'):
+        parent = main if isinstance(main, QWidget) else None
+        super().__init__(parent)
+        self.main = main
+        self.setWindowTitle("伴奏/原唱控制面板")
+        self.setModal(False)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass
+
+        self.setStyleSheet(
+            "QDialog { background:#202020; color:#ffffff; } "
+            "QLabel{color:white;} "
+            "QSlider::groove:horizontal{height:6px;background:#404040;border-radius:3px;} "
+            "QSlider::handle:horizontal{background:#4A90E2;width:14px;margin:-4px 0;border-radius:7px;} "
+            "QSlider::sub-page:horizontal{background:#66BB6A;border-radius:3px;}"
+        )
+
+        self.is_user_dragging = False
+        self._countdown_slider_active = False
+        self._countdown_slider_stylesheet = (
+            "QSlider::groove:horizontal{height:8px;background:#403030;border-radius:4px;} "
+            "QSlider::handle:horizontal{background:#FF7043;width:16px;margin:-5px 0;border-radius:8px;} "
+            "QSlider::sub-page:horizontal{background:#FFAB91;border-radius:4px;}"
+        )
+
+        layout = QVBoxLayout(self)
+
+        # --- 时间与预览 ---
+        time_row = QHBoxLayout()
+        time_row.addWidget(QLabel("位置:"))
+        self.time_label = QLabel("00:00.000")
+        self.time_label.setStyleSheet("font-weight:bold;")
+        time_row.addWidget(self.time_label)
+        self.countdown_label = QLabel("准备中：0.0s")
+        self.countdown_label.setStyleSheet("color:#FFA726; font-weight:bold;")
+        self.countdown_label.setVisible(False)
+        time_row.addWidget(self.countdown_label)
+        time_row.addStretch()
+        layout.addLayout(time_row)
+
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 6 * 60 * 60 * 1000)  # 6 小时上限，毫秒精度
+        self.position_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.position_slider.sliderReleased.connect(self._on_slider_released)
+        self.position_slider.valueChanged.connect(self._on_slider_changed)
+        layout.addWidget(self.position_slider)
+        self._default_slider_stylesheet = self.position_slider.styleSheet() or ""
+
+        # --- 音量调节 ---
+        volume_group = QGroupBox("音量调节")
+        volume_layout = QGridLayout(volume_group)
+
+        self.accomp_slider, self.accomp_value = self._make_volume_slider(
+            initial=getattr(main, 'backing_volume_accompaniment', 0.30),
+            on_change=self._on_accomp_volume
+        )
+        volume_layout.addWidget(QLabel("伴奏音量"), 0, 0)
+        volume_layout.addWidget(self.accomp_slider, 0, 1)
+        volume_layout.addWidget(self.accomp_value, 0, 2)
+
+        self.orig_slider, self.orig_value = self._make_volume_slider(
+            initial=getattr(main, 'backing_volume_original', 0.50),
+            on_change=self._on_orig_volume
+        )
+        volume_layout.addWidget(QLabel("原唱音量"), 1, 0)
+        volume_layout.addWidget(self.orig_slider, 1, 1)
+        volume_layout.addWidget(self.orig_value, 1, 2)
+
+        self.vocal_slider, self.vocal_value = self._make_volume_slider(
+            initial=getattr(main, 'monitoring_volume', 1.0),
+            on_change=self._on_vocal_volume
+        )
+        volume_layout.addWidget(QLabel("监听音量"), 2, 0)
+        volume_layout.addWidget(self.vocal_slider, 2, 1)
+        volume_layout.addWidget(self.vocal_value, 2, 2)
+
+        layout.addWidget(volume_group)
+
+        # --- 控制按钮 ---
+        btn_row = QHBoxLayout()
+        self.pause_btn = QPushButton("暂停伴奏")
+        self.pause_btn.clicked.connect(self._on_pause)
+        btn_row.addWidget(self.pause_btn)
+
+        self.resume_btn = QPushButton("继续伴奏")
+        self.resume_btn.clicked.connect(self._on_resume)
+        btn_row.addWidget(self.resume_btn)
+
+        self.stop_btn = QPushButton("停止录音")
+        self.stop_btn.clicked.connect(self._on_stop)
+        btn_row.addWidget(self.stop_btn)
+
+        self.redo_btn = QPushButton("选区重录")
+        self.redo_btn.clicked.connect(self._on_redo)
+        btn_row.addWidget(self.redo_btn)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        layout.addStretch()
+
+        self._refresh_pause_buttons()
+
+    # ------------------------------ UI Helpers ------------------------------
+
+    def closeEvent(self, event):  # type: ignore[override]
+        try:
+            if hasattr(self.main, '_backing_control_win'):
+                self.main._backing_control_win = None
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def _make_volume_slider(self, *, initial: float, on_change) -> Tuple[QSlider, QLabel]:
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 200)
+        slider.setValue(int(max(0.0, min(2.0, float(initial))) * 100))
+        value_label = QLabel(f"{slider.value()}%")
+
+        def _update_label(v: int):
+            value_label.setText(f"{v}%")
+            try:
+                on_change(v)
+            except Exception:
+                pass
+
+        slider.valueChanged.connect(_update_label)
+        return slider, value_label
+
+    # ------------------------------ Slider Logic ------------------------------
+
+    def _on_slider_pressed(self):
+        self.is_user_dragging = True
+
+    def _on_slider_released(self):
+        try:
+            target_ms = self.position_slider.value()
+            target_sec = float(target_ms) / 1000.0
+            self.is_user_dragging = False
+            if hasattr(self.main, '_apply_backing_seek'):
+                self.main._apply_backing_seek(target_sec, trim_if_backward=True)
+        except Exception:
+            pass
+
+    def _on_slider_changed(self, value: int):
+        if self.is_user_dragging:
+            try:
+                self.time_label.setText(self._fmt_time(float(value) / 1000.0))
+            except Exception:
+                pass
+
+    # ------------------------------ Volume Callbacks ------------------------------
+
+    def _on_accomp_volume(self, val: int):
+        try:
+            vol = max(0.0, min(2.0, float(val) / 100.0))
+            setattr(self.main, 'backing_volume_accompaniment', vol)
+        except Exception:
+            pass
+
+    def _on_orig_volume(self, val: int):
+        try:
+            vol = max(0.0, min(2.0, float(val) / 100.0))
+            setattr(self.main, 'backing_volume_original', vol)
+        except Exception:
+            pass
+
+    def _on_vocal_volume(self, val: int):
+        try:
+            vol = max(0.0, min(2.0, float(val) / 100.0))
+            if hasattr(self.main, 'set_monitoring_volume'):
+                self.main.set_monitoring_volume(vol)
+            else:
+                setattr(self.main, 'monitoring_volume', vol)
+        except Exception:
+            pass
+
+    # ------------------------------ Control Buttons ------------------------------
+
+    def _on_pause(self):
+        try:
+            if hasattr(self.main, '_set_backing_paused'):
+                self.main._set_backing_paused(True)
+            self._refresh_pause_buttons()
+        except Exception:
+            pass
+
+    def _on_resume(self):
+        try:
+            if hasattr(self.main, '_set_backing_paused'):
+                self.main._set_backing_paused(False)
+            self._refresh_pause_buttons()
+        except Exception:
+            pass
+
+    def _on_stop(self):
+        try:
+            if getattr(self.main, 'is_recording', False):
+                try:
+                    self.main.stop_recording()
+                except Exception:
+                    pass
+            if hasattr(self.main, '_stop_backing_playback'):
+                self.main._stop_backing_playback()
+            self.close()
+        except Exception:
+            pass
+
+    def _on_redo(self):
+        try:
+            viz = getattr(self.main, 'visualizer', None)
+            if viz is None or not getattr(viz, 'selection_active', False):
+                try:
+                    QMessageBox.information(self, "区间重录", "请先在主界面拖动建立一个时间选区（两条竖线）。")
+                except Exception:
+                    pass
+                return
+            start = float(getattr(viz, 'sel_start', 0.0))
+            end = float(getattr(viz, 'sel_end', start))
+            if end <= start + 1e-6:
+                return
+            try:
+                viz.remove_range(start, end)
+            except Exception:
+                pass
+            try:
+                self.main._apply_backing_seek(start, trim_if_backward=False)
+            except Exception:
+                pass
+            try:
+                if not hasattr(self.main, '_record_trim_point'):
+                    self.main._record_trim_point = start
+            except Exception:
+                pass
+            if not getattr(self.main, 'is_recording', False):
+                try:
+                    self.main.start_recording()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _refresh_pause_buttons(self):
+        try:
+            paused = bool(getattr(self.main, '_backing_paused', False) or getattr(self.main, 'is_paused', False))
+        except Exception:
+            paused = False
+        self.pause_btn.setEnabled(not paused)
+        self.resume_btn.setEnabled(paused)
+
+    # ------------------------------ Countdown Indicator ------------------------------
+
+    def set_countdown_indicator(
+        self,
+        active: bool,
+        start_sec: Optional[float],
+        target_sec: Optional[float],
+        remaining_sec: Optional[float]
+    ):
+        try:
+            if active:
+                if not self._countdown_slider_active:
+                    combined = self._countdown_slider_stylesheet
+                    if self._default_slider_stylesheet:
+                        combined = self._default_slider_stylesheet + "\n" + combined
+                    self.position_slider.setStyleSheet(combined)
+                    self._countdown_slider_active = True
+                rem = max(0.0, float(remaining_sec) if remaining_sec is not None else 0.0)
+                cur_value = self.position_slider.value() / 1000.0
+                if start_sec is not None and target_sec is not None:
+                    try:
+                        span = max(0.001, float(target_sec) - float(start_sec))
+                        elapsed = max(0.0, min(span, float(target_sec) - cur_value))
+                        rem = max(0.0, min(rem, span)) if remaining_sec is not None else max(0.0, span - elapsed)
+                    except Exception:
+                        pass
+                self.countdown_label.setText(f"准备中：{rem:0.1f}s")
+                self.countdown_label.setVisible(True)
+            else:
+                if self._countdown_slider_active:
+                    self.position_slider.setStyleSheet(self._default_slider_stylesheet)
+                    self._countdown_slider_active = False
+                self.countdown_label.setVisible(False)
+        except Exception:
+            pass
+
+    # ------------------------------ Utils ------------------------------
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        try:
+            seconds = max(0.0, float(seconds))
+        except Exception:
+            seconds = 0.0
+        mins, secs = divmod(seconds, 60.0)
+        return f"{int(mins):02d}:{secs:06.3f}"
+
+
 class _LocalFileRealtimeController(QObject):
     tick = pyqtSignal(float)  # 播放头位置(秒)更新
 
