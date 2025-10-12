@@ -10478,6 +10478,8 @@ class ECGStylePitchVisualizer(QWidget):
         }
         self._summary_interval = 2.0
         self._last_summary_time = time.time()
+        self._retake_axis_lock = None
+        self._retake_playhead_freeze = None
         self._vocal_protect_active = False
         # 悬停提示（细节点浮动气泡）
         self._hover_annot = None
@@ -18308,6 +18310,20 @@ class ECGStylePitchVisualizer(QWidget):
         - 单步最大位移随 dt 与积压误差自适应，消除“跟随不够→粘滞感”。
         """
         try:
+            lock = getattr(self, '_retake_axis_lock', None)
+            if lock is not None:
+                if hasattr(self, 'ax') and self.ax is not None:
+                    try:
+                        self.ax.set_xlim(float(lock[0]), float(lock[1]))
+                    except Exception:
+                        pass
+                self._smoothed_xlim = tuple(map(float, lock))
+                try:
+                    import time as _lock_t
+                    self._smooth_last_t = _lock_t.time()
+                except Exception:
+                    pass
+                return
             # 追加：手动横向拖动后的即时跳转优化
             # 如果在手动滚动活跃窗口内（_manual_scroll_active_until）或全局平滑抑制窗口内（_suppress_smooth_until）
             # 并且当前不是需要自动跟随推进的场景，则直接设置 xlim，避免任何动画式缓动。
@@ -19463,6 +19479,12 @@ class ECGStylePitchVisualizer(QWidget):
                 rem = 0.0
             if not (hasattr(self, 'ax') and self.ax is not None):
                 return False
+            try:
+                axis_lock = getattr(self, '_retake_axis_lock', None)
+                if axis_lock is not None:
+                    self.ax.set_xlim(float(axis_lock[0]), float(axis_lock[1]))
+            except Exception:
+                pass
 
             # 计算时间轴位置（用于同步播放线与进度条）
             tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
@@ -19478,6 +19500,24 @@ class ECGStylePitchVisualizer(QWidget):
                 else:
                     cur_t = tgt
                 cur_t = max(start_line_t, min(tgt, cur_t))
+            try:
+                last_pos = getattr(self, '_retake_countdown_last_pos', None)
+                if last_pos is not None:
+                    # ensure the overlay playhead never moves backwards due to timer jitter
+                    if cur_t < float(last_pos) - 0.002:
+                        cur_t = float(last_pos)
+                    else:
+                        cur_t = max(float(last_pos), float(cur_t))
+                self._retake_countdown_last_pos = float(cur_t)
+            except Exception:
+                try:
+                    self._retake_countdown_last_pos = float(cur_t)
+                except Exception:
+                    pass
+            try:
+                self._retake_playhead_freeze = float(cur_t)
+            except Exception:
+                pass
 
             # 同步可视化冻结时间，保证时间轴跟随倒计时推进
             try:
@@ -19633,6 +19673,14 @@ class ECGStylePitchVisualizer(QWidget):
                     self._restore_retake_countdown_highlight()
                 except Exception:
                     pass
+                try:
+                    self._retake_axis_lock = None
+                except Exception:
+                    pass
+                try:
+                    self._retake_playhead_freeze = None
+                except Exception:
+                    pass
 
             # 轻量触发重绘
             try:
@@ -19704,6 +19752,25 @@ class ECGStylePitchVisualizer(QWidget):
             self._retake_countdown_active_since = float(start_wall)
         except Exception:
             pass
+        try:
+            self._retake_countdown_last_pos = float(max(0.0, preroll_start if preroll_start is not None else target))
+        except Exception:
+            try:
+                self._retake_countdown_last_pos = float(target)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, 'ax') and self.ax is not None:
+                _lock_xlim = self.ax.get_xlim()
+                if _lock_xlim:
+                    self._retake_axis_lock = (float(_lock_xlim[0]), float(_lock_xlim[1]))
+                    self._smoothed_xlim = self._retake_axis_lock
+        except Exception:
+            self._retake_axis_lock = None
+        try:
+            self._retake_playhead_freeze = float(getattr(self, '_retake_countdown_last_pos', target))
+        except Exception:
+            self._retake_playhead_freeze = None
 
         # 冻结时间轴并阻止新点写入
         try:
@@ -24783,6 +24850,13 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 self._last_status_update = self.current_global_time
 
+            # 同步伴奏控制面板的进度信息以保持滑块更新
+            try:
+                if getattr(self, '_backing_control_win', None) is not None:
+                    self._backing_control_tick_sync()
+            except Exception:
+                pass
+
         except Exception as e:
             print(f"❌ 时间轴更新错误: {e}")
 
@@ -27373,6 +27447,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 self.backing_volume_original = 0.50
             # 平行控制窗口引用
             self._backing_control_win = None
+            self._backing_control_sync_timer = None
+            self._retake_countdown_hold_duration = False
         except Exception as _ie:
             try:
                 print(f"⚠️ 初始化伴奏状态失败: {_ie}")
@@ -27397,9 +27473,45 @@ class IntegratedRecordingInterface(QMainWindow):
         """
         try:
             if self._backing_control_win and self._backing_control_win.isVisible():
+                self._start_backing_control_sync_timer()
                 self._backing_control_win.activateWindow(); self._backing_control_win.raise_(); return
             self._backing_control_win = _BackingControlWindow(self)
+            try:
+                win = self._backing_control_win
+                total_sec = None
+                if (self.backing_pcm_accompaniment is not None and
+                    self.backing_sample_rate):
+                    total_sec = float(len(self.backing_pcm_accompaniment)) / float(self.backing_sample_rate)
+                win._total_duration_sec = total_sec
+
+                paused = bool(getattr(self, '_backing_paused', False) or getattr(self, 'is_paused', False))
+                pause_snapshot = getattr(self, '_backing_pause_position_sec', None)
+                pos_sec = 0.0
+                if paused and pause_snapshot is not None:
+                    try:
+                        pos_sec = float(pause_snapshot)
+                    except Exception:
+                        pos_sec = 0.0
+                elif self.backing_sample_rate and self.backing_pcm_accompaniment is not None:
+                    try:
+                        play_pos = getattr(self, 'backing_play_position', None)
+                        pos_sec = float(play_pos) / float(self.backing_sample_rate) if play_pos is not None else 0.0
+                    except Exception:
+                        pos_sec = 0.0
+
+                try:
+                    win.position_slider.blockSignals(True)
+                    win.position_slider.setValue(int(max(0.0, pos_sec) * 1000))
+                finally:
+                    try:
+                        win.position_slider.blockSignals(False)
+                    except Exception:
+                        pass
+                win.time_label.setText(win._fmt_time(pos_sec, total_sec))
+            except Exception:
+                pass
             self._backing_control_win.show()
+            self._start_backing_control_sync_timer()
         except Exception as e:
             print(f"⚠️ 打开伴奏控制窗口失败: {e}")
 
@@ -27551,7 +27663,12 @@ class IntegratedRecordingInterface(QMainWindow):
                                     except Exception:
                                         pass
                                 try:
-                                    ctrl.time_label.setText(ctrl._fmt_time(cur_before))
+                                    ctrl.time_label.setText(
+                                        ctrl._fmt_time(
+                                            cur_before,
+                                            getattr(ctrl, '_total_duration_sec', None)
+                                        )
+                                    )
                                 except Exception:
                                     pass
                         except Exception:
@@ -28601,6 +28718,19 @@ class IntegratedRecordingInterface(QMainWindow):
             if not win or not win.isVisible():
                 return
             # 当前时间 = 伴奏位置（秒）
+            try:
+                total_sec = None
+                if (self.backing_pcm_accompaniment is not None and
+                    self.backing_sample_rate):
+                    total_sec = float(len(self.backing_pcm_accompaniment)) / float(self.backing_sample_rate)
+                    max_ms = int(max(0.0, total_sec) * 1000)
+                    if max_ms <= 0:
+                        max_ms = 1
+                    if win.position_slider.maximum() != max_ms:
+                        win.position_slider.setMaximum(max_ms)
+                win._total_duration_sec = total_sec
+            except Exception:
+                win._total_duration_sec = None
             paused = bool(getattr(self, '_backing_paused', False) or getattr(self, 'is_paused', False))
             pause_snapshot = getattr(self, '_backing_pause_position_sec', None)
             pos_sec = 0.0
@@ -28685,11 +28815,49 @@ class IntegratedRecordingInterface(QMainWindow):
             # 时间标签：倒计时期间也以覆盖时间显示
             try:
                 if countdown_active or not win.is_user_dragging:
-                    win.time_label.setText(win._fmt_time(display_pos_sec))
+                    win.time_label.setText(
+                        win._fmt_time(
+                            display_pos_sec,
+                            getattr(win, '_total_duration_sec', None)
+                        )
+                    )
             except Exception:
                 pass
         except Exception:
             pass
+
+    def _start_backing_control_sync_timer(self, interval_ms: int = 80):
+        """确保伴奏控制窗口的进度刷新定时器运行。"""
+        try:
+            from PyQt6.QtCore import QTimer, Qt
+            timer = getattr(self, '_backing_control_sync_timer', None)
+            if timer is None:
+                timer = QTimer(self)
+                try:
+                    timer.setTimerType(Qt.TimerType.PreciseTimer)
+                except Exception:
+                    pass
+                timer.timeout.connect(self._backing_control_tick_sync)
+                self._backing_control_sync_timer = timer
+            if interval_ms < 30:
+                interval_ms = 30
+            if not timer.isActive():
+                timer.start(int(interval_ms))
+            self._backing_control_tick_sync()
+        except Exception:
+            pass
+
+    def _stop_backing_control_sync_timer(self):
+        """停止伴奏控制窗口的刷新定时器。"""
+        try:
+            timer = getattr(self, '_backing_control_sync_timer', None)
+        except Exception:
+            timer = None
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
 
     def _prepare_retake_preroll(self, target_time: float):
         """在伴奏模式下为回录倒计时准备伴奏预卷与定时器。"""
@@ -28897,6 +29065,10 @@ class IntegratedRecordingInterface(QMainWindow):
             self._retake_countdown_target = 0.0
             self._retake_countdown_preroll_start = 0.0
             self._retake_should_auto_resume = True
+        try:
+            self._retake_countdown_last_pos = None
+        except Exception:
+            pass
         self._backing_preview_active = False if not keep_pending else self._backing_preview_active
         # 移除界面叠加元素，防止取消后残留
         try:
@@ -28932,6 +29104,10 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 viz._retake_countdown_active = False
                 viz._retake_countdown_block_add = False
+            except Exception:
+                pass
+            try:
+                viz._retake_countdown_last_pos = None
             except Exception:
                 pass
             for attr in ('_retake_countdown_freeze_time', '_retake_countdown_preroll_start'):
@@ -29102,6 +29278,10 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             progress_handle = None
         try:
+            self._retake_countdown_last_pos = None
+        except Exception:
+            pass
+        try:
             for attr, value in (
                 ('_retake_countdown_active', False),
                 ('_retake_countdown_block_add', False),
@@ -29109,6 +29289,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 ('_retake_countdown_pause_started_at', 0.0),
                 ('_retake_countdown_start_wall', 0.0),
                 ('_retake_countdown_end_wall', now_wall),
+                ('_retake_countdown_last_pos', None),
             ):
                 try:
                     setattr(viz, attr, value)
@@ -29121,11 +29302,36 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             try:
+                viz._retake_axis_lock = None
+            except Exception:
+                pass
+            try:
+                viz._retake_playhead_freeze = None
+            except Exception:
+                pass
+            try:
                 viz.current_global_time = tgt
                 if hasattr(viz, 'last_pitch_time') and float(getattr(viz, 'last_pitch_time', tgt)) > tgt:
                     viz.last_pitch_time = tgt
             except Exception:
                 pass
+            try:
+                import time as _sync_time
+                viz.start_time = float(_sync_time.time() - tgt)
+            except Exception:
+                pass
+            try:
+                viz._accumulated_pause_dur = 0.0
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_manual_freeze_time'):
+                    delattr(viz, '_manual_freeze_time')
+            except Exception:
+                try:
+                    setattr(viz, '_manual_freeze_time', None)
+                except Exception:
+                    pass
             if progress_handle is not None:
                 progress_handle.step("对齐播放指针…")
             try:
@@ -29137,9 +29343,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 progress_handle.step("刷新播放跟随…")
             try:
                 if getattr(viz, '_cap_visible_time_enabled', False):
-                    cur_cap = float(getattr(viz, '_max_visible_time', 0.0))
-                    if cur_cap < tgt - 1e-9:
-                        viz._max_visible_time = tgt
+                    viz._max_visible_time = float(tgt)
                     viz._strict_cap_dirty = True
             except Exception:
                 pass
@@ -29187,6 +29391,11 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 if hasattr(viz, 'purge_artists_in_range'):
                     viz.purge_artists_in_range(float(max(0.0, tgt - 1e-6)), float('inf'))
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_purge_collections_beyond_cap'):
+                    viz._purge_collections_beyond_cap()
             except Exception:
                 pass
             if progress_handle is not None:
@@ -29254,6 +29463,20 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             try:
+                viz._post_seek_initial_cap = float(tgt)
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_last_forward_refresh_cap'):
+                    viz._last_forward_refresh_cap = -1.0
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_force_forward_segment_refresh'):
+                    viz._force_forward_segment_refresh()
+            except Exception:
+                pass
+            try:
                 viz._force_redraw_on_next_update = True
             except Exception:
                 pass
@@ -29295,17 +29518,58 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 if paused:
                     pause_sec = None
+                    sr = None
                     try:
-                        if self.backing_sample_rate and self.backing_sample_rate > 0 and self.backing_pcm_accompaniment is not None:
-                            pause_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
+                        if self.backing_sample_rate:
+                            sr = float(self.backing_sample_rate)
                     except Exception:
-                        pause_sec = None
+                        sr = None
+                    if sr and sr > 0:
+                        try:
+                            pause_sec = float(self.backing_play_position) / sr
+                        except Exception:
+                            pause_sec = None
                     if pause_sec is None:
                         try:
                             pause_sec = float(getattr(self, '_pending_retake_resume_time', getattr(self, 'recording_duration', 0.0)))
                         except Exception:
                             pause_sec = float(getattr(self, 'recording_duration', 0.0))
-                    self._backing_pause_position_sec = float(max(0.0, pause_sec))
+                    pause_sec = float(max(0.0, pause_sec))
+                    self._backing_pause_position_sec = pause_sec
+                    sample_idx = None
+                    if sr and sr > 0:
+                        try:
+                            sample_idx = int(round(pause_sec * sr))
+                        except Exception:
+                            sample_idx = None
+                        if sample_idx is not None:
+                            total_frames = None
+                            for _buf_attr in ('backing_pcm_accompaniment', 'backing_pcm_original'):
+                                try:
+                                    buf = getattr(self, _buf_attr, None)
+                                except Exception:
+                                    buf = None
+                                if buf is not None:
+                                    try:
+                                        total_frames = len(buf)
+                                    except Exception:
+                                        total_frames = None
+                                if total_frames:
+                                    sample_idx = max(0, min(int(sample_idx), total_frames - 1))
+                                    break
+                            try:
+                                self._backing_start_position_override = int(sample_idx)
+                            except Exception:
+                                self._backing_start_position_override = sample_idx
+                            try:
+                                self.backing_play_position = int(sample_idx)
+                            except Exception:
+                                try:
+                                    self.backing_play_position = sample_idx
+                                except Exception:
+                                    pass
+                    else:
+                        self._backing_start_position_override = None
                 else:
                     self._backing_pause_position_sec = None
             except Exception:
@@ -29373,6 +29637,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._maybe_start_backing_playback()
                 except Exception:
                     pass
+            try:
+                self._backing_control_tick_sync()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -31279,8 +31547,10 @@ class _BackingControlWindow(QDialog):
 
         # --- 时间与预览 ---
         time_row = QHBoxLayout()
-        time_row.addWidget(QLabel("位置:"))
-        self.time_label = QLabel("00:00.000")
+        self.progress_title = QLabel("播放进度:")
+        time_row.addWidget(self.progress_title)
+        self._total_duration_sec: Optional[float] = None
+        self.time_label = QLabel(self._fmt_time(0.0, self._total_duration_sec))
         self.time_label.setStyleSheet("font-weight:bold;")
         time_row.addWidget(self.time_label)
         self.countdown_label = QLabel("准备中：0.0s")
@@ -31330,11 +31600,11 @@ class _BackingControlWindow(QDialog):
 
         # --- 控制按钮 ---
         btn_row = QHBoxLayout()
-        self.pause_btn = QPushButton("暂停伴奏")
+        self.pause_btn = QPushButton("暂停")
         self.pause_btn.clicked.connect(self._on_pause)
         btn_row.addWidget(self.pause_btn)
 
-        self.resume_btn = QPushButton("继续伴奏")
+        self.resume_btn = QPushButton("继续")
         self.resume_btn.clicked.connect(self._on_resume)
         btn_row.addWidget(self.resume_btn)
 
@@ -31359,6 +31629,8 @@ class _BackingControlWindow(QDialog):
         try:
             if hasattr(self.main, '_backing_control_win'):
                 self.main._backing_control_win = None
+            if hasattr(self.main, '_stop_backing_control_sync_timer'):
+                self.main._stop_backing_control_sync_timer()
         except Exception:
             pass
         super().closeEvent(event)
@@ -31397,7 +31669,8 @@ class _BackingControlWindow(QDialog):
     def _on_slider_changed(self, value: int):
         if self.is_user_dragging:
             try:
-                self.time_label.setText(self._fmt_time(float(value) / 1000.0))
+                total = getattr(self, '_total_duration_sec', None)
+                self.time_label.setText(self._fmt_time(float(value) / 1000.0, total))
             except Exception:
                 pass
 
@@ -31539,13 +31812,25 @@ class _BackingControlWindow(QDialog):
     # ------------------------------ Utils ------------------------------
 
     @staticmethod
-    def _fmt_time(seconds: float) -> str:
+    def _fmt_time(seconds: float, total: Optional[float] = None) -> str:
+        def _fmt_single(val: float) -> str:
+            try:
+                val = max(0.0, float(val))
+            except Exception:
+                val = 0.0
+            mins, secs = divmod(val, 60.0)
+            return f"{int(mins):02d}:{secs:06.3f}"
+
+        current = _fmt_single(seconds)
+        if total is None:
+            return current
         try:
-            seconds = max(0.0, float(seconds))
+            total_val = float(total)
+            if not math.isfinite(total_val) or total_val < 0.0:
+                return current
         except Exception:
-            seconds = 0.0
-        mins, secs = divmod(seconds, 60.0)
-        return f"{int(mins):02d}:{secs:06.3f}"
+            return current
+        return f"{current} / {_fmt_single(total_val)}"
 
 
 class _LocalFileRealtimeController(QObject):
