@@ -8746,14 +8746,18 @@ class IntegratedAudioProcessor(QThread):
                     k_min, k_max = 0.16, 0.48
             k = k_min + (k_max - k_min) * s
             g_base = 1.0 - k
-            # 轻声有声时，进一步降低抑制力度、避免“模糊”
-            if voiced_soft:
-                g_base = min(1.0, g_base * 1.06)
-                s *= 0.88
 
-            # 轻声有声保护：若低频包络高于高频包络，提升 g_base（少削高频）并给低频极轻增益
-            env_l = float(np.mean(np.abs(y_lp))) + 1e-9
-            env_h = float(np.mean(np.abs(hf_res))) + 1e-9
+            # 低/高频包络估计（保底防止异常）
+            try:
+                env_l = float(np.mean(np.abs(y_lp))) + 1e-9
+            except Exception:
+                env_l = float(np.mean(np.abs(x))) + 1e-9
+            try:
+                env_h = float(np.mean(np.abs(hf_res))) + 1e-9
+            except Exception:
+                env_h = float(np.mean(np.abs(x))) + 1e-9
+
+            # 轻声有声时，进一步降低抑制力度、避免“模糊”
             low_boost = 0.0
             if env_l > env_h * 1.25:
                 g_base = min(1.0, g_base + 0.10)
@@ -8765,17 +8769,17 @@ class IntegratedAudioProcessor(QThread):
 
             # 软膝压缩：当高频包络占比过高时进一步降低高频（防“砂感”）
             base_amp = float(np.mean(np.abs(x))) + 1e-9
-            env_h_ratio = env_h / base_amp
-            t_ratio = 0.88 if natural else 0.78
-            if env_h_ratio <= t_ratio:
-                g_comp = 1.0
-            else:
-                over = (env_h_ratio - t_ratio) / max(1e-6, (1.0 - t_ratio))
-                # 嗡嗡声时对>2kHz更强的抑制，整体降砂但不压中频
-                c_base = (0.36 if natural else 0.46)
-                c = c_base + (0.55 * s) * (0.6 + 0.4 * user_strength)
-                g_comp = 1.0 - c * over
-                g_comp = 0.30 if g_comp < 0.30 else (1.0 if g_comp > 1.0 else g_comp)
+            env_h_ratio = env_h / base_amp if base_amp > 1e-9 else 0.0
+            try:
+                knee_ratio = float(getattr(self, '_breath_hf_soft_knee', 0.68 if natural else 0.62))
+            except Exception:
+                knee_ratio = 0.65
+            over = max(0.0, env_h_ratio - knee_ratio)
+            # 嗡嗡声时对>2kHz更强的抑制，整体降砂但不压中频
+            c_base = (0.36 if natural else 0.46)
+            c = c_base + (0.55 * s) * (0.6 + 0.4 * user_strength)
+            g_comp = 1.0 - c * over
+            g_comp = 0.30 if g_comp < 0.30 else (1.0 if g_comp > 1.0 else g_comp)
 
             g = g_base * g_comp
             # 呼吸保护：对2-6k带宽（hf_mid）保留更多细节，避免“抽空空气感”
@@ -11329,6 +11333,35 @@ class ECGStylePitchVisualizer(QWidget):
                         pass
                     # 使用已有的安全裁剪函数，会同步重建 _added_time_bins、尾部/扁平缓存等
                     self.trim_after(float(target_time))
+                    try:
+                        self._finalize_retake_visual_reset(float(target_time))
+                    except Exception:
+                        pass
+                    try:
+                        self._retake_drop_until_timestamp = _t.time()
+                    except Exception:
+                        self._retake_drop_until_timestamp = 0.0
+                    try:
+                        self._retake_skip_gate_frames = int(getattr(self, '_retake_skip_gate_frame_count', 6))
+                    except Exception:
+                        self._retake_skip_gate_frames = 6
+                else:
+                    try:
+                        self._release_time_bins_after(float(target_time))
+                    except Exception:
+                        pass
+                try:
+                    self._record_trim_point = float(target_time)
+                except Exception:
+                    pass
+                try:
+                    frames = int(getattr(self, '_retake_skip_gate_frame_count', 6))
+                except Exception:
+                    frames = 6
+                try:
+                    self._retake_skip_gate_frames = max(frames, 0)
+                except Exception:
+                    self._retake_skip_gate_frames = frames
             except Exception:
                 pass
             # 标记：回退后 time_data 可能出现“先大后小”的非单调拼接，
@@ -11398,8 +11431,7 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                         try:
-                            if hasattr(self, '_current_epoch'):
-                                self._current_epoch = None
+                            setattr(self, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
                         except Exception:
                             pass
                         if getattr(self,'debug_flags',{}).get('cap_diag'):
@@ -11730,6 +11762,234 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _finalize_retake_visual_reset(self, cutoff: float):
+        """在回退裁剪后刷新所有可视化状态，确保 cutoff 之后区域彻底清空，并保持 cutoff 之前的历史完整可见。"""
+        try:
+            cutoff = float(max(0.0, cutoff))
+        except Exception:
+            return
+        eps = 1e-6
+        # 先移除 cutoff 及之后的散点/集合，释放右侧可见内容
+        try:
+            self.purge_artists_in_range(cutoff, float('inf'))
+        except Exception:
+            pass
+        # 清空覆盖/渐变等缓存，防止旧段再次注入
+        for attr in ('_drawn_coverage', '_gradient_windows', '_prefetched_segments'):
+            try:
+                if hasattr(self, attr):
+                    setattr(self, attr, [] if isinstance(getattr(self, attr), list) else None)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, '_cov_reset') and callable(self._cov_reset):
+                self._cov_reset()
+        except Exception:
+            pass
+        for attr in ('gradient_lines', 'gradient_overlay_points', 'gradient_scatter'):
+            try:
+                obj = getattr(self, attr, None)
+            except Exception:
+                obj = None
+            if not obj:
+                continue
+            try:
+                if isinstance(obj, (list, tuple)):
+                    for item in list(obj):
+                        try:
+                            if hasattr(item, 'remove'):
+                                item.remove()
+                        except Exception:
+                            pass
+                    setattr(self, attr, [] if isinstance(obj, list) else None)
+                else:
+                    if hasattr(obj, 'remove'):
+                        obj.remove()
+                    setattr(self, attr, None)
+            except Exception:
+                pass
+        # 移除旧的段折线/散点对象（更新时会从 time_data 重新构建）
+        try:
+            if hasattr(self, '_segment_lines') and isinstance(self._segment_lines, list):
+                for ln in list(self._segment_lines):
+                    try:
+                        if hasattr(ln, 'remove'):
+                            ln.remove()
+                    except Exception:
+                        pass
+                self._segment_lines = []
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_segment_points') and isinstance(self._segment_points, list):
+                for coll in list(self._segment_points):
+                    try:
+                        if hasattr(coll, 'remove'):
+                            coll.remove()
+                    except Exception:
+                        pass
+                self._segment_points = []
+        except Exception:
+            pass
+        for attr in ('_segments', '_segments_cache', '_segments_cache_window', '_segments_cache_key'):
+            try:
+                if hasattr(self, attr):
+                    setattr(self, attr, [] if attr == '_segments' else None)
+            except Exception:
+                pass
+        # 清理批量点集合
+        try:
+            if hasattr(self, '_batched_points') and self._batched_points is not None:
+                import numpy as _np
+                self._batched_points.set_offsets(_np.empty((0, 2)))
+                self._batched_points.set_alpha(0.0)
+        except Exception:
+            pass
+        # 重建扁平点缓存与主折线，保持 cutoff 之前的历史立即可见
+        try:
+            from collections import deque as _dq
+            times = list(getattr(self, 'time_data', []))
+            pitches = list(getattr(self, 'pitch_data', []))
+            pairs = []
+            for t, p in zip(times, pitches):
+                try:
+                    ft = float(t)
+                except Exception:
+                    continue
+                if ft > cutoff + eps:
+                    continue
+                try:
+                    fp = float(p)
+                except Exception:
+                    continue
+                pairs.append((ft, fp))
+            maxlen = int(getattr(self, '_prefill_flat_cap', 6000))
+            try:
+                if isinstance(getattr(self, '_flat_points', None), list):
+                    self._flat_points = pairs[-maxlen:]
+                else:
+                    self._flat_points = _dq(pairs[-maxlen:], maxlen=maxlen)
+            except Exception:
+                self._flat_points = pairs[-maxlen:]
+            # 更新 pitch_line 以便历史立刻展示
+            try:
+                if hasattr(self, '_ensure_pitch_line'):
+                    self._ensure_pitch_line()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                    if pairs:
+                        xs = [pt[0] for pt in pairs]
+                        ys = [pt[1] for pt in pairs]
+                        self.pitch_line.set_data(xs, ys)
+                        self.pitch_line.set_alpha(1.0)
+                    else:
+                        self.pitch_line.set_data([], [])
+                        self.pitch_line.set_alpha(0.0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # 过滤尾部缓存/历史记录
+        try:
+            if hasattr(self, '_tail_time') and isinstance(self._tail_time, list):
+                mask = []
+                for t in self._tail_time:
+                    try:
+                        mask.append(float(t) <= cutoff + eps)
+                    except Exception:
+                        mask.append(True)
+                self._tail_time = [t for t, keep in zip(self._tail_time, mask) if keep]
+                if hasattr(self, '_tail_pitch') and isinstance(self._tail_pitch, list):
+                    self._tail_pitch = [p for p, keep in zip(self._tail_pitch, mask) if keep]
+                if hasattr(self, '_tail_conf') and isinstance(self._tail_conf, list):
+                    self._tail_conf = [c for c, keep in zip(self._tail_conf, mask) if keep]
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'pitch_history'):
+                ph = list(self.pitch_history)
+                filtered = []
+                for pkt in ph:
+                    try:
+                        ts = float(pkt.get('global_time', pkt.get('timestamp', 0.0)))
+                    except Exception:
+                        ts = 0.0
+                    if ts <= cutoff + eps:
+                        filtered.append(pkt)
+                from collections import deque as _dq
+                maxlen = getattr(self.pitch_history, 'maxlen', len(filtered) or 1000)
+                self.pitch_history = _dq(filtered, maxlen=maxlen)
+        except Exception:
+            pass
+        # 重建时间桶，确保新点不会被阻塞
+        try:
+            eps_bin = float(getattr(self, '_timebin_eps', 0.01))
+            bins = set()
+            for tt in getattr(self, 'time_data', []):
+                try:
+                    bins.add(int(round(float(tt)/eps_bin)))
+                except Exception:
+                    pass
+            self._added_time_bins = bins
+            self._release_time_bins_after(cutoff)
+        except Exception:
+            pass
+        # 重置前向注入状态，避免引用旧段
+        for attr, val in (
+            ('_forward_segment_last_inject_cap', cutoff),
+            ('_last_forward_refresh_cap', cutoff),
+            ('_quick_segments_rebuilt_at_cap', -1.0),
+        ):
+            try:
+                setattr(self, attr, val)
+            except Exception:
+                pass
+        # 重置门控/缓冲，保证新点首帧即可通过
+        try:
+            self._voice_gate_state = 'silent'
+            self._gate_consec_voiced = 0
+            self._gate_consec_silent = 0
+        except Exception:
+            pass
+        for attr in ('_vg_onset_buf', '_vg_tail_buf', '_vg_recent_buffer'):
+            try:
+                setattr(self, attr, [])
+            except Exception:
+                pass
+        try:
+            self._post_retake_new_data_started = False
+        except Exception:
+            pass
+        # 重新构建一次 <=cap 的快速段，确保回退前的细节点立即复现
+        try:
+            if getattr(self, '_cap_visible_time_enabled', False):
+                try:
+                    self._quick_segments_rebuilt_at_cap = -1.0
+                except Exception:
+                    pass
+                self._quick_rebuild_segments_upto_cap()
+        except Exception:
+            pass
+        # 触发一次重绘并安排立即刷新
+        try:
+            self._force_redraw_on_next_update = True
+            self._artist_times_dirty = True
+            self._last_heavy_redraw_time = 0.0
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'update_display'):
+                self.update_display()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
     def trim_after(self, cutoff: float):
         """裁剪掉 cutoff 之后的所有点（含时间/信心/音符等），用于录音中回退重录。
         - 仅修改数据缓冲，不影响视觉状态重建（由 notify_seek 触发）。
@@ -11746,37 +12006,30 @@ class ECGStylePitchVisualizer(QWidget):
                     return
             except Exception:
                 pass
-            # 转为列表一次性裁剪（deque 不支持切片）
+            # 转为列表一次性裁剪（deque 不支持切片），兼容非单调时间序列
             t_list = list(self.time_data)
-            # 找到第一处 > cutoff 的索引
-            cut_idx = None
-            for i, t in enumerate(t_list):
-                if t > cutoff + 1e-9:
-                    cut_idx = i
-                    break
-            if cut_idx is None:
+            keep_mask = [float(t) <= cutoff + 1e-9 for t in t_list]
+            if all(keep_mask):
                 return
-            keep_len = cut_idx
-            def _trim_deque(dq, keep):
+            def _trim_deque_mask(dq, mask):
                 try:
-                    if len(dq) <= keep:
-                        return dq
-                    # 重新构造 deque 以维持 maxlen
+                    arr = list(dq)
+                    filtered = [v for v, keep in zip(arr, mask) if keep]
                     from collections import deque as _dq
-                    kept = list(dq)[:keep]
-                    return _dq(kept, maxlen=dq.maxlen)
+                    return _dq(filtered, maxlen=dq.maxlen)
                 except Exception:
                     return dq
-            self.time_data = _trim_deque(self.time_data, keep_len)
-            self.pitch_data = _trim_deque(self.pitch_data, keep_len)
-            self.confidence_data = _trim_deque(self.confidence_data, keep_len)
-            self.note_data = _trim_deque(self.note_data, keep_len)
+            self.time_data = _trim_deque_mask(self.time_data, keep_mask)
+            self.pitch_data = _trim_deque_mask(self.pitch_data, keep_mask)
+            self.confidence_data = _trim_deque_mask(self.confidence_data, keep_mask)
+            self.note_data = _trim_deque_mask(self.note_data, keep_mask)
             # 重建时间桶集合，避免已移除时间阻塞
             try:
                 self._added_time_bins = set()
                 eps = float(getattr(self, '_timebin_eps', 0.01))
                 for tt in self.time_data:
                     self._added_time_bins.add(int(round(float(tt)/eps)))
+                self._release_time_bins_after(cutoff)
             except Exception:
                 pass
             # 裁剪尾部/扁平缓存
@@ -11893,6 +12146,26 @@ class ECGStylePitchVisualizer(QWidget):
             return ft, fp
         except Exception:
             return times, pitches
+
+    def _release_time_bins_after(self, cutoff: float, margin: Optional[float] = None):
+        """释放 cutoff 附近的时间桶，避免回退后新的时间点因去重机制被丢弃。"""
+        try:
+            bins = getattr(self, '_added_time_bins', None)
+            if not isinstance(bins, set) or not bins:
+                return
+            eps = float(getattr(self, '_timebin_eps', 0.01))
+            release_margin = margin if margin is not None else float(
+                getattr(self, '_retake_bin_release_margin', max(0.0, eps * 3.0))
+            )
+            cutoff_time = float(max(0.0, cutoff) - max(0.0, release_margin))
+            # 计算释放边界对应的桶，并多释放一个桶保证充分留白
+            threshold_bin = int(math.floor(cutoff_time / max(eps, 1e-6))) + 1
+            if threshold_bin <= 0:
+                self._added_time_bins = set()
+                return
+            self._added_time_bins = {b for b in bins if b < threshold_bin}
+        except Exception:
+            pass
 
     def _enforce_cap_on_existing_artists(self):
         """对当前所有已存在的散点/线条对象做一次强制 cap 过滤，防止极端竞态(迟到更新、后台线程)引入 >cap 点。
@@ -12084,6 +12357,7 @@ class ECGStylePitchVisualizer(QWidget):
                 eps = float(getattr(self, '_timebin_eps', 0.01))
                 for tt in self.time_data:
                     self._added_time_bins.add(int(round(float(tt)/eps)))
+                self._release_time_bins_after(start)
             except Exception:
                 pass
             try:
@@ -17738,6 +18012,26 @@ class ECGStylePitchVisualizer(QWidget):
             note_info = pitch_data.get('note_info', {})
             has_pitch = pitch_data.get('has_pitch', frequency > 0)
             audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+            # 回退守卫：过滤任何在回退壁钟之前生成的旧帧
+            try:
+                drop_wall = float(getattr(self, '_retake_drop_until_timestamp', 0.0))
+            except Exception:
+                drop_wall = 0.0
+            if drop_wall > 0.0:
+                pkt_ts = drop_wall
+                try:
+                    pkt_ts = float(timestamp)
+                except Exception:
+                    try:
+                        pkt_ts = float(pitch_data.get('timestamp', drop_wall))
+                    except Exception:
+                        pkt_ts = drop_wall
+                if pkt_ts < drop_wall - 1e-4:
+                    try:
+                        self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
+                    except Exception:
+                        pass
+                    return
             # ===== 迟到旧点过滤（回退后防回潮核心） =====
             try:
                 if getattr(self, '_cap_visible_time_enabled', False):
@@ -17944,11 +18238,24 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 global_time = _explicit_gt
 
-            # 若存在录音回退重录起点，则过滤掉回退之前段落后被裁掉的旧数据
+            # 若存在录音回退重录起点，则严格过滤掉回退之前的所有点，彻底防止旧点复现
             try:
                 trim_point = float(getattr(self, '_record_trim_point', -1.0))
-                if trim_point >= 0.0 and global_time < trim_point - 1e-6:
-                    return
+                if trim_point >= 0.0:
+                    frame_time = None
+                    try:
+                        if 'global_time' in pitch_data:
+                            frame_time = float(pitch_data.get('global_time'))
+                    except Exception:
+                        frame_time = None
+                    if frame_time is None:
+                        frame_time = float(global_time)
+                    if frame_time < trim_point - 1e-3:
+                        try:
+                            self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
+                        except Exception:
+                            pass
+                        return
             except Exception:
                 pass
 
@@ -18062,6 +18369,13 @@ class ECGStylePitchVisualizer(QWidget):
                     skip_gate = bool(pitch_data.get('_skip_gate', False))
                 except Exception:
                     skip_gate = False
+                try:
+                    pending = int(getattr(self, '_retake_skip_gate_frames', 0))
+                    if pending > 0:
+                        skip_gate = True
+                        self._retake_skip_gate_frames = pending - 1
+                except Exception:
+                    pass
                 # 在测试/无头环境，或调用方提供了显式 global_time（离线/回放场景），
                 # 为了保证可预期与快速反馈，默认跳过普通模式的门控缓冲。
                 try:
@@ -18291,6 +18605,10 @@ class ECGStylePitchVisualizer(QWidget):
                         self._post_retake_new_data_started = True
                         self._cap_strict_lock = False
                         self._strict_cap_dirty = True
+                        try:
+                            self._retake_drop_until_timestamp = 0.0
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 # 持久化：写入一个点记录（NDJSON 缓冲）
