@@ -11315,6 +11315,14 @@ class ECGStylePitchVisualizer(QWidget):
                     do_trim = True
                 elif bool(getattr(self, 'is_analyzing', False)):
                     do_trim = True
+                # 修复：伴奏模式回退也必须裁剪，避免旧细节点在倒计时结束或解锁后回潮
+                else:
+                    try:
+                        bm = str(getattr(self, 'backing_mode', '')).lower()
+                    except Exception:
+                        bm = ''
+                    if bm in ('accompaniment', 'both', 'analysis', 'analyzing'):
+                        do_trim = True
                 # 兜底：若检测到明显回退且缓冲中确有 > target_time 的旧数据，也执行裁剪
                 if not do_trim:
                     try:
@@ -11376,6 +11384,27 @@ class ECGStylePitchVisualizer(QWidget):
                 self._enforce_cap_on_existing_artists()
             except Exception:
                 pass
+            # 追加兜底：在 seek 后立即对所有集合/主线再做一轮净空与<=cap过滤，防止偶发复活
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False):
+                    try:
+                        if hasattr(self, '_purge_collections_beyond_cap'):
+                            self._purge_collections_beyond_cap()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, '_filter_mainline_to_cap'):
+                            self._filter_mainline_to_cap()
+                    except Exception:
+                        pass
+                    try:
+                        self._artist_times_dirty = True
+                        if hasattr(self, 'canvas') and self.canvas is not None:
+                            self.canvas.draw_idle()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # ===== 实施B: 回退后即时补点（左侧密集可见） =====
             try:
                 # 仅在启用cap且为回退场景触发；并且需要有历史数据
@@ -11424,7 +11453,12 @@ class ECGStylePitchVisualizer(QWidget):
                         self._post_retake_new_data_started = True
                         self._cap_strict_lock = False
                         self._strict_cap_dirty = True
+                        self._retake_block_old_history = False
                         self._retake_countdown_skipped_for_analyzing = True
+                        try:
+                            self._clear_retake_history_snapshot()
+                        except Exception:
+                            pass
                         try:
                             self._retake_countdown_pause_started_at = 0.0
                             self._retake_countdown_freeze_time = None
@@ -11490,6 +11524,10 @@ class ECGStylePitchVisualizer(QWidget):
                             if getattr(self,'debug_flags',{}).get('cap_diag'):
                                 print(f"[CAP_DBG] strict_lock_set(countdown) t={float(target_time):.3f}")
                 else:
+                    try:
+                        self._retake_block_old_history = True
+                    except Exception:
+                        pass
                     # 没有倒计时但仍是回退：仅在非分析/伴奏模式启用一个短暂严格锁
                     if bool(getattr(self, '_last_seek_backward', False)) and not analyzing_mode:
                         self._cap_strict_lock = True
@@ -11501,9 +11539,10 @@ class ECGStylePitchVisualizer(QWidget):
                         # 分析/伴奏：无倒计时回退，立即保持解锁并标记cap状态变更，允许>cap新点立刻写入/显示
                         self._cap_strict_lock = False
                         self._strict_cap_dirty = True
-                        # 认为“新数据阶段”立即开始，避免清理看门狗误删随后进入的>cap新点
                         try:
                             self._post_retake_new_data_started = True
+                            self._clear_retake_history_snapshot()
+                            self._retake_block_old_history = False
                         except Exception:
                             pass
                         if getattr(self,'debug_flags',{}).get('cap_diag'):
@@ -14797,10 +14836,50 @@ class ECGStylePitchVisualizer(QWidget):
                 # 失败则直接创建一次
                 self.pitch_line, = self.ax.plot([], [], color=self.line_color,
                                                 linewidth=self.current_linewidth, alpha=1.0, zorder=10)
-            # 如果处于 seek 清除态，不恢复任何历史数据
-            if not bool(getattr(self, '_clear_all_artists_on_next_grid', False)):
-                if existing_line_data is not None and len(existing_line_data[0]) > 0:
-                    self.pitch_line.set_data(existing_line_data[0], existing_line_data[1])
+            # 若处于 seek 清除态：仍可“安全恢复<=cap的历史线”，避免左侧历史在网格重建后突然消失
+            try:
+                if bool(getattr(self, '_clear_all_artists_on_next_grid', False)):
+                    # 仅当启用了cap时，恢复到 <=cap 的数据，严禁右侧旧点回潮
+                    if existing_line_data is not None and len(existing_line_data[0]) > 0 and getattr(self, '_cap_visible_time_enabled', False):
+                        try:
+                            xs, ys = list(existing_line_data[0] or []), list(existing_line_data[1] or [])
+                        except Exception:
+                            xs, ys = [], []
+                        if xs and ys and len(xs) == len(ys):
+                            try:
+                                # 使用统一cap过滤逻辑，保证严格锁下不越界
+                                ft, fp = self._cap_filter_times_pitches(xs, ys)
+                            except Exception:
+                                # 兜底：手动按cap过滤
+                                ft, fp = [], []
+                                try:
+                                    cap = float(getattr(self, '_max_visible_time', 0.0))
+                                except Exception:
+                                    cap = float('inf')
+                                for tx, py in zip(xs, ys):
+                                    try:
+                                        if float(tx) <= cap + 1e-9:
+                                            ft.append(tx); fp.append(py)
+                                    except Exception:
+                                        pass
+                            # 应用过滤后的数据；若为空则保持空线（避免恢复右侧旧段）
+                            try:
+                                self.pitch_line.set_data(ft, fp)
+                                if ft:
+                                    self.pitch_line.set_alpha(1.0)
+                                else:
+                                    # 无可恢复历史则保持不可见
+                                    self.pitch_line.set_alpha(0.0)
+                            except Exception:
+                                pass
+                    # 若未启用cap：继续沿用“完全不恢复”的策略（保持空线），避免误把右侧旧段带回
+                else:
+                    # 非清除态：正常恢复之前保存的主线数据
+                    if existing_line_data is not None and len(existing_line_data[0]) > 0:
+                        self.pitch_line.set_data(existing_line_data[0], existing_line_data[1])
+            except Exception:
+                # 任意异常不影响主流程
+                pass
         else:
             # 仍然确保存在不可见占位线，避免后续 NoneType
             try:
@@ -17555,6 +17634,16 @@ class ECGStylePitchVisualizer(QWidget):
             self.update_guides()
         except Exception:
             pass
+        # A+B附加：水平滚动后立即对现存图元执行cap过滤，避免暂停回看时旧点回潮
+        try:
+            if getattr(self, '_cap_visible_time_enabled', False):
+                if hasattr(self, '_enforce_cap_on_existing_artists'):
+                    self._enforce_cap_on_existing_artists()
+                # 再做一次集合净空，确保任何新生成的PathCollection也被裁剪
+                if hasattr(self, '_purge_collections_beyond_cap'):
+                    self._purge_collections_beyond_cap()
+        except Exception:
+            pass
     
     def re_enable_auto_scroll(self):
         """重新启用自动滚动"""
@@ -18043,25 +18132,44 @@ class ECGStylePitchVisualizer(QWidget):
                             gt_test = None
                     if gt_test is not None:
                         cap = float(getattr(self, '_max_visible_time', float('inf')))
-                        # 分析/伴奏模式下：若不在严格锁且新点时间已超出现有cap，提前直接提升cap，避免被“迟到点”逻辑挡住
-                        try:
-                            if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')) \
-                               and not getattr(self,'_cap_strict_lock',False) and gt_test > cap + 1e-9:
-                                self._max_visible_time = float(gt_test)
-                                self._post_retake_new_data_started = True
-                                self._strict_cap_dirty = True
-                        except Exception:
-                            pass
+                        strict_lock_active = bool(getattr(self, '_cap_strict_lock', False))
+                        countdown_active = bool(getattr(self, '_retake_countdown_active', False))
+                        unlock_flag = bool(pitch_data.get('_retake_force_unlock', False))
+                        if not unlock_flag and has_pitch and frequency > 0:
+                            try:
+                                unlock_conf = float(getattr(self, '_retake_unlock_confidence', 0.26))
+                            except Exception:
+                                unlock_conf = 0.26
+                            if confidence >= unlock_conf:
+                                unlock_flag = True
+                        if not unlock_flag and has_pitch:
+                            try:
+                                unlock_rms = float(getattr(self, '_retake_unlock_rms', 0.005))
+                            except Exception:
+                                unlock_rms = 0.005
+                            if audio_rms >= unlock_rms:
+                                unlock_flag = True
                         if gt_test > cap + 1e-9:
-                            # 严格锁情况下：将第一个“向前”新点视为正式起点，解除锁并推进cap
-                            if getattr(self, '_cap_strict_lock', False) and not getattr(self, '_retake_countdown_active', False):
+                            if strict_lock_active and not countdown_active:
+                                if not unlock_flag:
+                                    try:
+                                        self._retake_block_old_history = True
+                                        self._dropped_late_points = int(getattr(self, '_dropped_late_points', 0)) + 1
+                                    except Exception:
+                                        pass
+                                    return
                                 try:
                                     if getattr(self,'debug_flags',{}).get('cap_diag'):
                                         print(f"[CAP_DBG] strict_unlock advance cap {cap:.3f}->{gt_test:.3f}")
                                     self._cap_strict_lock = False
                                     self._post_retake_new_data_started = True
+                                    self._retake_block_old_history = False
                                     self._max_visible_time = float(gt_test)
                                     self._strict_cap_dirty = True
+                                    try:
+                                        self._clear_retake_history_snapshot()
+                                    except Exception:
+                                        pass
                                     # 强制一次重帧，立即生成包含新点的段
                                     self._force_redraw_on_next_update = True
                                     self._artist_times_dirty = True
@@ -18073,7 +18181,6 @@ class ECGStylePitchVisualizer(QWidget):
                                     try:
                                         if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')) and hasattr(self,'_quick_rebuild_segments_upto_cap'):
                                             self._quick_rebuild_segments_upto_cap()
-                                        # 立即尝试方案C注入
                                         try:
                                             if hasattr(self, '_maybe_forward_inject_after_cap'):
                                                 self._maybe_forward_inject_after_cap()
@@ -18084,8 +18191,8 @@ class ECGStylePitchVisualizer(QWidget):
                                 except Exception:
                                     pass
                             else:
-                                # 非严格锁：如果是分析/伴奏模式或已经开始新数据段，则视为合法新点，直接前进提升cap
-                                if (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing') or getattr(self,'_post_retake_new_data_started',False)):
+                                allow_forward = (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing') or getattr(self,'_post_retake_new_data_started',False))
+                                if allow_forward:
                                     try:
                                         if gt_test > cap:
                                             if getattr(self,'debug_flags',{}).get('cap_diag'):
@@ -18093,7 +18200,7 @@ class ECGStylePitchVisualizer(QWidget):
                                             self._max_visible_time = float(gt_test)
                                             self._strict_cap_dirty = True
                                             self._artist_times_dirty = True
-                                            # 尝试立即注入
+                                            self._retake_block_old_history = False
                                             try:
                                                 if hasattr(self, '_maybe_forward_inject_after_cap'):
                                                     self._maybe_forward_inject_after_cap()
@@ -18104,8 +18211,8 @@ class ECGStylePitchVisualizer(QWidget):
                                     except Exception:
                                         pass
                                 else:
-                                    # 仍认为是迟到旧点（seek后右侧残留回潮），丢弃
                                     try:
+                                        self._retake_block_old_history = True
                                         self._dropped_late_points = int(getattr(self, '_dropped_late_points', 0)) + 1
                                     except Exception:
                                         pass
@@ -18205,6 +18312,26 @@ class ECGStylePitchVisualizer(QWidget):
                     # 倒计时刚结束：保持严格锁由首个新点解除（与原策略一致），继续处理当前帧
                     if getattr(self, '_cap_strict_lock', False):
                         self._post_retake_new_data_started = False
+                    # 兜底：倒计时结束瞬间再净空一次所有集合并应用cap到主线，避免“解锁抖动”导致旧段复现
+                    try:
+                        if getattr(self, '_cap_visible_time_enabled', False):
+                            try:
+                                if hasattr(self, '_purge_collections_beyond_cap'):
+                                    self._purge_collections_beyond_cap()
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(self, '_filter_mainline_to_cap'):
+                                    self._filter_mainline_to_cap()
+                            except Exception:
+                                pass
+                            try:
+                                self._artist_times_dirty = True
+                                self._force_redraw_on_next_update = True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
             
@@ -18605,6 +18732,10 @@ class ECGStylePitchVisualizer(QWidget):
                         self._post_retake_new_data_started = True
                         self._cap_strict_lock = False
                         self._strict_cap_dirty = True
+                        try:
+                            self._clear_retake_history_snapshot()
+                        except Exception:
+                            pass
                         try:
                             self._retake_drop_until_timestamp = 0.0
                         except Exception:
@@ -20222,6 +20353,10 @@ class ECGStylePitchVisualizer(QWidget):
                 self._restore_retake_countdown_highlight()
             except Exception:
                 pass
+            try:
+                self._clear_retake_history_snapshot()
+            except Exception:
+                pass
             return False
         try:
             import time as _time
@@ -20311,6 +20446,21 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+        # 预先保存历史并清除>cap残留，倒计时期间保持整段可见
+        try:
+            cap_for_snapshot = float(getattr(self, '_max_visible_time', target))
+        except Exception:
+            cap_for_snapshot = float(target)
+        try:
+            self._retake_hard_purge_future(cap_for_snapshot)
+        except Exception:
+            pass
+        try:
+            self._capture_retake_history_snapshot(cap_for_snapshot)
+            self._apply_retake_history_snapshot(force=True, eager=True)
+        except Exception:
+            pass
+
         # 重置叠加元素以强制重新创建，顺便移除遗留对象
         for attr in ('_retake_countdown_bg', '_retake_countdown_line', '_retake_countdown_progress',
                      '_retake_countdown_start_line', '_retake_countdown_goal_line',
@@ -20354,6 +20504,193 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         return True
+
+    def _retake_hard_purge_future(self, cap: float):
+        try:
+            cap_val = float(cap)
+        except Exception:
+            return
+        try:
+            self.purge_artists_in_range(cap_val + 1e-6, float('inf'))
+        except Exception:
+            pass
+        for attr in ('_enforce_cap_on_existing_artists', '_purge_collections_beyond_cap', '_filter_mainline_to_cap'):
+            try:
+                fn = getattr(self, attr, None)
+                if callable(fn):
+                    fn()
+            except Exception:
+                pass
+        try:
+            self._artist_times_dirty = True
+        except Exception:
+            pass
+        try:
+            self._strict_cap_dirty = True
+        except Exception:
+            pass
+
+    def _capture_retake_history_snapshot(self, cap: float):
+        try:
+            cap_val = float(cap)
+        except Exception:
+            self._clear_retake_history_snapshot()
+            return
+        try:
+            base_iter = zip(list(getattr(self, 'time_data', [])), list(getattr(self, 'pitch_data', [])))
+        except Exception:
+            base_iter = []
+        times = []
+        pitches = []
+        for t_raw, p_raw in base_iter:
+            try:
+                ft = float(t_raw)
+            except Exception:
+                continue
+            if ft > cap_val + 1e-9:
+                continue
+            try:
+                fp = float(p_raw)
+            except Exception:
+                continue
+            times.append(ft)
+            pitches.append(fp)
+        if not times:
+            self._clear_retake_history_snapshot()
+            return
+        max_pts = int(getattr(self, '_retake_snapshot_max_points', 3200))
+        if len(times) > max_pts:
+            full_times = times
+            full_pitches = pitches
+            try:
+                import numpy as _np
+                idx = _np.linspace(0, len(full_times) - 1, num=max_pts, dtype=int)
+                times = [full_times[i] for i in idx]
+                pitches = [full_pitches[i] for i in idx]
+            except Exception:
+                step = max(1, len(full_times) // max_pts)
+                times = full_times[::step]
+                pitches = full_pitches[::step]
+                if times and (times[-1] < full_times[-1] - 1e-9):
+                    times.append(full_times[-1])
+                    pitches.append(full_pitches[-1])
+        self._retake_history_snapshot = (times, pitches)
+        self._retake_history_snapshot_cap = cap_val
+        self._retake_history_snapshot_applied = False
+
+    def _apply_retake_history_snapshot(self, *, force: bool = False, eager: bool = False):
+        snap = getattr(self, '_retake_history_snapshot', None)
+        if not snap:
+            return
+        already = bool(getattr(self, '_retake_history_snapshot_applied', False))
+        if already and not force:
+            return
+        times, pitches = snap
+        if not times:
+            return
+        cap_val = float(getattr(self, '_retake_history_snapshot_cap', times[-1]))
+        pts = list(zip(times, pitches))
+        maxlen = int(getattr(self, '_prefill_flat_cap', 6000))
+        try:
+            if isinstance(getattr(self, '_flat_points', None), list):
+                self._flat_points = pts[-maxlen:]
+            else:
+                from collections import deque as _dq
+                self._flat_points = _dq(pts[-maxlen:], maxlen=maxlen)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_ensure_pitch_line'):
+                self._ensure_pitch_line()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                self.pitch_line.set_data(times, pitches)
+                self.pitch_line.set_alpha(1.0 if times else 0.0)
+        except Exception:
+            pass
+        # 清理现有分段散点，保持与快照一致
+        try:
+            if hasattr(self, '_segment_points') and self._segment_points:
+                import numpy as _np
+                kept = []
+                for coll in list(self._segment_points):
+                    try:
+                        arr = _np.asarray(coll.get_offsets(), dtype=float)
+                        arr = arr[arr[:, 0] <= cap_val + 1e-9]
+                        if arr.size == 0:
+                            if coll in self.ax.collections:
+                                coll.remove()
+                        else:
+                            coll.set_offsets(arr)
+                            kept.append(coll)
+                    except Exception:
+                        try:
+                            if coll in self.ax.collections:
+                                coll.remove()
+                        except Exception:
+                            pass
+                self._segment_points = kept
+        except Exception:
+            pass
+        self._retake_history_snapshot_applied = True
+        if eager:
+            try:
+                self._force_redraw_on_next_update = True
+            except Exception:
+                pass
+            try:
+                self._artist_times_dirty = True
+            except Exception:
+                pass
+            try:
+                self._last_heavy_redraw_time = 0.0
+            except Exception:
+                pass
+
+        # 维护 cap 后快速刷新
+        try:
+            self._retake_hard_purge_future(cap_val)
+        except Exception:
+            pass
+
+    def _ensure_retake_history_visible(self):
+        snap = getattr(self, '_retake_history_snapshot', None)
+        if not snap:
+            return
+        times, _ = snap
+        if not times:
+            return
+        need_apply = False
+        try:
+            if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                xdata, _ = self.pitch_line.get_data()
+                if not xdata or len(xdata) == 0:
+                    need_apply = True
+                else:
+                    try:
+                        cur_last = float(xdata[-1])
+                    except Exception:
+                        cur_last = None
+                    ref_last = float(times[-1])
+                    if cur_last is None or abs(cur_last - ref_last) > 1e-3:
+                        need_apply = True
+            else:
+                need_apply = True
+        except Exception:
+            need_apply = True
+        if need_apply:
+            self._retake_history_snapshot_applied = False
+            self._apply_retake_history_snapshot(force=True, eager=False)
+
+    def _clear_retake_history_snapshot(self):
+        try:
+            self._retake_history_snapshot = None
+            self._retake_history_snapshot_cap = None
+            self._retake_history_snapshot_applied = False
+        except Exception:
+            pass
 
     def update_display(self):
         """更新显示（支持历史数据查看和断续音调曲线）"""
@@ -20402,6 +20739,11 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._strict_cap_dirty = False
                         except Exception:
                             pass
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_retake_countdown_active', False) or (getattr(self, '_cap_strict_lock', False) and not getattr(self, '_post_retake_new_data_started', False)):
+                self._ensure_retake_history_visible()
         except Exception:
             pass
         if len(self.pitch_data) == 0:
@@ -28833,6 +29175,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     try:
                         setattr(viz, '_cap_strict_lock', True)
                         setattr(viz, '_post_retake_new_data_started', False)
+                        setattr(viz, '_retake_block_old_history', True)
                     except Exception:
                         pass
                     try:
@@ -30003,6 +30346,11 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 if hasattr(viz, '_post_retake_new_data_started'):
                     viz._post_retake_new_data_started = True
+                    if hasattr(viz, '_clear_retake_history_snapshot'):
+                        try:
+                            viz._clear_retake_history_snapshot()
+                        except Exception:
+                            pass
             except Exception:
                 pass
             try:
