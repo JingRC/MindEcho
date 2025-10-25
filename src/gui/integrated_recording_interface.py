@@ -7,10 +7,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 
 from collections import deque
-import time, threading, queue, json, os, sys, wave, math
-import contextlib  # 补充：_apply_backing_seek 中曾使用，之前未导入导致伴奏跳转 silently 失效
 from pathlib import Path
 import numpy as np
+import time, threading, queue, json, os, sys, wave, math
 
 # ------------- 提前定义项目根与 PyQt 版本 -------------
 try:
@@ -10933,6 +10932,23 @@ class ECGStylePitchVisualizer(QWidget):
             import time as _t
             now = _t.time()
             try:
+                if not hasattr(self, '_retake_trim_gap') or self._retake_trim_gap is None:
+                    self._retake_trim_gap = 0.18
+            except Exception:
+                pass
+            try:
+                trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+            except Exception:
+                trim_gap = 0.001
+            if trim_gap < 0.0:
+                trim_gap = 0.0
+            if trim_gap > 0.2:
+                trim_gap = 0.2
+            try:
+                target_cap_boundary = float(max(0.0, float(target_time) - trim_gap))
+            except Exception:
+                target_cap_boundary = max(0.0, -trim_gap)
+            try:
                 self._reset_on_listenback_start()
             except Exception:
                 pass
@@ -11092,7 +11108,7 @@ class ECGStylePitchVisualizer(QWidget):
                             self._cap_visible_time_enabled = True
                         except Exception:
                             pass
-                        self._max_visible_time = float(target_time)
+                        self._max_visible_time = target_cap_boundary
                         self._cap_strict_lock = True
                         self._post_retake_new_data_started = False
                         self._strict_cap_dirty = True
@@ -11275,7 +11291,7 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if bool(getattr(self, 'is_recording_active', False)) or bool(getattr(self, 'is_recording', False)) or bool(getattr(self, 'is_analyzing', False)):
                     self._cap_visible_time_enabled = True
-                    self._max_visible_time = float(max(0.0, target_time))
+                    self._max_visible_time = target_cap_boundary
                     # seek 后启动强制执行窗口（比 trim_after 稍长）
                     try:
                         self._cap_enforce_until = max(getattr(self, '_cap_enforce_until', 0.0), now + 3.0)
@@ -11296,7 +11312,7 @@ class ECGStylePitchVisualizer(QWidget):
                         last_hist_t = None
                     if is_backward_seek or (last_hist_t is not None and float(target_time) < last_hist_t - 1e-9):
                         self._cap_visible_time_enabled = True
-                        self._max_visible_time = float(max(0.0, target_time))
+                        self._max_visible_time = target_cap_boundary
                         try:
                             import time as _t
                             now2 = _t.time()
@@ -11323,6 +11339,8 @@ class ECGStylePitchVisualizer(QWidget):
                         bm = ''
                     if bm in ('accompaniment', 'both', 'analysis', 'analyzing'):
                         do_trim = True
+                if not do_trim and bool(getattr(self, '_last_seek_backward', False)):
+                    do_trim = True
                 # 兜底：若检测到明显回退且缓冲中确有 > target_time 的旧数据，也执行裁剪
                 if not do_trim:
                     try:
@@ -11332,7 +11350,34 @@ class ECGStylePitchVisualizer(QWidget):
                                 do_trim = True
                     except Exception:
                         pass
+                guard_range_candidate = None
                 if do_trim:
+                    try:
+                        existing_times_for_guard = list(getattr(self, 'time_data', []))
+                    except Exception:
+                        existing_times_for_guard = []
+                    if existing_times_for_guard:
+                        try:
+                            target_f = float(target_time)
+                        except Exception:
+                            try:
+                                target_f = float(existing_times_for_guard[0])
+                            except Exception:
+                                target_f = float(target_time)
+                        try:
+                            rhs_max = None
+                            for _tt in existing_times_for_guard:
+                                try:
+                                    ftt = float(_tt)
+                                except Exception:
+                                    continue
+                                if ftt > target_f + 1e-9:
+                                    if rhs_max is None or ftt > rhs_max:
+                                        rhs_max = ftt
+                            if rhs_max is not None and rhs_max > target_f + 1e-6:
+                                guard_range_candidate = (target_f, rhs_max)
+                        except Exception:
+                            guard_range_candidate = guard_range_candidate
                     # 写入持久化 trim 标记（用于后续加载过滤）
                     try:
                         if hasattr(self, '_persist_on_trim'):
@@ -11345,6 +11390,24 @@ class ECGStylePitchVisualizer(QWidget):
                         self._finalize_retake_visual_reset(float(target_time))
                     except Exception:
                         pass
+                    try:
+                        cap_reset = float(target_time)
+                    except Exception:
+                        cap_reset = float(target_time) if target_time is not None else 0.0
+                    try:
+                        prev_cap = float(getattr(self, '_max_visible_time', cap_reset))
+                    except Exception:
+                        prev_cap = cap_reset
+                    try:
+                        if prev_cap > cap_reset + 1e-6 or not getattr(self, '_cap_visible_time_enabled', False):
+                            self._max_visible_time = cap_reset
+                            self._cap_visible_time_enabled = True
+                            self._strict_cap_dirty = True
+                    except Exception:
+                        try:
+                            self._max_visible_time = cap_reset
+                        except Exception:
+                            pass
                     try:
                         self._retake_drop_until_timestamp = _t.time()
                     except Exception:
@@ -11370,6 +11433,124 @@ class ECGStylePitchVisualizer(QWidget):
                     self._retake_skip_gate_frames = max(frames, 0)
                 except Exception:
                     self._retake_skip_gate_frames = frames
+                try:
+                    host = getattr(self, '_host_interface', None)
+                except Exception:
+                    host = None
+                try:
+                    if host is not None:
+                        try:
+                            host._record_epoch = int(getattr(host, '_record_epoch', 0)) + 1
+                        except Exception:
+                            host._record_epoch = 1
+                        try:
+                            if hasattr(host, '_sync_audio_processor_epoch'):
+                                host._sync_audio_processor_epoch()
+                        except Exception:
+                            pass
+                        try:
+                            setattr(self, '_current_epoch', int(getattr(host, '_record_epoch', 0)))
+                        except Exception:
+                            pass
+                        try:
+                            from queue import Empty as _Empty
+                            total_flushed = 0
+                            for attr_name, limit in (('audio_queue', 64), ('audio_buffer_queue', 512)):
+                                q_obj = getattr(host, attr_name, None)
+                                if q_obj is None:
+                                    continue
+                                drained = 0
+                                while drained < limit:
+                                    try:
+                                        q_obj.get_nowait()
+                                    except _Empty:
+                                        break
+                                    else:
+                                        drained += 1
+                                total_flushed += drained
+                            if total_flushed and getattr(host, 'debug_flags', {}).get('queue_log', False):
+                                print(f"[SEEK_FLUSH] cleared queued packets={total_flushed}")
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(host, '_enqueue_accum'):
+                                import numpy as _np
+                                host._enqueue_accum = _np.empty(0, dtype=_np.float32)
+                        except Exception:
+                            host._enqueue_accum = None
+                        try:
+                            if hasattr(host, '_frame_buffer') and isinstance(host._frame_buffer, list):
+                                host._frame_buffer.clear()
+                        except Exception:
+                            host._frame_buffer = []
+                        try:
+                            import time as _t2
+                            now2 = _t2.time()
+                            existing = float(getattr(host, '_analysis_backoff_until', now2))
+                            host._analysis_backoff_until = max(existing, now2 + 0.12)
+                            host._analysis_backoff_reason = 'retake_seek_flush'
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    guard_tuple = guard_range_candidate
+                    guard_ready = False
+                    if guard_tuple is not None:
+                        try:
+                            guard_start = float(guard_tuple[0])
+                            guard_end = float(guard_tuple[1])
+                        except Exception:
+                            guard_tuple = None
+                        else:
+                            if guard_end > guard_start + 1e-6:
+                                guard_ready = True
+                            else:
+                                guard_tuple = None
+                    import time as _t_guard
+                    if guard_ready:
+                        guard_duration = float(getattr(self, '_retake_epoch_guard_duration', 3.5))
+                        self._retake_block_range = (guard_start, guard_end)
+                        self._retake_epoch_guard_epoch = int(getattr(self, '_current_epoch', 0))
+                        self._retake_epoch_guard_until = _t_guard.time() + max(0.6, guard_duration)
+                        self._retake_guard_active = True
+                        self._retake_epoch_dropped = 0
+                        self._retake_missing_epoch_dropped = 0
+                        guard_info = (guard_start, guard_end, int(getattr(self, '_current_epoch', 0)), float(self._retake_epoch_guard_until))
+                    else:
+                        self._retake_block_range = None
+                        self._retake_epoch_guard_until = 0.0
+                        self._retake_guard_active = False
+                        guard_info = None
+                except Exception:
+                    pass
+                try:
+                    self._retake_force_unlock_pending = True
+                except Exception:
+                    pass
+                try:
+                    self._retake_strict_grace_frames = int(getattr(self, '_retake_grace_frame_count', 12))
+                except Exception:
+                    self._retake_strict_grace_frames = 12
+                try:
+                    self._retake_epoch_time_zero = None
+                    self._retake_epoch_time_zero_epoch = None
+                    self._retake_epoch_time_shift = float(target_time)
+                except Exception:
+                    pass
+                try:
+                    import time as _t3
+                    align_now = _t3.time()
+                    self.start_time = align_now - float(target_time)
+                    if hasattr(self, '_time_offset_shift'):
+                        self._time_offset_shift = 0.0
+                    if hasattr(self, '_accumulated_pause_dur'):
+                        self._accumulated_pause_dur = 0.0
+                    self.current_global_time = float(target_time)
+                    if hasattr(self, 'last_pitch_time') and self.last_pitch_time > float(target_time):
+                        self.last_pitch_time = float(target_time)
+                except Exception:
+                    pass
             except Exception:
                 pass
             # 标记：回退后 time_data 可能出现“先大后小”的非单调拼接，
@@ -11460,6 +11641,10 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                         try:
+                            self._retake_drop_until_timestamp = 0.0
+                        except Exception:
+                            pass
+                        try:
                             self._retake_countdown_pause_started_at = 0.0
                             self._retake_countdown_freeze_time = None
                         except Exception:
@@ -11528,6 +11713,10 @@ class ECGStylePitchVisualizer(QWidget):
                         self._retake_block_old_history = True
                     except Exception:
                         pass
+                    try:
+                        self._retake_drop_until_timestamp = 0.0
+                    except Exception:
+                        pass
                     # 没有倒计时但仍是回退：仅在非分析/伴奏模式启用一个短暂严格锁
                     if bool(getattr(self, '_last_seek_backward', False)) and not analyzing_mode:
                         self._cap_strict_lock = True
@@ -11554,10 +11743,37 @@ class ECGStylePitchVisualizer(QWidget):
                         pass
             except Exception:
                 pass
+            try:
+                host = getattr(self, '_host_interface', None)
+            except Exception:
+                host = None
+            if host is not None:
+                try:
+                    import time as _t4
+                    now4 = _t4.time()
+                    if getattr(self, '_retake_countdown_active', False):
+                        end_wall = float(getattr(self, '_retake_countdown_end_wall', 0.0))
+                        if end_wall > 0.0:
+                            deadline = max(end_wall + 0.05, now4 + 0.05)
+                            host._analysis_backoff_until = max(float(getattr(host, '_analysis_backoff_until', now4)), deadline)
+                            host._analysis_backoff_reason = 'retake_countdown'
+                    else:
+                        short_deadline = now4 + 0.05
+                        if float(getattr(host, '_analysis_backoff_until', 0.0)) < short_deadline:
+                            host._analysis_backoff_until = short_deadline
+                            if getattr(host, '_analysis_backoff_reason', '') == 'retake_countdown':
+                                host._analysis_backoff_reason = 'retake_seek_flush'
+                except Exception:
+                    pass
             # 快速段重建：仅第一次回退后且普通模式
             try:
-                if getattr(self, '_cap_visible_time_enabled', False) and bool(getattr(self, '_last_seek_backward', False)):
-                    self._quick_rebuild_segments_upto_cap()
+                    if getattr(self, '_cap_visible_time_enabled', False) and bool(getattr(self, '_last_seek_backward', False)):
+                        self._quick_rebuild_segments_upto_cap()
+                        if self._retake_snapshot_active():
+                            try:
+                                self._apply_retake_history_snapshot(force=True, eager=True)
+                            except Exception:
+                                pass
             except Exception:
                 pass
             # ===== 回退后允许覆盖重写：重置已绘制覆盖与时间桶去重（>=target_time 部分） =====
@@ -11807,10 +12023,19 @@ class ECGStylePitchVisualizer(QWidget):
             cutoff = float(max(0.0, cutoff))
         except Exception:
             return
+        try:
+            trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+        except Exception:
+            trim_gap = 0.001
+        if trim_gap < 0.0:
+            trim_gap = 0.0
+        if trim_gap > 0.2:
+            trim_gap = 0.2
+        cutoff_boundary = max(0.0, cutoff - trim_gap)
         eps = 1e-6
         # 先移除 cutoff 及之后的散点/集合，释放右侧可见内容
         try:
-            self.purge_artists_in_range(cutoff, float('inf'))
+            self.purge_artists_in_range(cutoff_boundary, float('inf'))
         except Exception:
             pass
         # 清空覆盖/渐变等缓存，防止旧段再次注入
@@ -11895,7 +12120,7 @@ class ECGStylePitchVisualizer(QWidget):
                     ft = float(t)
                 except Exception:
                     continue
-                if ft > cutoff + eps:
+                if ft > cutoff_boundary + eps:
                     continue
                 try:
                     fp = float(p)
@@ -11910,6 +12135,13 @@ class ECGStylePitchVisualizer(QWidget):
                     self._flat_points = _dq(pairs[-maxlen:], maxlen=maxlen)
             except Exception:
                 self._flat_points = pairs[-maxlen:]
+            try:
+                self._retake_preserved_flat = list(pairs)
+                if pairs:
+                    self._retake_preserve_floor = pairs[0][0]
+                    self._retake_preserve_cap = pairs[-1][0]
+            except Exception:
+                pass
             # 更新 pitch_line 以便历史立刻展示
             try:
                 if hasattr(self, '_ensure_pitch_line'):
@@ -12038,16 +12270,25 @@ class ECGStylePitchVisualizer(QWidget):
             cutoff = float(max(0.0, cutoff))
             if not self.time_data:
                 return
-            # 若末尾时间本就 <= cutoff 则无需动作
+            try:
+                trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+            except Exception:
+                trim_gap = 0.001
+            if trim_gap < 0.0:
+                trim_gap = 0.0
+            if trim_gap > 0.2:
+                trim_gap = 0.2
+            cutoff_boundary = max(0.0, cutoff - trim_gap)
+            # 若末尾时间本就 <= cutoff_boundary 则无需动作
             try:
                 last_t = self.time_data[-1]
-                if last_t <= cutoff + 1e-9:
+                if last_t <= cutoff_boundary + 1e-9:
                     return
             except Exception:
                 pass
             # 转为列表一次性裁剪（deque 不支持切片），兼容非单调时间序列
             t_list = list(self.time_data)
-            keep_mask = [float(t) <= cutoff + 1e-9 for t in t_list]
+            keep_mask = [float(t) <= cutoff_boundary + 1e-9 for t in t_list]
             if all(keep_mask):
                 return
             def _trim_deque_mask(dq, mask):
@@ -12068,13 +12309,13 @@ class ECGStylePitchVisualizer(QWidget):
                 eps = float(getattr(self, '_timebin_eps', 0.01))
                 for tt in self.time_data:
                     self._added_time_bins.add(int(round(float(tt)/eps)))
-                self._release_time_bins_after(cutoff)
+                self._release_time_bins_after(cutoff_boundary)
             except Exception:
                 pass
             # 裁剪尾部/扁平缓存
             try:
                 if hasattr(self, '_tail_time') and isinstance(self._tail_time, list):
-                    keep_mask = [t <= cutoff + 1e-9 for t in self._tail_time]
+                    keep_mask = [t <= cutoff_boundary + 1e-9 for t in self._tail_time]
                     self._tail_time = [t for t,k in zip(self._tail_time, keep_mask) if k]
                     self._tail_pitch = [p for p,k in zip(self._tail_pitch, keep_mask) if k]
                     self._tail_conf = [c for c,k in zip(self._tail_conf, keep_mask) if k]
@@ -12083,21 +12324,37 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if hasattr(self, '_flat_points') and self._flat_points is not None:
                     if isinstance(self._flat_points, list):
-                        self._flat_points = [pt for pt in self._flat_points if pt[0] <= cutoff + 1e-9]
+                        self._flat_points = [pt for pt in self._flat_points if pt[0] <= cutoff_boundary + 1e-9]
                     else:
                         from collections import deque as _dq2
-                        tmp = [pt for pt in list(self._flat_points) if pt[0] <= cutoff + 1e-9]
+                        tmp = [pt for pt in list(self._flat_points) if pt[0] <= cutoff_boundary + 1e-9]
                         self._flat_points = _dq2(tmp, maxlen=self._flat_points.maxlen)  # type: ignore
+            except Exception:
+                pass
+            try:
+                if getattr(self, '_retake_preserved_flat', None):
+                    self._retake_preserved_flat = [(t, y) for (t, y) in self._retake_preserved_flat if t <= cutoff_boundary + 1e-9]
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_retake_preserve_cap'):
+                    current_cap = float(getattr(self, '_retake_preserve_cap', cutoff_boundary))
+                    self._retake_preserve_cap = min(current_cap, cutoff_boundary)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_retake_preserve_floor'):
+                    self._retake_preserve_floor = min(float(getattr(self, '_retake_preserve_floor', cutoff_boundary)), cutoff_boundary)
             except Exception:
                 pass
             # 清除裁剪区间内的已绘制图元与缓存，防止旧细节点残留
             try:
-                self.purge_artists_in_range(float(cutoff) - 1e-6, float('inf'))
+                self.purge_artists_in_range(max(0.0, cutoff_boundary - 1e-6), float('inf'))
             except Exception:
                 pass
             try:
                 if hasattr(self, '_segments'):
-                    self._segments = [seg for seg in getattr(self, '_segments', []) if seg and seg[0] and float(seg[0][-1]) <= cutoff + 1e-9]
+                    self._segments = [seg for seg in getattr(self, '_segments', []) if seg and seg[0] and float(seg[0][-1]) <= cutoff_boundary + 1e-9]
                     if not self._segments:
                         self._segments = []
             except Exception:
@@ -18095,6 +18352,43 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             add_receive_time = time.time()
+            guard_now = add_receive_time
+            guard_range = getattr(self, '_retake_block_range', None)
+            guard_epoch = getattr(self, '_retake_epoch_guard_epoch', None)
+            guard_until = float(getattr(self, '_retake_epoch_guard_until', 0.0))
+            guard_active = False
+            guard_info = None
+            if guard_range and guard_epoch is not None:
+                if guard_until > 0.0 and guard_now > guard_until:
+                    try:
+                        self._retake_block_range = None
+                        self._retake_epoch_guard_until = 0.0
+                        self._retake_guard_active = False
+                    except Exception:
+                        pass
+                    guard_range = None
+                else:
+                    guard_active = True
+                    try:
+                        self._retake_guard_active = True
+                    except Exception:
+                        pass
+                if guard_active and guard_range:
+                    try:
+                        guard_info = (float(guard_range[0]), float(guard_range[1]), int(guard_epoch), float(guard_until))
+                    except Exception:
+                        guard_info = None
+            else:
+                guard_range = None
+                try:
+                    self._retake_guard_active = False
+                except Exception:
+                    pass
+                try:
+                    if self._retake_snapshot_active():
+                        self._retake_history_snapshot_applied = False
+                except Exception:
+                    pass
             frequency = pitch_data.get('frequency', 0)
             confidence = pitch_data.get('confidence', 0)
             timestamp = pitch_data.get('timestamp', time.time())
@@ -18115,12 +18409,25 @@ class ECGStylePitchVisualizer(QWidget):
                         pkt_ts = float(pitch_data.get('timestamp', drop_wall))
                     except Exception:
                         pkt_ts = drop_wall
+                allow_newer = False
                 if pkt_ts < drop_wall - 1e-4:
                     try:
-                        self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
+                        trim_point = float(getattr(self, '_record_trim_point', -1.0))
                     except Exception:
-                        pass
-                    return
+                        trim_point = -1.0
+                    if trim_point >= 0.0:
+                        try:
+                            gt_val = pitch_data.get('global_time', None)
+                            if gt_val is not None and float(gt_val) >= trim_point - 1e-4:
+                                allow_newer = True
+                        except Exception:
+                            allow_newer = False
+                    if not allow_newer:
+                        try:
+                            self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
+                        except Exception:
+                            pass
+                        return
             # ===== 迟到旧点过滤（回退后防回潮核心） =====
             try:
                 if getattr(self, '_cap_visible_time_enabled', False):
@@ -18150,6 +18457,29 @@ class ECGStylePitchVisualizer(QWidget):
                             if audio_rms >= unlock_rms:
                                 unlock_flag = True
                         if gt_test > cap + 1e-9:
+                            if not unlock_flag:
+                                grace_left = 0
+                                try:
+                                    grace_left = int(getattr(self, '_retake_strict_grace_frames', 0))
+                                except Exception:
+                                    grace_left = 0
+                                if grace_left > 0:
+                                    unlock_flag = True
+                                    try:
+                                        self._retake_strict_grace_frames = max(0, grace_left - 1)
+                                    except Exception:
+                                        self._retake_strict_grace_frames = 0
+                                    try:
+                                        pitch_data['_retake_force_unlock'] = True
+                                    except Exception:
+                                        pass
+                                try:
+                                    if bool(getattr(self, '_retake_force_unlock_pending', False)):
+                                        unlock_flag = True
+                                        self._retake_force_unlock_pending = False
+                                        pitch_data['_retake_force_unlock'] = True
+                                except Exception:
+                                    pass
                             if strict_lock_active and not countdown_active:
                                 if not unlock_flag:
                                     try:
@@ -18186,6 +18516,17 @@ class ECGStylePitchVisualizer(QWidget):
                                                 self._maybe_forward_inject_after_cap()
                                         except Exception:
                                             pass
+                                        try:
+                                            if hasattr(self, '_force_forward_segment_refresh'):
+                                                self._force_forward_segment_refresh()
+                                        except Exception:
+                                            pass
+                                        try:
+                                            if not getattr(self, '_retake_fast_refresh_queued', False):
+                                                self._retake_fast_refresh_queued = True
+                                                QTimer.singleShot(0, self._retake_post_unlock_refresh)
+                                        except Exception:
+                                            pass
                                     except Exception:
                                         pass
                                 except Exception:
@@ -18206,6 +18547,12 @@ class ECGStylePitchVisualizer(QWidget):
                                                     self._maybe_forward_inject_after_cap()
                                                 if hasattr(self, '_force_forward_segment_refresh'):
                                                     self._force_forward_segment_refresh()
+                                                if not getattr(self, '_retake_fast_refresh_queued', False):
+                                                    self._retake_fast_refresh_queued = True
+                                                    try:
+                                                        self._retake_post_unlock_refresh()
+                                                    except Exception:
+                                                        pass
                                             except Exception:
                                                 pass
                                     except Exception:
@@ -18288,6 +18635,10 @@ class ECGStylePitchVisualizer(QWidget):
                     self._retake_countdown_block_add = False
                     self._retake_countdown_active = False
                     self._retake_countdown_freeze_time = None
+                    try:
+                        self._retake_drop_until_timestamp = 0.0
+                    except Exception:
+                        pass
                     # 结束瞬间将播放指针对齐到 cap，避免视觉落后
                     try:
                         _capx = float(getattr(self, '_retake_countdown_target_time', getattr(self, '_max_visible_time', 0.0)))
@@ -18309,6 +18660,19 @@ class ECGStylePitchVisualizer(QWidget):
                         self._retake_countdown_pause_started_at = 0.0
                     except Exception:
                         pass
+                    try:
+                        host = getattr(self, '_host_interface', None)
+                    except Exception:
+                        host = None
+                    if host is not None:
+                        try:
+                            reason = getattr(host, '_analysis_backoff_reason', '')
+                            if reason in ('retake_countdown', 'retake_seek_flush', ''):
+                                host._analysis_backoff_until = now_wall - 0.01
+                                if reason == 'retake_countdown':
+                                    host._analysis_backoff_reason = ''
+                        except Exception:
+                            pass
                     # 倒计时刚结束：保持严格锁由首个新点解除（与原策略一致），继续处理当前帧
                     if getattr(self, '_cap_strict_lock', False):
                         self._post_retake_new_data_started = False
@@ -18330,6 +18694,15 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._force_redraw_on_next_update = True
                             except Exception:
                                 pass
+                            try:
+                                self._clear_retake_history_snapshot()
+                            except Exception:
+                                pass
+                            try:
+                                if self._retake_snapshot_active():
+                                    self._apply_retake_history_snapshot(force=True, eager=True)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
             except Exception:
@@ -18345,6 +18718,77 @@ class ECGStylePitchVisualizer(QWidget):
                 pause_comp = float(getattr(self, '_accumulated_pause_dur', 0.0))
             except Exception:
                 pause_comp = 0.0
+            # 若存在显式 global_time，先根据回退上下文与 epoch 重新对齐，避免重录重置时间轴导致新点被裁剪
+            try:
+                if isinstance(pitch_data, dict) and ('global_time' in pitch_data):
+                    raw_gt_val = pitch_data.get('global_time')
+                    try:
+                        raw_gt = float(raw_gt_val)
+                    except Exception:
+                        raw_gt = None
+                    if raw_gt is not None:
+                        base_ref = None
+                        try:
+                            base_attr = getattr(self, '_rollback_base_time', None)
+                            if base_attr is not None:
+                                base_ref = float(base_attr)
+                        except Exception:
+                            base_ref = None
+                        if base_ref is None:
+                            try:
+                                tp = float(getattr(self, '_record_trim_point', -1.0))
+                            except Exception:
+                                tp = -1.0
+                            if tp >= 0.0:
+                                base_ref = float(tp)
+                        same_epoch = False
+                        try:
+                            cur_epoch_attr = getattr(self, '_current_epoch', None)
+                            pkt_epoch_raw = pitch_data.get('_epoch', None)
+                            if cur_epoch_attr is not None and pkt_epoch_raw is not None:
+                                same_epoch = (int(pkt_epoch_raw) == int(cur_epoch_attr))
+                        except Exception:
+                            same_epoch = False
+                        guard_active_now = bool(getattr(self, '_retake_guard_active', False))
+                        if base_ref is not None and raw_gt < float(base_ref) - 1e-3 and (same_epoch or guard_active_now):
+                            try:
+                                target_epoch = int(getattr(self, '_current_epoch', 0))
+                            except Exception:
+                                target_epoch = getattr(self, '_current_epoch', None)
+                            zero_epoch = getattr(self, '_retake_epoch_time_zero_epoch', None)
+                            zero_val = getattr(self, '_retake_epoch_time_zero', None)
+                            if zero_val is None or zero_epoch != target_epoch:
+                                try:
+                                    self._retake_epoch_time_zero = float(raw_gt)
+                                except Exception:
+                                    self._retake_epoch_time_zero = raw_gt
+                                try:
+                                    self._retake_epoch_time_zero_epoch = target_epoch
+                                except Exception:
+                                    self._retake_epoch_time_zero_epoch = target_epoch
+                                try:
+                                    self._retake_epoch_time_shift = float(base_ref)
+                                except Exception:
+                                    self._retake_epoch_time_shift = float(base_ref) if base_ref is not None else 0.0
+                                zero_val = getattr(self, '_retake_epoch_time_zero', raw_gt)
+                            try:
+                                shift = float(getattr(self, '_retake_epoch_time_shift', base_ref if base_ref is not None else 0.0))
+                            except Exception:
+                                shift = float(base_ref) if base_ref is not None else 0.0
+                            try:
+                                offset = float(raw_gt) - float(zero_val)
+                            except Exception:
+                                offset = 0.0
+                            if offset < 0.0:
+                                offset = 0.0
+                            adjusted_gt = shift + offset
+                            try:
+                                pitch_data['global_time'] = adjusted_gt
+                                raw_gt = adjusted_gt
+                            except Exception:
+                                raw_gt = adjusted_gt
+            except Exception:
+                pass
             # 允许调用方直接指定绝对时间（例如测试/离线喂数），否则使用内部时钟
             _explicit_gt = None
             try:
@@ -18365,26 +18809,127 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 global_time = _explicit_gt
 
+            if guard_info is not None:
+                try:
+                    guard_start, guard_end, guard_epoch_val, guard_until_snapshot = guard_info
+                except Exception:
+                    guard_start = guard_end = guard_epoch_val = guard_until_snapshot = None
+                if guard_start is not None and guard_end is not None and guard_end > guard_start - 1e-6:
+                    gt_for_guard = global_time
+                    try:
+                        if 'global_time' in pitch_data:
+                            gt_for_guard = float(pitch_data.get('global_time'))
+                    except Exception:
+                        gt_for_guard = global_time
+                    if (gt_for_guard >= guard_start - 1e-6) and (gt_for_guard <= guard_end + 1e-6):
+                        pkt_epoch_raw = pitch_data.get('_epoch', None)
+                        pkt_epoch_val = None
+                        try:
+                            if pkt_epoch_raw is not None:
+                                pkt_epoch_val = int(pkt_epoch_raw)
+                        except Exception:
+                            pkt_epoch_val = None
+                        if pkt_epoch_val is None:
+                            try:
+                                self._retake_missing_epoch_dropped = int(getattr(self, '_retake_missing_epoch_dropped', 0)) + 1
+                            except Exception:
+                                self._retake_missing_epoch_dropped = 1
+                            if getattr(self, 'debug_flags', {}).get('cap_diag'):
+                                print(f"[RETAKE_GUARD] drop missing epoch t={gt_for_guard:.3f} guard=({guard_start:.3f},{guard_end:.3f})")
+                            return
+                        if guard_epoch_val is None or pkt_epoch_val != guard_epoch_val:
+                            try:
+                                self._retake_epoch_dropped = int(getattr(self, '_retake_epoch_dropped', 0)) + 1
+                            except Exception:
+                                self._retake_epoch_dropped = 1
+                            if getattr(self, 'debug_flags', {}).get('cap_diag'):
+                                print(f"[RETAKE_GUARD] drop epoch mismatch pkt={pkt_epoch_val} guard={guard_epoch_val} t={gt_for_guard:.3f}")
+                            return
+                        # 合法新帧：延长守卫窗口并刷新范围
+                        try:
+                            now_guard = time.time()
+                            new_until = max(float(getattr(self, '_retake_epoch_guard_until', guard_until_snapshot or 0.0)), now_guard + 0.8)
+                            self._retake_epoch_guard_until = new_until
+                        except Exception:
+                            pass
+                        try:
+                            # 扩展守卫覆盖以包含最新点
+                            self._retake_block_range = (guard_start, max(guard_end, gt_for_guard + 0.05))
+                        except Exception:
+                            pass
+                        try:
+                            if self._retake_snapshot_active():
+                                self._retake_history_snapshot_applied = False
+                        except Exception:
+                            pass
+
+            if guard_active and guard_range is not None and guard_epoch is not None:
+                try:
+                    guard_start, guard_end = float(guard_range[0]), float(guard_range[1])
+                except Exception:
+                    guard_start = guard_end = None
+                if guard_start is not None and guard_end is not None and guard_end > guard_start - 1e-6:
+                    if (global_time >= guard_start - 1e-6) and (global_time <= guard_end + 1e-6):
+                        pkt_epoch_raw = pitch_data.get('_epoch', None)
+                        if pkt_epoch_raw is None:
+                            try:
+                                self._retake_missing_epoch_dropped = int(getattr(self, '_retake_missing_epoch_dropped', 0)) + 1
+                            except Exception:
+                                self._retake_missing_epoch_dropped = 1
+                            if getattr(self, 'debug_flags', {}).get('cap_diag'):
+                                print(f"[RETAKE_GUARD] drop missing epoch t={global_time:.3f} guard=({guard_start:.3f},{guard_end:.3f})")
+                            return
+                        try:
+                            pkt_epoch_val = int(pkt_epoch_raw)
+                        except Exception:
+                            pkt_epoch_val = None
+                        guard_epoch_val = None
+                        try:
+                            guard_epoch_val = int(guard_epoch)
+                        except Exception:
+                            guard_epoch_val = None
+                        if guard_epoch_val is None or pkt_epoch_val is None or pkt_epoch_val != guard_epoch_val:
+                            try:
+                                self._retake_epoch_dropped = int(getattr(self, '_retake_epoch_dropped', 0)) + 1
+                            except Exception:
+                                self._retake_epoch_dropped = 1
+                            if getattr(self, 'debug_flags', {}).get('cap_diag'):
+                                print(f"[RETAKE_GUARD] drop epoch mismatch pkt={pkt_epoch_val} guard={guard_epoch_val} t={global_time:.3f}")
+                            return
+                        # 合法新帧：延长守卫窗口以涵盖重写期
+                        if guard_until > 0.0:
+                            try:
+                                self._retake_epoch_guard_until = max(guard_until, guard_now + 0.8)
+                            except Exception:
+                                pass
+                        try:
+                            # 在成功重写后仍保留守卫，后续旧包仍会被挡下
+                            self._retake_block_range = (guard_start, guard_end)
+                        except Exception:
+                            pass
+                        try:
+                            if self._retake_snapshot_active():
+                                self._retake_history_snapshot_applied = False
+                        except Exception:
+                            pass
+
             # 若存在录音回退重录起点，则严格过滤掉回退之前的所有点，彻底防止旧点复现
             try:
                 trim_point = float(getattr(self, '_record_trim_point', -1.0))
-                if trim_point >= 0.0:
-                    frame_time = None
-                    try:
-                        if 'global_time' in pitch_data:
-                            frame_time = float(pitch_data.get('global_time'))
-                    except Exception:
-                        frame_time = None
-                    if frame_time is None:
-                        frame_time = float(global_time)
-                    if frame_time < trim_point - 1e-3:
+            except Exception:
+                trim_point = -1.0
+            if trim_point >= 0.0:
+                try:
+                    if float(global_time) < trim_point - 1e-4:
                         try:
                             self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
                         except Exception:
-                            pass
+                            self._dropped_retaken_frames = 1
+                        if getattr(self, 'debug_flags', {}).get('cap_diag'):
+                            print(f"[RETAKE_TRIM] drop frame t={float(global_time):.3f} trim={trim_point:.3f}")
                         return
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
             # 动态提升“可见时间上限”（用于回退后阻止旧细节点回潮）
             try:
@@ -18402,6 +18947,11 @@ class ECGStylePitchVisualizer(QWidget):
                                     self._enforce_cap_on_existing_artists()
                                 if hasattr(self,'_quick_rebuild_segments_upto_cap'):
                                     self._quick_rebuild_segments_upto_cap()
+                                if self._retake_snapshot_active():
+                                    try:
+                                        self._apply_retake_history_snapshot(force=True, eager=True)
+                                    except Exception:
+                                        pass
                                 # 兜底注入
                                 try:
                                     if hasattr(self, '_maybe_forward_inject_after_cap'):
@@ -18740,6 +19290,10 @@ class ECGStylePitchVisualizer(QWidget):
                             self._retake_drop_until_timestamp = 0.0
                         except Exception:
                             pass
+                        try:
+                            self._retake_strict_grace_frames = 0
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 # 持久化：写入一个点记录（NDJSON 缓冲）
@@ -18794,14 +19348,33 @@ class ECGStylePitchVisualizer(QWidget):
                         # 适度修剪：只保留可视窗+1.5s 余量，减少刷新扫描成本
                         win = float(getattr(self, 'time_window', 16.0))
                         cutoff = global_time - (win + 1.0)
+                        try:
+                            preserve_cap = float(getattr(self, '_retake_preserve_cap', -1.0))
+                        except Exception:
+                            preserve_cap = -1.0
+                        maxlen = int(getattr(self, '_prefill_flat_cap', 6000))
                         if isinstance(self._flat_points, list):
-                            self._flat_points = [(t, y) for (t, y) in self._flat_points if t >= cutoff][-6000:]
+                            dynamic = [(t, y) for (t, y) in self._flat_points if (preserve_cap < 0.0 or t > preserve_cap + 1e-9) and t >= cutoff]
+                            if len(dynamic) > maxlen:
+                                dynamic = dynamic[-maxlen:]
+                            merged = self._merge_preserved_flat_points(dynamic)
+                            self._flat_points = merged
                         else:
-                            while self._flat_points and self._flat_points[0][0] < cutoff:
-                                try:
-                                    self._flat_points.popleft()
-                                except Exception:
-                                    break
+                            from collections import deque as _dq_merge
+                            dynamic_list = []
+                            tmp_iter = list(self._flat_points)
+                            for (t, y) in tmp_iter:
+                                if preserve_cap >= 0.0 and t <= preserve_cap + 1e-9:
+                                    continue
+                                if t >= cutoff:
+                                    dynamic_list.append((t, y))
+                            if len(dynamic_list) > maxlen:
+                                dynamic_list = dynamic_list[-maxlen:]
+                            merged = self._merge_preserved_flat_points(dynamic_list)
+                            try:
+                                self._flat_points = _dq_merge(merged, maxlen=max(maxlen, len(merged)))
+                            except Exception:
+                                self._flat_points = merged
                 except Exception:
                     pass
                 
@@ -20343,10 +20916,23 @@ class ECGStylePitchVisualizer(QWidget):
             span = float(max(0.0, duration))
         except Exception:
             span = 0.0
+        try:
+            if not hasattr(self, '_retake_trim_gap') or self._retake_trim_gap is None:
+                self._retake_trim_gap = 0.18
+        except Exception:
+            pass
+        try:
+            self._retake_fast_refresh_queued = False
+        except Exception:
+            pass
         if span <= 0.05:
             try:
                 self._retake_countdown_active = False
                 self._retake_countdown_block_add = False
+                self._retake_countdown_end = 0.0
+                self._retake_countdown_target_time = target
+                self._retake_countdown_target = target
+                self._retake_countdown_preroll_start = preroll_start
             except Exception:
                 pass
             try:
@@ -20448,9 +21034,40 @@ class ECGStylePitchVisualizer(QWidget):
 
         # 预先保存历史并清除>cap残留，倒计时期间保持整段可见
         try:
-            cap_for_snapshot = float(getattr(self, '_max_visible_time', target))
+            prev_cap = float(getattr(self, '_max_visible_time', target))
         except Exception:
-            cap_for_snapshot = float(target)
+            prev_cap = float(target)
+        cap_for_snapshot = float(min(prev_cap, target))
+        try:
+            trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+        except Exception:
+            trim_gap = 0.001
+        if trim_gap < 0.0:
+            trim_gap = 0.0
+        if trim_gap > 0.2:
+            trim_gap = 0.2
+        cap_boundary = max(0.0, cap_for_snapshot - trim_gap)
+        try:
+            self._max_visible_time = cap_boundary
+        except Exception:
+            pass
+        try:
+            self._retake_preserve_cap = cap_boundary
+        except Exception:
+            pass
+        try:
+            self._retake_preserved_flat = None
+        except Exception:
+            pass
+        try:
+            self._retake_preserve_floor = None
+        except Exception:
+            pass
+        try:
+            if not getattr(self, '_cap_visible_time_enabled', False):
+                self._cap_visible_time_enabled = True
+        except Exception:
+            pass
         try:
             self._retake_hard_purge_future(cap_for_snapshot)
         except Exception:
@@ -20511,7 +21128,16 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             return
         try:
-            self.purge_artists_in_range(cap_val + 1e-6, float('inf'))
+            trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+        except Exception:
+            trim_gap = 0.001
+        if trim_gap < 0.0:
+            trim_gap = 0.0
+        if trim_gap > 0.2:
+            trim_gap = 0.2
+        purge_start = max(0.0, cap_val - trim_gap)
+        try:
+            self.purge_artists_in_range(purge_start, float('inf'))
         except Exception:
             pass
         for attr in ('_enforce_cap_on_existing_artists', '_purge_collections_beyond_cap', '_filter_mainline_to_cap'):
@@ -20542,12 +21168,23 @@ class ECGStylePitchVisualizer(QWidget):
             base_iter = []
         times = []
         pitches = []
+        try:
+            trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+        except Exception:
+            trim_gap = 0.001
+        if trim_gap < 0.0:
+            trim_gap = 0.0
+        if trim_gap > 0.2:
+            trim_gap = 0.2
+        cap_boundary = max(0.0, cap_val - trim_gap)
+        preserve_pairs = []
+        preserve_pairs = []
         for t_raw, p_raw in base_iter:
             try:
                 ft = float(t_raw)
             except Exception:
                 continue
-            if ft > cap_val + 1e-9:
+            if ft > cap_boundary + 1e-9:
                 continue
             try:
                 fp = float(p_raw)
@@ -20555,6 +21192,18 @@ class ECGStylePitchVisualizer(QWidget):
                 continue
             times.append(ft)
             pitches.append(fp)
+            preserve_pairs.append((ft, fp))
+        try:
+            max_preserve = int(getattr(self, '_retake_preserve_max_points', 12000))
+        except Exception:
+            max_preserve = 12000
+        if max_preserve > 0 and len(preserve_pairs) > max_preserve:
+            try:
+                import math as _m
+                step_preserve = _m.ceil(len(preserve_pairs) / max_preserve)
+            except Exception:
+                step_preserve = max(1, len(preserve_pairs) // max_preserve)
+            preserve_pairs = preserve_pairs[::step_preserve]
         if not times:
             self._clear_retake_history_snapshot()
             return
@@ -20577,8 +21226,19 @@ class ECGStylePitchVisualizer(QWidget):
         self._retake_history_snapshot = (times, pitches)
         self._retake_history_snapshot_cap = cap_val
         self._retake_history_snapshot_applied = False
+        try:
+            self._retake_preserved_flat = preserve_pairs
+        except Exception:
+            pass
+        try:
+            if preserve_pairs:
+                self._retake_preserve_floor = preserve_pairs[0][0]
+        except Exception:
+            pass
 
     def _apply_retake_history_snapshot(self, *, force: bool = False, eager: bool = False):
+        if not self._retake_snapshot_active():
+            return
         snap = getattr(self, '_retake_history_snapshot', None)
         if not snap:
             return
@@ -20635,6 +21295,11 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         self._retake_history_snapshot_applied = True
+        try:
+            if hasattr(self, '_quick_rebuild_segments_upto_cap'):
+                self._quick_rebuild_segments_upto_cap()
+        except Exception:
+            pass
         if eager:
             try:
                 self._force_redraw_on_next_update = True
@@ -20692,6 +21357,65 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _retake_snapshot_active(self) -> bool:
+        try:
+            if getattr(self, '_post_retake_new_data_started', False):
+                return False
+            return getattr(self, '_retake_history_snapshot', None) is not None
+        except Exception:
+            return False
+
+    def _merge_preserved_flat_points(self, dynamic_points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """将回退保留区间的细节点与动态点集合合并，保证回退点之前的历史始终存在。
+
+        参数 dynamic_points 为已按时间排序的列表，仅包含 > preserve_cap 的新点。
+        返回值包含保留区间（<= preserve_cap）的点及 dynamic_points，按时间升序排列并去重。
+        """
+        try:
+            preserve_cap = float(getattr(self, '_retake_preserve_cap', -1.0))
+        except Exception:
+            preserve_cap = -1.0
+        preserved = getattr(self, '_retake_preserved_flat', None)
+        if not preserved or preserve_cap < 0.0:
+            return list(dynamic_points)
+        cleaned_preserved: List[Tuple[float, float]] = []
+        try:
+            for item in preserved:
+                try:
+                    t_val = float(item[0])
+                    y_val = float(item[1])
+                except Exception:
+                    continue
+                if t_val > preserve_cap + 1e-9:
+                    continue
+                cleaned_preserved.append((t_val, y_val))
+        except Exception:
+            cleaned_preserved = []
+        if not cleaned_preserved:
+            return list(dynamic_points)
+        if not dynamic_points:
+            return list(cleaned_preserved)
+        merged: List[Tuple[float, float]] = list(cleaned_preserved)
+        first_dynamic = dynamic_points[0]
+        if merged and abs(merged[-1][0] - first_dynamic[0]) <= 1e-6:
+            # 若边界时间重叠，则以更新后的动态点覆盖末尾，保持时间轴连续
+            merged[-1] = first_dynamic
+            merged.extend(dynamic_points[1:])
+        else:
+            merged.extend(dynamic_points)
+        return merged
+
+    def _retake_post_unlock_refresh(self):
+        """回退计数解锁后的快速刷新，确保首批新点立刻落图。"""
+        try:
+            self._retake_fast_refresh_queued = False
+        except Exception:
+            pass
+        try:
+            self._instant_refresh()
+        except Exception:
+            pass
+
     def update_display(self):
         """更新显示（支持历史数据查看和断续音调曲线）"""
         # 重入保护：多定时器可能同时触发，避免并发重绘造成状态不一致/抖动
@@ -20743,7 +21467,8 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         try:
             if getattr(self, '_retake_countdown_active', False) or (getattr(self, '_cap_strict_lock', False) and not getattr(self, '_post_retake_new_data_started', False)):
-                self._ensure_retake_history_visible()
+                if self._retake_snapshot_active():
+                    self._apply_retake_history_snapshot(force=True, eager=False)
         except Exception:
             pass
         if len(self.pitch_data) == 0:
@@ -27124,6 +27849,10 @@ class IntegratedRecordingInterface(QMainWindow):
         
         # 创建可视化区域
         self.visualizer = ECGStylePitchVisualizer()
+        try:
+            self.visualizer._host_interface = self
+        except Exception:
+            pass
         # 设置音频处理器引用
         self.visualizer.set_audio_processor(self.audio_processor)
         
@@ -30367,22 +31096,42 @@ class IntegratedRecordingInterface(QMainWindow):
     def _set_backing_paused(self, paused: bool):
         """设置伴奏/原唱及可视化暂停状态（暂停时不推进时间轴/不绘制新点）。"""
         try:
-            self._backing_paused = bool(paused)
-            if paused:
+            paused_flag = bool(paused)
+            prev_paused = bool(getattr(self, '_backing_paused', False))
+            state_changed = (paused_flag != prev_paused)
+            self._backing_paused = paused_flag
+
+            if paused_flag and state_changed:
                 try:
                     self._stop_backing_playback()
                 except Exception:
                     pass
+
+            sr = None
             try:
-                if paused:
-                    pause_sec = None
-                    sr = None
+                if self.backing_sample_rate:
+                    sr = float(self.backing_sample_rate)
+            except Exception:
+                sr = None
+
+            pause_sec = None
+            if paused_flag:
+                if not state_changed:
                     try:
-                        if self.backing_sample_rate:
-                            sr = float(self.backing_sample_rate)
+                        pause_sec = float(getattr(self, '_backing_pause_position_sec', None))
                     except Exception:
-                        sr = None
-                    if sr and sr > 0:
+                        pause_sec = None
+                if pause_sec is None:
+                    try:
+                        viz = getattr(self, 'visualizer', None)
+                    except Exception:
+                        viz = None
+                    if viz is not None:
+                        try:
+                            pause_sec = float(getattr(viz, 'current_global_time', None))
+                        except Exception:
+                            pause_sec = None
+                    if pause_sec is None and sr and sr > 0:
                         try:
                             pause_sec = float(self.backing_play_position) / sr
                         except Exception:
@@ -30392,95 +31141,94 @@ class IntegratedRecordingInterface(QMainWindow):
                             pause_sec = float(getattr(self, '_pending_retake_resume_time', getattr(self, 'recording_duration', 0.0)))
                         except Exception:
                             pause_sec = float(getattr(self, 'recording_duration', 0.0))
-                    pause_sec = float(max(0.0, pause_sec))
-                    self._backing_pause_position_sec = pause_sec
-                    sample_idx = None
-                    if sr and sr > 0:
-                        try:
-                            sample_idx = int(round(pause_sec * sr))
-                        except Exception:
-                            sample_idx = None
-                        if sample_idx is not None:
-                            total_frames = None
-                            for _buf_attr in ('backing_pcm_accompaniment', 'backing_pcm_original'):
-                                try:
-                                    buf = getattr(self, _buf_attr, None)
-                                except Exception:
-                                    buf = None
-                                if buf is not None:
-                                    try:
-                                        total_frames = len(buf)
-                                    except Exception:
-                                        total_frames = None
-                                if total_frames:
-                                    sample_idx = max(0, min(int(sample_idx), total_frames - 1))
-                                    break
-                            try:
-                                self._backing_start_position_override = int(sample_idx)
-                            except Exception:
-                                self._backing_start_position_override = sample_idx
-                            try:
-                                self.backing_play_position = int(sample_idx)
-                            except Exception:
-                                try:
-                                    self.backing_play_position = sample_idx
-                                except Exception:
-                                    pass
-                    else:
-                        self._backing_start_position_override = None
-                else:
-                    self._backing_pause_position_sec = None
-            except Exception:
-                try:
-                    if not paused:
-                        self._backing_pause_position_sec = None
-                except Exception:
-                    pass
-            # 冻结录音时长（用户期望：暂停时录音时长停表）
-            if paused and not self._is_duration_frozen:
-                self._freeze_recording_duration = float(getattr(self, 'recording_duration', 0.0))
-                self._is_duration_frozen = True
-            elif (not paused) and self._is_duration_frozen:
-                self._is_duration_frozen = False  # 恢复继续推进
-            # 可视化冻结：通过一个外部标志阻止 add_pitch_data 添加点
-            if hasattr(self, 'visualizer') and self.visualizer is not None:
-                try:
-                    self.visualizer._external_paused = bool(paused)
+                if pause_sec is None:
+                    pause_sec = 0.0
+                pause_sec = float(max(0.0, pause_sec))
+                self._backing_pause_position_sec = pause_sec
+                if state_changed and sr and sr > 0:
                     try:
-                        self.visualizer.is_backing_paused = bool(paused)
+                        sample_idx = int(round(pause_sec * sr))
                     except Exception:
-                        pass
-                    if paused:
+                        sample_idx = None
+                    if sample_idx is not None:
+                        total_frames = None
+                        for _buf_attr in ('backing_pcm_accompaniment', 'backing_pcm_original'):
+                            try:
+                                buf = getattr(self, _buf_attr, None)
+                            except Exception:
+                                buf = None
+                            if buf is not None:
+                                try:
+                                    total_frames = len(buf)
+                                except Exception:
+                                    total_frames = None
+                            if total_frames:
+                                sample_idx = max(0, min(int(sample_idx), total_frames - 1))
+                                break
                         try:
-                            freeze_t = float(getattr(self, '_pending_retake_resume_time', getattr(self.visualizer, 'current_global_time', 0.0)))
+                            self._backing_start_position_override = int(sample_idx)
                         except Exception:
-                            freeze_t = float(getattr(self.visualizer, 'current_global_time', 0.0)) if hasattr(self.visualizer, 'current_global_time') else 0.0
+                            self._backing_start_position_override = sample_idx
                         try:
-                            setattr(self.visualizer, '_manual_freeze_time', freeze_t)
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(self.visualizer, 'current_global_time'):
-                                self.visualizer.current_global_time = float(freeze_t)
-                        except Exception:
-                            pass
-                    else:
-                        try:
-                            if hasattr(self.visualizer, '_manual_freeze_time'):
-                                delattr(self.visualizer, '_manual_freeze_time')
+                            self.backing_play_position = int(sample_idx)
                         except Exception:
                             try:
-                                setattr(self.visualizer, '_manual_freeze_time', None)
+                                self.backing_play_position = sample_idx
                             except Exception:
                                 pass
-                    if paused and hasattr(self.visualizer, 'pause_time_tracking'):
-                        self.visualizer.pause_time_tracking()
-                    elif (not paused) and hasattr(self.visualizer, 'resume_time_tracking'):
-                        self.visualizer.resume_time_tracking()
+                elif state_changed:
+                    self._backing_start_position_override = None
+            elif state_changed:
+                self._backing_pause_position_sec = None
+                self._backing_start_position_override = None
+
+            if paused_flag:
+                if not getattr(self, '_is_duration_frozen', False):
+                    try:
+                        self._freeze_recording_duration = float(getattr(self, 'recording_duration', 0.0))
+                    except Exception:
+                        self._freeze_recording_duration = float(getattr(self, 'recording_duration', 0.0))
+                    self._is_duration_frozen = True
+            elif getattr(self, '_is_duration_frozen', False):
+                self._is_duration_frozen = False
+
+            if hasattr(self, 'visualizer') and self.visualizer is not None:
+                try:
+                    viz = self.visualizer
+                    viz._external_paused = paused_flag
+                    try:
+                        viz.is_backing_paused = paused_flag
+                    except Exception:
+                        pass
+                    freeze_t = pause_sec if pause_sec is not None else 0.0
+                    if paused_flag:
+                        try:
+                            setattr(viz, '_manual_freeze_time', float(freeze_t))
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(viz, 'current_global_time'):
+                                viz.current_global_time = float(freeze_t)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            if hasattr(viz, '_manual_freeze_time'):
+                                delattr(viz, '_manual_freeze_time')
+                        except Exception:
+                            try:
+                                setattr(viz, '_manual_freeze_time', None)
+                            except Exception:
+                                pass
+                    if state_changed:
+                        if paused_flag and hasattr(viz, 'pause_time_tracking'):
+                            viz.pause_time_tracking()
+                        elif (not paused_flag) and hasattr(viz, 'resume_time_tracking'):
+                            viz.resume_time_tracking()
                 except Exception:
                     pass
-            # 恢复后重置检测频率平滑基线，避免跨度统计
-            if (not paused):
+
+            if (not paused_flag) and state_changed:
                 try:
                     self._detection_rate_smoothing_active = True
                     self._detection_rate_smoothing_start = time.time()
@@ -30495,10 +31243,12 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._maybe_start_backing_playback()
                 except Exception:
                     pass
-            try:
-                self._backing_control_tick_sync()
-            except Exception:
-                pass
+
+            if state_changed or paused_flag:
+                try:
+                    self._backing_control_tick_sync()
+                except Exception:
+                    pass
         except Exception:
             pass
 
