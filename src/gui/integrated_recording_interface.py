@@ -7,10 +7,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 
 from collections import deque
+import bisect
 import time, threading, queue, json, os, sys, wave, math
 from pathlib import Path
 
 import numpy as np
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -39,6 +41,42 @@ except Exception:
         PYQT_VERSION = 0
 
 # ---------- 占位/容错：可能在其它模块中定义，若缺失则提供轻量占位以免IDE报错 ----------
+    def _retake_post_seek_refresh(self, cap: float):
+        """在回退 seek 完成后再次收束缓存并立刻重建 <=cap 的可视化段。"""
+        try:
+            cap_val = float(cap)
+        except Exception:
+            return
+        try:
+            self._retake_force_clear_future_data(cap_val, reset_coverage=False)
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_cap_visible_time_enabled', False):
+                try:
+                    self._quick_segments_rebuilt_at_cap = -1.0
+                except Exception:
+                    pass
+                self._quick_rebuild_segments_upto_cap()
+        except Exception:
+            pass
+        try:
+            self._force_redraw_on_next_update = True
+            self._artist_times_dirty = True
+            self._last_heavy_redraw_time = 0.0
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'update_display'):
+                self.update_display()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
 try:
     from .pyqtgraph_gradient_widget import (
         PYQTGRAPH_AVAILABLE as _PG_AVAIL,
@@ -67,6 +105,362 @@ class LatencyMeasurer:
         self.values.append(float(v))
     def avg(self):
         return sum(self.values)/len(self.values) if self.values else 0.0
+
+
+class SegmentedPitchBuffer:
+    """Segment-oriented storage that supports incremental retake edits."""
+
+    class _Segment:
+        __slots__ = ("times", "pitches", "confidences", "notes", "start", "end")
+
+        def __init__(self, time_val: float, pitch_val: float, conf_val: float, note_val):
+            self.times = [float(time_val)]
+            self.pitches = [float(pitch_val)]
+            self.confidences = [float(conf_val)]
+            self.notes = [note_val]
+            self.start = float(time_val)
+            self.end = float(time_val)
+
+        @property
+        def length(self) -> int:
+            return len(self.times)
+
+        def append(self, time_val: float, pitch_val: float, conf_val: float, note_val):
+            self.times.append(float(time_val))
+            self.pitches.append(float(pitch_val))
+            self.confidences.append(float(conf_val))
+            self.notes.append(note_val)
+            self.end = float(time_val)
+
+        def trim_tail(self, keep_length: int):
+            if keep_length < self.length:
+                del self.times[keep_length:]
+                del self.pitches[keep_length:]
+                del self.confidences[keep_length:]
+                del self.notes[keep_length:]
+                self.end = float(self.times[-1]) if self.times else self.start
+
+        def trim_head(self, drop_count: int):
+            if drop_count <= 0:
+                return
+            del self.times[:drop_count]
+            del self.pitches[:drop_count]
+            del self.confidences[:drop_count]
+            del self.notes[:drop_count]
+            if self.times:
+                self.start = float(self.times[0])
+                self.end = float(self.times[-1])
+            else:
+                self.start = self.end
+
+        def clone_head(self, keep_length: int) -> "SegmentedPitchBuffer._Segment":
+            keep = max(0, min(keep_length, self.length))
+            if keep == 0:
+                clone = SegmentedPitchBuffer._Segment(self.start, 0.0, 0.0, None)
+                clone.times = []
+                clone.pitches = []
+                clone.confidences = []
+                clone.notes = []
+                clone.start = self.start
+                clone.end = self.start
+                return clone
+            clone = SegmentedPitchBuffer._Segment(
+                self.times[0], self.pitches[0], self.confidences[0], self.notes[0]
+            )
+            clone.times = self.times[:keep]
+            clone.pitches = self.pitches[:keep]
+            clone.confidences = self.confidences[:keep]
+            clone.notes = self.notes[:keep]
+            clone.start = float(clone.times[0])
+            clone.end = float(clone.times[-1])
+            return clone
+
+        def clone_tail(self, start_index: int) -> "SegmentedPitchBuffer._Segment":
+            if start_index >= self.length:
+                clone = SegmentedPitchBuffer._Segment(self.end, 0.0, 0.0, None)
+                clone.times = []
+                clone.pitches = []
+                clone.confidences = []
+                clone.notes = []
+                clone.start = self.end
+                clone.end = self.end
+                return clone
+            clone = SegmentedPitchBuffer._Segment(
+                self.times[start_index],
+                self.pitches[start_index],
+                self.confidences[start_index],
+                self.notes[start_index],
+            )
+            clone.times = self.times[start_index:]
+            clone.pitches = self.pitches[start_index:]
+            clone.confidences = self.confidences[start_index:]
+            clone.notes = self.notes[start_index:]
+            clone.start = float(clone.times[0]) if clone.times else self.start
+            clone.end = float(clone.times[-1]) if clone.times else clone.start
+            return clone
+
+    _FIELD_ATTR = {
+        "time": "times",
+        "pitch": "pitches",
+        "confidence": "confidences",
+        "note": "notes",
+    }
+
+    def __init__(self, max_points: int, *, segment_capacity: int = 512, gap_tolerance: float = 0.10):
+        self.max_points = max(1, int(max_points))
+        self.segment_capacity = max(8, int(segment_capacity))
+        self.gap_tolerance = max(0.0, float(gap_tolerance))
+        self._segments: List["SegmentedPitchBuffer._Segment"] = []
+        self._starts: List[float] = []
+        self._length = 0
+        self._epsilon = 1e-9
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __bool__(self) -> bool:
+        return self._length > 0
+
+    def create_view(self, field: str) -> "SegmentedSeriesView":
+        return SegmentedSeriesView(self, field)
+
+    def append_point(self, time_val: float, pitch_val: float, conf_val: float, note_val):
+        t = float(time_val)
+        p = float(pitch_val)
+        c = float(conf_val)
+        n = note_val
+        if self._segments:
+            last = self._segments[-1]
+            if t + self._epsilon < last.end:
+                self.trim_after(t - self._epsilon)
+                last = self._segments[-1] if self._segments else None
+            if last and t - last.end <= self.gap_tolerance and len(last.times) < self.segment_capacity:
+                last.append(t, p, c, n)
+            else:
+                new_seg = self._Segment(t, p, c, n)
+                self._segments.append(new_seg)
+                self._starts.append(new_seg.start)
+        else:
+            new_seg = self._Segment(t, p, c, n)
+            self._segments.append(new_seg)
+            self._starts.append(new_seg.start)
+        self._length += 1
+        self._enforce_capacity()
+
+    def extend_points(self, times, pitches, confidences, notes):
+        for t, p, c, n in zip(times, pitches, confidences, notes):
+            self.append_point(t, p, c, n)
+
+    def clear(self):
+        self._segments.clear()
+        self._starts.clear()
+        self._length = 0
+
+    def set_capacity(self, max_points: int):
+        self.max_points = max(1, int(max_points))
+        self._enforce_capacity()
+
+    def rebuild(self, times, pitches, confidences, notes):
+        self.clear()
+        if not times:
+            return
+        self.extend_points(times, pitches, confidences, notes)
+
+    def trim_after(self, cutoff: float) -> bool:
+        boundary = float(cutoff)
+        if not self._segments:
+            return False
+        changed = False
+        new_segments: List["SegmentedPitchBuffer._Segment"] = []
+        new_starts: List[float] = []
+        new_length = 0
+        for seg in self._segments:
+            if seg.start > boundary + self._epsilon:
+                changed = True
+                break
+            if seg.end <= boundary + self._epsilon:
+                new_segments.append(seg)
+                new_starts.append(seg.start)
+                new_length += seg.length
+                continue
+            idx = bisect.bisect_right(seg.times, boundary + self._epsilon)
+            if idx <= 0:
+                changed = True
+                break
+            trimmed = seg.clone_head(idx)
+            if trimmed.length:
+                new_segments.append(trimmed)
+                new_starts.append(trimmed.start)
+                new_length += trimmed.length
+            changed = True
+            break
+        self._segments = new_segments
+        self._starts = new_starts
+        self._length = new_length
+        return changed
+
+    def remove_range(self, start: float, end: float) -> bool:
+        if not self._segments:
+            return False
+        start = float(start)
+        end = float(max(start, end))
+        if end <= start + self._epsilon:
+            return False
+        changed = False
+        new_segments: List["SegmentedPitchBuffer._Segment"] = []
+        new_starts: List[float] = []
+        new_length = 0
+        for seg in self._segments:
+            if seg.end <= start + self._epsilon or seg.start >= end - self._epsilon:
+                new_segments.append(seg)
+                new_starts.append(seg.start)
+                new_length += seg.length
+                continue
+            changed = True
+            left_idx = bisect.bisect_left(seg.times, start - self._epsilon)
+            right_idx = bisect.bisect_left(seg.times, end - self._epsilon)
+            if left_idx > 0:
+                head_seg = seg.clone_head(left_idx)
+                if head_seg.length:
+                    new_segments.append(head_seg)
+                    new_starts.append(head_seg.start)
+                    new_length += head_seg.length
+            if right_idx < seg.length:
+                tail_seg = seg.clone_tail(right_idx)
+                if tail_seg.length:
+                    new_segments.append(tail_seg)
+                    new_starts.append(tail_seg.start)
+                    new_length += tail_seg.length
+        if changed:
+            order = sorted(range(len(new_segments)), key=lambda i: new_segments[i].start)
+            self._segments = [new_segments[i] for i in order]
+            self._starts = [self._segments[i].start for i in range(len(self._segments))]
+            self._length = new_length
+        return changed
+
+    def iter_field(self, field: str):
+        attr = self._FIELD_ATTR[field]
+        for seg in self._segments:
+            data = getattr(seg, attr)
+            for value in data:
+                yield value
+
+    def get_field_value(self, field: str, index: int):
+        idx = int(index)
+        if idx < 0:
+            idx += self._length
+        if idx < 0 or idx >= self._length:
+            raise IndexError(idx)
+        attr = self._FIELD_ATTR[field]
+        for seg in self._segments:
+            seg_len = seg.length
+            if idx < seg_len:
+                return getattr(seg, attr)[idx]
+            idx -= seg_len
+        raise IndexError(index)
+
+    def get_field_slice(self, field: str, slice_obj: slice):
+        start, stop, step = slice_obj.indices(self._length)
+        if step == 0:
+            raise ValueError("slice step cannot be zero")
+        if start >= stop:
+            return []
+        values = list(self.iter_field(field))
+        return values[start:stop:step]
+
+    def iter_segments(self):
+        for seg in self._segments:
+            yield seg.times, seg.pitches, seg.confidences, seg.notes
+
+    def last_time(self):
+        if not self._segments:
+            return None
+        return self._segments[-1].end
+
+    def to_lists(self):
+        times: List[float] = []
+        pitches: List[float] = []
+        confidences: List[float] = []
+        notes: List[Any] = []
+        for seg in self._segments:
+            times.extend(seg.times)
+            pitches.extend(seg.pitches)
+            confidences.extend(seg.confidences)
+            notes.extend(seg.notes)
+        return times, pitches, confidences, notes
+
+    def _enforce_capacity(self):
+        if self._length <= self.max_points:
+            return
+        excess = self._length - self.max_points
+        new_segments: List["SegmentedPitchBuffer._Segment"] = []
+        new_starts: List[float] = []
+        new_length = self._length
+        for seg in self._segments:
+            if excess <= 0:
+                new_segments.append(seg)
+                new_starts.append(seg.start)
+                continue
+            seg_len = seg.length
+            if seg_len <= excess:
+                excess -= seg_len
+                new_length -= seg_len
+                continue
+            seg.trim_head(excess)
+            if seg.length:
+                new_segments.append(seg)
+                new_starts.append(seg.start)
+                new_length -= excess
+            excess = 0
+        self._segments = new_segments
+        self._starts = new_starts
+        self._length = new_length
+
+
+class SegmentedSeriesView:
+    """Read-only facade for a single data field stored in SegmentedPitchBuffer."""
+
+    __slots__ = ("_parent", "_field")
+
+    def __init__(self, parent: SegmentedPitchBuffer, field: str):
+        self._parent = parent
+        self._field = field
+
+    @property
+    def maxlen(self) -> int:
+        return self._parent.max_points
+
+    def __len__(self) -> int:
+        return len(self._parent)
+
+    def __bool__(self) -> bool:
+        return bool(self._parent)
+
+    def __iter__(self):
+        return self._parent.iter_field(self._field)
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return self._parent.get_field_slice(self._field, item)
+        return self._parent.get_field_value(self._field, item)
+
+    def clear(self):
+        self._parent.clear()
+
+    def to_list(self):
+        return list(self.__iter__())
+
+    def __repr__(self) -> str:
+        total_len = len(self)
+        iterator = self.__iter__()
+        preview = []
+        try:
+            for _ in range(6):
+                preview.append(next(iterator))
+        except StopIteration:
+            pass
+        suffix = "…" if total_len > len(preview) else ""
+        return f"SegmentedSeriesView(field={self._field!r}, len={total_len}, data={preview}{suffix})"
 
 def set_realtime_priority():
     try:
@@ -130,8 +524,6 @@ except Exception:
 # 说明：外部可能存在不同签名的 PitchFrame，这里统一使用本地兼容类，
 # 接受 f0_raw/f0_smooth 等关键字并提供 to_dict()，避免关键字不匹配导致运行时异常。
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple
-
 @dataclass
 class PitchFrame:
     # 基本时间戳
@@ -10421,10 +10813,17 @@ class ECGStylePitchVisualizer(QWidget):
         # ================== 数据缓冲 ==================
         max_data_points = int(64 * self.max_history_time)
         print(f"📊 初始化数据缓冲区: {max_data_points} 个数据点 ({self.max_history_time}秒)")
-        self.pitch_data = deque(maxlen=max_data_points)
-        self.time_data = deque(maxlen=max_data_points)
-        self.confidence_data = deque(maxlen=max_data_points)
-        self.note_data = deque(maxlen=max_data_points)
+        segment_capacity = int(getattr(self, '_segment_capacity_hint', 512))
+        segment_gap = float(getattr(self, '_segment_gap_tolerance', 0.12))
+        self._pitch_store = SegmentedPitchBuffer(
+            max_data_points,
+            segment_capacity=segment_capacity,
+            gap_tolerance=segment_gap,
+        )
+        self.time_data = self._pitch_store.create_view("time")
+        self.pitch_data = self._pitch_store.create_view("pitch")
+        self.confidence_data = self._pitch_store.create_view("confidence")
+        self.note_data = self._pitch_store.create_view("note")
         self._timebin_eps = 0.01
         self._added_time_bins = set()
 
@@ -10774,6 +11173,121 @@ class ECGStylePitchVisualizer(QWidget):
         self._maybe_summary = _maybe_summary
 
         # ================== 运行/刷新计时器与阈值 ==================
+
+        # ===== 缓冲协助工具 =====
+        def _refresh_time_bins(self, cutoff_limit: Optional[float] = None):
+            """按当前缓冲重建时间桶集合，可选地限制在 cutoff_limit 之前。"""
+            try:
+                eps = float(getattr(self, '_timebin_eps', 0.01))
+                if eps <= 0.0:
+                    eps = 0.01
+            except Exception:
+                eps = 0.01
+            bins = set()
+            try:
+                for tt in self.time_data:
+                    try:
+                        ft = float(tt)
+                    except Exception:
+                        continue
+                    if cutoff_limit is not None and ft > cutoff_limit + 1e-9:
+                        continue
+                    bins.add(int(round(ft / eps)))
+            except Exception:
+                bins = set()
+            self._added_time_bins = bins
+
+        def _filter_tail_buffer(self, predicate):
+            """根据 predicate(t) 过滤尾部滑窗缓存。"""
+            try:
+                if not hasattr(self, '_tail_time') or self._tail_time is None:
+                    return
+                tail_times = list(getattr(self, '_tail_time', []))
+                tail_pitches = list(getattr(self, '_tail_pitch', []))
+                tail_confs = list(getattr(self, '_tail_conf', []))
+                if not tail_times:
+                    return
+                filtered = []
+                for t, p, c in zip(tail_times, tail_pitches, tail_confs):
+                    try:
+                        keep = bool(predicate(float(t)))
+                    except Exception:
+                        keep = True
+                    if keep:
+                        filtered.append((t, p, c))
+                if isinstance(self._tail_time, list):
+                    self._tail_time = [t for t, _, _ in filtered]
+                    self._tail_pitch = [p for _, p, _ in filtered]
+                    self._tail_conf = [c for _, _, c in filtered]
+                else:
+                    try:
+                        from collections import deque as _dq
+                        maxlen = getattr(self._tail_time, 'maxlen', len(filtered) or 1)
+                        new_time = _dq(maxlen=maxlen)
+                        new_pitch = _dq(maxlen=maxlen)
+                        new_conf = _dq(maxlen=maxlen)
+                        for t, p, c in filtered:
+                            new_time.append(t)
+                            new_pitch.append(p)
+                            new_conf.append(c)
+                        self._tail_time = new_time
+                        self._tail_pitch = new_pitch
+                        self._tail_conf = new_conf
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # 兼容旧名称（历史补丁曾误拼写为 _filter_taill_buffer）
+        def _filter_taill_buffer(self, predicate):
+            return self._filter_tail_buffer(predicate)
+
+        def _filter_point_buffer(self, attr_name: str, predicate):
+            """通用过滤工具：根据 predicate(t) 过滤 _flat_points/_head_points 等时间点集合。"""
+            try:
+                buf = getattr(self, attr_name, None)
+            except Exception:
+                buf = None
+            if buf is None:
+                return
+            try:
+                if isinstance(buf, list):
+                    setattr(self, attr_name, [pt for pt in buf if len(pt) >= 1 and predicate(float(pt[0]))])
+                else:
+                    pts = list(buf)
+                    keep = [pt for pt in pts if len(pt) >= 1 and predicate(float(pt[0]))]
+                    try:
+                        from collections import deque as _dq
+                        maxlen = getattr(buf, 'maxlen', len(keep) or 1)
+                        new_buf = _dq(maxlen=maxlen)
+                        for pt in keep:
+                            new_buf.append(pt)
+                        setattr(self, attr_name, new_buf)
+                    except Exception:
+                        setattr(self, attr_name, keep)
+            except Exception:
+                pass
+
+        def _update_last_added_time(self):
+            """根据当前缓冲刷新 _last_added_time。"""
+            try:
+                last_t = self._pitch_store.last_time()
+            except Exception:
+                last_t = None
+            try:
+                self._last_added_time = float(last_t) if last_t is not None else -1.0
+            except Exception:
+                self._last_added_time = -1.0
+        # 将局部辅助函数绑定为实例方法，防止历史补丁路径直接访问属性时出现缺失
+        try:
+            self._refresh_time_bins = _refresh_time_bins.__get__(self, type(self))
+            self._filter_tail_buffer = _filter_tail_buffer.__get__(self, type(self))
+            self._filter_point_buffer = _filter_point_buffer.__get__(self, type(self))
+            self._update_last_added_time = _update_last_added_time.__get__(self, type(self))
+            # 兼容旧补丁在实例上查找误拼写名称
+            self._filter_taill_buffer = self._filter_tail_buffer
+        except Exception:
+            pass
         # 最小重绘间隔（秒）：避免过度重绘导致卡顿，但允许自适应策略在 update_display 内调节
         # 该值用于 add_pitch_data/_fast_update_tick 的快速判定，必须在此初始化
         self._min_heavy_interval = 0.016  # 再小幅下降，提升“即时感”，配合 push 因子
@@ -12229,35 +12743,16 @@ class ECGStylePitchVisualizer(QWidget):
                 confs.append(float(row.get('c', 0.0)))
             except Exception:
                 confs.append(0.0)
-        from collections import deque as _dq
-        def _clone_like(src_obj, values):
-            vals = list(values)
-            try:
-                if isinstance(src_obj, _dq):
-                    return _dq(vals, maxlen=src_obj.maxlen)
-                if isinstance(src_obj, list):
-                    return list(vals)
-            except Exception:
-                pass
-            return _dq(vals, maxlen=len(vals) or 1)
-        try:
-            self.time_data = _clone_like(getattr(self, 'time_data', None), times)
-        except Exception:
-            pass
-        try:
-            self.pitch_data = _clone_like(getattr(self, 'pitch_data', None), pitches)
-        except Exception:
-            pass
-        try:
-            self.confidence_data = _clone_like(getattr(self, 'confidence_data', None), confs)
-        except Exception:
-            pass
         try:
             note_buf = list(getattr(self, 'note_data', []))
-            if note_buf:
-                self.note_data = _clone_like(getattr(self, 'note_data', None), note_buf[:len(times)])
-            else:
-                self.note_data = _clone_like(getattr(self, 'note_data', None), [None] * len(times))
+        except Exception:
+            note_buf = []
+        if note_buf:
+            notes = note_buf[:len(times)]
+        else:
+            notes = [None] * len(times)
+        try:
+            self._pitch_store.rebuild(times, pitches, confs, notes)
         except Exception:
             pass
         try:
@@ -12300,50 +12795,21 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         # 主缓冲：严格裁剪到 cutoff 之前，防止残留未来点在后续逻辑中重新注入
         try:
-            from collections import deque as _dq
-            buf_times = list(getattr(self, 'time_data', []))
-            if buf_times:
-                keep_mask = []
-                for raw_t in buf_times:
-                    try:
-                        keep_mask.append(float(raw_t) <= cutoff_boundary + eps)
-                    except Exception:
-                        keep_mask.append(True)
-                if not all(keep_mask):
-                    def _clone_like(src_obj, values):
-                        values = list(values)
-                        try:
-                            if isinstance(src_obj, _dq):
-                                return _dq(values, maxlen=src_obj.maxlen)
-                            if isinstance(src_obj, list):
-                                return list(values)
-                        except Exception:
-                            pass
-                        try:
-                            return _dq(values, maxlen=len(values) or 1)
-                        except Exception:
-                            return list(values)
-                    try:
-                        filtered_times = [val for val, keep in zip(buf_times, keep_mask) if keep]
-                        self.time_data = _clone_like(getattr(self, 'time_data', None), filtered_times)
-                    except Exception:
-                        pass
-                    for _attr_name in ('pitch_data', 'confidence_data', 'note_data'):
-                        try:
-                            buf = list(getattr(self, _attr_name, []))
-                            filt = [val for val, keep in zip(buf, keep_mask) if keep]
-                            setattr(self, _attr_name, _clone_like(getattr(self, _attr_name, None), filt))
-                        except Exception:
-                            pass
-                    try:
-                        if filtered_times:
-                            self._last_added_time = float(filtered_times[-1])
-                        else:
-                            self._last_added_time = -1.0
-                    except Exception:
-                        pass
+            self._pitch_store.trim_after(cutoff_boundary)
         except Exception:
             pass
+        keep_pred = lambda t: float(t) <= cutoff_boundary + eps
+        self._filter_tail_buffer(keep_pred)
+        self._filter_point_buffer('_flat_points', keep_pred)
+        self._filter_point_buffer('_head_points', keep_pred)
+        try:
+            self._refresh_time_bins(cutoff_boundary)
+        except Exception:
+            try:
+                self._added_time_bins = set()
+            except Exception:
+                pass
+        self._update_last_added_time()
         # 清空覆盖/渐变等缓存，防止旧段再次注入
         for attr in ('_drawn_coverage', '_gradient_windows', '_prefetched_segments'):
             try:
@@ -12567,111 +13033,73 @@ class ECGStylePitchVisualizer(QWidget):
         """
         try:
             cutoff = float(max(0.0, cutoff))
+        except Exception:
+            return
+        try:
+            trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+        except Exception:
+            trim_gap = 0.001
+        trim_gap = min(max(trim_gap, 0.0), 0.2)
+        cutoff_boundary = max(0.0, cutoff - trim_gap)
+        # 若当前缓冲已为空或末尾时间不超过边界则不处理
+        try:
             if not self.time_data:
                 return
-            try:
-                trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
-            except Exception:
-                trim_gap = 0.001
-            if trim_gap < 0.0:
-                trim_gap = 0.0
-            if trim_gap > 0.2:
-                trim_gap = 0.2
-            cutoff_boundary = max(0.0, cutoff - trim_gap)
-            # 若末尾时间本就 <= cutoff_boundary 则无需动作
-            try:
-                last_t = self.time_data[-1]
-                if last_t <= cutoff_boundary + 1e-9:
-                    return
-            except Exception:
-                pass
-            # 转为列表一次性裁剪（deque 不支持切片），兼容非单调时间序列
-            t_list = list(self.time_data)
-            keep_mask = [float(t) <= cutoff_boundary + 1e-9 for t in t_list]
-            if all(keep_mask):
+            last_t = self.time_data[-1]
+            if last_t <= cutoff_boundary + 1e-9:
                 return
-            def _trim_deque_mask(dq, mask):
+        except Exception:
+            pass
+        changed = False
+        try:
+            changed = bool(self._pitch_store.trim_after(cutoff_boundary))
+        except Exception:
+            changed = False
+        if not changed:
+            return
+        # 重建时间桶并释放回退区间
+        try:
+            self._refresh_time_bins()
+            self._release_time_bins_after(cutoff_boundary)
+        except Exception:
+            pass
+        # 修剪尾巴/扁平/头部缓冲
+        keep_pred = lambda t: t <= cutoff_boundary + 1e-9
+        self._filter_tail_buffer(keep_pred)
+        self._filter_point_buffer('_flat_points', keep_pred)
+        self._filter_point_buffer('_head_points', keep_pred)
+        # 清除相关图元与缓存
+        try:
+            self.purge_artists_in_range(max(0.0, cutoff_boundary - 1e-6), float('inf'))
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_segments'):
+                self._segments = [seg for seg in getattr(self, '_segments', []) if seg and seg[0] and float(seg[0][-1]) <= cutoff_boundary + 1e-9]
+        except Exception:
+            self._segments = []
+        for attr in ('_segments_cache', '_segments_cache_window', '_segments_cache_key'):
+            if hasattr(self, attr):
                 try:
-                    arr = list(dq)
-                    filtered = [v for v, keep in zip(arr, mask) if keep]
-                    from collections import deque as _dq
-                    return _dq(filtered, maxlen=dq.maxlen)
+                    delattr(self, attr)
                 except Exception:
-                    return dq
-            self.time_data = _trim_deque_mask(self.time_data, keep_mask)
-            self.pitch_data = _trim_deque_mask(self.pitch_data, keep_mask)
-            self.confidence_data = _trim_deque_mask(self.confidence_data, keep_mask)
-            self.note_data = _trim_deque_mask(self.note_data, keep_mask)
-            # 重建时间桶集合，避免已移除时间阻塞
-            try:
-                self._added_time_bins = set()
-                eps = float(getattr(self, '_timebin_eps', 0.01))
-                for tt in self.time_data:
-                    self._added_time_bins.add(int(round(float(tt)/eps)))
-                self._release_time_bins_after(cutoff_boundary)
-            except Exception:
-                pass
-            # 裁剪尾部/扁平缓存
-            try:
-                if hasattr(self, '_tail_time') and isinstance(self._tail_time, list):
-                    keep_mask = [t <= cutoff_boundary + 1e-9 for t in self._tail_time]
-                    self._tail_time = [t for t,k in zip(self._tail_time, keep_mask) if k]
-                    self._tail_pitch = [p for p,k in zip(self._tail_pitch, keep_mask) if k]
-                    self._tail_conf = [c for c,k in zip(self._tail_conf, keep_mask) if k]
-            except Exception:
-                pass
-            try:
-                if hasattr(self, '_flat_points') and self._flat_points is not None:
-                    if isinstance(self._flat_points, list):
-                        self._flat_points = [pt for pt in self._flat_points if pt[0] <= cutoff_boundary + 1e-9]
-                    else:
-                        from collections import deque as _dq2
-                        tmp = [pt for pt in list(self._flat_points) if pt[0] <= cutoff_boundary + 1e-9]
-                        self._flat_points = _dq2(tmp, maxlen=self._flat_points.maxlen)  # type: ignore
-            except Exception:
-                pass
-            # 清除裁剪区间内的已绘制图元与缓存，防止旧细节点残留
-            try:
-                self.purge_artists_in_range(max(0.0, cutoff_boundary - 1e-6), float('inf'))
-            except Exception:
-                pass
-            try:
-                if hasattr(self, '_segments'):
-                    self._segments = [seg for seg in getattr(self, '_segments', []) if seg and seg[0] and float(seg[0][-1]) <= cutoff_boundary + 1e-9]
-                    if not self._segments:
-                        self._segments = []
-            except Exception:
-                try:
-                    self._segments = []
-                except Exception:
-                    pass
-            for attr in ('_segments_cache', '_segments_cache_window', '_segments_cache_key'):
-                if hasattr(self, attr):
-                    try:
-                        delattr(self, attr)
-                    except Exception:
-                        setattr(self, attr, None)
-            try:
-                self._artist_times_dirty = True
-            except Exception:
-                pass
-            # 标记强制重绘（下帧重建曲线）
-            try:
-                self._force_redraw_on_next_update = True
-            except Exception:
-                pass
-            # 持久化：记录一次 trim 标记，便于后续离线回放按时间过滤
-            try:
-                if hasattr(self, '_persist_on_trim'):
-                    self._persist_on_trim(float(cutoff))
-            except Exception:
-                pass
-            # 启动一次短暂的 cap 强制执行窗口，防止极少数迟到图元越界
-            try:
-                import time as _t
-                self._cap_enforce_until = _t.time() + 2.5  # 裁剪后 2.5 秒内每帧强制过滤
-            except Exception:
-                pass
+                    setattr(self, attr, None)
+        self._update_last_added_time()
+        try:
+            self._artist_times_dirty = True
+            self._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        # 持久化记录
+        try:
+            if hasattr(self, '_persist_on_trim'):
+                self._persist_on_trim(float(cutoff))
+        except Exception:
+            pass
+        # 短暂开启 cap 强制过滤窗口，杜绝迟到图元回潮
+        try:
+            import time as _t
+            self._cap_enforce_until = _t.time() + 2.5
         except Exception:
             pass
 
@@ -12912,46 +13340,50 @@ class ECGStylePitchVisualizer(QWidget):
         """删除时间区间 [start, end) 内所有已绘制点，保留前后段；用于区间重录。
         不改动 start 之前与 end 之后的数据，之后的数据时间不回填（保持真实时间轴）。"""
         try:
-            start = float(max(0.0, start)); end = float(max(start, end))
-            if not self.time_data or end <= start + 1e-9:
-                return
-            t_list = list(self.time_data)
-            keep_mask = [(t < start - 1e-9) or (t >= end - 1e-9) for t in t_list]
-            if all(keep_mask):
-                return
-            from collections import deque as _dq
-            def _filter(dq):
-                try:
-                    arr = list(dq)
-                    filtered = [v for v,k in zip(arr, keep_mask) if k]
-                    return _dq(filtered, maxlen=dq.maxlen)
-                except Exception:
-                    return dq
-            self.time_data = _filter(self.time_data)
-            self.pitch_data = _filter(self.pitch_data)
-            self.confidence_data = _filter(self.confidence_data)
-            self.note_data = _filter(self.note_data)
+            start = float(max(0.0, start))
+            end = float(max(start, end))
+        except Exception:
+            return
+        if end <= start + 1e-9:
+            return
+        changed = False
+        try:
+            changed = bool(self._pitch_store.remove_range(start, end))
+        except Exception:
+            changed = False
+        if not changed:
+            return
+        try:
+            self._refresh_time_bins()
+        except Exception:
             try:
                 self._added_time_bins = set()
-                eps = float(getattr(self, '_timebin_eps', 0.01))
-                for tt in self.time_data:
-                    self._added_time_bins.add(int(round(float(tt)/eps)))
-                self._release_time_bins_after(start)
             except Exception:
                 pass
-            try:
-                if hasattr(self, '_flat_points') and self._flat_points is not None:
-                    if isinstance(self._flat_points, list):
-                        self._flat_points = [pt for pt in self._flat_points if (pt[0] < start -1e-9) or (pt[0] >= end -1e-9)]
-                    else:
-                        tmp = [pt for pt in list(self._flat_points) if (pt[0] < start -1e-9) or (pt[0] >= end -1e-9)]
-                        from collections import deque as _dq2
-                        self._flat_points = _dq2(tmp, maxlen=self._flat_points.maxlen)  # type: ignore
-            except Exception:
-                pass
+        keep_pred = lambda t: (t < start - 1e-9) or (t >= end - 1e-9)
+        self._filter_tail_buffer(keep_pred)
+        self._filter_point_buffer('_flat_points', keep_pred)
+        self._filter_point_buffer('_head_points', keep_pred)
+        try:
+            self.purge_artists_in_range(max(0.0, start - 1e-6), float(end) + 1e-6)
+        except Exception:
+            pass
+        for attr in ('_segments', '_segments_cache', '_segments_cache_window', '_segments_cache_key'):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, [] if attr == '_segments' else None)
+                except Exception:
+                    pass
+        self._update_last_added_time()
+        try:
+            self._artist_times_dirty = True
             self._force_redraw_on_next_update = True
         except Exception:
             pass
+
+    def _filter_taill_buffer(self, predicate):
+        """兼容旧补丁的误拼写接口，转调至 _filter_tail_buffer。"""
+        return self._filter_tail_buffer(predicate)
 
     def purge_artists_in_range(self, start: float, end: float):
         """移除缓存的线段/散点等图元，确保区间 [start,end) 的细节点不会残留。"""
@@ -18712,25 +19144,12 @@ class ECGStylePitchVisualizer(QWidget):
                         pkt_ts = float(pitch_data.get('timestamp', drop_wall))
                     except Exception:
                         pkt_ts = drop_wall
-                allow_newer = False
                 if pkt_ts < drop_wall - 1e-4:
                     try:
-                        trim_point = float(getattr(self, '_record_trim_point', -1.0))
+                        self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
                     except Exception:
-                        trim_point = -1.0
-                    if trim_point >= 0.0:
-                        try:
-                            gt_val = pitch_data.get('global_time', None)
-                            if gt_val is not None and float(gt_val) >= trim_point - 1e-4:
-                                allow_newer = True
-                        except Exception:
-                            allow_newer = False
-                    if not allow_newer:
-                        try:
-                            self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
-                        except Exception:
-                            pass
-                        return
+                        pass
+                    return
             # ===== 迟到旧点过滤（回退后防回潮核心） =====
             try:
                 if getattr(self, '_cap_visible_time_enabled', False):
@@ -19175,18 +19594,21 @@ class ECGStylePitchVisualizer(QWidget):
                             frames = int(getattr(self, '_retake_skip_gate_frame_count', 6))
                         except Exception:
                             frames = 6
-                        if getattr(self, '_cap_strict_lock', False):
-                            frames = max(frames, 2)
-                        else:
-                            frames = max(frames, 3)
+                        strict_now = bool(getattr(self, '_cap_strict_lock', False))
+                        default_cap = 2 if strict_now else 1
                         try:
-                            pending = int(getattr(self, '_retake_skip_gate_frames', 0))
+                            fast_cap = int(getattr(self, '_retake_skip_gate_frames_limit', default_cap))
                         except Exception:
-                            pending = 0
+                            fast_cap = default_cap
+                        frames = max(0, min(frames, max(0, fast_cap)))
                         try:
-                            self._retake_skip_gate_frames = max(pending, frames)
-                        except Exception:
                             self._retake_skip_gate_frames = frames
+                        except Exception:
+                            self._retake_skip_gate_frames = 0
+                        try:
+                            self._retake_gate_suppress_until = 0.0
+                        except Exception:
+                            pass
                         try:
                             cap_for_reset = float(getattr(self, '_retake_countdown_target_time', target_cap))
                         except Exception:
@@ -19462,6 +19884,8 @@ class ECGStylePitchVisualizer(QWidget):
                                         self._maybe_forward_inject_after_cap()
                                     if hasattr(self,'_force_forward_segment_refresh'):
                                         self._force_forward_segment_refresh()
+                                    if hasattr(self, '_quick_rebuild_segments_upto_cap'):
+                                        self._quick_rebuild_segments_upto_cap()
                                 except Exception:
                                     pass
                         except Exception:
@@ -19770,7 +20194,7 @@ class ECGStylePitchVisualizer(QWidget):
                         print(f"🎵 音高精度修复: {frequency:.2f}Hz → 原始Y={old_y_pos:.2f}, 精确Y={y_pos:.4f} (差值={abs(y_pos-old_y_pos):.4f})")
                 
                 # 只有在有音高时才添加到音高数据中
-                self.pitch_data.append(y_pos)
+                self._pitch_store.append_point(global_time, y_pos, confidence, note_info)
                 # 回退后的时间矫正：若存在 _rollback_base_time，且新算出的 global_time < base 则提升到 base；若远大于 base + 10s(异常跳跃)则按帧增量续写
                 try:
                     if hasattr(self, '_rollback_base_time') and self._rollback_base_time is not None:
@@ -19784,9 +20208,7 @@ class ECGStylePitchVisualizer(QWidget):
                     # 记录矫正后时间
                 except Exception:
                     pass
-                self.time_data.append(global_time)
-                self.confidence_data.append(confidence)
-                self.note_data.append(note_info)
+                # Append handled by segmented buffer; keep local mirrors consistent via views.
                 # 首个新点写入：解除严格cap锁，允许 cap 递增
                 try:
                     if getattr(self, '_cap_strict_lock', False) and not getattr(self, '_post_retake_new_data_started', False):
@@ -21647,7 +22069,15 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             eps = 1e-5
         cutoff = max(0.0, cap_val + max(eps, 1e-6))
-        # 数据缓冲区：直接移除 cutoff 之后的所有时间点
+        # 数据缓冲区：确保彻底裁剪 cap 之后的历史点
+        try:
+            self._pitch_store.trim_after(float(cap_val))
+        except Exception:
+            pass
+        try:
+            self._pitch_store.remove_range(float(cap_val), float('inf'))
+        except Exception:
+            pass
         try:
             self.remove_range(float(cutoff), float('inf'))
         except Exception:
@@ -21655,6 +22085,154 @@ class ECGStylePitchVisualizer(QWidget):
         # 图元与批量集合：强制清理 cutoff 之后的散点/折线
         try:
             self.purge_artists_in_range(float(cap_val), float('inf'))
+        except Exception:
+            pass
+        # 逐段散点与缓存：只保留 <=cap 的段，防止回潮
+        try:
+            if hasattr(self, '_segments') and getattr(self, '_segments', None):
+                trimmed_segments = []
+                for seg_times, seg_pitches in list(self._segments):
+                    if not seg_times or not seg_pitches:
+                        continue
+                    try:
+                        kept = [(t, p) for t, p in zip(seg_times, seg_pitches) if float(t) <= cap_val + 1e-9]
+                    except Exception:
+                        kept = []
+                    if not kept:
+                        continue
+                    t_list, p_list = zip(*kept)
+                    trimmed_segments.append((list(t_list), list(p_list)))
+                self._segments = trimmed_segments
+        except Exception:
+            pass
+        # 可视化散点集合：逐一裁剪 offsets，彻底移除 >cap 点
+        try:
+            import numpy as _np
+            if hasattr(self, '_segment_points') and isinstance(self._segment_points, list):
+                kept_points = []
+                for coll in list(self._segment_points):
+                    keep = False
+                    try:
+                        offs = coll.get_offsets()
+                        if offs is None:
+                            continue
+                        arr = _np.asarray(offs, dtype=float)
+                        if arr.size == 0:
+                            continue
+                        arr = arr[arr[:, 0] <= cap_val + 1e-9]
+                        coll.set_offsets(arr)
+                        if arr.size == 0:
+                            if hasattr(coll, 'remove'):
+                                coll.remove()
+                        else:
+                            keep = True
+                    except Exception:
+                        try:
+                            if hasattr(coll, 'remove'):
+                                coll.remove()
+                        except Exception:
+                            pass
+                    if keep:
+                        kept_points.append(coll)
+                self._segment_points = kept_points
+        except Exception:
+            pass
+        # 渐变折线等线段集合：同步按照 cap 裁剪数据
+        try:
+            if hasattr(self, '_segment_lines') and isinstance(self._segment_lines, list):
+                kept_lines = []
+                for ln in list(self._segment_lines):
+                    try:
+                        xs, ys = ln.get_data()
+                        if xs is None or ys is None:
+                            continue
+                        trimmed_pairs = [(float(x), y) for x, y in zip(xs, ys) if float(x) <= cap_val + 1e-9]
+                        if not trimmed_pairs:
+                            if hasattr(ln, 'remove'):
+                                ln.remove()
+                            continue
+                        tx, ty = zip(*trimmed_pairs)
+                        ln.set_data(list(tx), list(ty))
+                        kept_lines.append(ln)
+                    except Exception:
+                        try:
+                            if hasattr(ln, 'remove'):
+                                ln.remove()
+                        except Exception:
+                            pass
+                self._segment_lines = kept_lines
+        except Exception:
+            pass
+        # 预览/临时折线：仅保留 <=cap 的历史
+        try:
+            if hasattr(self, '_provisional_polyline') and self._provisional_polyline:
+                try:
+                    pts_t, pts_p = self._provisional_polyline
+                    trimmed = [(t, p) for t, p in zip(pts_t, pts_p) if float(t) <= cap_val + 1e-9]
+                    if trimmed:
+                        tt, pp = zip(*trimmed)
+                        self._provisional_polyline = (list(tt), list(pp))
+                    else:
+                        self._provisional_polyline = None
+                except Exception:
+                    self._provisional_polyline = None
+            if hasattr(self, '_provisional_line') and self._provisional_line is not None:
+                try:
+                    xs, ys = self._provisional_line.get_data()
+                    if xs is None or ys is None:
+                        self._provisional_line.set_data([], [])
+                    else:
+                        trimmed = [(x, y) for x, y in zip(xs, ys) if float(x) <= cap_val + 1e-9]
+                        if trimmed:
+                            tx, ty = zip(*trimmed)
+                            self._provisional_line.set_data(list(tx), list(ty))
+                        else:
+                            self._provisional_line.set_data([], [])
+                except Exception:
+                    try:
+                        self._provisional_line.set_data([], [])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        for attr in ('_segments_cache', '_segments_cache_window', '_segments_cache_key', '_segments_cache_v2', '_segments_sparse_index'):
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+        # 兜底散点集合：同步裁剪 cap 之后的离线点，避免下一帧回填
+        try:
+            import numpy as _np
+            fallback = getattr(self, '_browse_points_fallback', None)
+            if fallback is not None:
+                offs = fallback.get_offsets()
+                if offs is not None:
+                    arr = _np.asarray(offs, dtype=float)
+                    if arr.size:
+                        arr = arr[arr[:, 0] <= cap_val + 1e-9]
+                        fallback.set_offsets(arr)
+                        if arr.size == 0:
+                            try:
+                                fallback.set_alpha(0.0)
+                            except Exception:
+                                pass
+            batched = getattr(self, '_batched_points', None)
+            if batched is not None:
+                offs = batched.get_offsets()
+                if offs is not None:
+                    arr = _np.asarray(offs, dtype=float)
+                    if arr.size:
+                        arr = arr[arr[:, 0] <= cap_val + 1e-9]
+                        batched.set_offsets(arr)
+                        if arr.size == 0:
+                            try:
+                                batched.set_alpha(0.0)
+                            except Exception:
+                                pass
+            if hasattr(self, '_forward_segment_last_inject_cap'):
+                self._forward_segment_last_inject_cap = float(cap_val)
+            if hasattr(self, '_last_forward_refresh_cap'):
+                self._last_forward_refresh_cap = float(cap_val)
         except Exception:
             pass
         # 可视化覆盖区间：过滤掉回退点之后记录的覆盖，避免 restore 时重放旧点
@@ -21719,6 +22297,16 @@ class ECGStylePitchVisualizer(QWidget):
             self._artist_times_dirty = True
             self._force_redraw_on_next_update = True
             self._last_heavy_redraw_time = 0.0
+        except Exception:
+            pass
+        try:
+            self._post_retake_new_data_started = False
+        except Exception:
+            pass
+        # 清理完成后立即重建一次段缓存，确保 <=cap 的历史在界面中即时保持
+        try:
+            if getattr(self, '_cap_visible_time_enabled', False) and hasattr(self, '_quick_rebuild_segments_upto_cap'):
+                self._quick_rebuild_segments_upto_cap()
         except Exception:
             pass
 
@@ -26363,17 +26951,16 @@ class ECGStylePitchVisualizer(QWidget):
         max_data_points = int(64 * self.max_history_time)
         print(f"📊 更新数据缓冲区: {max_data_points} 个数据点 ({self.max_history_time}秒)")
         
-        # 更新数据队列的最大长度
-        # 注意：deque不支持动态修改maxlen，需要重新创建
-        old_pitch_data = list(self.pitch_data)
-        old_time_data = list(self.time_data)
-        old_confidence_data = list(self.confidence_data)
-        old_note_data = list(self.note_data)
-        
-        self.pitch_data = deque(old_pitch_data, maxlen=max_data_points)
-        self.time_data = deque(old_time_data, maxlen=max_data_points)
-        self.confidence_data = deque(old_confidence_data, maxlen=max_data_points)
-        self.note_data = deque(old_note_data, maxlen=max_data_points)
+        # 更新分段缓冲容量，自动裁剪超出部分
+        try:
+            self._pitch_store.set_capacity(max_data_points)
+        except Exception:
+            pass
+        try:
+            self._refresh_time_bins()
+        except Exception:
+            pass
+        self._update_last_added_time()
         
         # 更新时间滑块的最大值
         if hasattr(self, 'time_slider'):
@@ -29722,6 +30309,7 @@ class IntegratedRecordingInterface(QMainWindow):
             if target_sec < 0:
                 target_sec = 0.0
             v = getattr(self, 'visualizer', None)
+            retake_cleanup_done = False
             cur_candidates: List[float] = []
 
             def _collect_time(val):
@@ -29730,6 +30318,10 @@ class IntegratedRecordingInterface(QMainWindow):
                         return
                     as_float = float(val)
                     if not math.isfinite(as_float):
+                        return
+                    # 忽略明显为绝对时间戳或失真的值，防止确认提示区间出现 1e9 秒等异常数
+                    max_reasonable = max(86400.0, abs(target_sec) + 7200.0)
+                    if abs(as_float) > max_reasonable:
                         return
                     cur_candidates.append(max(0.0, as_float))
                 except Exception:
@@ -29834,6 +30426,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     if ret == QMessageBox.StandardButton.Yes:
                         try:
                             self.rollback_to_time(start_t, end_t)
+                            retake_cleanup_done = True
                             cur_before = start_t
                             backward = False
                             target_sec = start_t
@@ -29883,6 +30476,7 @@ class IntegratedRecordingInterface(QMainWindow):
             if backward and trim_if_backward and not enable_retake and (has_visual_data or has_pitch_history or has_audio_buffer):
                 try:
                     self.rollback_to_time(target_sec, cur_before)
+                    retake_cleanup_done = True
                     cur_before = target_sec
                     backward = False
                 except Exception as _fallback_re:
@@ -29910,6 +30504,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 # 回退 -> 裁剪未来点
                 try:
                     v.trim_after(target_sec)
+                    retake_cleanup_done = True
                     try:
                         v.purge_artists_in_range(target_sec, cur_before)
                     except Exception:
@@ -29961,6 +30556,17 @@ class IntegratedRecordingInterface(QMainWindow):
                 setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
             except Exception:
                 pass
+            if v is not None and retake_cleanup_done:
+                try:
+                    if hasattr(v, '_retake_post_seek_refresh') and callable(getattr(v, '_retake_post_seek_refresh')):
+                        v._retake_post_seek_refresh(target_sec)
+                    else:
+                        if hasattr(v, '_retake_force_clear_future_data'):
+                            v._retake_force_clear_future_data(target_sec, reset_coverage=False)
+                        if getattr(v, '_cap_visible_time_enabled', False) and hasattr(v, '_quick_rebuild_segments_upto_cap'):
+                            v._quick_rebuild_segments_upto_cap()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"⚠️ 应用回放跳转失败: {e}")
 
