@@ -5,7 +5,6 @@ from PyQt6.QtWidgets import (
     QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
-
 from collections import deque
 import bisect
 import time, threading, queue, json, os, sys, wave, math
@@ -41,42 +40,6 @@ except Exception:
         PYQT_VERSION = 0
 
 # ---------- 占位/容错：可能在其它模块中定义，若缺失则提供轻量占位以免IDE报错 ----------
-    def _retake_post_seek_refresh(self, cap: float):
-        """在回退 seek 完成后再次收束缓存并立刻重建 <=cap 的可视化段。"""
-        try:
-            cap_val = float(cap)
-        except Exception:
-            return
-        try:
-            self._retake_force_clear_future_data(cap_val, reset_coverage=False)
-        except Exception:
-            pass
-        try:
-            if getattr(self, '_cap_visible_time_enabled', False):
-                try:
-                    self._quick_segments_rebuilt_at_cap = -1.0
-                except Exception:
-                    pass
-                self._quick_rebuild_segments_upto_cap()
-        except Exception:
-            pass
-        try:
-            self._force_redraw_on_next_update = True
-            self._artist_times_dirty = True
-            self._last_heavy_redraw_time = 0.0
-        except Exception:
-            pass
-        try:
-            if hasattr(self, 'update_display'):
-                self.update_display()
-        except Exception:
-            pass
-        try:
-            if hasattr(self, 'canvas') and self.canvas is not None:
-                self.canvas.draw_idle()
-        except Exception:
-            pass
-
 try:
     from .pyqtgraph_gradient_widget import (
         PYQTGRAPH_AVAILABLE as _PG_AVAIL,
@@ -85,26 +48,32 @@ try:
     PYQTGRAPH_GRADIENT_AVAILABLE = _PG_AVAIL
 except Exception:  # 允许缺失
     PYQTGRAPH_GRADIENT_AVAILABLE = False
+
     class PyQtGraphColorGradientWidget(QWidget):  # type: ignore
         def __init__(self, *a, **k):
             super().__init__(*a, **k)
 
 # （保留旧的兼容片段：已提前定义，此处不再需要）
 
+
 class AudioProcessor:  # 占位，真实实现应在独立文件
     def __init__(self, sample_rate=48000):
         self.sample_rate = sample_rate
+
     def process_block(self, data):
         return data
+
 
 class LatencyMeasurer:
     def __init__(self, window_size=100):
         self.window_size = window_size
         self.values = deque(maxlen=window_size)
+
     def add(self, v):
         self.values.append(float(v))
+
     def avg(self):
-        return sum(self.values)/len(self.values) if self.values else 0.0
+        return sum(self.values) / len(self.values) if self.values else 0.0
 
 
 class SegmentedPitchBuffer:
@@ -764,12 +733,6 @@ class IntegratedAudioProcessor(QThread):
                 return True
             except Exception:
                 return False
-                try:
-                    if getattr(self, '_cap_visible_time_enabled', False):
-                        cap_ref = float(getattr(self, '_max_visible_time', self.current_global_time))
-                        self._refresh_left_history_for_seek(cap_ref, throttle=True)
-                except Exception:
-                    pass
         # 绑定为实例方法供回调内部使用
         self._should_suppress_audio_debug = _should_suppress_audio_debug
         # 🔧 统计计数器（回调中引用，避免 AttributeError）
@@ -12446,6 +12409,16 @@ class ECGStylePitchVisualizer(QWidget):
                     self._refresh_batched_points_for_current_xlim()
                 except Exception:
                     pass
+            if bool(getattr(self, '_last_seek_backward', False)):
+                try:
+                    self._retake_bridge_left_history = True
+                except Exception:
+                    pass
+                try:
+                    if not hasattr(self, '_retake_history_bridge_margin') or getattr(self, '_retake_history_bridge_margin', None) is None:
+                        self._retake_history_bridge_margin = 0.045
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -12626,16 +12599,34 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             if len(times) < 2:
                 return
-            # 稀疏限制：与预填充逻辑类似
-            max_pts = int(getattr(self, '_quick_segment_cap', 3000))
-            if len(times) > max_pts:
-                import math as _m
-                step = _m.ceil(len(times)/max_pts)
-                times = times[::step]
-                pitches = pitches[::step]
             try:
-                # 直接绘制单段（后续重帧会替换）
-                self.draw_segmented_pitch_line([(times, pitches)])
+                import numpy as _np
+                arr_t = _np.asarray(times, dtype=_np.float64)
+                arr_p = _np.asarray(pitches, dtype=_np.float64)
+                max_pts = int(getattr(self, '_quick_segment_cap', 3000))
+                if arr_t.size > max_pts and max_pts > 0:
+                    step = int(_np.ceil(arr_t.size / max_pts))
+                    arr_t = arr_t[::step]
+                    arr_p = arr_p[::step]
+                gap_thr = float(getattr(self, '_quick_segment_gap_threshold', 0.18))
+                if gap_thr < 0.02:
+                    gap_thr = 0.02
+                split_idx = _np.where(_np.diff(arr_t) > gap_thr)[0] + 1
+                t_segments = _np.split(arr_t, split_idx)
+                p_segments = _np.split(arr_p, split_idx)
+                prepared = []
+                seg_cap = max(4, int(getattr(self, '_quick_segment_per_segment_cap', 1200)))
+                for ts, ps in zip(t_segments, p_segments):
+                    if ts.size == 0:
+                        continue
+                    if ts.size > seg_cap:
+                        step = int(_np.ceil(ts.size / seg_cap))
+                        ts = ts[::step]
+                        ps = ps[::step]
+                    prepared.append((ts.tolist(), ps.tolist()))
+                if not prepared:
+                    return
+                self.draw_segmented_pitch_line(prepared)
             except Exception:
                 pass
             # 标记已完成一次快速重建，避免重复浪费；直到下一次 seek 再允许
@@ -19372,6 +19363,15 @@ class ECGStylePitchVisualizer(QWidget):
                                             pass
                                     except Exception:
                                         pass
+                                    try:
+                                        self._retake_snap_view_to_time(gt_test)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if hasattr(self, '_provisional_polyline'):
+                                            self._provisional_polyline = None
+                                    except Exception:
+                                        pass
                                 except Exception:
                                     pass
                             else:
@@ -19402,6 +19402,15 @@ class ECGStylePitchVisualizer(QWidget):
                                                     self._maybe_forward_inject_after_cap()
                                                 if hasattr(self, '_force_forward_segment_refresh'):
                                                     self._force_forward_segment_refresh()
+                                            except Exception:
+                                                pass
+                                            try:
+                                                self._retake_snap_view_to_time(gt_test)
+                                            except Exception:
+                                                pass
+                                            try:
+                                                if hasattr(self, '_provisional_polyline'):
+                                                    self._provisional_polyline = None
                                             except Exception:
                                                 pass
                                     except Exception:
@@ -21617,26 +21626,64 @@ class ECGStylePitchVisualizer(QWidget):
             start_line_t = max(0.0, tgt - max(0.0, dur))
             pos = self._get_retake_countdown_position()
             if pos is not None:
-                cur_t = float(max(start_line_t, min(tgt, pos)))
+                raw_pos = float(max(start_line_t, min(tgt, pos)))
             else:
                 if rem > 0.0 and dur > 1e-6:
                     frac = 1.0 - rem / dur
-                    cur_t = start_line_t + frac * (tgt - start_line_t)
+                    raw_pos = start_line_t + frac * (tgt - start_line_t)
                 else:
-                    cur_t = tgt
-                cur_t = max(start_line_t, min(tgt, cur_t))
+                    raw_pos = tgt
+                raw_pos = float(max(start_line_t, min(tgt, raw_pos)))
             try:
-                last_pos = getattr(self, '_retake_countdown_last_pos', None)
-                if last_pos is not None:
-                    # ensure the overlay playhead never moves backwards due to timer jitter
-                    if cur_t < float(last_pos) - 0.002:
-                        cur_t = float(last_pos)
-                    else:
-                        cur_t = max(float(last_pos), float(cur_t))
-                self._retake_countdown_last_pos = float(cur_t)
+                last_raw = getattr(self, '_retake_countdown_last_raw', None)
             except Exception:
+                last_raw = None
+            if last_raw is not None:
                 try:
-                    self._retake_countdown_last_pos = float(cur_t)
+                    last_raw_val = float(last_raw)
+                except Exception:
+                    last_raw_val = None
+                else:
+                    if raw_pos < last_raw_val - 0.0015:
+                        raw_pos = last_raw_val
+                    else:
+                        raw_pos = max(last_raw_val, raw_pos)
+            try:
+                self._retake_countdown_last_raw = float(raw_pos)
+            except Exception:
+                pass
+            if rem > 0:
+                try:
+                    prev_disp = float(getattr(self, '_retake_countdown_display_pos', raw_pos))
+                except Exception:
+                    prev_disp = raw_pos
+                smooth_factor = float(getattr(self, '_retake_countdown_smooth_factor', 0.4))
+                if not (0.0 < smooth_factor <= 1.0):
+                    smooth_factor = 0.4
+                smooth_factor = max(0.05, min(1.0, smooth_factor))
+                delta = raw_pos - prev_disp
+                if delta < 0:
+                    delta = 0.0
+                disp = prev_disp + delta * smooth_factor
+                max_lag = float(getattr(self, '_retake_countdown_max_lag', 0.14))
+                if max_lag < 0.0:
+                    max_lag = 0.0
+                if raw_pos - disp > max_lag:
+                    disp = raw_pos - max_lag
+                disp = float(max(prev_disp, min(raw_pos, disp)))
+                try:
+                    self._retake_countdown_display_pos = float(disp)
+                except Exception:
+                    pass
+                cur_t = disp
+            else:
+                cur_t = raw_pos
+                try:
+                    self._retake_countdown_display_pos = None
+                except Exception:
+                    pass
+                try:
+                    self._retake_countdown_last_raw = None
                 except Exception:
                     pass
             try:
@@ -21653,11 +21700,14 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 背景遮罩
             try:
+                bg_alpha = 0.14
                 if (not hasattr(self, '_retake_countdown_bg')) or self._retake_countdown_bg is None:
                     self._retake_countdown_bg = self.ax.add_patch(patches.Rectangle(
-                        (0, 0), 1, 1, transform=self.ax.transAxes, color='black', alpha=0.22, zorder=180))
+                        (0, 0), 1, 1, transform=self.ax.transAxes, color='black', alpha=(bg_alpha if rem > 0 else 0.0), zorder=8))
                 else:
-                    self._retake_countdown_bg.set_alpha(0.22 if rem > 0 else 0.0)
+                    self._retake_countdown_bg.set_alpha(bg_alpha if rem > 0 else 0.0)
+                    self._retake_countdown_bg.set_zorder(8)
+                self._retake_countdown_bg.set_visible(rem > 0)
             except Exception:
                 pass
 
@@ -21668,13 +21718,15 @@ class ECGStylePitchVisualizer(QWidget):
                     self._retake_countdown_progress = self.ax.add_patch(patches.Rectangle(
                         (start_line_t, 0.0), width, 1.0,
                         transform=self.ax.get_xaxis_transform(), facecolor='#FF4C4C',
-                        alpha=0.30, zorder=186, linewidth=0))
+                        alpha=0.18 if rem > 0 else 0.0, zorder=12, linewidth=0))
+                    self._retake_countdown_progress.set_visible(rem > 0)
                 else:
                     rect = self._retake_countdown_progress
                     rect.set_x(start_line_t)
                     rect.set_width(width)
-                    rect.set_alpha(0.30 if rem > 0 else 0.0)
+                    rect.set_alpha(0.18 if rem > 0 else 0.0)
                     rect.set_visible(rem > 0)
+                    rect.set_zorder(12)
             except Exception:
                 pass
 
@@ -21768,6 +21820,14 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
                 self._retake_countdown_line = None
+                try:
+                    self._retake_countdown_display_pos = None
+                except Exception:
+                    pass
+                try:
+                    self._retake_countdown_last_raw = None
+                except Exception:
+                    pass
                 for attr_name in ('_retake_countdown_progress', '_retake_countdown_start_line', '_retake_countdown_goal_line'):
                     try:
                         obj = getattr(self, attr_name, None)
@@ -21786,6 +21846,7 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     if hasattr(self, '_retake_countdown_bg') and self._retake_countdown_bg is not None:
                         self._retake_countdown_bg.set_alpha(0.0)
+                        self._retake_countdown_bg.set_visible(False)
                 except Exception:
                     pass
                 try:
@@ -21888,6 +21949,14 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         try:
             self._retake_countdown_active_since = float(start_wall)
+        except Exception:
+            pass
+        try:
+            self._retake_countdown_display_pos = None
+        except Exception:
+            pass
+        try:
+            self._retake_countdown_last_raw = None
         except Exception:
             pass
         try:
@@ -22307,6 +22376,103 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if getattr(self, '_cap_visible_time_enabled', False) and hasattr(self, '_quick_rebuild_segments_upto_cap'):
                 self._quick_rebuild_segments_upto_cap()
+        except Exception:
+            pass
+
+    def _retake_snap_view_to_time(self, target_time: float):
+        """将回退后的视图立即对准目标时间，避免视觉滞后。"""
+        try:
+            tgt = float(target_time)
+        except Exception:
+            return
+        try:
+            import math as _math
+            if _math.isnan(tgt) or _math.isinf(tgt):
+                return
+        except Exception:
+            if tgt != tgt:
+                return
+        if tgt < 0.0:
+            tgt = 0.0
+        try:
+            win = float(getattr(self, 'time_window', 16.0))
+            if win <= 1e-6:
+                win = 16.0
+        except Exception:
+            win = 16.0
+        try:
+            center = float(getattr(self, 'center_display_time', win * 0.5))
+        except Exception:
+            center = win * 0.5
+        try:
+            max_hist = float(getattr(self, 'max_history_time', max(tgt, win)))
+        except Exception:
+            max_hist = max(tgt, win)
+        max_offset = max(0.0, max_hist - win)
+        try:
+            current_offset = float(getattr(self, 'time_offset', 0.0))
+        except Exception:
+            current_offset = 0.0
+        desired = 0.0 if tgt <= center else max(0.0, min(tgt - center, max_offset))
+        view_min = current_offset
+        view_max = current_offset + win
+        margin = max(0.12 * win, 0.4)
+        if tgt >= view_min + margin and tgt <= view_max - margin:
+            desired = current_offset
+        new_offset = max(0.0, min(desired, max_offset))
+        try:
+            self.time_offset = float(new_offset)
+        except Exception:
+            self.time_offset = new_offset
+        x_min = float(getattr(self, 'time_offset', 0.0))
+        x_max = x_min + win
+        try:
+            self._smoothed_xlim = None
+        except Exception:
+            pass
+        try:
+            self._suppress_next_smooth_xlim = True
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'ax') and self.ax is not None:
+                self.ax.set_xlim(x_min, x_max)
+        except Exception:
+            pass
+        try:
+            self._last_render_window = (x_min, x_max)
+        except Exception:
+            pass
+        try:
+            self.current_global_time = float(tgt)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'last_pitch_time'):
+                self.last_pitch_time = float(tgt)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'update_scrollbars'):
+                self.update_scrollbars()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'update_axis_ranges'):
+                self.update_axis_ranges()
+        except Exception:
+            pass
+        try:
+            import time as _t
+            hold = float(getattr(self, '_retake_snap_override_sec', 1.2))
+            if hold < 0.0:
+                hold = 0.0
+            self._manual_time_offset_override_until = _t.time() + hold
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
         except Exception:
             pass
 
@@ -24535,6 +24701,49 @@ class ECGStylePitchVisualizer(QWidget):
             # 存储段信息供其他函数使用
             self._segments = segments
 
+            bridge_left_history = False
+            bridge_anchor = None
+            earliest_seg_t = None
+            try:
+                bridge_margin = float(getattr(self, '_retake_history_bridge_margin', 0.045))
+            except Exception:
+                bridge_margin = 0.045
+            if bridge_margin < 0.0:
+                bridge_margin = 0.0
+            try:
+                if segments and bool(getattr(self, '_retake_bridge_left_history', False)):
+                    import math as _m
+                    anchor_candidate = getattr(self, '_record_trim_point', None)
+                    if anchor_candidate is None:
+                        anchor_candidate = getattr(self, '_max_visible_time', None)
+                    if anchor_candidate is not None:
+                        anchor_val = float(anchor_candidate)
+                        if _m.isfinite(anchor_val):
+                            bridge_anchor = anchor_val
+                            for seg in segments:
+                                try:
+                                    ts = seg[0]
+                                except Exception:
+                                    ts = None
+                                if not ts:
+                                    continue
+                                try:
+                                    t0 = float(ts[0])
+                                except Exception:
+                                    continue
+                                if earliest_seg_t is None or t0 < earliest_seg_t:
+                                    earliest_seg_t = t0
+                            if earliest_seg_t is not None:
+                                if earliest_seg_t >= bridge_anchor - bridge_margin + 1e-9:
+                                    bridge_left_history = True
+                                elif earliest_seg_t <= bridge_anchor - bridge_margin - 1e-3:
+                                    try:
+                                        self._retake_bridge_left_history = False
+                                    except Exception:
+                                        pass
+            except Exception:
+                bridge_left_history = False
+
             # 若没有段，普通模式也不显示临时叠加主线，只用纯白兜底点
             if not segments:
                 # 优先绘制临时叠加线
@@ -24728,12 +24937,49 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         pass
                 # 同时隐藏兜底散点，避免与逐段白点重复
-                if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
-                    try:
-                        self._browse_points_fallback.set_alpha(0.0)
-                        self._browse_points_fallback.set_visible(False)
-                    except Exception:
-                        pass
+                fallback_coll = getattr(self, '_browse_points_fallback', None)
+                if fallback_coll is not None:
+                    if bridge_left_history and bridge_anchor is not None:
+                        try:
+                            import numpy as _np
+                            offs = fallback_coll.get_offsets()
+                            arr = _np.asarray(offs, dtype=_np.float32) if offs is not None else _np.empty((0, 2), dtype=_np.float32)
+                            if arr.size == 0 and hasattr(self, '_flat_points') and self._flat_points:
+                                try:
+                                    arr = _np.asarray(self._flat_points, dtype=_np.float32)
+                                except Exception:
+                                    arr = _np.empty((0, 2), dtype=_np.float32)
+                            if arr.size > 0:
+                                cutoff = bridge_anchor - max(bridge_margin * 0.25, 0.0)
+                                arr = arr[arr[:, 0] <= cutoff + 1e-9]
+                            fallback_coll.set_offsets(arr)
+                            if arr.size > 0:
+                                base_w = float(getattr(self, 'current_linewidth', 0.6))
+                                zoom = float(getattr(self, 'zoom_level', 1.0))
+                                diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                                sizes = [diameter ** 2] * arr.shape[0]
+                                fallback_coll.set_sizes(sizes)
+                                fallback_coll.set_alpha(0.96)
+                                fallback_coll.set_visible(True)
+                                try:
+                                    fallback_coll.set_zorder(max(fallback_coll.get_zorder(), 14))
+                                except Exception:
+                                    fallback_coll.set_zorder(14)
+                            else:
+                                fallback_coll.set_alpha(0.0)
+                                fallback_coll.set_visible(False)
+                        except Exception:
+                            try:
+                                fallback_coll.set_alpha(0.0)
+                                fallback_coll.set_visible(False)
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            fallback_coll.set_alpha(0.0)
+                            fallback_coll.set_visible(False)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             
