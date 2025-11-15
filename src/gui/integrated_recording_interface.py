@@ -2,7 +2,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QGroupBox, QHBoxLayout,
     QSlider, QLabel, QPushButton, QMainWindow,
     QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
-    QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication
+    QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication,
+    QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 from collections import deque
@@ -13711,6 +13712,11 @@ class ECGStylePitchVisualizer(QWidget):
         # ================== 回听（Listenback）UI 状态 ==================
         self.listenback_enabled = False
         self.selection_active = False
+        # 选区模式：None / 'listenback' / 'retake'
+        self.selection_mode: Optional[str] = None
+        self.retake_selection_active = False
+        self._retake_default_span = 5.0
+        self._retake_anchor_time = 0.0
         self.sel_start = 0.0
         self.sel_end = 0.0
         self._sel_line_left = None
@@ -13728,6 +13734,8 @@ class ECGStylePitchVisualizer(QWidget):
         # 回听：可拖动播放头状态
         self._dragging_playhead = False
         self._sel_dragging_side = None
+        self._sel_dragging_last_x = None
+        self._sel_hover_side = None
         # 回听：用户触发的“暂停”标记（用于屏蔽暂停时误触发的完成回调）
         self._lb_user_paused = False
     
@@ -13738,6 +13746,8 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             self.listenback_enabled = bool(enabled)
             if self.listenback_enabled:
+                if not self.retake_selection_active:
+                    self.selection_mode = 'listenback'
                 self._init_listenback_selection()
                 self.selection_active = True
                 # 刚启用时强制显示选区元素
@@ -13779,7 +13789,11 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
             else:
-                self.selection_active = False
+                if self.retake_selection_active:
+                    self.selection_active = True
+                else:
+                    self.selection_active = False
+                    self.selection_mode = None
             # 刷新一次
             try:
                 self.update_listenback_artists()
@@ -13846,6 +13860,354 @@ class ECGStylePitchVisualizer(QWidget):
             self.update_listenback_artists()
         except Exception as e:
             print(f"⚠️ 初始化回听选区失败: {e}")
+
+    def activate_retake_selection(self, anchor_time: Optional[float] = None, initial_span: Optional[float] = None):
+        """进入区间重录模式，基于 anchor_time 构建默认选区。"""
+        try:
+            span_default = float(getattr(self, '_retake_default_span', 5.0))
+        except Exception:
+            span_default = 5.0
+        try:
+            span = float(initial_span) if initial_span is not None else span_default
+        except Exception:
+            span = span_default
+        if not math.isfinite(span) or span <= 0.05:
+            span = span_default
+        min_span = max(0.05, float(getattr(self, '_retake_min_span', 0.35)))
+        span = max(min_span, span)
+        try:
+            anchor = float(anchor_time) if anchor_time is not None else float(getattr(self, 'current_global_time', 0.0))
+        except Exception:
+            anchor = float(getattr(self, 'current_global_time', 0.0))
+        if not math.isfinite(anchor):
+            anchor = 0.0
+        anchor = max(0.0, anchor)
+        start = max(0.0, anchor - span)
+        end = max(anchor, start + min_span)
+        if end <= start:
+            end = start + min_span
+        self._retake_anchor_time = anchor
+        self.retake_selection_active = True
+        self.selection_mode = 'retake'
+        self.selection_active = True
+        self.listenback_enabled = False
+        self._sel_dragging_side = None
+        self._sel_dragging_last_x = None
+        self._sel_hover_side = None
+        self._dragging_playhead = False
+        self.sel_start = start
+        self.sel_end = end
+        try:
+            self._lb_user_moved_playhead = False
+        except Exception:
+            pass
+        self._ensure_playhead()
+        try:
+            if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                self._lb_playhead.set_xdata([self.sel_start, self.sel_start])
+                self._lb_playhead.set_ydata([0.0, 1.0])
+                self._lb_playhead.set_visible(True)
+                self._lb_playhead.set_zorder(148)
+        except Exception:
+            pass
+        self._focus_time_window_on_range(self.sel_start, self.sel_end)
+        try:
+            self.update_listenback_artists()
+        except Exception:
+            pass
+        if hasattr(self, 'canvas'):
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+
+    def set_retake_range(
+        self,
+        start: float,
+        end: float,
+        *,
+        refresh: bool = True,
+        sync_playhead: bool = True,
+        anchor_side: Optional[str] = None,
+    ):
+        """调节区间重录选区；anchor_side 指示由哪一侧驱动调整。"""
+        if start is None or end is None:
+            return
+        try:
+            start = float(start)
+            end = float(end)
+        except Exception:
+            return
+        if not math.isfinite(start) or not math.isfinite(end):
+            return
+        right_limit = self._get_retake_right_limit()
+        if right_limit is not None and not math.isfinite(right_limit):
+            right_limit = None
+        min_span = max(0.05, float(getattr(self, '_retake_min_span', 0.35)))
+
+        def _clamp_start_end(s: float, e: float) -> Tuple[float, float]:
+            s = max(0.0, s)
+            e = max(0.0, e)
+            if e < s:
+                s, e = e, s
+            return s, e
+
+        if anchor_side == 'left':
+            start, end = _clamp_start_end(start, end)
+            if end - start < min_span:
+                start = max(0.0, end - min_span)
+            if right_limit is not None and end > right_limit:
+                end = right_limit
+                if end - start < min_span:
+                    start = max(0.0, end - min_span)
+        elif anchor_side == 'right':
+            start, end = _clamp_start_end(start, end)
+            end = max(end, start + min_span)
+            if right_limit is not None and end > right_limit:
+                end = right_limit
+                start = max(0.0, end - min_span)
+        elif anchor_side == 'block':
+            start, end = _clamp_start_end(start, end)
+            span = max(min_span, end - start)
+            end = start + span
+            if right_limit is not None and end > right_limit:
+                shift = end - right_limit
+                end = right_limit
+                start = max(0.0, start - shift)
+        else:
+            start, end = _clamp_start_end(start, end)
+            end = max(end, start + min_span)
+            if right_limit is not None and end > right_limit:
+                end = right_limit
+                start = max(0.0, end - min_span)
+
+        if right_limit is not None and end > right_limit:
+            end = right_limit
+            start = max(0.0, min(start, end - min_span))
+        if start < 0.0:
+            shift = -start
+            start = 0.0
+            end = end + shift
+            if right_limit is not None and end > right_limit:
+                end = right_limit
+        if end < start:
+            end = start
+        self.retake_selection_active = True
+        self.selection_mode = 'retake'
+        self.selection_active = True
+        self.listenback_enabled = False
+        self.sel_start = start
+        self.sel_end = end
+        if sync_playhead:
+            try:
+                ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', 'stopped')
+            except Exception:
+                ap_state = 'stopped'
+            if ap_state == 'stopped' and not getattr(self, '_dragging_playhead', False):
+                self._ensure_playhead()
+                try:
+                    if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                        self._lb_playhead.set_xdata([self.sel_start, self.sel_start])
+                        self._lb_playhead.set_ydata([0.0, 1.0])
+                        self._lb_playhead.set_visible(True)
+                        self._lb_playhead.set_zorder(148)
+                        self._lb_user_moved_playhead = False
+                except Exception:
+                    pass
+        self._focus_time_window_on_range(self.sel_start, self.sel_end)
+        if refresh:
+            try:
+                self.update_listenback_artists()
+            except Exception:
+                pass
+            if hasattr(self, 'canvas'):
+                try:
+                    self.canvas.draw_idle()
+                except Exception:
+                    pass
+        self._notify_retake_range_changed()
+
+    def deactivate_retake_selection(self):
+        """退出区间重录模式并恢复回听/普通状态。"""
+        self.retake_selection_active = False
+        if self.listenback_enabled:
+            self.selection_mode = 'listenback'
+            self.selection_active = True
+        else:
+            self.selection_mode = None
+            self.selection_active = False
+        self._sel_hover_side = None
+        try:
+            self.update_listenback_artists()
+        except Exception:
+            pass
+        if hasattr(self, 'canvas'):
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+
+    def clear_pitch_points_in_range(self, start: float, end: float):
+        """便于区间重录调用的封装，直接复用 remove_range。"""
+        self.remove_range(start, end)
+
+    def _notify_retake_range_changed(self):
+        """Inform the host dialog when retake bounds shift so the UI stays in sync."""
+        if not getattr(self, 'retake_selection_active', False):
+            return
+        host = getattr(self, '_host_interface', None)
+        if host is None:
+            return
+        def _sync():
+            try:
+                win = getattr(host, '_retake_control_win', None)
+            except Exception:
+                win = None
+            if win is None:
+                return
+            try:
+                win.sync_from_visualizer(force=True)
+            except Exception:
+                pass
+
+        try:
+            QTimer.singleShot(0, _sync)
+        except Exception:
+            _sync()
+
+    def _focus_time_window_on_range(self, start: float, end: float):
+        """确保当前时间窗口覆盖给定区间，便于用户快速定位。"""
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            x0, x1 = self.ax.get_xlim()
+            current_width = max(0.1, x1 - x0)
+            start = max(0.0, float(start))
+            end = max(start + 0.01, float(end))
+            if start >= x0 and end <= x1:
+                return
+            span = max(0.01, end - start)
+            target_width = max(current_width, span * 1.1)
+            center = start + span * 0.5
+            new_x0 = max(0.0, center - target_width * 0.5)
+            new_x1 = new_x0 + target_width
+            try:
+                self.ax.set_xlim(new_x0, new_x1)
+            except Exception:
+                pass
+            try:
+                self.time_offset = max(0.0, new_x0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _get_retake_right_limit(self) -> Optional[float]:
+        """返回当前已录制数据的最远时间，用于限制选区右边界。"""
+        limit = None
+        try:
+            if getattr(self, 'time_data', None):
+                limit = float(self.time_data[-1])
+        except Exception:
+            limit = None
+        if limit is None:
+            try:
+                limit = float(getattr(self, 'current_global_time', None))
+            except Exception:
+                limit = None
+        if limit is None:
+            host = getattr(self, '_host_interface', None)
+            if host is not None:
+                try:
+                    limit = float(getattr(host, 'current_global_time', None))
+                except Exception:
+                    limit = None
+        if limit is None or not math.isfinite(limit):
+            return None
+        return max(0.0, limit)
+
+    def _interaction_selection_mode(self) -> Optional[str]:
+        """在交互场景下优先使用重录模式，避免被 listenback 状态覆盖。"""
+        if getattr(self, 'retake_selection_active', False):
+            return 'retake'
+        return getattr(self, 'selection_mode', None)
+
+    def _set_selection_hover_state(self, side: Optional[str]):
+        """高亮指定侧边的选区线以提供交互提示。"""
+        if getattr(self, '_sel_hover_side', None) == side:
+            return
+        self._sel_hover_side = side
+        base_alpha = 0.88
+        hover_alpha = 1.0
+        base_lw = 0.8
+        hover_lw = 1.4
+        try:
+            pairs = (
+                ('left', self._sel_line_left, self._sel_tri_top_left, self._sel_tri_bot_left),
+                ('right', self._sel_line_right, self._sel_tri_top_right, self._sel_tri_bot_right),
+            )
+        except Exception:
+            pairs = ()
+        for name, line, tri_top, tri_bot in pairs:
+            target_alpha = hover_alpha if side == name else base_alpha
+            target_lw = hover_lw if side == name else base_lw
+            try:
+                if line is not None:
+                    line.set_alpha(target_alpha)
+                    line.set_linewidth(target_lw)
+            except Exception:
+                pass
+            for tri in (tri_top, tri_bot):
+                try:
+                    if tri is not None:
+                        tri.set_alpha(0.95 if side == name else 0.75)
+                except Exception:
+                    pass
+        try:
+            if hasattr(self, 'canvas'):
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _update_selection_hover_hint(self, event):
+        dragging = getattr(self, '_sel_dragging_side', None)
+        if dragging in ('left', 'right'):
+            self._set_selection_hover_state(dragging)
+            return
+        if dragging:
+            self._set_selection_hover_state(None)
+            return
+        if event.inaxes != getattr(self, 'ax', None):
+            self._set_selection_hover_state(None)
+            return
+        if not getattr(self, 'selection_active', False) or self._interaction_selection_mode() != 'retake':
+            self._set_selection_hover_state(None)
+            return
+        x = event.xdata
+        if x is None:
+            self._set_selection_hover_state(None)
+            return
+        try:
+            px_w = float(self.ax.bbox.width)
+            x0, x1 = self.ax.get_xlim()
+            sec_per_px = max(1e-9, (x1 - x0) / max(1.0, px_w))
+            thr = sec_per_px * 6.0
+        except Exception:
+            thr = 0.05
+        try:
+            left = float(self.sel_start)
+            right = float(self.sel_end)
+        except Exception:
+            self._set_selection_hover_state(None)
+            return
+        dL = abs(x - left)
+        dR = abs(x - right)
+        if dL <= thr and dL <= dR:
+            self._set_selection_hover_state('left')
+        elif dR <= thr:
+            self._set_selection_hover_state('right')
+        else:
+            self._set_selection_hover_state(None)
 
     def _ensure_listenback_patches(self):
         """确保选区相关的所有图元存在并已挂载到坐标轴。"""
@@ -13996,7 +14358,8 @@ class ECGStylePitchVisualizer(QWidget):
     def update_listenback_artists(self):
         """根据当前状态与轴范围更新选区图元位置/可见性。"""
         try:
-            if not self.listenback_enabled:
+            overlay_active = bool(self.listenback_enabled or self.retake_selection_active)
+            if not overlay_active:
                 # 隐藏所有图元
                 for art in [self._sel_line_left, self._sel_line_right,
                             self._sel_tri_top_left, self._sel_tri_bot_left,
@@ -14016,6 +14379,7 @@ class ECGStylePitchVisualizer(QWidget):
             self._ensure_listenback_patches()
             if not hasattr(self, 'ax') or self.ax is None:
                 return
+            selection_mode = getattr(self, 'selection_mode', None)
             # 线位置
             try:
                 ymin, ymax = self.ax.get_ylim()
@@ -14066,7 +14430,7 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             # 播放状态
             ap = getattr(self, 'audio_processor', None)
-            is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing')
+            is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing') if selection_mode == 'listenback' else False
             # 确保播放头位置与可见性（始终可见，表示“唱到哪了/暂停到哪了”）
             try:
                 self._ensure_playhead()
@@ -14091,20 +14455,25 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             # 中间播放按钮（绿色透明三角），当未播放时显示（更大更醒目）
             try:
-                cx = (xL + xR) * 0.5
-                cy = (ymin + ymax) * 0.5
-                # 播放图标再稍微变大一些
-                s_play = max((xR - xL) * 0.10, 0.09)
-                half = s_play * 0.5
-                # 指向右的三角，限制在正方形 [cx-half, cx+half] x [cy-half, cy+half] 内
-                tri_pts = [[cx - half*0.6, cy - half], [cx - half*0.6, cy + half], [cx + half, cy]]
-                self._sel_play_icon.set_xy(tri_pts)
-                # 正常显示：未播放时才显示.
-                vis_play = self.selection_active and (not is_playing)
-                self._sel_play_icon.set_visible(vis_play)
-                self._sel_play_icon.set_zorder(149)
-                # 更新播放按钮命中区域（正方形），否则清空，避免误触
-                self._play_hit_box = (cx - half, cx + half, cy - half, cy + half) if vis_play else None
+                if selection_mode == 'listenback':
+                    cx = (xL + xR) * 0.5
+                    cy = (ymin + ymax) * 0.5
+                    # 播放图标再稍微变大一些
+                    s_play = max((xR - xL) * 0.10, 0.09)
+                    half = s_play * 0.5
+                    # 指向右的三角，限制在正方形 [cx-half, cx+half] x [cy-half, cy+half] 内
+                    tri_pts = [[cx - half*0.6, cy - half], [cx - half*0.6, cy + half], [cx + half, cy]]
+                    self._sel_play_icon.set_xy(tri_pts)
+                    # 正常显示：未播放时才显示.
+                    vis_play = self.selection_active and (not is_playing)
+                    self._sel_play_icon.set_visible(vis_play)
+                    self._sel_play_icon.set_zorder(149)
+                    # 更新播放按钮命中区域（正方形），否则清空，避免误触
+                    self._play_hit_box = (cx - half, cx + half, cy - half, cy + half) if vis_play else None
+                else:
+                    if self._sel_play_icon is not None:
+                        self._sel_play_icon.set_visible(False)
+                    self._play_hit_box = None
             except Exception:
                 try:
                     self._play_hit_box = None
@@ -14112,67 +14481,75 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             # 暂停图标（两条竖线）在播放时显示
             try:
-                # 统一图标基准尺寸（更大）
-                s = max((xR - xL) * 0.10, 0.09)
-                half = s * 0.5
-                cx = (xL + xR) * 0.5
-                cy = (ymin + ymax) * 0.5
-                # 将暂停按钮组与结束按钮分开更多（再加大一点点间距）
-                pause_cx = cx - s * 0.70
-                stop_cx = cx + s * 0.95
-                # 暂停两条竖线：高度 = s，条宽 = s*0.25，条间距 = s*0.24（更粗更明显）
-                bar_h = half
-                bar_w = s * 0.25
-                inner_gap = s * 0.24
-                # 左条矩形左下角
-                left_x0 = pause_cx - inner_gap*0.5 - bar_w
-                left_y0 = cy - bar_h
-                right_x0 = pause_cx + inner_gap*0.5
-                right_y0 = cy - bar_h
-                # 左条
-                if hasattr(self._sel_pause_icon_left, 'set_width'):
-                    # Rectangle 风格
-                    self._sel_pause_icon_left.set_xy((left_x0, left_y0))
-                    self._sel_pause_icon_left.set_width(bar_w)
-                    self._sel_pause_icon_left.set_height(bar_h * 2)
+                if selection_mode == 'listenback':
+                    # 统一图标基准尺寸（更大）
+                    s = max((xR - xL) * 0.10, 0.09)
+                    half = s * 0.5
+                    cx = (xL + xR) * 0.5
+                    cy = (ymin + ymax) * 0.5
+                    # 将暂停按钮组与结束按钮分开更多（再加大一点点间距）
+                    pause_cx = cx - s * 0.70
+                    stop_cx = cx + s * 0.95
+                    # 暂停两条竖线：高度 = s，条宽 = s*0.25，条间距 = s*0.24（更粗更明显）
+                    bar_h = half
+                    bar_w = s * 0.25
+                    inner_gap = s * 0.24
+                    # 左条矩形左下角
+                    left_x0 = pause_cx - inner_gap*0.5 - bar_w
+                    left_y0 = cy - bar_h
+                    right_x0 = pause_cx + inner_gap*0.5
+                    right_y0 = cy - bar_h
+                    # 左条
+                    if hasattr(self._sel_pause_icon_left, 'set_width'):
+                        # Rectangle 风格
+                        self._sel_pause_icon_left.set_xy((left_x0, left_y0))
+                        self._sel_pause_icon_left.set_width(bar_w)
+                        self._sel_pause_icon_left.set_height(bar_h * 2)
+                    else:
+                        # Polygon 风格
+                        self._sel_pause_icon_left.set_xy([[left_x0, left_y0], [left_x0+bar_w, left_y0], [left_x0+bar_w, left_y0+bar_h*2], [left_x0, left_y0+bar_h*2]])
+                    # 右条
+                    if hasattr(self._sel_pause_icon_right, 'set_width'):
+                        self._sel_pause_icon_right.set_xy((right_x0, right_y0))
+                        self._sel_pause_icon_right.set_width(bar_w)
+                        self._sel_pause_icon_right.set_height(bar_h * 2)
+                    else:
+                        self._sel_pause_icon_right.set_xy([[right_x0, right_y0], [right_x0+bar_w, right_y0], [right_x0+bar_w, right_y0+bar_h*2], [right_x0, right_y0+bar_h*2]])
+                    # 红色“结束”按钮：位于暂停条右侧，正方形（更大）
+                    stop_size = s * 1.00
+                    stop_x0 = stop_cx - stop_size * 0.5
+                    stop_y0 = cy - stop_size * 0.5
+                    if hasattr(self._sel_stop_icon, 'set_xy') and hasattr(self._sel_stop_icon, 'set_width'):
+                        # Rectangle 风格
+                        self._sel_stop_icon.set_xy((stop_x0, stop_y0))
+                        self._sel_stop_icon.set_width(stop_size)
+                        self._sel_stop_icon.set_height(stop_size)
+                    else:
+                        self._sel_stop_icon.set_xy([[stop_x0, stop_y0], [stop_x0+stop_size, stop_y0], [stop_x0+stop_size, stop_y0+stop_size], [stop_x0, stop_y0+stop_size]])
+                    # 可见性
+                    for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                        art.set_visible(is_playing)
+                        art.set_zorder(149)
+                    # 更新命中区域（数据坐标）：严格限定在各自“正方形”区域内
+                    if is_playing:
+                        # 暂停：使用以 pause_cx, cy 为中心、边长 = s 的正方形命中框
+                        pause_size = s * 1.00
+                        pause_x0 = pause_cx - pause_size * 0.5
+                        pause_y0 = cy - pause_size * 0.5
+                        self._pause_hit_boxes = [
+                            (pause_x0, pause_x0 + pause_size, pause_y0, pause_y0 + pause_size)
+                        ]
+                        # 结束：保持正方形命中框
+                        self._stop_hit_box = (stop_x0, stop_x0+stop_size, stop_y0, stop_y0+stop_size)
+                    else:
+                        # 非播放态，命中区域无效
+                        self._pause_hit_boxes = None
+                        self._stop_hit_box = None
                 else:
-                    # Polygon 风格
-                    self._sel_pause_icon_left.set_xy([[left_x0, left_y0], [left_x0+bar_w, left_y0], [left_x0+bar_w, left_y0+bar_h*2], [left_x0, left_y0+bar_h*2]])
-                # 右条
-                if hasattr(self._sel_pause_icon_right, 'set_width'):
-                    self._sel_pause_icon_right.set_xy((right_x0, right_y0))
-                    self._sel_pause_icon_right.set_width(bar_w)
-                    self._sel_pause_icon_right.set_height(bar_h * 2)
-                else:
-                    self._sel_pause_icon_right.set_xy([[right_x0, right_y0], [right_x0+bar_w, right_y0], [right_x0+bar_w, right_y0+bar_h*2], [right_x0, right_y0+bar_h*2]])
-                # 红色“结束”按钮：位于暂停条右侧，正方形（更大）
-                stop_size = s * 1.00
-                stop_x0 = stop_cx - stop_size * 0.5
-                stop_y0 = cy - stop_size * 0.5
-                if hasattr(self._sel_stop_icon, 'set_xy') and hasattr(self._sel_stop_icon, 'set_width'):
-                    # Rectangle 风格
-                    self._sel_stop_icon.set_xy((stop_x0, stop_y0))
-                    self._sel_stop_icon.set_width(stop_size)
-                    self._sel_stop_icon.set_height(stop_size)
-                else:
-                    self._sel_stop_icon.set_xy([[stop_x0, stop_y0], [stop_x0+stop_size, stop_y0], [stop_x0+stop_size, stop_y0+stop_size], [stop_x0, stop_y0+stop_size]])
-                # 可见性
-                for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
-                    art.set_visible(is_playing)
-                    art.set_zorder(149)
-                # 更新命中区域（数据坐标）：严格限定在各自“正方形”区域内
-                if is_playing:
-                    # 暂停：使用以 pause_cx, cy 为中心、边长 = s 的正方形命中框
-                    pause_size = s * 1.00
-                    pause_x0 = pause_cx - pause_size * 0.5
-                    pause_y0 = cy - pause_size * 0.5
-                    self._pause_hit_boxes = [
-                        (pause_x0, pause_x0 + pause_size, pause_y0, pause_y0 + pause_size)
-                    ]
-                    # 结束：保持正方形命中框
-                    self._stop_hit_box = (stop_x0, stop_x0+stop_size, stop_y0, stop_y0+stop_size)
-                else:
-                    # 非播放态，命中区域无效
+                    # 非回听模式：隐藏按钮，清除命中区域
+                    for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
+                        if art is not None:
+                            art.set_visible(False)
                     self._pause_hit_boxes = None
                     self._stop_hit_box = None
             except Exception:
@@ -16444,32 +16821,34 @@ class ECGStylePitchVisualizer(QWidget):
         """鼠标按下事件"""
         if event.inaxes != self.ax:
             return
-        # 回听：播放状态命中检测 + 选区拖拽/播放切换
+        selection_mode = self._interaction_selection_mode()
+        # 回听/重录：播放状态命中检测 + 选区拖拽/播放切换
         try:
-            if getattr(self, 'listenback_enabled', False):
-                ap = getattr(self, 'audio_processor', None)
-                is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing')
-                # 播放中：优先检测暂停/结束按钮命中
-                if is_playing and event.xdata is not None and event.ydata is not None:
-                    x, y = float(event.xdata), float(event.ydata)
-                    # 命中暂停左右条
-                    try:
-                        if self._pause_hit_boxes:
-                            for (x0,x1,y0,y1) in self._pause_hit_boxes:
+            if selection_mode in ('listenback', 'retake'):
+                if selection_mode == 'listenback':
+                    ap = getattr(self, 'audio_processor', None)
+                    is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing')
+                    # 播放中：优先检测暂停/结束按钮命中
+                    if is_playing and event.xdata is not None and event.ydata is not None:
+                        x, y = float(event.xdata), float(event.ydata)
+                        # 命中暂停左右条
+                        try:
+                            if self._pause_hit_boxes:
+                                for (x0,x1,y0,y1) in self._pause_hit_boxes:
+                                    if x0 <= x <= x1 and y0 <= y <= y1:
+                                        self._handle_pause_click()
+                                        return
+                        except Exception:
+                            pass
+                        # 命中结束按钮
+                        try:
+                            if self._stop_hit_box:
+                                x0,x1,y0,y1 = self._stop_hit_box
                                 if x0 <= x <= x1 and y0 <= y <= y1:
-                                    self._handle_pause_click()
+                                    self._handle_stop_click()
                                     return
-                    except Exception:
-                        pass
-                    # 命中结束按钮
-                    try:
-                        if self._stop_hit_box:
-                            x0,x1,y0,y1 = self._stop_hit_box
-                            if x0 <= x <= x1 and y0 <= y <= y1:
-                                self._handle_stop_click()
-                                return
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
                 # 未播放时允许拖拽/触发播放
                 if getattr(self, 'selection_active', False):
                     # 计算阈值：约6px对应的秒数
@@ -16481,39 +16860,61 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         thr = 0.05
                     x = event.xdata
-                    # 先检测左右边线把手，再检测播放头，避免播放头抢占左线
+                    start = end = None
                     if x is not None:
                         try:
-                            dL = abs(x - float(self.sel_start))
-                            dR = abs(x - float(self.sel_end))
-                            if dL <= dR and dL <= thr:
-                                self._sel_dragging_side = 'left'
-                                return
-                            if dR < dL and dR <= thr:
-                                self._sel_dragging_side = 'right'
-                                return
+                            start = float(self.sel_start)
+                            end = float(self.sel_end)
+                        except Exception:
+                            start = end = None
+                    # 先检测左右边线把手，再检测播放头，避免播放头抢占左线
+                    if x is not None and start is not None and end is not None:
+                        if start > end:
+                            start, end = end, start
+                        dL = abs(x - start)
+                        dR = abs(x - end)
+                        if dL <= dR and dL <= thr:
+                            self._sel_dragging_side = 'left'
+                            self._sel_dragging_last_x = None
+                            try:
+                                self._set_selection_hover_state('left')
+                            except Exception:
+                                pass
+                            return
+                        if dR < dL and dR <= thr:
+                            self._sel_dragging_side = 'right'
+                            self._sel_dragging_last_x = None
+                            try:
+                                self._set_selection_hover_state('right')
+                            except Exception:
+                                pass
+                            return
+                        # 区间整体拖动：重录模式下点击选区任意位置即可左右平移
+                        if selection_mode == 'retake' and start <= x <= end:
+                            self._sel_dragging_side = 'block'
+                            self._sel_dragging_last_x = x
+                            return
+                    # 播放头命中检测（仅 listenback 需要）
+                    if selection_mode == 'listenback':
+                        try:
+                            if x is not None and hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                                phx_data = self._lb_playhead.get_xdata()
+                                phx = float(phx_data[0]) if phx_data is not None and len(phx_data) > 0 else float(self.sel_start)
+                                if abs(x - phx) <= thr:
+                                    self._dragging_playhead = True
+                                    self._lb_user_moved_playhead = True
+                                    return
                         except Exception:
                             pass
-                    # 播放头命中检测（次优先）
-                    try:
-                        if x is not None and hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
-                            phx_data = self._lb_playhead.get_xdata()
-                            phx = float(phx_data[0]) if phx_data is not None and len(phx_data) > 0 else float(self.sel_start)
-                            if abs(x - phx) <= thr:
-                                self._dragging_playhead = True
-                                self._lb_user_moved_playhead = True
-                                return
-                    except Exception:
-                        pass
-                    # 仅点击绿色播放按钮所在正方形命中区域才触发
-                    try:
-                        if x is not None and self._play_hit_box is not None and event.ydata is not None:
-                            x0,x1,y0,y1 = self._play_hit_box
-                            if x0 <= x <= x1 and y0 <= event.ydata <= y1:
-                                self._toggle_listenback_play_pause()
-                                return
-                    except Exception:
-                        pass
+                        # 仅点击绿色播放按钮所在正方形命中区域才触发
+                        try:
+                            if x is not None and self._play_hit_box is not None and event.ydata is not None:
+                                x0,x1,y0,y1 = self._play_hit_box
+                                if x0 <= x <= x1 and y0 <= event.ydata <= y1:
+                                    self._toggle_listenback_play_pause()
+                                    return
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -16528,6 +16929,11 @@ class ECGStylePitchVisualizer(QWidget):
         # 回听选区拖拽结束
         if getattr(self, '_sel_dragging_side', None) is not None:
             self._sel_dragging_side = None
+            self._sel_dragging_last_x = None
+            try:
+                self._set_selection_hover_state(None)
+            except Exception:
+                pass
             try:
                 self.update_listenback_artists()
             except Exception:
@@ -16556,6 +16962,10 @@ class ECGStylePitchVisualizer(QWidget):
             self._update_hover_cursor(event)
         except Exception:
             pass
+        try:
+            self._update_selection_hover_hint(event)
+        except Exception:
+            pass
         # 回听：拖拽选区
         if getattr(self, '_sel_dragging_side', None) is not None and event.inaxes == self.ax:
             try:
@@ -16565,22 +16975,64 @@ class ECGStylePitchVisualizer(QWidget):
                 # 夹紧到当前可视范围
                 x0, x1 = self.ax.get_xlim()
                 x = max(x0, min(x1, x))
-                if self._sel_dragging_side == 'left':
-                    self.sel_start = min(x, self.sel_end)
-                    # 联动播放头：未播放时播放头起点跟随左边线
+                mode = self._interaction_selection_mode()
+                if self._sel_dragging_side == 'block':
+                    last = getattr(self, '_sel_dragging_last_x', None)
+                    if last is None:
+                        self._sel_dragging_last_x = x
+                        return
+                    delta = x - last
+                    if abs(delta) <= 1e-9:
+                        return
+                    span = float(self.sel_end) - float(self.sel_start)
+                    new_start = float(self.sel_start) + delta
+                    new_end = new_start + span
+                    # 保证不越界
+                    max_time = getattr(self, 'max_history_time', None)
                     try:
-                        ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
-                        if ap_state == 'stopped':
-                            self._ensure_playhead()
-                            if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
-                                self._lb_playhead.set_xdata([self.sel_start, self.sel_start])
-                                self._lb_playhead.set_ydata([0.0, 1.0])
-                                self._lb_playhead.set_visible(True)
-                                self._lb_playhead.set_zorder(148)
+                        max_time = float(max_time) if max_time is not None else None
                     except Exception:
-                        pass
+                        max_time = None
+                    if new_start < 0.0:
+                        shift = -new_start
+                        new_start += shift
+                        new_end += shift
+                    if max_time is not None and new_end > max_time:
+                        shift = new_end - max_time
+                        new_start -= shift
+                        new_end -= shift
+                        if new_start < 0.0:
+                            new_start = 0.0
+                    self.set_retake_range(new_start, new_end, refresh=False, sync_playhead=False, anchor_side='block')
+                    self._sel_dragging_last_x = x
+                    self.update_listenback_artists()
+                    if hasattr(self, 'canvas'):
+                        self.canvas.draw_idle()
+                    return
+                if self._sel_dragging_side == 'left':
+                    new_start = min(x, self.sel_end)
+                    if mode == 'retake':
+                        self.set_retake_range(new_start, self.sel_end, refresh=False, sync_playhead=True, anchor_side='left')
+                    else:
+                        self.sel_start = min(x, self.sel_end)
+                        # 联动播放头：未播放时播放头起点跟随左边线
+                        try:
+                            ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
+                            if ap_state == 'stopped':
+                                self._ensure_playhead()
+                                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                                    self._lb_playhead.set_xdata([self.sel_start, self.sel_start])
+                                    self._lb_playhead.set_ydata([0.0, 1.0])
+                                    self._lb_playhead.set_visible(True)
+                                    self._lb_playhead.set_zorder(148)
+                        except Exception:
+                            pass
                 elif self._sel_dragging_side == 'right':
-                    self.sel_end = max(x, self.sel_start)
+                    new_end = max(x, self.sel_start)
+                    if mode == 'retake':
+                        self.set_retake_range(self.sel_start, new_end, refresh=False, sync_playhead=False, anchor_side='right')
+                    else:
+                        self.sel_end = max(x, self.sel_start)
                 self.update_listenback_artists()
                 if hasattr(self, 'canvas'):
                     self.canvas.draw_idle()
@@ -29034,6 +29486,7 @@ class IntegratedRecordingInterface(QMainWindow):
         # 字体/对话框占位
         self.chinese_font_available = False
         self.volume_control_dialog = None
+        self._retake_control_win = None
 
         # 初始化 UI
         self.init_ui()
@@ -29190,6 +29643,11 @@ class IntegratedRecordingInterface(QMainWindow):
         """窗口关闭事件处理 - 确保所有资源正确释放"""
         try:
             print("🔄 正在关闭MindEcho...")
+
+            try:
+                self.deactivate_retake_mode()
+            except Exception:
+                pass
 
             # 取消注册性能模式监听器（若已注册）
             try:
@@ -31884,6 +32342,111 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
         except Exception:
             pass
+
+    def _ensure_retake_control_window(self) -> Optional["_RetakeControlWindow"]:
+        """Create the retake control window if needed and return it."""
+        win = getattr(self, '_retake_control_win', None)
+        if win is not None:
+            return win
+        try:
+            win = _RetakeControlWindow(self)
+            self._retake_control_win = win
+            return win
+        except Exception as exc:
+            print(f"⚠️ 创建选区重录窗口失败: {exc}")
+            self._retake_control_win = None
+            return None
+
+    def open_retake_control_window(self):
+        """Show the retake control window and sync it with current selection."""
+        try:
+            win = self._ensure_retake_control_window()
+            if win is None:
+                return
+            win.sync_from_visualizer(force=True)
+            if not win.isVisible():
+                win.show()
+            try:
+                win.raise_()
+                win.activateWindow()
+            except Exception:
+                pass
+        except Exception as exc:
+            print(f"⚠️ 打开选区重录窗口失败: {exc}")
+
+    def trigger_default_retake_selection(
+        self,
+        anchor_time: Optional[float] = None,
+        span: Optional[float] = None,
+    ) -> bool:
+        """Ensure a retake selection exists around the current timeline and focus UI on it."""
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return False
+        try:
+            anchor = anchor_time
+            if anchor is None:
+                anchor = getattr(self, 'current_global_time', None)
+            if anchor is None:
+                anchor = getattr(viz, 'current_global_time', 0.0)
+            anchor = float(anchor)
+            if not math.isfinite(anchor) or anchor < 0.0:
+                anchor = max(0.0, float(getattr(viz, 'sel_end', 0.0)))
+        except Exception:
+            anchor = max(0.0, float(getattr(viz, 'sel_end', 0.0)))
+
+        span_hint: Optional[float]
+        try:
+            if span is not None:
+                span_hint = float(span)
+                if not math.isfinite(span_hint) or span_hint <= 0.0:
+                    span_hint = None
+            else:
+                span_hint = None
+        except Exception:
+            span_hint = None
+        if span_hint is not None:
+            try:
+                min_span = max(0.05, float(getattr(viz, '_retake_min_span', 0.35)))
+            except Exception:
+                min_span = 0.35
+            if span_hint < min_span:
+                span_hint = min_span
+
+        try:
+            viz.activate_retake_selection(anchor_time=anchor, initial_span=span_hint)
+            win = self._ensure_retake_control_window()
+            if win is not None:
+                win.sync_from_visualizer(force=True)
+                if not win.isVisible():
+                    win.show()
+                try:
+                    win.raise_()
+                    win.activateWindow()
+                except Exception:
+                    pass
+            return True
+        except Exception as exc:
+            print(f"⚠️ 激活选区重录失败: {exc}")
+            return False
+
+    def deactivate_retake_mode(self, *, close_window: bool = True):
+        """Leave retake mode and optionally close its control window."""
+        viz = getattr(self, 'visualizer', None)
+        try:
+            if viz is not None and hasattr(viz, 'deactivate_retake_selection'):
+                viz.deactivate_retake_selection()
+        except Exception as exc:
+            print(f"⚠️ 退出选区重录失败: {exc}")
+        if not close_window:
+            return
+        win = getattr(self, '_retake_control_win', None)
+        if win is not None:
+            try:
+                win.close()
+            except Exception:
+                pass
+            self._retake_control_win = None
 
     def _start_backing_control_sync_timer(self, interval_ms: int = 80):
         """确保伴奏控制窗口的进度刷新定时器运行。"""
@@ -34587,6 +35150,592 @@ def _enter_local_file_realtime_mode(self, file_path: str):
     except Exception:
         print("[Info] 本地文件实时分析入口已调用：功能尚未实现。")
 
+# ========================= 区间重录控制窗口 ========================= #
+class _RetakeControlWindow(QDialog):
+    """Dedicated controller for retake selections."""
+
+    def __init__(self, main: 'IntegratedRecordingInterface'):
+        parent = main if isinstance(main, QWidget) else None
+        super().__init__(parent)
+        self.main = main
+        self.setWindowTitle("选区重录控制台")
+        self.setModal(False)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass
+
+        self._updating_from_visualizer = False
+        self._last_range: Tuple[Optional[float], Optional[float]] = (None, None)
+
+        layout = QVBoxLayout(self)
+
+        range_group = QGroupBox("重录区间 (秒)")
+        range_layout = QGridLayout(range_group)
+
+        self.start_spin = QDoubleSpinBox()
+        self.start_spin.setRange(0.0, 6.0 * 60.0 * 60.0)
+        self.start_spin.setDecimals(3)
+        self.start_spin.setSingleStep(0.1)
+
+        self.end_spin = QDoubleSpinBox()
+        self.end_spin.setRange(0.0, 6.0 * 60.0 * 60.0)
+        self.end_spin.setDecimals(3)
+        self.end_spin.setSingleStep(0.1)
+
+        range_layout.addWidget(QLabel("开始"), 0, 0)
+        range_layout.addWidget(self.start_spin, 0, 1)
+        range_layout.addWidget(QLabel("结束"), 1, 0)
+        range_layout.addWidget(self.end_spin, 1, 1)
+
+        self.length_label = QLabel("区间长度: 0.000s")
+        range_layout.addWidget(self.length_label, 2, 0, 1, 2)
+
+        range_group.setLayout(range_layout)
+        layout.addWidget(range_group)
+
+        listenback_group = QGroupBox("回听")
+        lb_layout = QVBoxLayout(listenback_group)
+
+        progress_row = QHBoxLayout()
+        self.listenback_time_label = QLabel("进度: -- / --")
+        progress_row.addWidget(self.listenback_time_label)
+        progress_row.addStretch()
+        lb_layout.addLayout(progress_row)
+
+        self.listenback_slider = QSlider(Qt.Orientation.Horizontal)
+        self.listenback_slider.setRange(0, 1)
+        self.listenback_slider.setEnabled(False)
+        self.listenback_slider.sliderPressed.connect(self._on_listenback_slider_pressed)
+        self.listenback_slider.sliderReleased.connect(self._on_listenback_slider_released)
+        self.listenback_slider.valueChanged.connect(self._on_listenback_slider_changed)
+        lb_layout.addWidget(self.listenback_slider)
+
+        control_row = QHBoxLayout()
+        self.listenback_play_btn = QPushButton("开始")
+        self.listenback_play_btn.setEnabled(False)
+        self.listenback_play_btn.clicked.connect(self._on_listenback_play_clicked)
+        control_row.addWidget(self.listenback_play_btn)
+
+        self.listenback_pause_btn = QPushButton("暂停")
+        self.listenback_pause_btn.setEnabled(False)
+        self.listenback_pause_btn.clicked.connect(self._on_listenback_pause_clicked)
+        control_row.addWidget(self.listenback_pause_btn)
+
+        self.listenback_backing_checkbox = QCheckBox("伴奏")
+        self.listenback_backing_checkbox.setEnabled(False)
+        self.listenback_backing_checkbox.toggled.connect(self._on_listenback_backing_toggled)
+        control_row.addWidget(self.listenback_backing_checkbox)
+        control_row.addStretch()
+        lb_layout.addLayout(control_row)
+
+        self.listenback_status_label = QLabel("回听已就绪")
+        self.listenback_status_label.setStyleSheet("color:#8AB4F8;")
+        lb_layout.addWidget(self.listenback_status_label)
+
+        layout.addWidget(listenback_group)
+        self._listenback_group = listenback_group
+
+        action_row = QHBoxLayout()
+        self.clear_btn = QPushButton("清除区间音高")
+        self.clear_btn.clicked.connect(self._on_clear_range)
+        action_row.addWidget(self.clear_btn)
+
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color:#A0A0A0;")
+        layout.addWidget(self.status_label)
+        layout.addStretch()
+
+        self.start_spin.valueChanged.connect(self._on_spin_changed)
+        self.end_spin.valueChanged.connect(self._on_spin_changed)
+
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(160)
+        self._sync_timer.timeout.connect(self._sync_from_visualizer)
+        self._sync_timer.start()
+
+        self._listenback_slider_dragging = False
+        self._listenback_length = 0.0
+        self._listenback_abs_range: Optional[Tuple[float, float]] = None
+        self._listenback_backing_session = False
+        self._listenback_prev_preview_flag = False
+        self._listenback_manual_offset: Optional[float] = None
+
+        ap = getattr(self.main, 'audio_processor', None)
+        if ap is not None and hasattr(ap, 'listenback_playback_finished'):
+            try:
+                ap.listenback_playback_finished.connect(self._on_listenback_finished)
+            except Exception:
+                pass
+
+        self._sync_from_visualizer(force=True)
+
+    def sync_from_visualizer(self, force: bool = False):
+        self._sync_from_visualizer(force=force)
+
+    def _sync_from_visualizer(self, force: bool = False):
+        viz = getattr(self.main, 'visualizer', None)
+        active = bool(viz is not None and getattr(viz, 'retake_selection_active', False))
+        self._set_controls_enabled(active)
+        if not active:
+            if self._last_range != (None, None):
+                self._last_range = (None, None)
+                self.length_label.setText("区间长度: --")
+            self.status_label.setText("提示：当前未处于选区重录模式。")
+            self._disable_listenback_controls()
+            return
+        try:
+            start = float(getattr(viz, 'sel_start', 0.0))
+            end = float(getattr(viz, 'sel_end', start))
+        except Exception:
+            start, end = 0.0, 0.0
+        range_changed = bool(force or self._last_range != (start, end))
+        if range_changed:
+            self._last_range = (start, end)
+            self._updating_from_visualizer = True
+            try:
+                self.start_spin.blockSignals(True)
+                self.end_spin.blockSignals(True)
+                self.start_spin.setValue(max(0.0, start))
+                self.end_spin.setValue(max(start + 0.001, end))
+            finally:
+                try:
+                    self.start_spin.blockSignals(False)
+                    self.end_spin.blockSignals(False)
+                except Exception:
+                    pass
+                self._updating_from_visualizer = False
+            self._update_length_label(end - start)
+        self.status_label.setText("")
+        self._update_listenback_range_ui(start, end, range_reset=range_changed)
+        self._refresh_listenback_status()
+
+    def _set_controls_enabled(self, enabled: bool):
+        self.start_spin.setEnabled(enabled)
+        self.end_spin.setEnabled(enabled)
+        self.clear_btn.setEnabled(enabled)
+        lb_enabled = bool(enabled and self._listenback_length > 0.0)
+        try:
+            self._listenback_group.setEnabled(lb_enabled)
+        except Exception:
+            pass
+        for widget in (self.listenback_slider, self.listenback_play_btn, self.listenback_pause_btn, self.listenback_backing_checkbox):
+            widget.setEnabled(lb_enabled)
+        if not lb_enabled:
+            self.listenback_time_label.setText("进度: -- / --")
+
+    def _update_length_label(self, length: float):
+        try:
+            length = max(0.0, float(length))
+        except Exception:
+            length = 0.0
+        self.length_label.setText(f"区间长度: {length:.3f}s")
+
+    def _on_spin_changed(self):
+        if self._updating_from_visualizer:
+            return
+        self._apply_range()
+
+    def _apply_range(self):
+        viz = getattr(self.main, 'visualizer', None)
+        if viz is None or not getattr(viz, 'retake_selection_active', False):
+            return
+        start = float(self.start_spin.value())
+        end = float(self.end_spin.value())
+        if end <= start + 1e-3:
+            end = start + 0.35
+            self.end_spin.setValue(end)
+        try:
+            viz.set_retake_range(start, end, refresh=True, sync_playhead=True)
+            self._update_length_label(end - start)
+            self.status_label.setText("选区范围已更新。")
+        except Exception as exc:
+            print(f"⚠️ 更新选区范围失败: {exc}")
+
+    def _on_clear_range(self):
+        viz = getattr(self.main, 'visualizer', None)
+        if viz is None or not getattr(viz, 'retake_selection_active', False):
+            return
+        try:
+            start = float(getattr(viz, 'sel_start', 0.0))
+            end = float(getattr(viz, 'sel_end', start))
+            viz.clear_pitch_points_in_range(start, end)
+            self.status_label.setText("已清除区间内的音高点。")
+            self._sync_from_visualizer(force=True)
+        except Exception as exc:
+            print(f"⚠️ 清除选区失败: {exc}")
+    def _disable_listenback_controls(self):
+        self._listenback_length = 0.0
+        self._listenback_abs_range = None
+        self._listenback_manual_offset = None
+        try:
+            self._listenback_group.setEnabled(False)
+        except Exception:
+            pass
+        for widget in (self.listenback_slider, self.listenback_play_btn, self.listenback_pause_btn, self.listenback_backing_checkbox):
+            widget.setEnabled(False)
+        self.listenback_time_label.setText("进度: -- / --")
+        self.listenback_status_label.setText("回听不可用：未选区")
+
+    def _set_listenback_slider_position(self, rel_sec: float, *, update_label: bool = True):
+        if self._listenback_length <= 0.0:
+            return
+        try:
+            rel_val = max(0.0, min(self._listenback_length, float(rel_sec)))
+        except Exception:
+            rel_val = 0.0
+        slider_val = int(round(rel_val * 1000.0))
+        slider_val = min(self.listenback_slider.maximum(), max(0, slider_val))
+        try:
+            self.listenback_slider.blockSignals(True)
+            self.listenback_slider.setValue(slider_val)
+        finally:
+            try:
+                self.listenback_slider.blockSignals(False)
+            except Exception:
+                pass
+        if update_label:
+            self.listenback_time_label.setText(
+                f"进度: {rel_val:.3f} / {self._listenback_length:.3f}s"
+            )
+
+    def _update_listenback_range_ui(self, start: float, end: float, *, range_reset: bool = False):
+        try:
+            length = max(0.0, float(end) - float(start))
+        except Exception:
+            length = 0.0
+        self._listenback_length = length
+        self._listenback_abs_range = self._get_absolute_range(start, end)
+        enabled = bool(length > 1e-3 and self._listenback_abs_range is not None)
+        try:
+            self._listenback_group.setEnabled(enabled)
+        except Exception:
+            pass
+        for widget in (self.listenback_slider, self.listenback_play_btn, self.listenback_pause_btn, self.listenback_backing_checkbox):
+            widget.setEnabled(enabled)
+        if not enabled:
+            self.listenback_time_label.setText("进度: -- / --")
+            self._listenback_manual_offset = None
+            return
+        max_ms = max(1, int(round(length * 1000.0)))
+        try:
+            self.listenback_slider.blockSignals(True)
+            self.listenback_slider.setMaximum(max_ms)
+            cur = min(self.listenback_slider.value(), max_ms)
+            if range_reset:
+                cur = 0
+            self.listenback_slider.setValue(cur)
+        finally:
+            try:
+                self.listenback_slider.blockSignals(False)
+            except Exception:
+                pass
+        rel_sec = min(self.listenback_slider.value() / 1000.0, length)
+        if range_reset:
+            self._listenback_manual_offset = 0.0
+        elif self._listenback_manual_offset is not None:
+            self._listenback_manual_offset = min(rel_sec, self._listenback_length)
+        self.listenback_time_label.setText(
+            f"进度: {rel_sec:.3f} / {length:.3f}s"
+        )
+
+    def _refresh_listenback_status(self):
+        ap = getattr(self.main, 'audio_processor', None)
+        if ap is None or self._listenback_length <= 0.0 or self._listenback_abs_range is None:
+            self.listenback_status_label.setText("回听不可用：未选区")
+            for widget in (self.listenback_play_btn, self.listenback_pause_btn):
+                widget.setEnabled(False)
+            return
+        state = str(getattr(ap, '_lb_state', 'stopped'))
+        status_map = {
+            'playing': '回听播放中',
+            'paused': '回听已暂停',
+            'stopped': '回听待播放'
+        }
+        self.listenback_status_label.setText(status_map.get(state, '回听待播放'))
+        rel_sec = self._compute_current_relative_sec(ap)
+        if state == 'playing':
+            self._listenback_manual_offset = None
+        elif self._listenback_manual_offset is not None:
+            rel_sec = max(0.0, min(self._listenback_length, self._listenback_manual_offset))
+        if not self._listenback_slider_dragging:
+            self._set_listenback_slider_position(rel_sec)
+        enabled = bool(self._listenback_abs_range is not None)
+        self.listenback_play_btn.setEnabled(enabled and state != 'playing')
+        self.listenback_pause_btn.setEnabled(enabled and state == 'playing')
+
+    def _compute_current_relative_sec(self, ap) -> float:
+        if self._listenback_abs_range is None or ap is None:
+            return 0.0
+        try:
+            sr = float(getattr(ap, 'sample_rate', getattr(self.main, 'sample_rate', 48000)) or 48000)
+        except Exception:
+            sr = 48000.0
+        try:
+            base = float(getattr(ap, '_lb_data_abs_start', self._listenback_abs_range[0]))
+        except Exception:
+            base = self._listenback_abs_range[0]
+        try:
+            pos = float(getattr(ap, '_lb_pos', 0)) / max(sr, 1.0)
+        except Exception:
+            pos = 0.0
+        rel = (base + pos) - float(self._listenback_abs_range[0])
+        return max(0.0, min(self._listenback_length, rel))
+
+    def _on_listenback_play_clicked(self):
+        if self._listenback_length <= 0.0:
+            return
+        self._stop_accompaniment_preview()
+        slider_max = max(0, self.listenback_slider.maximum())
+        slider_val = min(self.listenback_slider.value(), slider_max)
+        rel_sec = max(0.0, min(self._listenback_length, slider_val / 1000.0))
+        if slider_max > 0 and slider_val >= slider_max:
+            rel_sec = 0.0
+            self._listenback_manual_offset = 0.0
+            self._set_listenback_slider_position(0.0)
+        if not self._start_listenback_from_offset(rel_sec):
+            self.listenback_status_label.setText("回听失败：无可播放数据")
+            return
+        self._listenback_manual_offset = None
+        if self.listenback_backing_checkbox.isChecked() and self._listenback_abs_range is not None:
+            self._start_accompaniment_preview(self._listenback_abs_range[0] + rel_sec)
+        else:
+            self._stop_accompaniment_preview()
+        self._refresh_listenback_status()
+
+    def _on_listenback_pause_clicked(self):
+        viz = getattr(self.main, 'visualizer', None)
+        if viz is None:
+            return
+        try:
+            pause_handler = getattr(viz, '_handle_pause_click', None)
+            if callable(pause_handler):
+                pause_handler()
+            else:
+                ap = getattr(self.main, 'audio_processor', None)
+                if ap is not None:
+                    ap.pause_listenback_playback()
+        except Exception:
+            pass
+        self._stop_accompaniment_preview()
+        self._refresh_listenback_status()
+
+    def _on_listenback_slider_pressed(self):
+        self._listenback_slider_dragging = True
+
+    def _on_listenback_slider_released(self):
+        self._listenback_slider_dragging = False
+        ap = getattr(self.main, 'audio_processor', None)
+        keep_playing = bool(ap and getattr(ap, '_lb_state', 'stopped') == 'playing')
+        self._apply_slider_seek(keep_playing)
+
+    def _on_listenback_slider_changed(self, value: int):
+        if self._listenback_length <= 0.0:
+            return
+        rel_sec = max(0.0, min(self._listenback_length, value / 1000.0))
+        self.listenback_time_label.setText(f"进度: {rel_sec:.3f} / {self._listenback_length:.3f}s")
+        if self._listenback_slider_dragging:
+            self._update_visualizer_playhead(rel_sec)
+            ap = getattr(self.main, 'audio_processor', None)
+            state = str(getattr(ap, '_lb_state', 'stopped')) if ap is not None else 'stopped'
+            if state != 'playing':
+                self._listenback_manual_offset = rel_sec
+
+    def _apply_slider_seek(self, keep_playing: bool):
+        if self._listenback_length <= 0.0:
+            return
+        rel_sec = max(0.0, min(self._listenback_length, self.listenback_slider.value() / 1000.0))
+        self._update_visualizer_playhead(rel_sec)
+        if keep_playing:
+            backing = self.listenback_backing_checkbox.isChecked()
+            self._stop_accompaniment_preview()
+            if self._start_listenback_from_offset(rel_sec):
+                self._listenback_manual_offset = None
+                if backing and self._listenback_abs_range is not None:
+                    self._start_accompaniment_preview(self._listenback_abs_range[0] + rel_sec)
+        else:
+            self._listenback_manual_offset = rel_sec
+        self._refresh_listenback_status()
+
+    def _update_visualizer_playhead(self, rel_sec: float):
+        viz = getattr(self.main, 'visualizer', None)
+        if viz is None:
+            return
+        try:
+            base = float(self._last_range[0] or 0.0)
+        except Exception:
+            base = 0.0
+        pos = base + rel_sec
+        try:
+            viz._ensure_playhead()
+            if hasattr(viz, '_lb_playhead') and viz._lb_playhead is not None:
+                viz._lb_playhead.set_xdata([pos, pos])
+                viz._lb_playhead.set_ydata([0.0, 1.0])
+                viz._lb_playhead.set_visible(True)
+                try:
+                    viz._lb_user_moved_playhead = True
+                except Exception:
+                    pass
+            if hasattr(viz, 'canvas') and viz.canvas is not None:
+                viz.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _start_listenback_from_offset(self, rel_sec: float) -> bool:
+        viz = getattr(self.main, 'visualizer', None)
+        ap = getattr(self.main, 'audio_processor', None)
+        if viz is None or ap is None or self._listenback_abs_range is None:
+            return False
+        rel_sec = max(0.0, min(self._listenback_length, rel_sec))
+        abs_start, abs_end = self._listenback_abs_range
+        playback_start = abs_start + rel_sec
+        state = getattr(ap, '_lb_state', 'stopped')
+        if state in ('playing', 'paused'):
+            try:
+                stop_cb = getattr(viz, '_handle_stop_click', None)
+                if callable(stop_cb):
+                    stop_cb()
+                else:
+                    ap.stop_listenback_playback()
+            except Exception:
+                try:
+                    ap.stop_listenback_playback()
+                except Exception:
+                    pass
+        ok = ap.start_listenback_playback(playback_start, abs_end)
+        if not ok:
+            return False
+        try:
+            viz.selection_active = False
+            viz._ensure_playhead()
+            base = float(self._last_range[0] or 0.0)
+            if hasattr(viz, '_lb_playhead') and viz._lb_playhead is not None:
+                pos = base + rel_sec
+                viz._lb_playhead.set_xdata([pos, pos])
+                viz._lb_playhead.set_ydata([0.0, 1.0])
+                viz._lb_playhead.set_visible(True)
+                viz._lb_user_moved_playhead = False
+            viz._start_playhead_timer(playback_start, abs_end)
+            viz.update_listenback_artists()
+            if hasattr(viz, 'canvas') and viz.canvas is not None:
+                viz.canvas.draw_idle()
+        except Exception:
+            pass
+        return True
+
+    def _get_absolute_range(self, start: float, end: float) -> Optional[Tuple[float, float]]:
+        viz = getattr(self.main, 'visualizer', None)
+        if viz is None:
+            return None
+        base = getattr(viz, 'start_time', None)
+        if base is None:
+            return None
+        try:
+            base_val = float(base)
+        except Exception:
+            return None
+        return (base_val + float(start), base_val + float(end))
+
+    def _start_accompaniment_preview(self, abs_start: float):
+        main = self.main
+        viz = getattr(main, 'visualizer', None)
+        if main is None or viz is None:
+            return
+        start_time = getattr(viz, 'start_time', None)
+        if start_time is None:
+            return
+        offset = abs_start - float(start_time)
+        if offset < 0.0:
+            offset = 0.0
+        try:
+            self._listenback_prev_preview_flag = bool(getattr(main, '_backing_preview_active', False))
+        except Exception:
+            self._listenback_prev_preview_flag = False
+        try:
+            if not self._listenback_prev_preview_flag:
+                setattr(main, '_backing_preview_active', True)
+        except Exception:
+            pass
+        try:
+            main._seek_backing_audio(offset)
+        except Exception:
+            pass
+        try:
+            setattr(main, '_backing_paused', False)
+        except Exception:
+            pass
+        try:
+            main._maybe_start_backing_playback()
+            self._listenback_backing_session = True
+        except Exception:
+            self._listenback_backing_session = False
+
+    def _stop_accompaniment_preview(self, force: bool = False):
+        if not self._listenback_backing_session and not force:
+            return
+        main = self.main
+        if main is None:
+            return
+        try:
+            if not self._listenback_prev_preview_flag or force:
+                main._stop_backing_playback()
+                setattr(main, '_backing_preview_active', False)
+        except Exception:
+            pass
+        self._listenback_backing_session = False
+        self._listenback_prev_preview_flag = False
+
+    def _on_listenback_backing_toggled(self, checked: bool):
+        if not checked:
+            self._stop_accompaniment_preview()
+
+    def _on_listenback_finished(self):
+        self._stop_accompaniment_preview()
+        if self._listenback_length > 0.0 and not self._listenback_slider_dragging:
+            try:
+                self.listenback_slider.blockSignals(True)
+                self.listenback_slider.setValue(self.listenback_slider.maximum())
+            finally:
+                try:
+                    self.listenback_slider.blockSignals(False)
+                except Exception:
+                    pass
+        if self._listenback_length > 0.0:
+            self._listenback_manual_offset = self._listenback_length
+        self._refresh_listenback_status()
+
+    def closeEvent(self, event):  # type: ignore[override]
+        try:
+            self._stop_accompaniment_preview()
+        except Exception:
+            pass
+        try:
+            ap = getattr(self.main, 'audio_processor', None)
+            if ap is not None and hasattr(ap, 'listenback_playback_finished'):
+                ap.listenback_playback_finished.disconnect(self._on_listenback_finished)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_sync_timer') and self._sync_timer is not None:
+                self._sync_timer.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.main, 'deactivate_retake_mode'):
+                self.main.deactivate_retake_mode(close_window=False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.main, '_retake_control_win') and self.main._retake_control_win is self:
+                self.main._retake_control_win = None
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
 # ========================= 本地音高检测：纯人声·实时分析 实现 ========================= #
 class _BackingControlWindow(QDialog):
     """伴奏/原唱辅助控制窗口：提供进度拖动、音量调节与倒计时提示。"""
@@ -34807,36 +35956,25 @@ class _BackingControlWindow(QDialog):
             pass
 
     def _on_redo(self):
+        success = False
         try:
-            viz = getattr(self.main, 'visualizer', None)
-            if viz is None or not getattr(viz, 'selection_active', False):
-                try:
-                    QMessageBox.information(self, "区间重录", "请先在主界面拖动建立一个时间选区（两条竖线）。")
-                except Exception:
-                    pass
+            handler = getattr(self.main, 'trigger_default_retake_selection', None)
+            if callable(handler):
+                success = bool(handler())
+        except Exception as exc:
+            print(f"⚠️ 触发选区重录失败: {exc}")
+            success = False
+        if success:
+            return
+        try:
+            opener = getattr(self.main, 'open_retake_control_window', None)
+            if callable(opener):
+                opener()
                 return
-            start = float(getattr(viz, 'sel_start', 0.0))
-            end = float(getattr(viz, 'sel_end', start))
-            if end <= start + 1e-6:
-                return
-            try:
-                viz.remove_range(start, end)
-            except Exception:
-                pass
-            try:
-                self.main._apply_backing_seek(start, trim_if_backward=False)
-            except Exception:
-                pass
-            try:
-                if not hasattr(self.main, '_record_trim_point'):
-                    self.main._record_trim_point = start
-            except Exception:
-                pass
-            if not getattr(self.main, 'is_recording', False):
-                try:
-                    self.main.start_recording()
-                except Exception:
-                    pass
+        except Exception:
+            pass
+        try:
+            QMessageBox.information(self, "区间重录", "当前无法进入选区重录模式，请稍后再试。")
         except Exception:
             pass
 
