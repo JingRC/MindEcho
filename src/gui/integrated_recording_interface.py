@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QSlider, QLabel, QPushButton, QMainWindow,
     QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
     QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication,
-    QDoubleSpinBox
+    QDoubleSpinBox, QSizePolicy, QFormLayout, QAbstractSpinBox, QToolButton
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 from collections import deque
@@ -308,6 +308,57 @@ class SegmentedPitchBuffer:
             self._length = new_length
         return changed
 
+    def extract_range(self, start: float, end: float) -> List[Tuple[float, float, float, Any]]:
+        """Return pitch records inside [start, end]."""
+        if not self._segments:
+            return []
+        try:
+            start = float(start)
+            end = float(max(start, end))
+        except Exception:
+            return []
+        if end <= start + self._epsilon:
+            return []
+        records: List[Tuple[float, float, float, Any]] = []
+        low = start - self._epsilon
+        high = end + self._epsilon
+        for seg in self._segments:
+            if seg.end < low:
+                continue
+            if seg.start > high:
+                break
+            for t, p, c, n in zip(seg.times, seg.pitches, seg.confidences, seg.notes):
+                try:
+                    tv = float(t)
+                except Exception:
+                    tv = t
+                if tv < low or tv > high:
+                    continue
+                records.append((tv, float(p), float(c), n))
+        return records
+
+    def restore_points(self, records: List[Tuple[float, float, float, Any]]) -> bool:
+        """Reinsert records (time, pitch, confidence, note) preserving chronology."""
+        if not records:
+            return False
+        try:
+            merged = []
+            base_times, base_pitches, base_confs, base_notes = self.to_lists()
+            merged.extend(zip(base_times, base_pitches, base_confs, base_notes))
+            merged.extend(records)
+            merged.sort(key=lambda item: float(item[0]))
+            if not merged:
+                self.clear()
+                return True
+            times = [float(t) for t, _, _, _ in merged]
+            pitches = [float(p) for _, p, _, _ in merged]
+            confs = [float(c) for _, _, c, _ in merged]
+            notes = [n for _, _, _, n in merged]
+            self.rebuild(times, pitches, confs, notes)
+            return True
+        except Exception:
+            return False
+
     def iter_field(self, field: str):
         attr = self._FIELD_ATTR[field]
         for seg in self._segments:
@@ -493,7 +544,9 @@ except Exception:
 # 轻量 PitchFrame 结构（本地兼容封装）
 # 说明：外部可能存在不同签名的 PitchFrame，这里统一使用本地兼容类，
 # 接受 f0_raw/f0_smooth 等关键字并提供 to_dict()，避免关键字不匹配导致运行时异常。
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
 @dataclass
 class PitchFrame:
     # 基本时间戳
@@ -536,6 +589,54 @@ class PitchFrame:
             'f0_raw': float(raw),
         }
         return d
+
+
+# Plan 2 overlay buffer container (keeps retake data in memory until commit)
+@dataclass
+class RetakeOverlayState:
+    """In-memory overlay buffers for non-destructive retakes (Plan 2)."""
+
+    start: float = 0.0
+    end: float = 0.0
+    active: bool = False
+    recording: bool = False
+    requires_commit: bool = False
+    epoch: int = 0
+    start_sample_index: int = 0
+    end_sample_index: int = 0
+    created_wall_time: float = 0.0
+    last_timestamp: float = 0.0
+    paused_at: Optional[float] = None
+    original_duration: float = 0.0
+    original_audio_length: int = 0
+    original_pitch_count: int = 0
+    original_time_offset: float = 0.0
+    audio_samples: List[float] = field(default_factory=list)
+    pitch_packets: List[Dict[str, Any]] = field(default_factory=list)
+
+    def clear(self) -> None:
+        self.audio_samples.clear()
+        self.pitch_packets.clear()
+        self.active = False
+        self.recording = False
+        self.requires_commit = False
+        self.start = 0.0
+        self.end = 0.0
+        self.start_sample_index = 0
+        self.end_sample_index = 0
+        self.created_wall_time = 0.0
+        self.last_timestamp = 0.0
+        self.paused_at = None
+        self.original_duration = 0.0
+        self.original_audio_length = 0
+        self.original_pitch_count = 0
+        self.original_time_offset = 0.0
+
+    def duration(self) -> float:
+        return max(0.0, float(self.end) - float(self.start))
+
+    def has_data(self) -> bool:
+        return bool(self.audio_samples or self.pitch_packets)
 
 
 # 通用：延迟显示格式化（避免出现 "Nonems" 等）
@@ -587,6 +688,7 @@ class IntegratedAudioProcessor(QThread):
         self.is_global_monitoring_active = False
         self.is_monitoring_only = False
         self.enable_pitch_visualization = False
+        self.overlay_delegate = None  # Optional owner that handles retake overlay capture
 
         # 实时统计：保存最近的音高点（用于绘制与分析）
         # 清轴后，确保悬停注解与高亮图元可以重新挂载当前轴
@@ -617,14 +719,18 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             pass
 
-        # 专业级音频设备配置（Windows优化）
-        print("🎵 正在配置专业级音频处理器...")
-        self._configure_professional_audio_settings()
-
-        # 录音参数 - 终极超低延迟配置
+        # 录音参数 - 终极超低延迟配置（在硬件探测前先给出兜底值，避免属性缺失）
         self.sample_rate = 96000  # 🚀 96kHz超高采样率，提升时间分辨率
         self.channels = 1
         self.chunk_size = 32      # 🎵 终极小块（理论延迟0.33ms @96kHz）
+
+        # 专业级音频设备配置（Windows优化）
+        try:
+            print("🎵 正在配置专业级音频处理器...")
+            self._configure_professional_audio_settings()
+        except Exception as exc:
+            print(f"⚠️ 专业音频设置初始化失败: {exc}")
+
 
         # 🔥 初始化性能优化工具
         self.audio_processor = AudioProcessor(sample_rate=96000)  # 🚀 使用96kHz处理器
@@ -720,28 +826,33 @@ class IntegratedAudioProcessor(QThread):
         # 2) 未显式开启以下 debug 标志任一：audio_status_log / latency_report / latency_warn_verbose / perf_verbose
         # 3) 非首次关键诊断（首次少量输出仍保留，避免完全静默导致误判）
         # 可通过在外部设置 self.debug_flags['perf_verbose']=True 或 audio_status_log=True 临时恢复
-        def _should_suppress_audio_debug():
+        def _should_suppress_audio_debug() -> bool:
+            """伴奏模式下默认压制底层音频日志，除非用户开启调试标志。"""
             try:
                 mode = getattr(self, 'backing_mode', 'off')
                 if mode not in ('accompaniment', 'both'):
                     return False
                 flags = getattr(self, 'debug_flags', {}) or {}
-                # 若显式允许伴奏模式底层日志 或 开启性能/状态类详细调试，则不抑制
-                if flags.get('allow_accompaniment_audio_debug') or any(flags.get(k, False) for k in (
-                    'audio_status_log','latency_report','latency_warn_verbose','perf_verbose'
-                )):
+                if flags.get('allow_accompaniment_audio_debug'):
+                    return False
+                if any(flags.get(k, False) for k in ('audio_status_log', 'latency_report', 'latency_warn_verbose', 'perf_verbose')):
+                    return False
+                # 允许第一次关键诊断打印，以防完全静默
+                first_logged = bool(getattr(self, '_backing_debug_first_logged', False))
+                if not first_logged:
+                    self._backing_debug_first_logged = True
                     return False
                 return True
             except Exception:
                 return False
-        # 绑定为实例方法供回调内部使用
+
         self._should_suppress_audio_debug = _should_suppress_audio_debug
         # 🔧 统计计数器（回调中引用，避免 AttributeError）
         self._stat_counters = {
             'vocal_protect': 0,
             'high_latency': 0,
             'segments_recomputed': 0,
-            'segment_cache_hits': 0
+            'segment_cache_hits': 0,
         }
         # 兼容性保障：若后续代码仍直接访问 self.debug_flags.get(...) 则不会再报错
 
@@ -785,6 +896,7 @@ class IntegratedAudioProcessor(QThread):
         self._lb_state = 'stopped'  # 'playing'|'paused'|'stopped'
         self._lb_data_abs_start = 0.0
         self._lb_data_abs_end = 0.0
+        self.listenback_vocal_gain = 1.25  # 默认让回听人声稍微更响亮
 
         # ====== 其余核心初始化（之前因缩进错误而跑到方法定义后）======
         # 颤音检测相关参数
@@ -926,7 +1038,7 @@ class IntegratedAudioProcessor(QThread):
             if data.size == 0:
                 print("⚠️ 回听：无可用音频数据或超出缓冲范围")
                 return False
-            self._lb_data = data
+                self._lb_data = data
             self._lb_pos = 0
             self._lb_state = 'playing'
             try:
@@ -944,6 +1056,12 @@ class IntegratedAudioProcessor(QThread):
                     end = self._lb_pos + frames
                     chunk = self._lb_data[self._lb_pos:end]
                     n = len(chunk)
+                    gain = float(getattr(self, 'listenback_vocal_gain', 1.0) or 1.0)
+                    if gain != 1.0 and n > 0:
+                        try:
+                            chunk = np.clip(chunk * gain, -1.0, 1.0)
+                        except Exception:
+                            pass
                     if n < frames:
                         # 填充剩余为0，并停止
                         if n > 0:
@@ -1049,6 +1167,12 @@ class IntegratedAudioProcessor(QThread):
                     end = self._lb_pos + frames
                     chunk = self._lb_data[self._lb_pos:end]
                     n = len(chunk)
+                    gain = float(getattr(self, 'listenback_vocal_gain', 1.0) or 1.0)
+                    if gain != 1.0 and n > 0:
+                        try:
+                            chunk = np.clip(chunk * gain, -1.0, 1.0)
+                        except Exception:
+                            pass
                     if n < frames:
                         if n > 0:
                             outdata[:n, 0] = chunk
@@ -1120,6 +1244,19 @@ class IntegratedAudioProcessor(QThread):
             return True
         except Exception:
             return False
+
+    def set_listenback_vocal_gain(self, gain: float):
+        try:
+            gain = max(0.1, min(3.0, float(gain)))
+        except Exception:
+            gain = 1.0
+        self.listenback_vocal_gain = gain
+
+    def get_listenback_vocal_gain(self) -> float:
+        try:
+            return float(getattr(self, 'listenback_vocal_gain', 1.0))
+        except Exception:
+            return 1.0
 
     def set_save_base_dir(self, path: str):
         # 设置录音保存的基础目录（由主窗口调用）
@@ -1644,6 +1781,32 @@ class IntegratedAudioProcessor(QThread):
         except Exception as e:
             print(f"⚠️ 加载首选设备配置失败: {e}")
             self._selected_device_config = None
+
+    def _delegate_overlay_audio_chunk(self, samples) -> bool:
+        """Forward raw audio chunks to overlay-aware owner when configured."""
+        delegate = getattr(self, 'overlay_delegate', None)
+        if delegate is None:
+            return False
+        handler = getattr(delegate, '_capture_overlay_audio_chunk', None)
+        if not callable(handler):
+            return False
+        try:
+            return bool(handler(samples))
+        except Exception:
+            return False
+
+    def _delegate_overlay_pitch_packet(self, packet: dict) -> bool:
+        """Forward pitch packets for overlay buffering when owner is active."""
+        delegate = getattr(self, 'overlay_delegate', None)
+        if delegate is None:
+            return False
+        handler = getattr(delegate, '_capture_overlay_pitch_packet', None)
+        if not callable(handler):
+            return False
+        try:
+            return bool(handler(packet))
+        except Exception:
+            return False
     
     def _configure_professional_audio_settings(self):
         """配置专业级音频设备设置（Windows ASIO/WASAPI优化）"""
@@ -5191,8 +5354,16 @@ class IntegratedAudioProcessor(QThread):
                         # 🎯 处理录音需求（在全局监听模式下）+ 合批入队 raw 音频，保持与录音一致
                         try:
                             should_save_audio = self.is_recording and self.should_save
+                            overlay_capture = False
+                            try:
+                                overlay_capture = bool(self._retake_overlay_active())
+                            except Exception:
+                                overlay_capture = False
+                            handled = False
+                            if should_save_audio or overlay_capture:
+                                handled = self._delegate_overlay_audio_chunk(audio_data)
                             # 保存录音原始/增强波形到缓冲，仅当需要保存
-                            if should_save_audio:
+                            if should_save_audio and not handled:
                                 self.audio_buffer.extend(audio_data)
                             # 合批累积并按阈值吐包
                             if self._enqueue_accum.size == 0:
@@ -7280,8 +7451,16 @@ class IntegratedAudioProcessor(QThread):
             if audio_packets:
                 try:
                     # 保存需求处理
+                    overlay_capture = False
+                    try:
+                        overlay_capture = bool(self._retake_overlay_active())
+                    except Exception:
+                        overlay_capture = False
                     for packet in audio_packets:
-                        if packet['should_save']:
+                        handled = False
+                        if packet['should_save'] or overlay_capture:
+                            handled = self._delegate_overlay_audio_chunk(packet['data'])
+                        if packet['should_save'] and not handled:
                             self.audio_buffer.extend(packet['data'])
                     # 回听缓冲：总是记录（仅暂存，不等同保存）
                     try:
@@ -7820,13 +7999,16 @@ class IntegratedAudioProcessor(QThread):
                 # 🔥 强制保存历史数据和发送信号
                 try:
                     # 监听态不写入录音历史，避免污染
+                    overlay_handled = False
                     if not preview_only:
-                        self.pitch_history.append({
-                            'frequency': smooth_frequency,
-                            'timestamp': current_time,
-                            'confidence': confidence,
-                            'note_info': note_info
-                        })
+                        overlay_handled = self._delegate_overlay_pitch_packet(pitch_data)
+                        if not overlay_handled:
+                            self.pitch_history.append({
+                                'frequency': smooth_frequency,
+                                'timestamp': current_time,
+                                'confidence': confidence,
+                                'note_info': note_info
+                            })
                     # 记录最近一次有效绘制，用于换气中段柔性抑制参考
                     try:
                         if preview_only:
@@ -10878,6 +11060,11 @@ class ECGStylePitchVisualizer(QWidget):
         self._retake_skip_gate_frame_count = 6
         self._retake_unlock_cap_margin = 0.05
         self._retake_gate_suppress_until = 0.0
+        # 选区遮罩：用于软删除/高亮指定区间而不破坏原始数据
+        self._pitch_masks = {}
+        self._pitch_masks_active = False
+        self._pitch_mask_cache = None
+        self._next_pitch_mask_id = 1
         # 悬停提示（细节点浮动气泡）
         self._hover_annot = None
         self._hover_last_xy = None  # (x, y) in data coords
@@ -12423,6 +12610,192 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _delegate_overlay_audio_chunk(self, samples) -> bool:
+        """Forward raw audio data to an overlay-aware owner if configured."""
+        delegate = getattr(self, 'overlay_delegate', None)
+        if delegate is None:
+            return False
+        handler = getattr(delegate, '_capture_overlay_audio_chunk', None)
+        if not callable(handler):
+            return False
+        try:
+            return bool(handler(samples))
+        except Exception:
+            return False
+
+    def _delegate_overlay_pitch_packet(self, packet: dict) -> bool:
+        """Forward pitch packets for overlay buffering when available."""
+        delegate = getattr(self, 'overlay_delegate', None)
+        if delegate is None:
+            return False
+        handler = getattr(delegate, '_capture_overlay_pitch_packet', None)
+        if not callable(handler):
+            return False
+        try:
+            return bool(handler(packet))
+        except Exception:
+            return False
+
+    # ====== 选区遮罩（软清除）辅助 ======
+    def _invalidate_pitch_mask_cache(self):
+        self._pitch_mask_cache = None
+        self._pitch_masks_active = bool(self._pitch_masks)
+        for attr in ('_segments_cache', '_segments_cache_window', '_segments_cache_key'):
+            if hasattr(self, attr):
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    setattr(self, attr, None)
+
+    def _get_pitch_mask_intervals(self):
+        if not getattr(self, '_pitch_masks_active', False):
+            return []
+        cache = getattr(self, '_pitch_mask_cache', None)
+        if cache is not None:
+            return cache
+        intervals = []
+        for info in list(self._pitch_masks.values()):
+            try:
+                start = float(info.get('start', 0.0))
+                end = float(info.get('end', start))
+            except Exception:
+                continue
+            if end < start:
+                start, end = end, start
+            if end <= start + 1e-9:
+                continue
+            intervals.append((start, end))
+        intervals.sort(key=lambda item: item[0])
+        merged = []
+        for start, end in intervals:
+            if not merged or start > merged[-1][1] + 1e-9:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+        merged = [(float(a), float(b)) for a, b in merged]
+        self._pitch_mask_cache = merged
+        return merged
+
+    def _time_in_mask_intervals(self, t: float, intervals: Optional[List[Tuple[float, float]]] = None) -> bool:
+        if not getattr(self, '_pitch_masks_active', False):
+            return False
+        spans = intervals if intervals is not None else self._get_pitch_mask_intervals()
+        if not spans:
+            return False
+        eps = 1e-9
+        for start, end in spans:
+            if t < start - eps:
+                break
+            if start - eps <= t <= end + eps:
+                return True
+        return False
+
+    def _apply_pitch_masks_to_series(self, times: List[float], *series: List[Any]):
+        if (not times) or (not getattr(self, '_pitch_masks_active', False)):
+            return (times, *series)
+        intervals = self._get_pitch_mask_intervals()
+        if not intervals:
+            return (times, *series)
+        keep_idx = []
+        for idx, t in enumerate(times):
+            try:
+                t_val = float(t)
+            except Exception:
+                t_val = t
+            if not self._time_in_mask_intervals(t_val, intervals):
+                keep_idx.append(idx)
+        if len(keep_idx) == len(times):
+            return (times, *series)
+        filtered_times = [times[i] for i in keep_idx]
+        filtered_series: List[List[Any]] = []
+        for seq in series:
+            if seq is None or len(seq) != len(times):
+                filtered_series.append(seq)
+                continue
+            filtered_series.append([seq[i] for i in keep_idx])
+        return (filtered_times, *filtered_series)
+
+    def _mask_filter_offsets_array(self, arr):
+        try:
+            if arr is None or not getattr(self, '_pitch_masks_active', False):
+                return arr
+            import numpy as _np
+            arr_np = _np.asarray(arr, dtype=float)
+            if arr_np.ndim != 2 or arr_np.shape[1] < 2 or arr_np.size == 0:
+                return arr
+            intervals = self._get_pitch_mask_intervals()
+            if not intervals:
+                return arr
+            mask = _np.ones(arr_np.shape[0], dtype=bool)
+            eps = 1e-9
+            for start, end in intervals:
+                mask &= ~((arr_np[:, 0] >= start - eps) & (arr_np[:, 0] <= end + eps))
+            return arr_np[mask]
+        except Exception:
+            return arr
+
+    def mask_pitch_points_in_range(self, start: float, end: float, *, label: Optional[str] = None) -> Optional[int]:
+        try:
+            start_f = float(max(0.0, start))
+            end_f = float(max(start_f, end))
+        except Exception:
+            return None
+        if end_f <= start_f + 1e-9:
+            return None
+        mask_id = int(self._next_pitch_mask_id)
+        self._next_pitch_mask_id = mask_id + 1
+        self._pitch_masks[mask_id] = {
+            'start': start_f,
+            'end': end_f,
+            'label': label,
+            'created': time.time(),
+        }
+        self._invalidate_pitch_mask_cache()
+        self.refresh_artists()
+        return mask_id
+
+    def unmask_pitch_points(self, mask_id: Optional[int] = None, *, label: Optional[str] = None) -> bool:
+        removed = False
+        if mask_id is not None:
+            removed = self._pitch_masks.pop(mask_id, None) is not None
+        elif label is not None:
+            target = [mid for mid, meta in self._pitch_masks.items() if meta.get('label') == label]
+            for mid in target:
+                self._pitch_masks.pop(mid, None)
+            removed = bool(target)
+        else:
+            return False
+        if removed:
+            self._invalidate_pitch_mask_cache()
+            self.refresh_artists()
+        return removed
+
+    def clear_all_pitch_masks(self) -> None:
+        if not getattr(self, '_pitch_masks', None):
+            return
+        self._pitch_masks.clear()
+        self._invalidate_pitch_mask_cache()
+        self.refresh_artists()
+
+    def refresh_artists(self, start: Optional[float] = None, end: Optional[float] = None):
+        try:
+            self._artist_times_dirty = True
+        except Exception:
+            pass
+        try:
+            self._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        try:
+            self.update_display()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
     def _refresh_left_history_for_seek(self, cap: float, throttle: bool = True):
         """在回退或拖动期间快速恢复回退点左侧的历史细节点，避免界面瞬态清空。"""
         try:
@@ -13122,7 +13495,17 @@ class ECGStylePitchVisualizer(QWidget):
                     cap_eff = cap
             except Exception:
                 cap_eff = cap
-            return arr[arr[:, 0] <= cap_eff + 1e-9]
+            guard_from = None
+            try:
+                guard_from = self._get_retake_future_visibility_guard()
+            except Exception:
+                guard_from = None
+            if guard_from is not None and guard_from > cap_eff + 1e-9:
+                mask = (arr[:, 0] <= cap_eff + 1e-9) | (arr[:, 0] >= guard_from - 1e-9)
+                filtered = arr[mask]
+            else:
+                filtered = arr[arr[:, 0] <= cap_eff + 1e-9]
+            return self._mask_filter_offsets_array(filtered)
         except Exception:
             return arr
 
@@ -13134,15 +13517,26 @@ class ECGStylePitchVisualizer(QWidget):
             if not times or not pitches or len(times) != len(pitches):
                 return times, pitches
             cap = float(getattr(self, '_max_visible_time', float('inf')))
+            guard_from = None
+            try:
+                guard_from = self._get_retake_future_visibility_guard()
+            except Exception:
+                guard_from = None
             ft = []
             fp = []
             for t, p in zip(times, pitches):
                 try:
-                    if float(t) <= cap + 1e-9:
+                    val_t = float(t)
+                    if val_t <= cap + 1e-9:
+                        ft.append(t); fp.append(p)
+                    elif guard_from is not None and val_t >= guard_from - 1e-9:
                         ft.append(t); fp.append(p)
                 except Exception:
                     pass
-            return ft, fp
+            masked = self._apply_pitch_masks_to_series(ft, fp)
+            ft_masked = masked[0]
+            fp_masked = masked[1] if len(masked) > 1 else fp
+            return ft_masked, fp_masked
         except Exception:
             return times, pitches
 
@@ -13372,6 +13766,44 @@ class ECGStylePitchVisualizer(QWidget):
             self._force_redraw_on_next_update = True
         except Exception:
             pass
+
+    def collect_pitch_points_in_range(self, start: float, end: float) -> List[Tuple[float, float, float, Any]]:
+        """Return raw pitch samples inside selection bounds for snapshot/restore."""
+        try:
+            return self._pitch_store.extract_range(start, end)
+        except Exception:
+            return []
+
+    def restore_pitch_points(self, records: List[Tuple[float, float, float, Any]]) -> bool:
+        """Reinsert snapshot pitch points and trigger a redraw."""
+        if not records:
+            return False
+        restored = False
+        try:
+            restored = bool(self._pitch_store.restore_points(records))
+        except Exception:
+            restored = False
+        if not restored:
+            return False
+        try:
+            self._refresh_time_bins()
+        except Exception:
+            pass
+        try:
+            self._artist_times_dirty = True
+            self._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        try:
+            self.update_listenback_artists()
+        except Exception:
+            pass
+        if hasattr(self, 'canvas') and self.canvas is not None:
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+        return True
 
     def _filter_taill_buffer(self, predicate):
         """兼容旧补丁的误拼写接口，转调至 _filter_tail_buffer。"""
@@ -13715,6 +14147,8 @@ class ECGStylePitchVisualizer(QWidget):
         # 选区模式：None / 'listenback' / 'retake'
         self.selection_mode: Optional[str] = None
         self.retake_selection_active = False
+        self._selection_visibility_hold_until = 0.0
+        self._selection_visibility_hold_window = 0.35
         self._retake_default_span = 5.0
         self._retake_anchor_time = 0.0
         self.sel_start = 0.0
@@ -13898,6 +14332,10 @@ class ECGStylePitchVisualizer(QWidget):
         self.sel_start = start
         self.sel_end = end
         try:
+            self._retake_active_range_hint = (self.sel_start, self.sel_end)
+        except Exception:
+            pass
+        try:
             self._lb_user_moved_playhead = False
         except Exception:
             pass
@@ -13929,6 +14367,7 @@ class ECGStylePitchVisualizer(QWidget):
         refresh: bool = True,
         sync_playhead: bool = True,
         anchor_side: Optional[str] = None,
+        respect_right_limit: bool = True,
     ):
         """调节区间重录选区；anchor_side 指示由哪一侧驱动调整。"""
         if start is None or end is None:
@@ -13940,7 +14379,7 @@ class ECGStylePitchVisualizer(QWidget):
             return
         if not math.isfinite(start) or not math.isfinite(end):
             return
-        right_limit = self._get_retake_right_limit()
+        right_limit = self._get_retake_right_limit() if respect_right_limit else None
         if right_limit is not None and not math.isfinite(right_limit):
             right_limit = None
         min_span = max(0.05, float(getattr(self, '_retake_min_span', 0.35)))
@@ -13998,6 +14437,10 @@ class ECGStylePitchVisualizer(QWidget):
         self.listenback_enabled = False
         self.sel_start = start
         self.sel_end = end
+        try:
+            self._retake_active_range_hint = (self.sel_start, self.sel_end)
+        except Exception:
+            pass
         if sync_playhead:
             try:
                 ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', 'stopped')
@@ -14026,6 +14469,49 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
         self._notify_retake_range_changed()
+
+    def _get_active_retake_range(self) -> Optional[Tuple[float, float]]:
+        """Return (start,end) for the current or last active retake selection."""
+        active = bool(getattr(self, 'retake_selection_active', False))
+        if not active:
+            hint = getattr(self, '_retake_active_range_hint', None)
+            if hint and isinstance(hint, (tuple, list)) and len(hint) >= 2:
+                try:
+                    start = float(hint[0])
+                    end = float(hint[1])
+                except Exception:
+                    start = end = None
+                else:
+                    if math.isfinite(start) and math.isfinite(end):
+                        if end < start:
+                            start, end = end, start
+                        if end > start + 1e-9:
+                            return (max(0.0, start), max(0.0, end))
+            return None
+        try:
+            start = getattr(self, 'sel_start', None)
+            end = getattr(self, 'sel_end', None)
+        except Exception:
+            start = end = None
+        if start is None or end is None:
+            return None
+        try:
+            start = float(start)
+            end = float(end)
+        except Exception:
+            return None
+        if not math.isfinite(start) or not math.isfinite(end):
+            return None
+        if end < start:
+            start, end = end, start
+        if end <= start + 1e-9:
+            return None
+        rng = (max(0.0, start), max(0.0, end))
+        try:
+            self._retake_active_range_hint = rng
+        except Exception:
+            pass
+        return rng
 
     def deactivate_retake_selection(self):
         """退出区间重录模式并恢复回听/普通状态。"""
@@ -14358,7 +14844,33 @@ class ECGStylePitchVisualizer(QWidget):
     def update_listenback_artists(self):
         """根据当前状态与轴范围更新选区图元位置/可见性。"""
         try:
-            overlay_active = bool(self.listenback_enabled or self.retake_selection_active)
+            overlay_active = bool(
+                getattr(self, 'selection_active', False)
+                or self.listenback_enabled
+                or self.retake_selection_active
+            )
+            if overlay_active:
+                try:
+                    hold = float(getattr(self, '_selection_visibility_hold_window', 0.35))
+                except Exception:
+                    hold = 0.35
+                try:
+                    hold = max(0.05, min(0.8, hold))
+                except Exception:
+                    hold = 0.35
+                try:
+                    self._selection_visibility_hold_until = time.time() + hold
+                except Exception:
+                    self._selection_visibility_hold_until = time.time() + 0.35
+            else:
+                try:
+                    hold_until = float(getattr(self, '_selection_visibility_hold_until', 0.0) or 0.0)
+                except Exception:
+                    hold_until = 0.0
+                if hold_until > 0.0:
+                    import time as _time_hold
+                    if _time_hold.time() < hold_until:
+                        overlay_active = True
             if not overlay_active:
                 # 隐藏所有图元
                 for art in [self._sel_line_left, self._sel_line_right,
@@ -14439,18 +14951,22 @@ class ECGStylePitchVisualizer(QWidget):
                     self._lb_playhead.set_ydata([0.0, 1.0])
                     self._lb_playhead.set_visible(True)
                     self._lb_playhead.set_zorder(148)
-                    # 仅在完全停止状态下，且用户未移动过播放头时，才自动贴合左线
                     ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
+                    pin_idle = (
+                        selection_mode != 'listenback'
+                        or not getattr(self, 'listenback_enabled', False)
+                        or ap_state in ('', 'stopped', None)
+                    )
                     if (
-                        ap_state == 'stopped'
+                        pin_idle
                         and not getattr(self, '_dragging_playhead', False)
                         and getattr(self, '_lb_resume_abs_start', None) is None
+                        and not getattr(self, '_lb_user_moved_playhead', False)
                     ):
-                        if not getattr(self, '_lb_user_moved_playhead', False):
-                            try:
-                                self._lb_playhead.set_xdata([xL, xL])
-                            except Exception:
-                                pass
+                        try:
+                            self._lb_playhead.set_xdata([xL, xL])
+                        except Exception:
+                            pass
             except Exception:
                 pass
             # 中间播放按钮（绿色透明三角），当未播放时显示（更大更醒目）
@@ -19696,7 +20212,16 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._strict_cap_dirty = True
                                 self._artist_times_dirty = True
                                 try:
-                                    self._retake_force_clear_future_data(float(cap), reset_coverage=False)
+                                    if not self._retake_future_preserve_active():
+                                        active_range = self._get_active_retake_range()
+                                        range_start = active_range[0] if active_range else None
+                                        range_hint = active_range[1] if active_range else None
+                                        self._retake_force_clear_future_data(
+                                            float(cap),
+                                            reset_coverage=False,
+                                            range_end=range_hint,
+                                            range_start=range_start,
+                                        )
                                 except Exception:
                                     pass
                                 try:
@@ -19790,7 +20315,16 @@ class ECGStylePitchVisualizer(QWidget):
                                     except Exception:
                                         pass
                                     try:
-                                        self._retake_force_clear_future_data(float(cap), reset_coverage=False)
+                                        if not self._retake_future_preserve_active():
+                                            active_range = self._get_active_retake_range()
+                                            range_start = active_range[0] if active_range else None
+                                            range_hint = active_range[1] if active_range else None
+                                            self._retake_force_clear_future_data(
+                                                float(cap),
+                                                reset_coverage=False,
+                                                range_end=range_hint,
+                                                range_start=range_start,
+                                            )
                                     except Exception:
                                         pass
                                     try:
@@ -20074,16 +20608,25 @@ class ECGStylePitchVisualizer(QWidget):
                             cap_for_reset = float(getattr(self, '_retake_countdown_target_time', target_cap))
                         except Exception:
                             cap_for_reset = target_cap
+                        preserve_future = bool(getattr(self, '_retake_countdown_preserve_future', False))
                         try:
                             self._retake_finalize_countdown_release(cap_for_reset)
                         except Exception:
                             pass
                         # 倒计时结束瞬间：彻底刷新可视化缓存，确保旧细节点不会残留且新线条可立即落地
-                        try:
-                            if hasattr(self, '_retake_after_countdown_visual_reset'):
-                                self._retake_after_countdown_visual_reset(cap_for_reset)
-                        except Exception:
-                            pass
+                        if not preserve_future:
+                            try:
+                                if hasattr(self, '_retake_after_countdown_visual_reset'):
+                                    active_range = self._get_active_retake_range()
+                                    range_start = active_range[0] if active_range else None
+                                    range_hint = active_range[1] if active_range else None
+                                    self._retake_after_countdown_visual_reset(
+                                        cap_for_reset,
+                                        range_end=range_hint,
+                                        range_start=range_start,
+                                    )
+                            except Exception:
+                                pass
                         # 本帧用于收尾倒计时状态，不再参与写入，等待下一帧新数据
                         try:
                             self.current_pitch_active = False
@@ -22330,6 +22873,12 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             return False
 
+    def _retake_future_preserve_active(self) -> bool:
+        try:
+            return bool(getattr(self, '_retake_countdown_preserve_future', False) or getattr(self, '_retake_force_preserve_future', False))
+        except Exception:
+            return False
+
     def activate_retake_countdown(self, target_time: float, duration: float,
                                   *, start_wall: Optional[float] = None,
                                   end_wall: Optional[float] = None,
@@ -22378,6 +22927,27 @@ class ECGStylePitchVisualizer(QWidget):
             end_wall = float(start_wall) + span
         if preroll_start is None:
             preroll_start = max(0.0, target - span)
+
+        host_interface = getattr(self, '_host_interface', None)
+        preserve_future_points = False
+        if host_interface is not None:
+            try:
+                checker = getattr(host_interface, '_retake_overlay_active', None)
+            except Exception:
+                checker = None
+            try:
+                preserve_future_points = bool(checker()) if callable(checker) else bool(getattr(host_interface, '_retake_overlay_enabled', False))
+            except Exception:
+                preserve_future_points = False
+        if not preserve_future_points:
+            try:
+                preserve_future_points = bool(self._get_active_retake_range())
+            except Exception:
+                pass
+        try:
+            self._retake_countdown_preserve_future = bool(preserve_future_points)
+        except Exception:
+            pass
 
         for attr, val in (
             ('_retake_countdown_duration', span),
@@ -22456,50 +23026,80 @@ class ECGStylePitchVisualizer(QWidget):
             pass
 
         # 倒计时期间保持严格 cap，阻止旧点回潮
-        try:
-            self._cap_strict_lock = True
-            self._post_retake_new_data_started = False
-            self._strict_cap_dirty = True
-        except Exception:
-            pass
+        if not preserve_future_points:
+            try:
+                self._cap_strict_lock = True
+                self._post_retake_new_data_started = False
+                self._strict_cap_dirty = True
+            except Exception:
+                pass
 
-        # 预先保存历史并清除>cap残留，倒计时期间保持整段可见
-        try:
-            prev_cap = float(getattr(self, '_max_visible_time', target))
-        except Exception:
-            prev_cap = float(target)
-        cap_for_snapshot = float(min(prev_cap, target))
-        try:
-            trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
-        except Exception:
-            trim_gap = 0.001
-        if trim_gap < 0.0:
-            trim_gap = 0.0
-        if trim_gap > 0.2:
-            trim_gap = 0.2
-        cap_boundary = max(0.0, cap_for_snapshot - trim_gap)
-        try:
-            self._max_visible_time = cap_boundary
-        except Exception:
-            pass
-        try:
-            if not getattr(self, '_cap_visible_time_enabled', False):
-                self._cap_visible_time_enabled = True
-        except Exception:
-            pass
-        try:
-            self._retake_hard_purge_future(cap_for_snapshot)
-        except Exception:
-            pass
-        try:
-            self._retake_force_clear_future_data(cap_for_snapshot, reset_coverage=True)
-        except Exception:
-            pass
-        try:
-            self._capture_retake_history_snapshot(cap_for_snapshot)
-            self._apply_retake_history_snapshot(force=True, eager=True)
-        except Exception:
-            pass
+            # 预先保存历史并清除>cap残留，倒计时期间保持整段可见
+            try:
+                prev_cap = float(getattr(self, '_max_visible_time', target))
+            except Exception:
+                prev_cap = float(target)
+            cap_for_snapshot = float(min(prev_cap, target))
+            try:
+                trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
+            except Exception:
+                trim_gap = 0.001
+            if trim_gap < 0.0:
+                trim_gap = 0.0
+            if trim_gap > 0.2:
+                trim_gap = 0.2
+            cap_boundary = max(0.0, cap_for_snapshot - trim_gap)
+            try:
+                self._max_visible_time = cap_boundary
+            except Exception:
+                pass
+            try:
+                if not getattr(self, '_cap_visible_time_enabled', False):
+                    self._cap_visible_time_enabled = True
+            except Exception:
+                pass
+            active_range = self._get_active_retake_range()
+            range_start = active_range[0] if active_range else None
+            range_hint = active_range[1] if active_range else None
+            if range_hint is not None:
+                try:
+                    self._set_retake_future_visibility_guard(range_hint)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._clear_retake_future_visibility_guard()
+                except Exception:
+                    pass
+            try:
+                self._retake_hard_purge_future(
+                    cap_for_snapshot,
+                    range_end=range_hint,
+                    range_start=range_start,
+                )
+            except Exception:
+                pass
+            try:
+                self._retake_force_clear_future_data(
+                    cap_for_snapshot,
+                    reset_coverage=True,
+                    range_end=range_hint,
+                    range_start=range_start,
+                )
+            except Exception:
+                pass
+            try:
+                self._capture_retake_history_snapshot(cap_for_snapshot)
+                self._apply_retake_history_snapshot(force=True, eager=True)
+            except Exception:
+                pass
+        else:
+            # 方案二覆盖：仅冻结时间轴，保留右侧细节点，避免陪练数据被抹除
+            for attr in ('_cap_strict_lock', '_cap_visible_time_enabled', '_retake_block_old_history'):
+                try:
+                    setattr(self, attr, False)
+                except Exception:
+                    pass
 
         # 重置叠加元素以强制重新创建，顺便移除遗留对象
         for attr in ('_retake_countdown_bg', '_retake_countdown_line', '_retake_countdown_progress',
@@ -22545,11 +23145,37 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         return True
 
-    def _retake_hard_purge_future(self, cap: float):
+    def _retake_hard_purge_future(self, cap: float, *, range_end: Optional[float] = None, range_start: Optional[float] = None):
         try:
             cap_val = float(cap)
         except Exception:
             return
+        tol = max(1e-4, float(getattr(self, '_retake_trim_gap', 0.001)) * 3.0)
+        active = self._get_active_retake_range()
+        if active:
+            if range_start is None:
+                range_start = active[0]
+            if range_end is None:
+                range_end = active[1]
+        safe_start = None
+        safe_end = None
+        if range_start is not None:
+            try:
+                safe_start = float(range_start)
+            except Exception:
+                safe_start = None
+        if range_end is not None:
+            try:
+                safe_end = float(range_end)
+            except Exception:
+                safe_end = None
+        if safe_start is not None and cap_val < safe_start - tol:
+            cap_val = safe_start
+        clear_stop = None
+        if safe_end is not None:
+            clear_stop = safe_end if safe_start is None or safe_end > safe_start + 1e-9 else None
+            if clear_stop is not None and clear_stop <= cap_val + 1e-9:
+                clear_stop = None
         try:
             trim_gap = float(getattr(self, '_retake_trim_gap', 0.001))
         except Exception:
@@ -22559,17 +23185,19 @@ class ECGStylePitchVisualizer(QWidget):
         if trim_gap > 0.2:
             trim_gap = 0.2
         purge_start = max(0.0, cap_val - trim_gap)
+        target_end = float('inf') if clear_stop is None else float(clear_stop)
         try:
-            self.purge_artists_in_range(purge_start, float('inf'))
+            self.purge_artists_in_range(purge_start, target_end)
         except Exception:
             pass
-        for attr in ('_enforce_cap_on_existing_artists', '_purge_collections_beyond_cap', '_filter_mainline_to_cap'):
-            try:
-                fn = getattr(self, attr, None)
-                if callable(fn):
-                    fn()
-            except Exception:
-                pass
+        if clear_stop is None:
+            for attr in ('_enforce_cap_on_existing_artists', '_purge_collections_beyond_cap', '_filter_mainline_to_cap'):
+                try:
+                    fn = getattr(self, attr, None)
+                    if callable(fn):
+                        fn()
+                except Exception:
+                    pass
         try:
             self._artist_times_dirty = True
         except Exception:
@@ -22579,7 +23207,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
-    def _retake_force_clear_future_data(self, cap: float, *, reset_coverage: bool = True):
+    def _retake_force_clear_future_data(self, cap: float, *, reset_coverage: bool = True, range_end: Optional[float] = None, range_start: Optional[float] = None):
         """彻底清理回退点之后的所有数据与缓存，防止旧音调点在重录阶段复现。"""
         try:
             cap_val = float(cap)
@@ -22589,6 +23217,61 @@ class ECGStylePitchVisualizer(QWidget):
             eps = float(getattr(self, '_retake_future_epsilon', 1e-5))
         except Exception:
             eps = 1e-5
+        active_range = self._get_active_retake_range()
+        if active_range:
+            if range_start is None:
+                range_start = active_range[0]
+            if range_end is None:
+                range_end = active_range[1]
+        tol = max(1e-4, float(getattr(self, '_retake_trim_gap', 0.001)) * 3.0)
+        safe_start = None
+        safe_end = None
+        if range_start is not None:
+            try:
+                safe_start = float(range_start)
+            except Exception:
+                safe_start = None
+        if range_end is not None:
+            try:
+                safe_end = float(range_end)
+            except Exception:
+                safe_end = None
+        if safe_start is not None and cap_val < safe_start - tol:
+            cap_val = safe_start
+        clear_stop = None
+        if safe_end is not None:
+            clear_stop = safe_end if safe_start is None or safe_end > safe_start + 1e-9 else None
+            if clear_stop is not None and clear_stop <= cap_val + 1e-9:
+                clear_stop = None
+        if clear_stop is not None:
+            start_for_clear = cap_val
+            if safe_start is not None:
+                start_for_clear = max(start_for_clear, safe_start)
+            self.remove_range(start_for_clear, clear_stop)
+            if reset_coverage:
+                try:
+                    cov = list(getattr(self, '_drawn_coverage', []))
+                except Exception:
+                    cov = []
+                trimmed = []
+                for (cs, ce) in cov:
+                    try:
+                        csf = float(cs)
+                        cef = float(ce)
+                    except Exception:
+                        continue
+                    if cef <= start_for_clear + 1e-6 or csf >= clear_stop - 1e-6:
+                        trimmed.append((csf, cef))
+                        continue
+                    if csf < start_for_clear - 1e-6:
+                        trimmed.append((csf, min(start_for_clear, cef)))
+                    if cef > clear_stop + 1e-6:
+                        trimmed.append((max(clear_stop, csf), cef))
+                try:
+                    self._drawn_coverage = trimmed
+                except Exception:
+                    pass
+            return
         cutoff = max(0.0, cap_val + max(eps, 1e-6))
         # 数据缓冲区：确保彻底裁剪 cap 之后的历史点
         try:
@@ -22831,6 +23514,69 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _set_retake_future_visibility_guard(self, threshold: Optional[float]):
+        """记住一个阈值，允许倒计时期间保留选区右侧的细节点。"""
+        try:
+            if threshold is None:
+                self._retake_future_visibility_guard = None
+                return
+            import math as _math
+        except Exception:
+            _math = None
+        try:
+            val = float(threshold)
+        except Exception:
+            try:
+                self._retake_future_visibility_guard = None
+            except Exception:
+                pass
+            return
+        if _math is not None:
+            try:
+                if not _math.isfinite(val):
+                    self._retake_future_visibility_guard = None
+                    return
+            except Exception:
+                pass
+        if val < 0.0:
+            val = 0.0
+        try:
+            self._retake_future_visibility_guard = val
+        except Exception:
+            pass
+
+    def _clear_retake_future_visibility_guard(self):
+        try:
+            self._retake_future_visibility_guard = None
+        except Exception:
+            pass
+
+    def _get_retake_future_visibility_guard(self) -> Optional[float]:
+        try:
+            guard = getattr(self, '_retake_future_visibility_guard', None)
+        except Exception:
+            guard = None
+        if guard is None:
+            return None
+        try:
+            val = float(guard)
+        except Exception:
+            try:
+                self._retake_future_visibility_guard = None
+            except Exception:
+                pass
+            return None
+        try:
+            import math as _math
+            if not _math.isfinite(val):
+                self._retake_future_visibility_guard = None
+                return None
+        except Exception:
+            pass
+        if val < 0.0:
+            val = 0.0
+        return val
+
     def _retake_snap_view_to_time(self, target_time: float):
         """将回退后的视图立即对准目标时间，避免视觉滞后。"""
         try:
@@ -22933,33 +23679,51 @@ class ECGStylePitchVisualizer(QWidget):
             cap_val = float(cap)
         except Exception:
             return
+        preserve_future = bool(getattr(self, '_retake_countdown_preserve_future', False))
         # 确保左侧历史已经落地到主线后再清除快照，避免重新注入旧点
         try:
             if self._retake_snapshot_active():
                 self._apply_retake_history_snapshot(force=True, eager=True)
         except Exception:
             pass
-        try:
-            self._retake_force_clear_future_data(cap_val, reset_coverage=True)
-        except Exception:
-            pass
+        if not preserve_future:
+            try:
+                active_range = self._get_active_retake_range()
+                range_start = active_range[0] if active_range else None
+                range_hint = active_range[1] if active_range else None
+                self._retake_force_clear_future_data(
+                    cap_val,
+                    reset_coverage=True,
+                    range_end=range_hint,
+                    range_start=range_start,
+                )
+            except Exception:
+                pass
         try:
             self._clear_retake_history_snapshot()
         except Exception:
             pass
-        try:
-            self._retake_hard_purge_future(cap_val)
-        except Exception:
-            pass
-        try:
-            if hasattr(self, '_cov_reset'):
-                self._cov_reset()
-        except Exception:
-            pass
-        try:
-            self._release_time_bins_after(cap_val)
-        except Exception:
-            pass
+        if not preserve_future:
+            try:
+                active_range = self._get_active_retake_range()
+                range_start = active_range[0] if active_range else None
+                range_hint = active_range[1] if active_range else None
+                self._retake_hard_purge_future(
+                    cap_val,
+                    range_end=range_hint,
+                    range_start=range_start,
+                )
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_cov_reset'):
+                    self._cov_reset()
+            except Exception:
+                pass
+            try:
+                self._release_time_bins_after(cap_val)
+            except Exception:
+                pass
         try:
             self._retake_block_old_history = False
         except Exception:
@@ -22970,27 +23734,69 @@ class ECGStylePitchVisualizer(QWidget):
             self._last_heavy_redraw_time = 0.0
         except Exception:
             pass
+        try:
+            self._retake_countdown_preserve_future = False
+        except Exception:
+            pass
 
-    def _retake_after_countdown_visual_reset(self, cap: float):
-        """倒计时解锁后执行一次深度清理，避免旧细节点残留并保证新点首帧即可绘制。"""
+    def _retake_after_countdown_visual_reset(self, cap: float, *, range_end: Optional[float] = None, range_start: Optional[float] = None):
+        """倒计时解锁后执行一次深度清理，但仅影响当前选区，避免右侧历史被误删。"""
         try:
             cap_val = float(cap)
         except Exception:
             return
-        # 为防止浮点边界导致的点残留，向回收缩一个很小的窗口一并清理
+        active_range = self._get_active_retake_range()
+        if active_range:
+            if range_start is None:
+                range_start = active_range[0]
+            if range_end is None:
+                range_end = active_range[1]
+        try:
+            tol = max(1e-4, float(getattr(self, '_retake_trim_gap', 0.001)) * 3.0)
+        except Exception:
+            tol = 1e-3
+        safe_start = None
+        safe_end = None
+        if range_start is not None:
+            try:
+                safe_start = float(range_start)
+            except Exception:
+                safe_start = None
+        if range_end is not None:
+            try:
+                safe_end = float(range_end)
+            except Exception:
+                safe_end = None
+        if safe_start is not None and cap_val < safe_start - tol:
+            trim_lower = safe_start
+        else:
+            trim_lower = cap_val if safe_start is None else safe_start
+        if safe_end is not None and (safe_start is None or safe_end > safe_start + tol):
+            trim_upper = safe_end
+        else:
+            trim_upper = None
+        # 为防止浮点边界导致的点残留，仅收缩当前选区窗口
         try:
             trim_margin = float(getattr(self, '_retake_visual_trim_margin', 0.015))
         except Exception:
             trim_margin = 0.015
         if trim_margin < 0.0:
             trim_margin = 0.0
-        purge_start = max(0.0, cap_val - trim_margin)
+        purge_start = max(0.0, trim_lower - trim_margin)
+        purge_stop = float('inf') if trim_upper is None else max(trim_upper, purge_start)
         try:
             if hasattr(self, 'purge_artists_in_range'):
-                self.purge_artists_in_range(purge_start, float('inf'))
+                self.purge_artists_in_range(purge_start, purge_stop)
         except Exception:
             pass
-        # 主折线与平铺缓存：仅保留回退截断点之前的数据
+        # 主折线与平铺缓存：仅剔除选区内部点，保留左/右两侧历史
+        def _keep_point(val: float) -> bool:
+            if val <= trim_lower + 1e-9:
+                return True
+            if trim_upper is not None and val >= trim_upper - 1e-9:
+                return True
+            return False
+
         try:
             if hasattr(self, 'pitch_line') and self.pitch_line is not None:
                 xs, ys = self.pitch_line.get_data()
@@ -22999,11 +23805,12 @@ class ECGStylePitchVisualizer(QWidget):
                     keep_y = []
                     for xv, yv in zip(xs, ys):
                         try:
-                            if float(xv) <= cap_val + 1e-9:
-                                keep_x.append(xv)
-                                keep_y.append(yv)
+                            fx = float(xv)
                         except Exception:
                             continue
+                        if _keep_point(fx):
+                            keep_x.append(xv)
+                            keep_y.append(yv)
                     if len(keep_x) != len(xs):
                         self.pitch_line.set_data(keep_x, keep_y)
                         self.pitch_line.set_alpha(1.0 if keep_x else 0.0)
@@ -23018,7 +23825,7 @@ class ECGStylePitchVisualizer(QWidget):
                 kept = []
                 for pt in iterable:
                     try:
-                        if float(pt[0]) <= cap_val + 1e-9:
+                        if _keep_point(float(pt[0])):
                             kept.append(pt)
                     except Exception:
                         continue
@@ -23030,18 +23837,29 @@ class ECGStylePitchVisualizer(QWidget):
                     self._flat_points = _dq(kept, maxlen=maxlen)
         except Exception:
             pass
-        # 已绘制覆盖：限制到回退点，避免新点被覆盖检查拦截
+        # 已绘制覆盖：剪除选区内部，同时保留区间外的覆盖片段
         try:
             if hasattr(self, '_drawn_coverage') and self._drawn_coverage:
                 trimmed = []
                 for (cs, ce) in list(self._drawn_coverage):
                     try:
-                        if ce <= cap_val + 1e-9:
-                            trimmed.append((cs, ce))
-                        elif cs <= cap_val + 1e-9:
-                            trimmed.append((cs, cap_val))
+                        csf = float(cs)
+                        cef = float(ce)
                     except Exception:
                         continue
+                    if trim_upper is None:
+                        if cef <= trim_lower + 1e-9:
+                            trimmed.append((csf, cef))
+                        elif csf <= trim_lower + 1e-9:
+                            trimmed.append((csf, trim_lower))
+                        continue
+                    if cef <= trim_lower + 1e-9 or csf >= trim_upper - 1e-9:
+                        trimmed.append((csf, cef))
+                        continue
+                    if csf < trim_lower - 1e-9:
+                        trimmed.append((csf, min(trim_lower, cef)))
+                    if cef > trim_upper + 1e-9:
+                        trimmed.append((max(trim_upper, csf), cef))
                 self._drawn_coverage = trimmed
         except Exception:
             pass
@@ -23188,10 +24006,17 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
 
         # 维护 cap 后快速刷新
-        try:
-            self._retake_hard_purge_future(cap_val)
-        except Exception:
-            pass
+            try:
+                active_range = self._get_active_retake_range()
+                range_start = active_range[0] if active_range else None
+                range_hint = active_range[1] if active_range else None
+                self._retake_hard_purge_future(
+                    cap_val,
+                    range_end=range_hint,
+                    range_start=range_start,
+                )
+            except Exception:
+                pass
 
     def _ensure_retake_history_visible(self):
         snap = getattr(self, '_retake_history_snapshot', None)
@@ -25150,8 +25975,26 @@ class ECGStylePitchVisualizer(QWidget):
                     self._browse_points_fallback = None
             except Exception:
                 pass
-            # 存储段信息供其他函数使用
-            self._segments = segments
+            # 存储段信息供其他函数使用，同时应用遮罩剔除选区
+            processed_segments = list(segments or [])
+            if processed_segments and getattr(self, '_pitch_masks_active', False):
+                masked_segments = []
+                for seg in processed_segments:
+                    try:
+                        seg_times, seg_pitches = seg
+                    except Exception:
+                        continue
+                    try:
+                        filtered = self._apply_pitch_masks_to_series(list(seg_times), list(seg_pitches))
+                        seg_times = filtered[0]
+                        seg_pitches = filtered[1] if len(filtered) > 1 else []
+                    except Exception:
+                        pass
+                    if seg_times:
+                        masked_segments.append((seg_times, seg_pitches))
+                processed_segments = masked_segments
+            self._segments = processed_segments
+            segments = processed_segments
 
             bridge_left_history = False
             bridge_anchor = None
@@ -26283,6 +27126,16 @@ class ECGStylePitchVisualizer(QWidget):
         """更新美观的音高线条（彩色渐变模式专用 - 真彩色LineCollection实现）"""
         print(f"🎨 开始创建彩色渐变，数据点: {len(times)}")
         
+        try:
+            if getattr(self, '_pitch_masks_active', False) and times:
+                conf_seq = list(confidences) if confidences else confidences
+                filtered = self._apply_pitch_masks_to_series(list(times), list(pitches), conf_seq)
+                times = filtered[0]
+                pitches = filtered[1] if len(filtered) > 1 else []
+                if len(filtered) > 2:
+                    confidences = filtered[2]
+        except Exception:
+            pass
         if len(times) == 0:
             print("⚠️ 没有数据点，退出")
             return False
@@ -29395,6 +30248,22 @@ class IntegratedRecordingInterface(QMainWindow):
         self._retake_cleanup_span_hint = 0.0
         self._retake_cleanup_consecutive_clean = 0
         self._retake_cleanup_last_dirty = 0.0
+        self._retake_active_range: Optional[Tuple[float, float]] = None
+        self._retake_stop_latched = False
+        self._retake_resume_after_close_time: Optional[float] = None
+        self._retake_tail_snapshot = None
+        self._selection_clear_snapshot: Optional[Dict[str, Any]] = None
+        # 覆盖缓冲（方案二）
+        self._retake_overlay_enabled = True
+        self._retake_overlay_state = RetakeOverlayState()
+        self._retake_overlay_preview_payload: List[Dict[str, Any]] = []
+        self._retake_overlay_last_visual_refresh = 0.0
+        self._retake_overlay_virtual_time: Optional[float] = None
+        self._retake_preserve_timeline = False
+        self._retake_preserved_recording_duration: Optional[float] = None
+        self._backing_display_frozen_pos: Optional[float] = None
+        self._backing_progress_locked = False
+        self._backing_progress_lock_hint: Optional[str] = None
 
         # 当前音高交互状态
         self.current_pitch_y = 4.0
@@ -29403,6 +30272,10 @@ class IntegratedRecordingInterface(QMainWindow):
 
         # 音频处理器
         self.audio_processor = IntegratedAudioProcessor()
+        try:
+            self.audio_processor.overlay_delegate = self
+        except Exception:
+            pass
         self._sync_audio_processor_epoch()
 
         # 降噪处理器（可选）
@@ -30993,10 +31866,190 @@ class IntegratedRecordingInterface(QMainWindow):
                 win.time_label.setText(win._fmt_time(pos_sec, total_sec))
             except Exception:
                 pass
+            try:
+                if getattr(self, '_backing_progress_locked', False):
+                    self._set_backing_progress_lock(True, getattr(self, '_backing_progress_lock_hint', None))
+            except Exception:
+                pass
             self._backing_control_win.show()
             self._start_backing_control_sync_timer()
         except Exception as e:
             print(f"⚠️ 打开伴奏控制窗口失败: {e}")
+
+    def _retake_should_preserve_timeline(self) -> bool:
+        """判定当前是否需要保留右侧时间轴与录音时长。"""
+        try:
+            if bool(getattr(self, '_retake_preserve_timeline', False)):
+                return True
+        except Exception:
+            pass
+        viz = getattr(self, 'visualizer', None)
+        try:
+            if viz is not None:
+                if bool(getattr(viz, '_retake_countdown_preserve_future', False)):
+                    return True
+                if bool(getattr(viz, 'retake_selection_active', False)):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _set_visualizer_future_preserve(self, enabled: bool) -> None:
+        """指示可视化器在选区重录期间保留右侧历史，不随回退裁剪。"""
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return
+        try:
+            setattr(viz, '_retake_force_preserve_future', bool(enabled))
+        except Exception:
+            pass
+        if enabled:
+            try:
+                setattr(viz, '_retake_countdown_preserve_future', True)
+            except Exception:
+                pass
+
+    def _set_selection_preserve_mode(self, enabled: bool, baseline: Optional[float] = None) -> None:
+        """统一设置选区重录的全局时间线保留模式。"""
+        if enabled:
+            try:
+                if baseline is None:
+                    baseline = float(getattr(self, 'recording_duration', 0.0))
+            except Exception:
+                baseline = 0.0
+            try:
+                self._retake_preserve_timeline = True
+                self._retake_preserved_recording_duration = baseline
+                self._backing_display_frozen_pos = baseline
+            except Exception:
+                pass
+            try:
+                self._set_backing_progress_lock(True, "选区重录中，伴奏进度已冻结")
+            except Exception:
+                pass
+            try:
+                self._backing_control_tick_sync()
+            except Exception:
+                pass
+            try:
+                self._set_visualizer_future_preserve(True)
+            except Exception:
+                pass
+        else:
+            baseline = None
+            try:
+                baseline = getattr(self, '_retake_preserved_recording_duration', None)
+                if baseline is not None:
+                    baseline = float(baseline)
+            except Exception:
+                baseline = None
+            if baseline is not None:
+                try:
+                    current_recording = float(getattr(self, 'recording_duration', 0.0))
+                except Exception:
+                    current_recording = 0.0
+                try:
+                    if current_recording + 1e-6 < baseline:
+                        self.recording_duration = float(baseline)
+                        self.current_duration = float(baseline)
+                        self.current_global_time = float(baseline)
+                except Exception:
+                    pass
+                try:
+                    self._backing_pause_position_sec = float(baseline)
+                except Exception:
+                    pass
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None:
+                    try:
+                        viz_time = float(getattr(viz, 'current_global_time', 0.0))
+                    except Exception:
+                        viz_time = 0.0
+                    if viz_time + 1e-6 < baseline:
+                        try:
+                            viz.current_global_time = float(baseline)
+                        except Exception:
+                            pass
+                        notify = getattr(viz, 'notify_seek', None)
+                        if callable(notify):
+                            try:
+                                notify(float(baseline))
+                            except Exception:
+                                pass
+            try:
+                self._retake_preserve_timeline = False
+                self._retake_preserved_recording_duration = None
+                self._backing_display_frozen_pos = None
+            except Exception:
+                pass
+            try:
+                self._set_backing_progress_lock(False, None)
+            except Exception:
+                pass
+            try:
+                self._backing_control_tick_sync()
+            except Exception:
+                pass
+            try:
+                self._set_visualizer_future_preserve(False)
+            except Exception:
+                pass
+
+    def _set_backing_progress_lock(self, locked: bool, hint: Optional[str] = None) -> None:
+        """同步伴奏控制面板的锁定状态，提示选区重录期间禁止拖动。"""
+        try:
+            current_hint = getattr(self, '_backing_progress_lock_hint', None)
+        except Exception:
+            current_hint = None
+        hint_to_use: Optional[str] = hint if hint is not None else current_hint
+        if locked and not hint_to_use:
+            hint_to_use = "选区重录中，伴奏进度已冻结"
+        try:
+            self._backing_progress_locked = bool(locked)
+        except Exception:
+            self._backing_progress_locked = locked
+        try:
+            self._backing_progress_lock_hint = hint_to_use if locked else None
+        except Exception:
+            self._backing_progress_lock_hint = None if not locked else hint_to_use
+        win = getattr(self, '_backing_control_win', None)
+        if win is not None:
+            setter = getattr(win, 'set_progress_lock', None)
+            if callable(setter):
+                try:
+                    setter(bool(locked), hint_to_use)
+                except Exception:
+                    pass
+
+    def _notify_backing_seek_locked(self, hint: Optional[str] = None) -> None:
+        """尝试在伴奏面板与主状态栏提示当前进度锁定。"""
+        message = hint or getattr(self, '_backing_progress_lock_hint', None) or "选区重录进行中，伴奏进度已锁定。"
+        try:
+            if message and hasattr(self, 'status_label') and self.status_label is not None:
+                self.status_label.setText(message)
+        except Exception:
+            pass
+        win = getattr(self, '_backing_control_win', None)
+        if win is not None:
+            flasher = getattr(win, 'flash_lock_hint', None)
+            if callable(flasher):
+                try:
+                    flasher(message)
+                    return
+                except Exception:
+                    pass
+            setter = getattr(win, 'set_progress_lock', None)
+            if callable(setter):
+                try:
+                    setter(True, message)
+                    return
+                except Exception:
+                    pass
+        if message:
+            try:
+                print(f"[BACKING_LOCK] {message}")
+            except Exception:
+                pass
 
     def _apply_backing_seek(self, target_sec: float, *, trim_if_backward: bool = True):
         """由伴奏控制窗口驱动的 seek：
@@ -31004,6 +32057,9 @@ class IntegratedRecordingInterface(QMainWindow):
         - 驱动可视化时间轴跳转；
         - 若处于录音+分析，并回退，则裁剪可视化与内部缓存（仅 UI 层）。
         """
+        if getattr(self, '_backing_progress_locked', False) and self._retake_should_preserve_timeline():
+            self._notify_backing_seek_locked()
+            return
         # 通用“回退重录”判定：针对任何启用 trim_if_backward 的向后跳转
         # 满足以下条件即触发确认或自动裁剪：
         #  - 目标时间早于当前播放指针（backward=True）
@@ -31197,7 +32253,14 @@ class IntegratedRecordingInterface(QMainWindow):
                         setattr(v, '_force_retake_countdown_once', True)
             except Exception:
                 pass
-            should_trim = backward and trim_if_backward and (
+            preserve_future = self._retake_should_preserve_timeline()
+            selection_guard = bool(v is not None and getattr(v, 'retake_selection_active', False))
+            if not selection_guard and v is not None and hasattr(v, '_get_active_retake_range'):
+                try:
+                    selection_guard = bool(v._get_active_retake_range())
+                except Exception:
+                    selection_guard = False
+            should_trim = backward and trim_if_backward and not preserve_future and not selection_guard and (
                 bool(getattr(self, 'is_recording', False))
                 or bool(getattr(self, 'is_analyzing', False))
                 or has_visual_data
@@ -31260,13 +32323,30 @@ class IntegratedRecordingInterface(QMainWindow):
                 setattr(v, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
             except Exception:
                 pass
+            range_kwargs = {}
+            if v is not None and hasattr(v, '_get_active_retake_range'):
+                try:
+                    active_range = v._get_active_retake_range()
+                except Exception:
+                    active_range = None
+                if active_range and len(active_range) >= 2:
+                    try:
+                        r_start = float(active_range[0])
+                        r_end = float(active_range[1])
+                    except Exception:
+                        pass
+                    else:
+                        range_kwargs = {
+                            'range_start': r_start,
+                            'range_end': r_end,
+                        }
             if v is not None and retake_cleanup_done:
                 try:
                     if hasattr(v, '_retake_post_seek_refresh') and callable(getattr(v, '_retake_post_seek_refresh')):
                         v._retake_post_seek_refresh(target_sec)
                     else:
                         if hasattr(v, '_retake_force_clear_future_data'):
-                            v._retake_force_clear_future_data(target_sec, reset_coverage=False)
+                            v._retake_force_clear_future_data(target_sec, reset_coverage=False, **range_kwargs)
                         if getattr(v, '_cap_visible_time_enabled', False) and hasattr(v, '_quick_rebuild_segments_upto_cap'):
                             v._quick_rebuild_segments_upto_cap()
                 except Exception:
@@ -31599,10 +32679,329 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._analysis_backoff_until = _time.time() + 0.05
                 self._analysis_backoff_reason = ''
         except Exception:
+            pass
+
+    def _clear_visualizer_retake_guard(self, viz):
+        """Drop seek/retake guard range so手动写入不会被挡下。"""
+        if viz is None:
+            return
+        for attr, value in (
+            ('_retake_block_range', None),
+            ('_retake_epoch_guard_epoch', None),
+            ('_retake_epoch_guard_until', 0.0),
+            ('_retake_guard_active', False),
+            ('_retake_epoch_dropped', 0),
+            ('_retake_missing_epoch_dropped', 0),
+        ):
             try:
-                self._analysis_backoff_until = 0.0
+                setattr(viz, attr, value)
             except Exception:
                 pass
+
+    def _release_retake_visual_guards(self):
+        """解除回录期间的可视化限制，确保尾段能够重新可见。"""
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return
+        for attr, value in (
+            ('_cap_visible_time_enabled', False),
+            ('_cap_strict_lock', False),
+            ('_retake_block_old_history', False),
+        ):
+            try:
+                setattr(viz, attr, value)
+            except Exception:
+                pass
+        self._clear_visualizer_retake_guard(viz)
+        try:
+            setattr(viz, '_post_retake_new_data_started', True)
+        except Exception:
+            pass
+
+    def _release_retake_countdown_freeze(self):
+        """恢复 add_pitch_data 管线，避免倒计时/覆盖残留阻塞实时细节点。"""
+        viz = getattr(self, 'visualizer', None)
+        targets = (
+            '_retake_countdown_active',
+            '_retake_countdown_block_add',
+            '_retake_guard_active',
+        )
+        if viz is not None:
+            for attr in targets:
+                try:
+                    setattr(viz, attr, False)
+                except Exception:
+                    pass
+            for attr in ('_retake_drop_until_timestamp', '_retake_gate_suppress_until'):
+                try:
+                    setattr(viz, attr, 0.0)
+                except Exception:
+                    pass
+        for attr in ('_retake_drop_until_timestamp', '_retake_gate_suppress_until'):
+            try:
+                setattr(self, attr, 0.0)
+            except Exception:
+                pass
+
+    def _enforce_active_retake_bounds(self, current_time: float, *, source: str = "progress"):
+        """Ensure选区重录不会越界，并在触达右界时自动锁止。"""
+        active = getattr(self, '_retake_active_range', None)
+        if not active:
+            return
+        try:
+            start, end = float(active[0]), float(active[1])
+            cur = float(current_time)
+        except Exception:
+            return
+        if end <= start + 1e-3:
+            return
+        try:
+            guard = float(getattr(self, '_retake_boundary_guard', 0.004))
+        except Exception:
+            guard = 0.004
+        preserve_future = self._retake_should_preserve_timeline()
+        if not preserve_future:
+            try:
+                recorded = float(getattr(self, 'recording_duration', cur))
+                if recorded > end:
+                    self.recording_duration = float(end)
+            except Exception:
+                pass
+        if cur < end - guard:
+            return
+        already_latched = bool(getattr(self, '_retake_stop_latched', False))
+        if already_latched:
+            return
+        paused = bool(getattr(self, 'is_paused', False))
+        if not paused:
+            try:
+                self.pause_recording()
+            except Exception as exc:
+                try:
+                    print(f"[RETAKE_GUARD] 自动暂停失败: {exc}")
+                except Exception:
+                    pass
+        try:
+            self._retake_stop_latched = True
+            self._retake_should_auto_resume = False
+        except Exception:
+            pass
+        self._notify_retake_boundary_latched(source)
+
+    def _maybe_trigger_retake_stop(self, timestamp: float, *, source: str = "overlay") -> None:
+        active = getattr(self, '_retake_active_range', None)
+        if not active:
+            return
+        try:
+            end = float(active[1])
+        except Exception:
+            return
+        try:
+            guard = float(getattr(self, '_retake_boundary_guard', 0.004))
+        except Exception:
+            guard = 0.004
+        try:
+            ts = float(timestamp)
+        except Exception:
+            ts = None  # type: ignore[assignment]
+        if ts is None:
+            return
+        if ts >= end - guard:
+            self._enforce_active_retake_bounds(max(ts, end), source=source)
+
+    def _notify_retake_boundary_latched(self, source: str = "progress"):
+        state = getattr(self, '_retake_overlay_state', None)
+        if state and state.active:
+            state.recording = False
+            state.paused_at = time.time()
+        auto_committed = False
+        try:
+            if self._retake_overlay_requires_commit():
+                auto_committed = bool(self._commit_retake_overlay())
+        except Exception as _auto_err:
+            try:
+                print(f"⚠️ 自动应用覆盖失败: {_auto_err}")
+            except Exception:
+                pass
+        msg = "选区重录完成，可回听或再次开始。"
+        if auto_committed:
+            msg = "选区重录完成，覆盖已自动应用。"
+        try:
+            win = getattr(self, '_retake_control_win', None)
+        except Exception:
+            win = None
+        if win is not None:
+            try:
+                win.status_label.setText(msg)
+            except Exception:
+                pass
+            try:
+                win._update_rerecord_progress()
+            except Exception:
+                pass
+            try:
+                win._update_overlay_action_buttons()
+            except Exception:
+                pass
+        try:
+            if hasattr(self, 'system_status_label') and self.system_status_label is not None:
+                self.system_status_label.setText("状态: 回录区间完成")
+        except Exception:
+            pass
+        try:
+            print(f"[RETAKE_GUARD] Boundary latched via {source}")
+        except Exception:
+            pass
+        try:
+            self._restore_retake_tail_snapshot(reason=source, replay_visuals=True, restore_audio=False)
+        except Exception:
+            pass
+
+    def _snapshot_retake_tail_segment(self, start: float, end: float, *, restore_audio: bool = True):
+        """记录选区右侧尾段，便于重录完成后自动拼接回来。"""
+        try:
+            start = float(max(0.0, start))
+            end = float(max(start, end))
+        except Exception:
+            return
+        snap = {
+            'start': start,
+            'end': end,
+            'original_duration': float(getattr(self, 'recording_duration', end)),
+            'total_pitches_before': int(getattr(self, 'total_pitches_detected', 0)),
+            'audio_tail': [],
+            'pitch_tail': [],
+            'audio_restored': False,
+            'visuals_restored': False,
+            'restore_audio': bool(restore_audio),
+        }
+        try:
+            sr = float(getattr(self, 'active_input_samplerate', getattr(self, 'sample_rate', 44100)) or 44100.0)
+        except Exception:
+            sr = 44100.0
+        snap['sample_rate'] = sr
+        try:
+            buf = getattr(self, 'audio_buffer', None)
+            if buf:
+                total_samples = len(buf)
+                end_idx = max(0, min(int(round(end * sr)), total_samples))
+                if end_idx < total_samples:
+                    try:
+                        snap['audio_tail'] = list(buf[end_idx:])
+                    except Exception:
+                        snap['audio_tail'] = buf[end_idx:]
+                snap['audio_end_index'] = end_idx
+            else:
+                snap['audio_tail'] = []
+        except Exception as _tail_err:
+            try:
+                print(f"⚠️ 记录回录尾段音频失败: {_tail_err}")
+            except Exception:
+                pass
+        try:
+            hist = getattr(self, 'pitch_history', None)
+            if hist:
+                from collections import deque
+                if isinstance(hist, deque):
+                    iterable = list(hist)
+                else:
+                    iterable = list(hist)
+                tail_items = []
+                for item in iterable:
+                    try:
+                        ts = float(item.get('timestamp', -1.0))
+                    except Exception:
+                        continue
+                    if ts >= end - 1e-6:
+                        try:
+                            tail_items.append(dict(item))
+                        except Exception:
+                            tail_items.append(item)
+                snap['pitch_tail'] = tail_items
+                snap['tail_pitch_count'] = len(tail_items)
+        except Exception as _tail_pitch_err:
+            try:
+                print(f"⚠️ 记录回录尾段音高失败: {_tail_pitch_err}")
+            except Exception:
+                pass
+        self._retake_tail_snapshot = snap
+
+    def _restore_retake_tail_snapshot(self, *, reason: str = "boundary", replay_visuals: bool = True, restore_audio: bool = True):
+        """按照需要恢复尾段：可单独恢复可视化或音频，避免重复追加。"""
+        snap = getattr(self, '_retake_tail_snapshot', None)
+        if not snap:
+            return
+        allow_audio = bool(restore_audio and snap.get('restore_audio', True))
+        if allow_audio and not snap.get('audio_restored', False):
+            try:
+                audio_tail = snap.get('audio_tail') or []
+                if audio_tail:
+                    if getattr(self, 'audio_buffer', None) is None:
+                        self.audio_buffer = []
+                    try:
+                        self.audio_buffer.extend(audio_tail)
+                    except Exception:
+                        pass
+                snap['audio_restored'] = True
+            except Exception as _restore_audio_err:
+                try:
+                    print(f"⚠️ 回录尾段音频恢复失败: {_restore_audio_err}")
+                except Exception:
+                    pass
+        pitch_tail = snap.get('pitch_tail') or []
+        if replay_visuals and not snap.get('visuals_restored', False) and pitch_tail:
+            try:
+                hist = getattr(self, 'pitch_history', None)
+                if hist is None:
+                    from collections import deque
+                    hist = deque(maxlen=1000)
+                    self.pitch_history = hist
+                append = hist.append if hasattr(hist, 'append') else hist.append
+                for item in pitch_tail:
+                    append(item)
+                snap['visuals_restored'] = True
+            except Exception as _restore_hist_err:
+                try:
+                    print(f"⚠️ 回录尾段音高恢复失败: {_restore_hist_err}")
+                except Exception:
+                    pass
+            viz = getattr(self, 'visualizer', None)
+            if viz is not None:
+                for item in pitch_tail:
+                    try:
+                        payload = {
+                            'timestamp': float(item.get('timestamp', 0.0)),
+                            'frequency': float(item.get('frequency', 0.0)),
+                            'confidence': float(item.get('confidence', 0.0)),
+                            'note_info': item.get('note_info'),
+                            'has_pitch': True,
+                            '_epoch': int(getattr(self, '_record_epoch', 0)),
+                        }
+                        viz.add_pitch_data(payload)
+                    except Exception:
+                        break
+        if snap.get('audio_restored', False):
+            try:
+                original_dur = float(snap.get('original_duration', getattr(self, 'recording_duration', 0.0)))
+                self.recording_duration = max(original_dur, float(getattr(self, 'recording_duration', 0.0)))
+                self.current_duration = float(self.recording_duration)
+            except Exception:
+                pass
+        if snap.get('visuals_restored', False) and pitch_tail:
+            try:
+                hist = getattr(self, 'pitch_history', None)
+                if hist is not None:
+                    self.total_pitches_detected = max(int(getattr(self, 'total_pitches_detected', 0)), len(hist))
+            except Exception:
+                pass
+        if snap.get('audio_restored', False) and (snap.get('visuals_restored', False) or not pitch_tail):
+            self._retake_tail_snapshot = None
+        elif not snap.get('restore_audio', True) and (snap.get('visuals_restored', False) or not pitch_tail):
+            self._retake_tail_snapshot = None
+        try:
+            print(f"[RETAKE_GUARD] 尾段恢复操作完成 (原因={reason}, audio={snap.get('audio_restored', False)}, visuals={snap.get('visuals_restored', False)})")
+        except Exception:
+            pass
 
     # ================= 回退重录核心实现 =================
     def rollback_to_time(self, start_t: float, end_t: float):
@@ -32144,10 +33543,9 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception:
                     self._retake_should_auto_resume = True
                 # 倒计时准备：伴奏模式下预卷，其余场景则仅取消旧倒计时
-                if str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both'):
-                    self._prepare_retake_preroll(float(start_t))
-                else:
-                    self._cancel_retake_countdown()
+                backing_mode = str(getattr(self, 'backing_mode', '')).lower()
+                # 无伴奏模式也统一启动倒计时，让“开始重录”立即生效，无需额外点击“暂停/继续”。
+                self._prepare_retake_preroll(float(start_t))
             except Exception as _prep_err:
                 try:
                     print(f"⚠️ 回退预卷准备失败: {_prep_err}")
@@ -32262,6 +33660,12 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception:
                     pos_sec = 0.0
             display_pos_sec = float(pos_sec)
+            try:
+                frozen = getattr(self, '_backing_display_frozen_pos', None)
+                if frozen is not None:
+                    display_pos_sec = float(frozen)
+            except Exception:
+                pass
             countdown_active = False
             countdown_start = None
             countdown_target = None
@@ -32383,17 +33787,18 @@ class IntegratedRecordingInterface(QMainWindow):
         viz = getattr(self, 'visualizer', None)
         if viz is None:
             return False
-        try:
-            anchor = anchor_time
-            if anchor is None:
-                anchor = getattr(self, 'current_global_time', None)
-            if anchor is None:
-                anchor = getattr(viz, 'current_global_time', 0.0)
-            anchor = float(anchor)
-            if not math.isfinite(anchor) or anchor < 0.0:
-                anchor = max(0.0, float(getattr(viz, 'sel_end', 0.0)))
-        except Exception:
-            anchor = max(0.0, float(getattr(viz, 'sel_end', 0.0)))
+
+        def _get_view_center() -> Optional[float]:
+            try:
+                ax = getattr(viz, 'ax', None)
+                if ax is None:
+                    return None
+                x0, x1 = ax.get_xlim()
+                if not (math.isfinite(x0) and math.isfinite(x1)):
+                    return None
+                return (x0 + x1) * 0.5
+            except Exception:
+                return None
 
         span_hint: Optional[float]
         try:
@@ -32405,13 +33810,42 @@ class IntegratedRecordingInterface(QMainWindow):
                 span_hint = None
         except Exception:
             span_hint = None
-        if span_hint is not None:
-            try:
-                min_span = max(0.05, float(getattr(viz, '_retake_min_span', 0.35)))
-            except Exception:
-                min_span = 0.35
-            if span_hint < min_span:
-                span_hint = min_span
+        try:
+            min_span = max(0.05, float(getattr(viz, '_retake_min_span', 0.35)))
+        except Exception:
+            min_span = 0.35
+        if span_hint is not None and span_hint < min_span:
+            span_hint = min_span
+        try:
+            span_default = max(min_span, float(getattr(viz, '_retake_default_span', 5.0)))
+        except Exception:
+            span_default = max(min_span, 5.0)
+        span_for_anchor = span_hint if span_hint is not None else span_default
+
+        anchor = anchor_time
+        if anchor is None:
+            view_center = _get_view_center()
+            if view_center is not None:
+                anchor = view_center + span_for_anchor
+                try:
+                    right_limit = None
+                    getter = getattr(viz, '_get_retake_right_limit', None)
+                    if callable(getter):
+                        right_limit = getter()
+                    if right_limit is not None and math.isfinite(right_limit):
+                        anchor = min(max(span_for_anchor, anchor), max(span_for_anchor, right_limit))
+                except Exception:
+                    pass
+            if anchor is None:
+                anchor = getattr(self, 'current_global_time', None)
+            if anchor is None:
+                anchor = getattr(viz, 'current_global_time', 0.0)
+        try:
+            anchor = float(anchor)
+            if not math.isfinite(anchor) or anchor < 0.0:
+                anchor = max(0.0, float(getattr(viz, 'sel_end', 0.0)))
+        except Exception:
+            anchor = max(0.0, float(getattr(viz, 'sel_end', 0.0)))
 
         try:
             viz.activate_retake_selection(anchor_time=anchor, initial_span=span_hint)
@@ -32438,6 +33872,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 viz.deactivate_retake_selection()
         except Exception as exc:
             print(f"⚠️ 退出选区重录失败: {exc}")
+        try:
+            self._restore_selection_snapshot_if_pending(reason="deactivate-mode")
+        except Exception:
+            pass
         if not close_window:
             return
         win = getattr(self, '_retake_control_win', None)
@@ -32447,6 +33885,260 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             self._retake_control_win = None
+
+    # ---- 选区清除快照与恢复 ----
+    def _selection_snapshot_active(self) -> bool:
+        snap = getattr(self, '_selection_clear_snapshot', None)
+        return bool(snap and not snap.get('consumed'))
+
+    def _discard_selection_snapshot(self):
+        try:
+            self._release_selection_masks()
+        except Exception:
+            pass
+        self._selection_clear_snapshot = None
+
+    def _release_selection_masks(self, snapshot: Optional[Dict[str, Any]] = None) -> bool:
+        snap = snapshot if snapshot is not None else getattr(self, '_selection_clear_snapshot', None)
+        if not snap:
+            return False
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return False
+        label = snap.get('viz_mask_label')
+        mask_ids = list(snap.get('viz_mask_ids') or [])
+        removed = False
+        try:
+            if label:
+                removed = bool(viz.unmask_pitch_points(label=label))
+            else:
+                for mid in mask_ids:
+                    if mid is None:
+                        continue
+                    removed = bool(viz.unmask_pitch_points(mask_id=mid)) or removed
+        except Exception:
+            pass
+        if removed:
+            snap['viz_mask_ids'] = []
+            snap['viz_mask_label'] = None
+            snap['soft_mask_active'] = False
+        return removed
+
+    def _restore_selection_snapshot_if_pending(self, reason: str = "manual") -> bool:
+        snap = getattr(self, '_selection_clear_snapshot', None)
+        if not snap:
+            return False
+        return self._restore_selection_snapshot(reason=reason)
+
+    def _effective_sample_rate(self) -> int:
+        try:
+            sr = int(getattr(self, 'active_input_samplerate', getattr(self, 'sample_rate', 44100)))
+        except Exception:
+            sr = 44100
+        return max(1, sr)
+
+    def _ensure_audio_buffer_list(self) -> List[float]:
+        buf = getattr(self, 'audio_buffer', None)
+        if buf is None:
+            buf = []
+            self.audio_buffer = buf
+        elif not isinstance(buf, list):
+            try:
+                buf = list(buf)
+                self.audio_buffer = buf
+            except Exception:
+                buf = list(buf)
+                self.audio_buffer = buf
+        return buf
+
+    def _silence_audio_range(self, start: float, end: float) -> Dict[str, Any]:
+        sr = self._effective_sample_rate()
+        buf = self._ensure_audio_buffer_list()
+        total = len(buf)
+        start_idx = max(0, min(int(round(start * sr)), total))
+        end_idx = max(start_idx, min(int(round(end * sr)), total))
+        segment = buf[start_idx:end_idx]
+        if segment:
+            zeros = [0.0] * len(segment)
+            buf[start_idx:end_idx] = zeros
+        return {
+            'audio_samples': list(segment),
+            'audio_start_idx': start_idx,
+            'audio_end_idx': end_idx,
+            'sample_rate': sr,
+        }
+
+    def _capture_selection_snapshot(self, start: float, end: float) -> Optional[Dict[str, Any]]:
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return None
+        try:
+            start = float(max(0.0, start))
+            end = float(max(start, end))
+        except Exception:
+            return None
+        if end <= start + 1e-6:
+            return None
+        existing = getattr(self, '_selection_clear_snapshot', None)
+        if existing and not existing.get('consumed'):
+            same_range = abs(existing.get('start', -1.0) - start) < 1e-4 and abs(existing.get('end', -1.0) - end) < 1e-4
+            if same_range:
+                return existing
+            self._restore_selection_snapshot(reason="range-changed")
+        pitch_records = []
+        try:
+            pitch_records = [tuple(rec) for rec in viz.collect_pitch_points_in_range(start, end)]
+        except Exception:
+            pitch_records = []
+        removed_info = self._remove_pitch_history_range(start, end, capture=True)
+        removed_entries: List[Any]
+        insert_idx: Optional[int]
+        if isinstance(removed_info, tuple):
+            _, removed_entries, insert_idx = removed_info
+        else:
+            removed_entries, insert_idx = [], None
+        safe_entries: List[Any] = []
+        for entry in removed_entries or []:
+            if isinstance(entry, dict):
+                safe_entries.append(dict(entry))
+            else:
+                safe_entries.append(entry)
+        audio_snapshot = self._silence_audio_range(start, end)
+        snapshot = {
+            'start': start,
+            'end': end,
+            'pitch_records': pitch_records,
+            'pitch_history_entries': safe_entries,
+            'pitch_history_insert_idx': insert_idx,
+            'pitch_records_removed': True,
+            'audio_samples': audio_snapshot.get('audio_samples', []),
+            'audio_start_idx': audio_snapshot.get('audio_start_idx', 0),
+            'audio_end_idx': audio_snapshot.get('audio_end_idx', 0),
+            'sample_rate': audio_snapshot.get('sample_rate'),
+            'soft_mask_active': False,
+            'viz_mask_ids': [],
+            'viz_mask_label': None,
+            'restored': False,
+            'consumed': False,
+        }
+        self._selection_clear_snapshot = snapshot
+        return snapshot
+
+    def _restore_selection_snapshot(self, reason: str = "manual") -> bool:
+        snapshot = getattr(self, '_selection_clear_snapshot', None)
+        if not snapshot:
+            return False
+        restored = False
+        try:
+            audio_samples = snapshot.get('audio_samples') or []
+            if audio_samples:
+                buf = self._ensure_audio_buffer_list()
+                start_idx = int(snapshot.get('audio_start_idx', 0))
+                end_idx = start_idx + len(audio_samples)
+                if end_idx > len(buf):
+                    buf.extend([0.0] * (end_idx - len(buf)))
+                buf[start_idx:end_idx] = list(audio_samples)
+                restored = True
+        except Exception:
+            pass
+        try:
+            entries = snapshot.get('pitch_history_entries') or []
+            if entries:
+                hist = getattr(self, 'pitch_history', None)
+                if hist is None:
+                    from collections import deque
+                    hist = deque(maxlen=1000)
+                    self.pitch_history = hist
+                items = list(hist) if hist else []
+                insert_idx = snapshot.get('pitch_history_insert_idx')
+                if insert_idx is None:
+                    insert_idx = len(items)
+                insert_idx = max(0, min(len(items), int(insert_idx)))
+                items[insert_idx:insert_idx] = entries
+                if isinstance(hist, list):
+                    hist[:] = items
+                else:
+                    try:
+                        hist.clear()
+                        for row in items:
+                            hist.append(row)
+                    except Exception:
+                        self.pitch_history = items
+                try:
+                    self.total_pitches_detected = max(int(getattr(self, 'total_pitches_detected', 0)), len(items))
+                except Exception:
+                    pass
+                restored = True
+        except Exception:
+            pass
+        try:
+            viz = getattr(self, 'visualizer', None)
+            pitch_records = snapshot.get('pitch_records') or []
+            pitch_restore_needed = bool(snapshot.get('pitch_records_removed', True))
+            if viz is not None and pitch_restore_needed and pitch_records:
+                if viz.restore_pitch_points(pitch_records):
+                    restored = True
+        except Exception:
+            pass
+        try:
+            if self._release_selection_masks(snapshot):
+                restored = True
+        except Exception:
+            pass
+        snapshot['consumed'] = True
+        snapshot['restored'] = True
+        self._selection_clear_snapshot = None
+        if restored:
+            try:
+                print(f"[SELECTION_SNAPSHOT] Restored snapshot ({reason})")
+            except Exception:
+                pass
+        return restored
+
+    def clear_retake_selection_range(self, start: float, end: float) -> bool:
+        snapshot = self._capture_selection_snapshot(start, end)
+        if snapshot is None:
+            return False
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return False
+        mask_applied = False
+        try:
+            if snapshot.get('soft_mask_active') and snapshot.get('viz_mask_ids'):
+                mask_applied = True
+            else:
+                label = snapshot.get('viz_mask_label')
+                if not label:
+                    label = f"retake-mask:{time.time():.6f}"
+                    snapshot['viz_mask_label'] = label
+                mask_id = viz.mask_pitch_points_in_range(snapshot['start'], snapshot['end'], label=label)
+                if mask_id is not None:
+                    ids = snapshot.setdefault('viz_mask_ids', [])
+                    ids.append(mask_id)
+                    snapshot['soft_mask_active'] = True
+                    snapshot['pitch_records_removed'] = False
+                    mask_applied = True
+        except Exception:
+            mask_applied = False
+        if mask_applied:
+            try:
+                viz.purge_artists_in_range(snapshot['start'], snapshot['end'])
+            except Exception:
+                pass
+        else:
+            snapshot['pitch_records_removed'] = True
+            try:
+                viz.remove_range(snapshot['start'], snapshot['end'])
+                viz.purge_artists_in_range(snapshot['start'], snapshot['end'])
+            except Exception:
+                pass
+        try:
+            viz.update_listenback_artists()
+            if hasattr(viz, 'canvas') and viz.canvas is not None:
+                viz.canvas.draw_idle()
+        except Exception:
+            pass
+        return True
 
     def _start_backing_control_sync_timer(self, interval_ms: int = 80):
         """确保伴奏控制窗口的进度刷新定时器运行。"""
@@ -32480,6 +34172,735 @@ class IntegratedRecordingInterface(QMainWindow):
                 timer.stop()
             except Exception:
                 pass
+
+    def _handle_retake_window_closed(self):
+        """Reset retake-related guards when the control window closes."""
+        try:
+            self._retake_control_win = None
+        except Exception:
+            pass
+        try:
+            self._restore_selection_snapshot_if_pending(reason="retake-window-close")
+        except Exception:
+            pass
+        try:
+            self._restore_retake_tail_snapshot(reason="retake-window-close", replay_visuals=True, restore_audio=True)
+        except Exception:
+            pass
+        self._retake_active_range = None
+        self._retake_stop_latched = False
+        baseline = None
+        try:
+            baseline = getattr(self, '_retake_preserved_recording_duration', None)
+            if baseline is not None:
+                baseline = float(baseline)
+        except Exception:
+            baseline = None
+        resume_time = getattr(self, '_retake_resume_after_close_time', None)
+        if resume_time is None:
+            resume_time = baseline
+        try:
+            resume_time = max(0.0, float(resume_time))
+        except Exception:
+            resume_time = baseline
+        if baseline is not None and (resume_time is None or baseline > resume_time):
+            resume_time = baseline
+        if resume_time is None:
+            self._retake_resume_after_close_time = None
+            try:
+                self._set_selection_preserve_mode(False)
+            except Exception:
+                pass
+            return
+        try:
+            self.recording_duration = max(resume_time, float(getattr(self, 'recording_duration', 0.0)))
+            self.current_global_time = self.recording_duration
+        except Exception:
+            pass
+        try:
+            self._backing_pause_position_sec = float(self.recording_duration)
+        except Exception:
+            pass
+        viz = getattr(self, 'visualizer', None)
+        if viz is not None:
+            try:
+                viz.current_global_time = self.recording_duration
+                viz.deactivate_retake_selection()
+                viz.notify_seek(self.recording_duration)
+            except Exception:
+                pass
+        self._retake_resume_after_close_time = None
+        try:
+            self._set_selection_preserve_mode(False)
+        except Exception:
+            pass
+
+    # ---- 方案二：选区覆盖缓冲辅助 ----
+    def _overlay_state(self) -> RetakeOverlayState:
+        state = getattr(self, '_retake_overlay_state', None)
+        if state is None:
+            state = RetakeOverlayState()
+            self._retake_overlay_state = state
+        return state
+
+    def _retake_overlay_active(self) -> bool:
+        state = getattr(self, '_retake_overlay_state', None)
+        return bool(state and state.active)
+
+    def _reset_retake_overlay_state(self, *, notify_visualizer: bool = True) -> None:
+        state = self._overlay_state()
+        state.clear()
+        self._retake_overlay_preview_payload.clear()
+        self._retake_overlay_last_visual_refresh = 0.0
+        if notify_visualizer:
+            viz = getattr(self, 'visualizer', None)
+            clear_cb = getattr(viz, 'clear_retake_overlay_preview', None) if viz is not None else None
+            if callable(clear_cb):
+                try:
+                    clear_cb()
+                except Exception:
+                    pass
+
+    def _activate_retake_overlay(self, start: float, end: float, *, reset_buffers: bool = True) -> RetakeOverlayState:
+        state = self._overlay_state()
+        if reset_buffers:
+            state.clear()
+            self._retake_overlay_preview_payload.clear()
+        try:
+            sr = int(getattr(self, 'active_input_samplerate', getattr(self, 'sample_rate', 44100)))
+        except Exception:
+            sr = 44100
+        state.start = float(max(0.0, start))
+        state.end = float(max(state.start, end))
+        state.start_sample_index = max(0, int(round(state.start * max(1, sr))))
+        state.end_sample_index = max(state.start_sample_index, int(round(state.end * max(1, sr))))
+        state.epoch = int(getattr(self, '_record_epoch', 0))
+        state.created_wall_time = time.time()
+        state.last_timestamp = state.start
+        state.active = True
+        state.recording = False
+        state.requires_commit = False
+        state.paused_at = None
+        viz = getattr(self, 'visualizer', None)
+        try:
+            state.original_duration = float(getattr(self, 'recording_duration', state.end))
+        except Exception:
+            state.original_duration = state.end
+        try:
+            state.original_audio_length = len(getattr(self, 'audio_buffer', []) or [])
+        except Exception:
+            state.original_audio_length = 0
+        try:
+            hist = getattr(self, 'pitch_history', None)
+            state.original_pitch_count = len(hist) if hist is not None else 0
+        except Exception:
+            state.original_pitch_count = 0
+        try:
+            state.original_time_offset = float(getattr(viz, 'time_offset', 0.0)) if viz is not None else 0.0
+        except Exception:
+            state.original_time_offset = 0.0
+        begin_cb = getattr(viz, 'activate_retake_overlay_preview', None) if viz is not None else None
+        if callable(begin_cb):
+            try:
+                begin_cb(state.start, state.end)
+            except Exception:
+                pass
+        return state
+
+    def _retake_overlay_sample_rate(self) -> int:
+        try:
+            sr = int(getattr(self, 'active_input_samplerate', getattr(self, 'sample_rate', 44100)))
+        except Exception:
+            sr = 44100
+        return max(1, sr)
+
+    def _append_overlay_audio_samples(self, samples) -> bool:
+        state = self._overlay_state()
+        if not state.active or samples is None:
+            return False
+        try:
+            arr = np.asarray(samples, dtype=np.float32).flatten()
+        except Exception:
+            try:
+                arr = np.array(list(samples), dtype=np.float32).flatten()
+            except Exception:
+                return False
+        if arr.size == 0:
+            return False
+        sr = self._retake_overlay_sample_rate()
+        base = self._retake_overlay_virtual_time
+        if base is None or base < state.start - 1e-6:
+            base = float(state.start)
+        remaining = max(0.0, float(state.end) - float(base))
+        if remaining <= 0.0:
+            try:
+                self._retake_overlay_virtual_time = float(state.end)
+                state.last_timestamp = float(state.end)
+                self._maybe_trigger_retake_stop(float(state.end), source="overlay-audio")
+            except Exception:
+                pass
+            return False
+        max_samples = int(math.ceil(remaining * max(1, sr)))
+        if max_samples <= 0:
+            try:
+                self._retake_overlay_virtual_time = float(state.end)
+                state.last_timestamp = float(state.end)
+                self._maybe_trigger_retake_stop(float(state.end), source="overlay-audio")
+            except Exception:
+                pass
+            return False
+        if arr.size > max_samples:
+            arr = arr[:max_samples]
+        if arr.size == 0:
+            try:
+                self._retake_overlay_virtual_time = float(state.end)
+                state.last_timestamp = float(state.end)
+                self._maybe_trigger_retake_stop(float(state.end), source="overlay-audio")
+            except Exception:
+                pass
+            return False
+        state.audio_samples.extend(float(v) for v in arr)
+        state.recording = True
+        state.requires_commit = True
+        try:
+            delta = float(arr.size) / float(sr)
+            new_timestamp = float(min(state.end, base + delta))
+            self._retake_overlay_virtual_time = new_timestamp
+            state.last_timestamp = new_timestamp
+            self._maybe_trigger_retake_stop(new_timestamp, source="overlay-audio")
+        except Exception:
+            pass
+        return True
+
+    def _append_overlay_pitch_packet(self, packet: Dict[str, Any]) -> bool:
+        state = self._overlay_state()
+        if not state.active or not isinstance(packet, dict):
+            return False
+        clone = dict(packet)
+        try:
+            virtual = getattr(self, '_retake_overlay_virtual_time', None)
+            if virtual is None or virtual < state.start - 1e-6:
+                virtual = float(state.start)
+            capped = float(min(state.end, virtual))
+            clone['timestamp'] = capped
+            self._retake_overlay_virtual_time = capped
+        except Exception:
+            clone['timestamp'] = float(state.start)
+        state.pitch_packets.append(clone)
+        ts = clone.get('timestamp')
+        if ts is not None:
+            try:
+                ts_val = float(ts)
+                capped_ts = float(min(state.end, max(state.start, ts_val)))
+                state.last_timestamp = capped_ts
+                self._retake_overlay_virtual_time = capped_ts
+                self._maybe_trigger_retake_stop(capped_ts, source="overlay-pitch")
+            except Exception:
+                pass
+        state.requires_commit = True
+        self._retake_overlay_preview_payload.append(clone)
+        self._flush_overlay_preview_throttled()
+        return True
+
+    def _capture_overlay_audio_chunk(self, samples) -> bool:
+        if not getattr(self, '_retake_overlay_enabled', False):
+            return False
+        if not self._retake_overlay_active():
+            return False
+        return self._append_overlay_audio_samples(samples)
+
+    def _capture_overlay_pitch_packet(self, packet: Dict[str, Any]) -> bool:
+        if not getattr(self, '_retake_overlay_enabled', False):
+            return False
+        if not self._retake_overlay_active():
+            return False
+        return self._append_overlay_pitch_packet(packet)
+
+    def _flush_overlay_preview_throttled(self, *, force: bool = False) -> None:
+        if not self._retake_overlay_preview_payload:
+            return
+        viz = getattr(self, 'visualizer', None)
+        append_cb = getattr(viz, 'render_retake_overlay_points', None) if viz is not None else None
+        if not callable(append_cb):
+            if force:
+                self._retake_overlay_preview_payload.clear()
+            return
+        now = time.time()
+        if (not force) and (now - self._retake_overlay_last_visual_refresh) < 0.05:
+            return
+        payload = self._retake_overlay_preview_payload[:]
+        self._retake_overlay_preview_payload.clear()
+        self._retake_overlay_last_visual_refresh = now
+        try:
+            append_cb(payload)
+        except Exception:
+            pass
+
+    def _discard_retake_overlay(self, *, notify_visualizer: bool = True) -> None:
+        self._reset_retake_overlay_state(notify_visualizer=notify_visualizer)
+
+    def _retake_overlay_history_stack(self) -> List[Dict[str, Any]]:
+        stack = getattr(self, '_retake_overlay_history', None)
+        if stack is None:
+            stack = []
+            self._retake_overlay_history = stack
+        return stack
+
+    def _retake_overlay_history_push(self, entry: Dict[str, Any]) -> int:
+        stack = self._retake_overlay_history_stack()
+        seq = int(getattr(self, '_retake_history_seq', 0)) + 1
+        self._retake_history_seq = seq
+        entry.setdefault('take_id', seq)
+        stack.append(entry)
+        limit = int(getattr(self, '_retake_overlay_history_limit', 10))
+        if limit <= 0:
+            limit = 1
+        while len(stack) > limit:
+            stack.pop(0)
+        return seq
+
+    def _retake_overlay_history_pop(self) -> Optional[Dict[str, Any]]:
+        stack = getattr(self, '_retake_overlay_history', None)
+        if not stack:
+            return None
+        return stack.pop()
+
+    def _retake_overlay_history_available(self) -> bool:
+        stack = getattr(self, '_retake_overlay_history', None)
+        return bool(stack)
+
+    def _persist_retake_event(self, event: str, **payload) -> None:
+        if not getattr(self, '_persist_enabled', False):
+            return
+        buf = getattr(self, '_persist_buf', None)
+        if buf is None:
+            return
+        try:
+            import time as _time
+            row: Dict[str, Any] = {'op': 'retake_event', 'event': str(event), 'ts': float(_time.time())}
+            for key, value in payload.items():
+                if isinstance(value, (int, float)):
+                    row[key] = float(value)
+                elif value is not None:
+                    row[key] = value
+            buf.append(row)
+            self._persist_flush()
+        except Exception:
+            pass
+
+    def _retake_overlay_requires_commit(self) -> bool:
+        state = getattr(self, '_retake_overlay_state', None)
+        return bool(state and state.requires_commit and state.has_data())
+
+    def _remove_pitch_history_range(self, start: float, end: float, *, capture: bool = False):
+        hist = getattr(self, 'pitch_history', None)
+        if not hist:
+            if capture:
+                return 0, [], 0
+            return 0
+        try:
+            entries = list(hist)
+        except Exception:
+            return (0, [], 0) if capture else 0
+        if not entries:
+            return (0, [], 0) if capture else 0
+        kept = []
+        removed_entries = [] if capture else None
+        insert_idx = None
+        removed = 0
+        eps = 1e-6
+        for item in entries:
+            timestamp = None
+            if isinstance(item, dict):
+                timestamp = item.get('timestamp')
+            if timestamp is None:
+                kept.append(item)
+                continue
+            try:
+                ts_val = float(timestamp)
+            except Exception:
+                kept.append(item)
+                continue
+            if start - eps <= ts_val < end - eps:
+                if capture and insert_idx is None:
+                    insert_idx = len(kept)
+                if removed_entries is not None:
+                    removed_entries.append(item)
+                removed += 1
+                continue
+            kept.append(item)
+        try:
+            from collections import deque as _deque
+            if isinstance(hist, _deque):
+                hist.clear()
+                hist.extend(kept)
+            elif isinstance(hist, list):
+                hist[:] = kept
+            else:
+                hist.clear()
+                for entry in kept:
+                    hist.append(entry)
+        except Exception:
+            try:
+                self.pitch_history = kept
+            except Exception:
+                pass
+        if capture:
+            if insert_idx is None:
+                insert_idx = len(kept)
+            return removed, removed_entries or [], insert_idx
+        return removed
+
+    def _apply_overlay_pitch_packets(self, packets: List[Dict[str, Any]], *, notify_visualizer: bool = True) -> int:
+        if not packets:
+            return 0
+        hist = getattr(self, 'pitch_history', None)
+        if hist is None:
+            from collections import deque
+            hist = deque(maxlen=1000)
+            self.pitch_history = hist
+        appended = 0
+        viz = getattr(self, 'visualizer', None) if notify_visualizer else None
+        if viz is not None and hasattr(self, '_clear_visualizer_retake_guard'):
+            try:
+                self._clear_visualizer_retake_guard(viz)
+            except Exception:
+                pass
+        for pkt in packets:
+            try:
+                clone = dict(pkt)
+            except Exception:
+                clone = pkt
+            try:
+                hist.append(clone)
+            except Exception:
+                try:
+                    hist.append(clone)
+                except Exception:
+                    pass
+            appended += 1
+            if viz is not None and hasattr(viz, 'add_pitch_data'):
+                payload = dict(clone)
+                if payload.get('_epoch') is None:
+                    try:
+                        payload['_epoch'] = int(getattr(self, '_record_epoch', 0))
+                    except Exception:
+                        payload['_epoch'] = 0
+                try:
+                    viz.add_pitch_data(payload)
+                except Exception:
+                    pass
+        if appended:
+            try:
+                self.total_pitches_detected = max(int(getattr(self, 'total_pitches_detected', 0)), len(hist))
+            except Exception:
+                pass
+        return appended
+
+    def _commit_retake_overlay(self) -> bool:
+        state = getattr(self, '_retake_overlay_state', None)
+        if not state or not state.active:
+            try:
+                self._set_selection_preserve_mode(False)
+            except Exception:
+                pass
+            return False
+        if not state.has_data():
+            self._reset_retake_overlay_state()
+            try:
+                self._set_selection_preserve_mode(False)
+            except Exception:
+                pass
+            return False
+        audio_buf = getattr(self, 'audio_buffer', None)
+        if audio_buf is None:
+            audio_buf = []
+            self.audio_buffer = audio_buf
+        elif not isinstance(audio_buf, list):
+            try:
+                audio_buf = list(audio_buf)
+                self.audio_buffer = audio_buf
+            except Exception:
+                print("⚠️ 无法转换音频缓冲为列表，覆盖失败。")
+                return False
+        sr = float(self._retake_overlay_sample_rate())
+        start_idx = max(0, min(len(audio_buf), int(state.start_sample_index)))
+        target_end_idx = max(start_idx, int(state.end_sample_index))
+        if target_end_idx > len(audio_buf):
+            audio_buf.extend([0.0] * (target_end_idx - len(audio_buf)))
+        end_idx = target_end_idx
+        original_audio = list(audio_buf[start_idx:end_idx])
+        replacement = list(state.audio_samples)
+        audio_buf[start_idx:end_idx] = replacement
+        try:
+            new_duration = len(audio_buf) / sr if sr > 0 else float(state.end)
+            baseline = float(getattr(self, 'recording_duration', new_duration))
+            self.recording_duration = max(baseline, float(state.end), float(new_duration))
+            self.current_duration = float(self.recording_duration)
+            self.current_global_time = float(self.recording_duration)
+        except Exception:
+            pass
+        removed_info = self._remove_pitch_history_range(float(state.start), float(state.end), capture=True)
+        if isinstance(removed_info, tuple):
+            removed, removed_entries, insert_idx = removed_info
+        else:
+            removed = int(removed_info)
+            removed_entries = []
+            insert_idx = 0
+        viz = getattr(self, 'visualizer', None)
+        if viz is not None and hasattr(viz, 'remove_range'):
+            try:
+                viz.remove_range(float(state.start), float(state.end))
+            except Exception:
+                pass
+        added = self._apply_overlay_pitch_packets(state.pitch_packets, notify_visualizer=True)
+        pitch_backup: List[Dict[str, Any]] = []
+        for pkt in removed_entries:
+            if isinstance(pkt, dict):
+                pitch_backup.append(dict(pkt))
+            else:
+                pitch_backup.append(pkt)
+        history_entry = {
+            'start': float(state.start),
+            'end': float(state.end),
+            'start_sample_index': int(state.start_sample_index),
+            'end_sample_index': int(state.end_sample_index),
+            'replacement_len': len(replacement),
+            'audio': original_audio,
+            'pitch_entries': pitch_backup,
+            'pitch_insert_idx': int(insert_idx),
+            'original_duration': float(getattr(state, 'original_duration', state.end)),
+            'original_audio_length': int(getattr(state, 'original_audio_length', len(audio_buf))),
+            'original_pitch_count': int(getattr(state, 'original_pitch_count', len(getattr(self, 'pitch_history', []) or []))),
+            'original_time_offset': float(getattr(state, 'original_time_offset', 0.0)),
+        }
+        take_id = self._retake_overlay_history_push(history_entry)
+        self._persist_retake_event('commit', start=state.start, end=state.end, take=take_id)
+        self._reset_retake_overlay_state()
+        self._retake_overlay_virtual_time = None
+        self._retake_tail_snapshot = None
+        try:
+            print(f"[RETAKE_OVERLAY] 覆盖已应用 (audio={len(replacement)}, pitch_added={added}, pitch_removed={removed})")
+        except Exception:
+            pass
+        win = getattr(self, '_retake_control_win', None)
+        if win is not None:
+            try:
+                win.status_label.setText("覆盖已应用，区间数据已更新。")
+            except Exception:
+                pass
+            try:
+                win._update_overlay_action_buttons()
+            except Exception:
+                pass
+            try:
+                win._update_rerecord_progress()
+            except Exception:
+                pass
+        try:
+            self._release_retake_visual_guards()
+        except Exception:
+            pass
+        try:
+            self._release_retake_countdown_freeze()
+        except Exception:
+            pass
+        try:
+            self._restore_selection_snapshot_if_pending(reason="overlay-cancel")
+        except Exception:
+            pass
+        try:
+            self._set_selection_preserve_mode(False)
+        except Exception:
+            pass
+        try:
+            self._set_selection_preserve_mode(False)
+        except Exception:
+            pass
+        try:
+            self._discard_selection_snapshot()
+        except Exception:
+            pass
+        return True
+
+    def commit_retake_overlay(self) -> bool:
+        return self._commit_retake_overlay()
+
+    def _cancel_retake_overlay(self, *, restore_tail: bool = True) -> None:
+        self._discard_retake_overlay(notify_visualizer=True)
+        self._retake_overlay_virtual_time = None
+        if restore_tail:
+            try:
+                self._restore_retake_tail_snapshot(reason="overlay-discard", replay_visuals=True, restore_audio=False)
+            except Exception:
+                pass
+        self._retake_tail_snapshot = None
+        win = getattr(self, '_retake_control_win', None)
+        if win is not None:
+            try:
+                win.status_label.setText("已放弃当前覆盖缓冲。")
+            except Exception:
+                pass
+            try:
+                win._update_overlay_action_buttons()
+            except Exception:
+                pass
+            try:
+                win._update_rerecord_progress()
+            except Exception:
+                pass
+        try:
+            self._release_retake_visual_guards()
+        except Exception:
+            pass
+        try:
+            self._release_retake_countdown_freeze()
+        except Exception:
+            pass
+
+    def discard_retake_overlay(self) -> None:
+        self._cancel_retake_overlay()
+
+    def _restore_last_retake_overlay(self) -> bool:
+        entry = self._retake_overlay_history_pop()
+        if not entry:
+            return False
+        try:
+            start = float(entry.get('start', 0.0))
+            end = float(entry.get('end', start))
+        except Exception:
+            start = 0.0
+            end = 0.0
+        try:
+            self._apply_retake_overlay_restore(entry, start, end)
+            return True
+        except Exception as exc:
+            try:
+                stack = self._retake_overlay_history_stack()
+                stack.append(entry)
+            except Exception:
+                pass
+            try:
+                print(f"⚠️ 撤销覆盖过程失败: {exc}")
+            except Exception:
+                pass
+            return False
+
+    def _apply_retake_overlay_restore(self, entry: Dict[str, Any], start: float, end: float) -> None:
+        try:
+            sr = float(self._retake_overlay_sample_rate())
+        except Exception:
+            sr = float(getattr(self, 'sample_rate', 44100))
+        audio_buf = getattr(self, 'audio_buffer', None)
+        if audio_buf is None:
+            audio_buf = []
+        elif not isinstance(audio_buf, list):
+            try:
+                audio_buf = list(audio_buf)
+            except Exception:
+                audio_buf = []
+        self.audio_buffer = audio_buf
+        start_idx = int(entry.get('start_sample_index', max(0, int(round(start * sr)))))
+        start_idx = max(0, min(len(audio_buf), start_idx))
+        replacement_len = max(0, int(entry.get('replacement_len', int(entry.get('end_sample_index', start_idx) - start_idx))))
+        if start_idx > len(audio_buf):
+            audio_buf.extend([0.0] * (start_idx - len(audio_buf)))
+        removal_end = min(len(audio_buf), start_idx + replacement_len)
+        del audio_buf[start_idx:removal_end]
+        audio_backup = list(entry.get('audio', []))
+        if audio_backup:
+            audio_buf[start_idx:start_idx] = audio_backup
+        self._remove_pitch_history_range(start, end)
+        hist = getattr(self, 'pitch_history', None)
+        if hist is None:
+            from collections import deque
+            hist = deque(maxlen=1000)
+            self.pitch_history = hist
+        seq = list(hist)
+        insert_idx = int(entry.get('pitch_insert_idx', len(seq)))
+        insert_idx = max(0, min(len(seq), insert_idx))
+        restored_packets = []
+        for pkt in entry.get('pitch_entries', []):
+            if isinstance(pkt, dict):
+                restored_packets.append(dict(pkt))
+            else:
+                restored_packets.append(pkt)
+        seq[insert_idx:insert_idx] = restored_packets
+        from collections import deque as _deque
+        if isinstance(hist, _deque):
+            hist.clear()
+            hist.extend(seq)
+        elif isinstance(hist, list):
+            hist[:] = seq
+        else:
+            try:
+                hist.clear()
+                for item in seq:
+                    hist.append(item)
+            except Exception:
+                self.pitch_history = seq
+        viz = getattr(self, 'visualizer', None)
+        if viz is not None:
+            try:
+                if hasattr(viz, 'remove_range'):
+                    viz.remove_range(start, end)
+            except Exception:
+                pass
+            add_cb = getattr(viz, 'add_pitch_data', None)
+            if callable(add_cb):
+                for pkt in restored_packets:
+                    try:
+                        payload = dict(pkt) if isinstance(pkt, dict) else pkt
+                    except Exception:
+                        payload = pkt
+                    try:
+                        add_cb(payload)
+                    except Exception:
+                        pass
+            try:
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+            except Exception:
+                pass
+        try:
+            orig_duration = float(entry.get('original_duration', end))
+            new_duration = len(audio_buf) / sr if sr > 0 else orig_duration
+            self.recording_duration = max(orig_duration, new_duration)
+            self.current_duration = float(self.recording_duration)
+            self.current_global_time = float(self.recording_duration)
+        except Exception:
+            pass
+        try:
+            self.total_pitches_detected = max(int(getattr(self, 'total_pitches_detected', 0)), len(seq))
+        except Exception:
+            pass
+        self._persist_retake_event('revert', start=start, end=end, take=entry.get('take_id'))
+        try:
+            self._release_retake_visual_guards()
+        except Exception:
+            pass
+        try:
+            self._release_retake_countdown_freeze()
+        except Exception:
+            pass
+        win = getattr(self, '_retake_control_win', None)
+        if win is not None:
+            try:
+                win.status_label.setText("已撤销上一次覆盖，恢复上一遍录制。")
+            except Exception:
+                pass
+            try:
+                win._update_overlay_action_buttons()
+            except Exception:
+                pass
+            try:
+                win._update_rerecord_progress()
+            except Exception:
+                pass
+        return None
+
+    def revert_last_retake_overlay(self) -> bool:
+        return self._restore_last_retake_overlay()
 
     def _prepare_retake_preroll(self, target_time: float):
         """在伴奏模式下为回录倒计时准备伴奏预卷与定时器。"""
@@ -32859,10 +35280,21 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
         self._pending_retake_resume = False
         self._pending_retake_resume_time = 0.0
+        preserve_future = self._retake_should_preserve_timeline()
         if target_time > 0:
             try:
                 self.current_duration = float(target_time)
-                self.recording_duration = float(target_time)
+                if not preserve_future:
+                    self.recording_duration = float(target_time)
+                else:
+                    preserved = getattr(self, '_retake_preserved_recording_duration', None)
+                    if preserved is not None:
+                        try:
+                            preserved = float(preserved)
+                        except Exception:
+                            preserved = None
+                    if preserved is not None:
+                        self.recording_duration = max(float(getattr(self, 'recording_duration', preserved)), preserved)
             except Exception:
                 pass
         try:
@@ -34267,6 +36699,10 @@ class IntegratedRecordingInterface(QMainWindow):
                         self.current_note_label.setText("当前音符: --")
                     except Exception:
                         pass
+                    overlay_state = getattr(self, '_retake_overlay_state', None)
+                    if overlay_state and overlay_state.active:
+                        overlay_state.recording = False
+                        overlay_state.paused_at = time.time()
                     self.pause_button.setText("继续")
                     if hasattr(self, 'status_label'):
                         self.status_label.setText("已暂停，点击继续")
@@ -34298,9 +36734,17 @@ class IntegratedRecordingInterface(QMainWindow):
                             self.visualizer._external_paused = False
                         except Exception:
                             pass
+                    overlay_state = getattr(self, '_retake_overlay_state', None)
+                    if overlay_state and overlay_state.active:
+                        overlay_state.paused_at = None
                     self.pause_button.setText("暂停")
                     if hasattr(self, 'status_label'):
                         self.status_label.setText("录音继续")
+                    try:
+                        if getattr(self, '_retake_active_range', None):
+                            self._retake_stop_latched = False
+                    except Exception:
+                        pass
                 else:
                     QMessageBox.warning(self, "继续失败", "无法继续，可能未处于暂停状态。")
         except Exception as e:
@@ -34860,13 +37304,65 @@ class IntegratedRecordingInterface(QMainWindow):
     
     def on_recording_progress(self, duration):
         """录音进度更新"""
+        retake_range = getattr(self, '_retake_active_range', None)
+        overlay_active = self._retake_overlay_active()
+        retake_clock_needed = bool(retake_range or overlay_active)
+        paused = bool(getattr(self, 'is_paused', False))
+        backing_paused = bool(getattr(self, '_backing_paused', False))
+        if paused:
+            return  # 全局暂停照旧冻结
+        if backing_paused and not retake_clock_needed:
+            return
         try:
-            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
-                return  # 暂停不更新，保持冻结
-            eff = self.get_effective_recording_time(float(duration))
-            self.recording_duration = max(0.0, float(eff))
+            raw_duration = float(duration)
         except Exception:
-            self.recording_duration = float(duration)
+            raw_duration = 0.0
+        try:
+            if backing_paused and retake_clock_needed:
+                eff = raw_duration
+            else:
+                eff = self.get_effective_recording_time(raw_duration)
+        except Exception:
+            eff = raw_duration
+        preserve = False
+        try:
+            preserve = self._retake_should_preserve_timeline()
+            if preserve:
+                baseline = getattr(self, '_retake_preserved_recording_duration', None)
+                try:
+                    baseline_val = float(baseline) if baseline is not None else float(getattr(self, 'recording_duration', eff))
+                except Exception:
+                    baseline_val = float(getattr(self, 'recording_duration', eff))
+                if baseline_val < eff:
+                    baseline_val = float(eff)
+                self.recording_duration = max(float(getattr(self, 'recording_duration', baseline_val)), baseline_val)
+                self.current_duration = float(self.recording_duration)
+                self.current_global_time = float(self.recording_duration)
+                current = float(self.recording_duration)
+            else:
+                self.recording_duration = max(0.0, float(eff))
+                current = float(self.recording_duration)
+        except Exception:
+            self.recording_duration = max(0.0, raw_duration)
+            current = float(self.recording_duration)
+            preserve = False
+        guard_time = float(current)
+        guard_source = "progress"
+        virtual = getattr(self, '_retake_overlay_virtual_time', None)
+        if virtual is None and retake_range:
+            try:
+                virtual = float(retake_range[0])
+            except Exception:
+                virtual = None
+        if virtual is not None:
+            try:
+                guard_time = float(virtual)
+                guard_source = "virtual"
+            except Exception:
+                guard_source = "progress"
+        elif preserve:
+            guard_source = "virtual"
+        self._enforce_active_retake_bounds(guard_time, source=guard_source)
     
     def on_status_updated(self, status):
         """状态更新"""
@@ -35158,6 +37654,7 @@ class _RetakeControlWindow(QDialog):
         parent = main if isinstance(main, QWidget) else None
         super().__init__(parent)
         self.main = main
+        self.setObjectName("RetakeControlDialog")
         self.setWindowTitle("选区重录控制台")
         self.setModal(False)
         try:
@@ -35165,61 +37662,158 @@ class _RetakeControlWindow(QDialog):
         except Exception:
             pass
 
+        self._apply_window_palette()
+
         self._updating_from_visualizer = False
         self._last_range: Tuple[Optional[float], Optional[float]] = (None, None)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(8)
+        self.resize(410, 218)
 
         range_group = QGroupBox("重录区间 (秒)")
-        range_layout = QGridLayout(range_group)
+        range_group.setObjectName("RetakeRangeGroup")
+        range_layout = QVBoxLayout()
+        range_layout.setContentsMargins(12, 10, 12, 10)
+        range_layout.setSpacing(8)
+        range_form = QFormLayout()
+        range_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        range_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        range_form.setHorizontalSpacing(8)
+        range_form.setVerticalSpacing(4)
+        range_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
-        self.start_spin = QDoubleSpinBox()
-        self.start_spin.setRange(0.0, 6.0 * 60.0 * 60.0)
-        self.start_spin.setDecimals(3)
-        self.start_spin.setSingleStep(0.1)
+        self.start_spin = self._make_time_spinbox("RetakeStartSpin")
+        start_field = self._wrap_spinbox_with_stepper(self.start_spin, suffix="Start")
 
-        self.end_spin = QDoubleSpinBox()
-        self.end_spin.setRange(0.0, 6.0 * 60.0 * 60.0)
-        self.end_spin.setDecimals(3)
-        self.end_spin.setSingleStep(0.1)
+        self.end_spin = self._make_time_spinbox("RetakeEndSpin")
+        end_field = self._wrap_spinbox_with_stepper(self.end_spin, suffix="End")
 
-        range_layout.addWidget(QLabel("开始"), 0, 0)
-        range_layout.addWidget(self.start_spin, 0, 1)
-        range_layout.addWidget(QLabel("结束"), 1, 0)
-        range_layout.addWidget(self.end_spin, 1, 1)
+        range_form.addRow("开始", start_field)
+        range_form.addRow("结束", end_field)
+        range_layout.addLayout(range_form)
 
         self.length_label = QLabel("区间长度: 0.000s")
-        range_layout.addWidget(self.length_label, 2, 0, 1, 2)
+        self.length_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        range_layout.addWidget(self.length_label)
+
+        self.rerecord_group = QGroupBox("重录")
+        self.rerecord_group.setObjectName("RetakeActionGroup")
+        rr_layout = QVBoxLayout()
+        rr_layout.setContentsMargins(12, 8, 12, 10)
+        rr_layout.setSpacing(8)
+
+        button_policy = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        stretch_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.clear_btn = QPushButton("清除选区")
+        self.clear_btn.setFixedHeight(32)
+        self.clear_btn.setMinimumWidth(96)
+        self.clear_btn.setSizePolicy(button_policy)
+        self.clear_btn.clicked.connect(self._on_clear_range)
+        self.clear_btn.setObjectName("RetakeClearButton")
+
+        self.rerecord_start_btn = QPushButton("开始重录")
+        self.rerecord_start_btn.setFixedHeight(36)
+        self.rerecord_start_btn.setMinimumWidth(150)
+        self.rerecord_start_btn.setSizePolicy(stretch_policy)
+        self.rerecord_start_btn.clicked.connect(self._on_rerecord_start_clicked)
+        self.rerecord_start_btn.setObjectName("RetakeStartButton")
+
+        self.rerecord_pause_btn = QPushButton("暂停")
+        self.rerecord_pause_btn.setFixedHeight(32)
+        self.rerecord_pause_btn.setMinimumWidth(96)
+        self.rerecord_pause_btn.setSizePolicy(button_policy)
+        self.rerecord_pause_btn.clicked.connect(self._on_rerecord_pause_clicked)
+        self.rerecord_pause_btn.setEnabled(False)
+        self.rerecord_pause_btn.setObjectName("RetakePauseButton")
+
+        self.overlay_discard_btn = QPushButton("取消覆盖")
+        self.overlay_discard_btn.setFixedHeight(32)
+        self.overlay_discard_btn.setSizePolicy(button_policy)
+        self.overlay_discard_btn.setObjectName("RetakeDiscardButton")
+        self.overlay_discard_btn.setEnabled(False)
+        self.overlay_discard_btn.clicked.connect(self._on_overlay_discard_clicked)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        action_row.addWidget(self.overlay_discard_btn)
+        action_row.addWidget(self.clear_btn)
+        action_row.addWidget(self.rerecord_start_btn, 1)
+        action_row.addWidget(self.rerecord_pause_btn)
+        rr_layout.addLayout(action_row)
+
+        self.rerecord_slider = QSlider(Qt.Orientation.Horizontal)
+        self.rerecord_slider.setRange(0, 1000)
+        self.rerecord_slider.setObjectName("RetakeProgressSlider")
+        self.rerecord_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        try:
+            self.rerecord_slider.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        except Exception:
+            pass
+        rr_layout.addWidget(self.rerecord_slider)
+
+        self.rerecord_progress = QProgressBar()
+        self.rerecord_progress.setRange(0, 1000)
+        self.rerecord_progress.setValue(0)
+        self.rerecord_progress.setTextVisible(True)
+        self.rerecord_progress.setFixedHeight(20)
+        self.rerecord_progress.setFormat("准备就绪")
+        self.rerecord_progress.setObjectName("RetakeProgressBar")
+        rr_layout.addWidget(self.rerecord_progress)
+
+        self.rerecord_group.setLayout(rr_layout)
 
         range_group.setLayout(range_layout)
-        layout.addWidget(range_group)
+        range_group.setMinimumWidth(218)
+        range_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         listenback_group = QGroupBox("回听")
+        listenback_group.setObjectName("ListenbackGroup")
         lb_layout = QVBoxLayout(listenback_group)
+        lb_layout.setContentsMargins(10, 8, 10, 8)
+        lb_layout.setSpacing(6)
+        listenback_group.setMinimumWidth(226)
+        listenback_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        progress_row = QHBoxLayout()
+        progress_frame = QFrame()
+        progress_frame.setObjectName("ListenbackProgressFrame")
+        progress_layout = QVBoxLayout(progress_frame)
+        progress_layout.setContentsMargins(8, 6, 8, 6)
+        progress_layout.setSpacing(4)
+
+        header_row = QHBoxLayout()
         self.listenback_time_label = QLabel("进度: -- / --")
-        progress_row.addWidget(self.listenback_time_label)
-        progress_row.addStretch()
-        lb_layout.addLayout(progress_row)
+        header_row.addWidget(self.listenback_time_label)
+        header_row.addStretch()
+        self.listenback_status_label = QLabel("回听待播放")
+        self.listenback_status_label.setStyleSheet("color:#8AB4F8;")
+        header_row.addWidget(self.listenback_status_label)
+        progress_layout.addLayout(header_row)
 
         self.listenback_slider = QSlider(Qt.Orientation.Horizontal)
         self.listenback_slider.setRange(0, 1)
         self.listenback_slider.setEnabled(False)
+        self.listenback_slider.setFixedHeight(16)
         self.listenback_slider.sliderPressed.connect(self._on_listenback_slider_pressed)
         self.listenback_slider.sliderReleased.connect(self._on_listenback_slider_released)
         self.listenback_slider.valueChanged.connect(self._on_listenback_slider_changed)
-        lb_layout.addWidget(self.listenback_slider)
+        progress_layout.addWidget(self.listenback_slider)
+        lb_layout.addWidget(progress_frame)
 
         control_row = QHBoxLayout()
+        control_row.setSpacing(6)
         self.listenback_play_btn = QPushButton("开始")
         self.listenback_play_btn.setEnabled(False)
         self.listenback_play_btn.clicked.connect(self._on_listenback_play_clicked)
+        self.listenback_play_btn.setFixedHeight(30)
         control_row.addWidget(self.listenback_play_btn)
 
         self.listenback_pause_btn = QPushButton("暂停")
         self.listenback_pause_btn.setEnabled(False)
         self.listenback_pause_btn.clicked.connect(self._on_listenback_pause_clicked)
+        self.listenback_pause_btn.setFixedHeight(30)
         control_row.addWidget(self.listenback_pause_btn)
 
         self.listenback_backing_checkbox = QCheckBox("伴奏")
@@ -35229,25 +37823,60 @@ class _RetakeControlWindow(QDialog):
         control_row.addStretch()
         lb_layout.addLayout(control_row)
 
-        self.listenback_status_label = QLabel("回听已就绪")
-        self.listenback_status_label.setStyleSheet("color:#8AB4F8;")
-        lb_layout.addWidget(self.listenback_status_label)
+        volume_frame = QFrame()
+        volume_frame.setObjectName("ListenbackVolumeFrame")
+        volume_layout = QGridLayout(volume_frame)
+        volume_layout.setContentsMargins(4, 4, 4, 2)
+        volume_layout.setHorizontalSpacing(6)
+        volume_layout.setVerticalSpacing(2)
 
-        layout.addWidget(listenback_group)
+        self.listenback_vocal_slider, self.listenback_vocal_value = self._create_volume_slider(
+            minimum=60,
+            maximum=220,
+            initial=self._get_vocal_gain_percent(),
+            tooltip="调节回听人声音量",
+            on_change=self._on_listenback_vocal_volume_changed
+        )
+        volume_layout.addWidget(QLabel("人声"), 0, 0)
+        volume_layout.addWidget(self.listenback_vocal_slider, 0, 1)
+        volume_layout.addWidget(self.listenback_vocal_value, 0, 2)
+
+        self.listenback_backing_slider, self.listenback_backing_value = self._create_volume_slider(
+            minimum=0,
+            maximum=200,
+            initial=self._get_backing_volume_percent(),
+            tooltip="调节伴奏音量",
+            on_change=self._on_listenback_backing_volume_changed
+        )
+        volume_layout.addWidget(QLabel("伴奏"), 1, 0)
+        volume_layout.addWidget(self.listenback_backing_slider, 1, 1)
+        volume_layout.addWidget(self.listenback_backing_value, 1, 2)
+
+        lb_layout.addWidget(volume_frame)
+
+        primary_row = QHBoxLayout()
+        primary_row.setContentsMargins(0, 0, 0, 0)
+        primary_row.setSpacing(10)
+        primary_row.addWidget(range_group)
+        primary_row.addWidget(listenback_group, stretch=1)
+        layout.addLayout(primary_row)
+        layout.addWidget(self.rerecord_group)
+        layout.setSpacing(8)
         self._listenback_group = listenback_group
+        self._listenback_control_widgets = [
+            self.listenback_slider,
+            self.listenback_play_btn,
+            self.listenback_pause_btn,
+            self.listenback_backing_checkbox,
+            self.listenback_vocal_slider,
+            self.listenback_backing_slider
+        ]
 
-        action_row = QHBoxLayout()
-        self.clear_btn = QPushButton("清除区间音高")
-        self.clear_btn.clicked.connect(self._on_clear_range)
-        action_row.addWidget(self.clear_btn)
-
-        action_row.addStretch()
-        layout.addLayout(action_row)
-
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color:#A0A0A0;")
-        layout.addWidget(self.status_label)
-        layout.addStretch()
+        footer_row = QHBoxLayout()
+        self.status_label = QLabel("提示：当前未处于选区重录模式。")
+        self.status_label.setObjectName("RetakeStatusLabel")
+        footer_row.addWidget(self.status_label, stretch=1)
+        layout.addLayout(footer_row)
 
         self.start_spin.valueChanged.connect(self._on_spin_changed)
         self.end_spin.valueChanged.connect(self._on_spin_changed)
@@ -35263,6 +37892,8 @@ class _RetakeControlWindow(QDialog):
         self._listenback_backing_session = False
         self._listenback_prev_preview_flag = False
         self._listenback_manual_offset: Optional[float] = None
+        self._progress_hint: Optional[Tuple[float, str]] = None
+        self._sync_volume_sliders()
 
         ap = getattr(self.main, 'audio_processor', None)
         if ap is not None and hasattr(ap, 'listenback_playback_finished'):
@@ -35272,6 +37903,7 @@ class _RetakeControlWindow(QDialog):
                 pass
 
         self._sync_from_visualizer(force=True)
+        self._update_overlay_action_buttons()
 
     def sync_from_visualizer(self, force: bool = False):
         self._sync_from_visualizer(force=force)
@@ -35286,6 +37918,7 @@ class _RetakeControlWindow(QDialog):
                 self.length_label.setText("区间长度: --")
             self.status_label.setText("提示：当前未处于选区重录模式。")
             self._disable_listenback_controls()
+            self._update_rerecord_progress(inactive_hint="等待选区")
             return
         try:
             start = float(getattr(viz, 'sel_start', 0.0))
@@ -35299,8 +37932,10 @@ class _RetakeControlWindow(QDialog):
             try:
                 self.start_spin.blockSignals(True)
                 self.end_spin.blockSignals(True)
-                self.start_spin.setValue(max(0.0, start))
-                self.end_spin.setValue(max(start + 0.001, end))
+                if not self._spinbox_has_user_focus(self.start_spin):
+                    self.start_spin.setValue(max(0.0, start))
+                if not self._spinbox_has_user_focus(self.end_spin):
+                    self.end_spin.setValue(max(start + 0.001, end))
             finally:
                 try:
                     self.start_spin.blockSignals(False)
@@ -35312,20 +37947,249 @@ class _RetakeControlWindow(QDialog):
         self.status_label.setText("")
         self._update_listenback_range_ui(start, end, range_reset=range_changed)
         self._refresh_listenback_status()
+        self._update_rerecord_progress()
 
     def _set_controls_enabled(self, enabled: bool):
         self.start_spin.setEnabled(enabled)
         self.end_spin.setEnabled(enabled)
         self.clear_btn.setEnabled(enabled)
+        main = getattr(self, 'main', None)
+        session_active = bool(main is not None and (getattr(main, 'is_recording', False) or getattr(main, 'is_analyzing', False)))
+        self.rerecord_start_btn.setEnabled(enabled and session_active)
+        self.rerecord_pause_btn.setEnabled(enabled and session_active)
+        self.rerecord_progress.setEnabled(enabled)
         lb_enabled = bool(enabled and self._listenback_length > 0.0)
         try:
             self._listenback_group.setEnabled(lb_enabled)
         except Exception:
             pass
-        for widget in (self.listenback_slider, self.listenback_play_btn, self.listenback_pause_btn, self.listenback_backing_checkbox):
+        for widget in self._iter_listenback_widgets():
             widget.setEnabled(lb_enabled)
         if not lb_enabled:
             self.listenback_time_label.setText("进度: -- / --")
+
+    def _update_rerecord_progress(self, inactive_hint: Optional[str] = None):
+        main = getattr(self, 'main', None)
+        viz = getattr(main, 'visualizer', None) if main is not None else None
+        selection_active = bool(viz is not None and getattr(viz, 'retake_selection_active', False))
+        session_active = bool(main is not None and (getattr(main, 'is_recording', False) or getattr(main, 'is_analyzing', False)))
+        pause_text = "继续" if bool(main is not None and getattr(main, 'is_paused', False)) else "暂停"
+        self.rerecord_pause_btn.setText(pause_text)
+        if not selection_active or self._last_range == (None, None):
+            self._clear_progress_hint()
+            hint = inactive_hint or "准备就绪"
+            self._set_rerecord_progress_state(0.0, hint)
+            self._set_rerecord_button_states(False, False)
+            return
+        try:
+            start = float(self._last_range[0]) if self._last_range[0] is not None else float(getattr(viz, 'sel_start', 0.0))
+            end = float(self._last_range[1]) if self._last_range[1] is not None else float(getattr(viz, 'sel_end', start))
+        except Exception:
+            start = float(getattr(viz, 'sel_start', 0.0))
+            end = float(getattr(viz, 'sel_end', start))
+        span = max(1e-3, end - start)
+        if not session_active:
+            self._clear_progress_hint()
+            self._set_rerecord_progress_state(0.0, "等待录音开始…")
+            self._set_rerecord_button_states(False, False)
+            return
+        countdown_in_progress = bool(main is not None and getattr(main, '_retake_countdown_in_progress', False))
+        pending_resume = bool(main is not None and getattr(main, '_retake_countdown_pending_resume', False))
+        if countdown_in_progress or pending_resume:
+            self._clear_progress_hint()
+        else:
+            if self._progress_hint is not None:
+                ratio_hint, label_hint = self._progress_hint
+                self._set_rerecord_progress_state(ratio_hint, label_hint)
+                self._set_rerecord_button_states(True, session_active)
+                return
+        if pending_resume and not countdown_in_progress:
+            self._set_rerecord_progress_state(0.0, "等待恢复录音…")
+            self._set_rerecord_button_states(False, True)
+            return
+        if countdown_in_progress:
+            duration = float(getattr(main, '_retake_countdown_duration', getattr(main, '_retake_countdown_seconds', 3.0))) if main is not None else 3.0
+            if duration <= 0.01:
+                duration = 0.01
+            try:
+                import time as _time
+                deadline = float(getattr(main, '_retake_countdown_deadline', 0.0)) if main is not None else 0.0
+                remaining = max(0.0, deadline - _time.time()) if deadline else max(0.0, duration)
+            except Exception:
+                remaining = duration
+            done = max(0.0, min(duration, duration - remaining))
+            ratio = max(0.0, min(1.0, done / duration))
+            self._set_rerecord_progress_state(ratio, f"准备中：{remaining:.1f}s")
+            self._set_rerecord_button_states(False, True)
+            return
+        current_time = None
+        virtual_time = None
+        if main is not None:
+            try:
+                virtual_time = getattr(main, '_retake_overlay_virtual_time', None)
+                if virtual_time is None:
+                    active_range = getattr(main, '_retake_active_range', None)
+                    if active_range:
+                        virtual_time = float(active_range[0])
+            except Exception:
+                virtual_time = None
+        if virtual_time is not None:
+            try:
+                current_time = float(virtual_time)
+            except Exception:
+                current_time = float(start)
+        if current_time is None and main is not None:
+            candidate = getattr(main, 'recording_duration', None)
+            if candidate is not None:
+                try:
+                    current_time = float(candidate)
+                except Exception:
+                    current_time = None
+        if current_time is None and main is not None and hasattr(main, 'get_effective_recording_time'):
+            try:
+                current_time = float(main.get_effective_recording_time(start))
+            except Exception:
+                current_time = None
+        preserve_progress = False
+        if main is not None:
+            checker = getattr(main, '_retake_should_preserve_timeline', None)
+            if callable(checker):
+                try:
+                    preserve_progress = bool(checker())
+                except Exception:
+                    preserve_progress = False
+        if preserve_progress and current_time is None:
+            try:
+                current_time = float(virtual_time if virtual_time is not None else start)
+            except Exception:
+                current_time = float(start)
+
+        reached_end = False
+        rel = 0.0
+        elapsed = 0.0
+        if current_time is not None:
+            rel = current_time - start
+            elapsed = max(0.0, rel)
+            if elapsed >= span - 1e-4:
+                elapsed = span
+                rel = span
+                reached_end = True
+        paused = bool(main is not None and getattr(main, 'is_paused', False))
+        if elapsed <= 0.0:
+            label = "等待进入选区"
+            display_ratio = 0.0
+        else:
+            self._clear_progress_hint()
+            progress_ratio = max(0.0, min(1.0, elapsed / span))
+            if reached_end:
+                label = "区间录制完成"
+                display_ratio = 1.0
+                self._maybe_latch_retake_stop(start, end)
+            elif paused:
+                label = f"录音已暂停：{max(0.0, elapsed):.2f}/{span:.2f}s"
+                display_ratio = progress_ratio
+            else:
+                label = f"录制中：{max(0.0, elapsed):.2f}/{span:.2f}s"
+                display_ratio = progress_ratio
+        self._set_rerecord_progress_state(display_ratio, label)
+        allow_start = not countdown_in_progress and not pending_resume and session_active
+        self._set_rerecord_button_states(allow_start, session_active)
+        self._update_overlay_action_buttons()
+
+    def _set_rerecord_progress_state(self, ratio: float, label: str):
+        ratio = max(0.0, min(1.0, float(ratio)))
+        try:
+            maximum = max(1, self.rerecord_progress.maximum())
+            self.rerecord_progress.setValue(int(round(ratio * maximum)))
+        except Exception:
+            pass
+        try:
+            self.rerecord_progress.setFormat(label)
+        except Exception:
+            pass
+        self._update_rerecord_slider(ratio)
+
+    def _update_rerecord_slider(self, ratio: float):
+        slider = getattr(self, 'rerecord_slider', None)
+        if slider is None:
+            return
+        try:
+            slider.blockSignals(True)
+            maximum = max(1, slider.maximum())
+            slider.setValue(int(round(max(0.0, min(1.0, ratio)) * maximum)))
+        except Exception:
+            pass
+        finally:
+            try:
+                slider.blockSignals(False)
+            except Exception:
+                pass
+
+    def _set_rerecord_button_states(self, start_enabled: bool, pause_enabled: bool):
+        self.rerecord_start_btn.setEnabled(bool(start_enabled))
+        self.rerecord_pause_btn.setEnabled(bool(pause_enabled))
+        self._update_overlay_action_buttons()
+
+    def _update_overlay_action_buttons(self):
+        main = getattr(self, 'main', None)
+        if main is None:
+            self.overlay_discard_btn.setEnabled(False)
+            self.overlay_discard_btn.setToolTip("暂无覆盖可取消")
+            return
+        try:
+            overlay_active = bool(main._retake_overlay_active())
+        except Exception:
+            overlay_active = False
+        history_available = False
+        checker = getattr(main, '_retake_overlay_history_available', None)
+        if callable(checker):
+            try:
+                history_available = bool(checker())
+            except Exception:
+                history_available = False
+        elif isinstance(getattr(main, '_retake_overlay_history', None), list):
+            history_available = bool(getattr(main, '_retake_overlay_history', None))
+        enabled = overlay_active or history_available
+        self.overlay_discard_btn.setEnabled(enabled)
+        if overlay_active:
+            tip = "取消当前覆盖录制"
+        elif history_available:
+            tip = "撤销最近一次覆盖"
+        else:
+            tip = "暂无覆盖可取消"
+        self.overlay_discard_btn.setToolTip(tip)
+
+    def _set_progress_hint(self, ratio: float, label: str):
+        try:
+            clamped = max(0.0, min(1.0, float(ratio)))
+        except Exception:
+            clamped = 0.0
+        self._progress_hint = (clamped, label)
+
+    def _clear_progress_hint(self):
+        self._progress_hint = None
+
+    def _maybe_latch_retake_stop(self, start: float, end: float):
+        main = getattr(self, 'main', None)
+        if main is None:
+            return
+        active = getattr(main, '_retake_active_range', None)
+        if not active:
+            return
+        try:
+            s_ok = abs(float(active[0]) - float(start)) < 1e-3
+            e_ok = abs(float(active[1]) - float(end)) < 1e-3
+        except Exception:
+            s_ok = e_ok = False
+        if not (s_ok and e_ok):
+            return
+        try:
+            guard = getattr(main, '_enforce_active_retake_bounds', None)
+            if callable(guard):
+                guard(float(end), source="retake-window")
+        except Exception:
+            pass
+        self.status_label.setText("选区重录完成，可回听或再次开始。")
 
     def _update_length_label(self, length: float):
         try:
@@ -35337,36 +38201,391 @@ class _RetakeControlWindow(QDialog):
     def _on_spin_changed(self):
         if self._updating_from_visualizer:
             return
-        self._apply_range()
+        anchor = None
+        try:
+            sender = self.sender()
+        except Exception:
+            sender = None
+        if sender is self.start_spin:
+            anchor = 'left'
+        elif sender is self.end_spin:
+            anchor = 'right'
+        self._apply_range(anchor_side=anchor)
 
-    def _apply_range(self):
+    def _apply_range(self, anchor_side: Optional[str] = None):
         viz = getattr(self.main, 'visualizer', None)
         if viz is None or not getattr(viz, 'retake_selection_active', False):
             return
         start = float(self.start_spin.value())
         end = float(self.end_spin.value())
+        right_limit = self._get_visualizer_retake_limit(viz)
+        min_span = self._get_min_retake_span(viz)
+        guard_margin = float(getattr(self.main, '_retake_right_guard_margin', 0.12) or 0.12)
+        if right_limit is not None and end >= right_limit - 1e-5:
+            guard_end = max(0.0, right_limit - guard_margin)
+            if guard_end > 0.0:
+                end = max(start + min_span, guard_end)
+                if not self._spinbox_has_user_focus(self.end_spin):
+                    try:
+                        self._updating_from_visualizer = True
+                        self.end_spin.blockSignals(True)
+                        self.end_spin.setValue(end)
+                    finally:
+                        self.end_spin.blockSignals(False)
+                        self._updating_from_visualizer = False
         if end <= start + 1e-3:
             end = start + 0.35
-            self.end_spin.setValue(end)
+            try:
+                self._updating_from_visualizer = True
+                self.end_spin.blockSignals(True)
+                self.end_spin.setValue(end)
+            finally:
+                self.end_spin.blockSignals(False)
+                self._updating_from_visualizer = False
         try:
-            viz.set_retake_range(start, end, refresh=True, sync_playhead=True)
-            self._update_length_label(end - start)
+            viz.set_retake_range(start, end, refresh=True, sync_playhead=True, anchor_side=anchor_side)
             self.status_label.setText("选区范围已更新。")
+            actual_start = float(getattr(viz, 'sel_start', start))
+            actual_end = float(getattr(viz, 'sel_end', end))
+            self._last_range = (actual_start, actual_end)
+            self._update_length_label(actual_end - actual_start)
+            def _maybe_sync_spin(spin: QDoubleSpinBox, value: float):
+                if self._spinbox_has_user_focus(spin):
+                    return
+                try:
+                    self._updating_from_visualizer = True
+                    spin.blockSignals(True)
+                    spin.setValue(value)
+                finally:
+                    spin.blockSignals(False)
+                    self._updating_from_visualizer = False
+            _maybe_sync_spin(self.start_spin, actual_start)
+            _maybe_sync_spin(self.end_spin, actual_end)
         except Exception as exc:
             print(f"⚠️ 更新选区范围失败: {exc}")
 
     def _on_clear_range(self):
         viz = getattr(self.main, 'visualizer', None)
-        if viz is None or not getattr(viz, 'retake_selection_active', False):
+        if viz is None:
             return
         try:
-            start = float(getattr(viz, 'sel_start', 0.0))
-            end = float(getattr(viz, 'sel_end', start))
-            viz.clear_pitch_points_in_range(start, end)
-            self.status_label.setText("已清除区间内的音高点。")
+            start = getattr(viz, 'sel_start', None)
+            end = getattr(viz, 'sel_end', None)
+            if start is None or end is None:
+                start = float(self.start_spin.value())
+                end = float(self.end_spin.value())
+            start = float(start)
+            end = float(end)
+        except Exception:
+            self.status_label.setText("未能识别当前选区。")
+            return
+        if end < start:
+            start, end = end, start
+        handler = getattr(self.main, 'clear_retake_selection_range', None)
+        success = False
+        if callable(handler):
+            try:
+                success = bool(handler(start, end))
+            except Exception as exc:
+                print(f"⚠️ 快照清除选区失败: {exc}")
+        if not success:
+            self.status_label.setText("清除选区失败，请重试。")
+            return
+        try:
+            self.status_label.setText("选区已清空，等待重录…")
+            min_span = max(0.05, float(getattr(viz, '_retake_min_span', 0.35)))
+            span = max(min_span, float(end - start))
+            def _apply_range():
+                viz.retake_selection_active = True
+                viz.selection_mode = 'retake'
+                viz.selection_active = True
+                viz.listenback_enabled = False
+                viz.set_retake_range(
+                    start,
+                    end,
+                    refresh=True,
+                    sync_playhead=False,
+                    anchor_side='block',
+                    respect_right_limit=False,
+                )
+            try:
+                _apply_range()
+            except Exception:
+                pass
+            if not getattr(viz, 'retake_selection_active', False):
+                activator = getattr(viz, 'activate_retake_selection', None)
+                if callable(activator):
+                    try:
+                        activator(anchor_time=start + span * 0.5, initial_span=span)
+                    except Exception:
+                        pass
+                    try:
+                        _apply_range()
+                    except Exception:
+                        pass
+            try:
+                viz.update_listenback_artists()
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+            except Exception:
+                pass
+            self._set_progress_hint(0.0, "选区已清空，等待重录…")
+            self._update_rerecord_progress()
             self._sync_from_visualizer(force=True)
         except Exception as exc:
-            print(f"⚠️ 清除选区失败: {exc}")
+            print(f"⚠️ 清除选区后刷新失败: {exc}")
+
+    def _on_overlay_commit_clicked(self):
+        main = getattr(self, 'main', None)
+        if main is None:
+            self.status_label.setText("无法访问主控制器。")
+            return
+        handler = getattr(main, 'commit_retake_overlay', None)
+        if handler is None:
+            handler = getattr(main, '_commit_retake_overlay', None)
+        success = False
+        if callable(handler):
+            try:
+                success = bool(handler())
+            except Exception as exc:
+                print(f"⚠️ 应用覆盖失败: {exc}")
+        self.status_label.setText("覆盖已应用。" if success else "暂无可应用的覆盖缓冲。")
+        self._update_overlay_action_buttons()
+        self._update_rerecord_progress()
+
+    def _on_overlay_discard_clicked(self):
+        main = getattr(self, 'main', None)
+        if main is None:
+            self.status_label.setText("无法访问主控制器。")
+            return
+        state = getattr(main, '_retake_overlay_state', None)
+        pending_overlay = bool(state and state.active and state.requires_commit)
+        action_done = False
+        if pending_overlay:
+            handler = getattr(main, 'discard_retake_overlay', None)
+            if handler is None:
+                handler = getattr(main, '_cancel_retake_overlay', None)
+            if callable(handler):
+                try:
+                    handler()
+                    action_done = True
+                except Exception as exc:
+                    print(f"⚠️ 放弃覆盖失败: {exc}")
+            if action_done:
+                self.status_label.setText("已放弃当前覆盖。")
+        else:
+            revert_handler = getattr(main, 'revert_last_retake_overlay', None)
+            if callable(revert_handler):
+                try:
+                    action_done = bool(revert_handler())
+                except Exception as exc:
+                    print(f"⚠️ 撤销覆盖失败: {exc}")
+            self.status_label.setText("已撤销上一次覆盖。" if action_done else "暂无可撤销的覆盖。")
+        if action_done:
+            restorer = getattr(main, '_restore_selection_snapshot_if_pending', None)
+            if callable(restorer):
+                try:
+                    restorer(reason="overlay-discard")
+                except Exception:
+                    pass
+        self._update_overlay_action_buttons()
+        self._update_rerecord_progress()
+
+    def _on_rerecord_start_clicked(self):
+        main = getattr(self, 'main', None)
+        viz = getattr(main, 'visualizer', None) if main is not None else None
+        if main is None or viz is None or not getattr(viz, 'retake_selection_active', False):
+            self.status_label.setText("提示：请先启用选区重录模式。")
+            return
+        start = None
+        end = None
+        try:
+            sel_start = getattr(viz, 'sel_start', None)
+            sel_end = getattr(viz, 'sel_end', None)
+            if sel_start is not None and sel_end is not None:
+                start = float(sel_start)
+                end = float(sel_end)
+        except Exception:
+            start = None
+            end = None
+        if start is None or end is None:
+            try:
+                spin_start = float(self.start_spin.value())
+                spin_end = float(self.end_spin.value())
+            except Exception:
+                self.status_label.setText("无法读取当前选区，稍后再试。")
+                return
+            start = min(spin_start, spin_end)
+            end = max(spin_start, spin_end)
+        if end <= start + 1e-3:
+            self.status_label.setText("区间长度过短，无法重录。")
+            return
+        countdown_busy = bool(
+            getattr(main, '_retake_countdown_in_progress', False)
+            or getattr(main, '_retake_countdown_pending_resume', False)
+        )
+        if countdown_busy:
+            self.status_label.setText("正在准备上一轮重录，请稍候…")
+            return
+        active_session = bool(getattr(main, 'is_recording', False) or getattr(main, 'is_analyzing', False))
+        if not active_session:
+            self.status_label.setText("当前未在录音或分析状态，无法重录。")
+            return
+        # 若全局处于暂停状态，自动恢复，确保倒计时立即启动
+        if getattr(main, 'is_paused', False):
+            try:
+                main.pause_recording()
+            except Exception as exc:
+                try:
+                    print(f"⚠️ 自动恢复录音失败: {exc}")
+                except Exception:
+                    pass
+        try:
+            main._retake_should_auto_resume = True
+        except Exception:
+            pass
+        try:
+            if hasattr(main, '_set_backing_paused'):
+                main._set_backing_paused(False)
+        except Exception:
+            pass
+        resume_time = None
+        limit_getter = getattr(viz, '_get_retake_right_limit', None)
+        if callable(limit_getter):
+            try:
+                resume_time = float(limit_getter())
+            except Exception:
+                resume_time = None
+        if resume_time is None:
+            try:
+                resume_time = float(getattr(main, 'recording_duration', end))
+            except Exception:
+                resume_time = float(end)
+        try:
+            main._retake_resume_after_close_time = max(float(resume_time), float(end))
+        except Exception:
+            main._retake_resume_after_close_time = float(end)
+        try:
+            main._retake_active_range = (float(start), float(end))
+            main._retake_stop_latched = False
+        except Exception:
+            pass
+        self._clear_progress_hint()
+        self._set_rerecord_button_states(False, bool(active_session))
+        self._set_rerecord_progress_state(0.0, "准备覆盖录制…")
+        preserve_enabled = False
+        try:
+            baseline = float(getattr(main, 'recording_duration', end))
+        except Exception:
+            baseline = float(end)
+        try:
+            main._set_selection_preserve_mode(True, baseline)
+            preserve_enabled = True
+        except Exception:
+            pass
+        try:
+            main._snapshot_retake_tail_segment(float(start), float(end), restore_audio=False)
+        except Exception as exc:
+            try:
+                print(f"⚠️ 尾段快照失败: {exc}")
+            except Exception:
+                pass
+        try:
+            main._activate_retake_overlay(start, end)
+            try:
+                main._retake_overlay_virtual_time = float(start)
+            except Exception:
+                main._retake_overlay_virtual_time = float(start)
+            try:
+                main._pending_retake_resume = True
+                main._pending_retake_resume_time = float(start)
+            except Exception:
+                pass
+            try:
+                main._stop_retake_cleanup_watch()
+            except Exception:
+                pass
+            try:
+                main._release_retake_visual_guards()
+            except Exception:
+                pass
+            try:
+                main._retake_should_auto_resume = True
+            except Exception:
+                pass
+            try:
+                main._prepare_retake_preroll(float(start))
+            except Exception as _prep_err:
+                print(f"⚠️ 覆盖预卷准备失败: {_prep_err}")
+            try:
+                countdown_active = bool(getattr(main, '_retake_countdown_in_progress', False))
+                pending_resume = bool(getattr(main, '_retake_countdown_pending_resume', False))
+                auto_resume = bool(getattr(main, '_retake_should_auto_resume', True))
+                if not countdown_active and pending_resume and auto_resume:
+                    main._process_pending_retake_countdown_on_resume()
+            except Exception:
+                pass
+            self.status_label.setText(f"已进入覆盖录制准备，起点 {start:.2f}s。")
+            try:
+                viz.set_retake_range(
+                    start,
+                    end,
+                    refresh=True,
+                    sync_playhead=True,
+                    anchor_side='block',
+                    respect_right_limit=False,
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            self.status_label.setText("重录失败：请查看日志。")
+            try:
+                print(f"⚠️ 触发区间重录失败: {exc}")
+            except Exception:
+                pass
+            if preserve_enabled:
+                try:
+                    main._set_selection_preserve_mode(False)
+                except Exception:
+                    pass
+            return
+        self._sync_from_visualizer(force=True)
+
+    def _on_rerecord_pause_clicked(self):
+        main = getattr(self, 'main', None)
+        if main is None:
+            return
+        session_active = bool(getattr(main, 'is_recording', False) or getattr(main, 'is_analyzing', False))
+        countdown_flags = bool(getattr(main, '_retake_countdown_in_progress', False) or getattr(main, '_retake_countdown_pending_resume', False))
+        if not session_active and not countdown_flags:
+            self.status_label.setText("当前未在录音状态，无法暂停。")
+            return
+        try:
+            main.pause_recording()
+        except Exception as exc:
+            self.status_label.setText("切换暂停状态失败，请检查录音。")
+            try:
+                print(f"⚠️ 重录暂停切换失败: {exc}")
+            except Exception:
+                pass
+            return
+        paused_now = bool(getattr(main, 'is_paused', False))
+        if paused_now:
+            self.status_label.setText("录音已暂停，可继续调整选区。")
+            try:
+                main._retake_should_auto_resume = False
+                main._cancel_retake_countdown(keep_pending=True)
+                main._retake_countdown_pending_resume = True
+            except Exception:
+                pass
+        else:
+            self.status_label.setText("录音继续，保持重录窗口打开。")
+            try:
+                main._retake_should_auto_resume = True
+                main._process_pending_retake_countdown_on_resume()
+            except Exception:
+                pass
+        self._update_rerecord_progress()
     def _disable_listenback_controls(self):
         self._listenback_length = 0.0
         self._listenback_abs_range = None
@@ -35375,10 +38594,239 @@ class _RetakeControlWindow(QDialog):
             self._listenback_group.setEnabled(False)
         except Exception:
             pass
-        for widget in (self.listenback_slider, self.listenback_play_btn, self.listenback_pause_btn, self.listenback_backing_checkbox):
+        for widget in self._iter_listenback_widgets():
             widget.setEnabled(False)
         self.listenback_time_label.setText("进度: -- / --")
         self.listenback_status_label.setText("回听不可用：未选区")
+
+    def _apply_window_palette(self):
+        try:
+            self.setStyleSheet(
+                "QDialog#RetakeControlDialog { background-color:#050a13; color:#f6f8ff; border:1px solid #0f1a2f; border-radius:14px; }\n"
+                "QGroupBox { border:1px solid rgba(255,255,255,0.07); border-radius:14px; margin-top:12px; padding-top:10px; background-color:#081125; }\n"
+                "QGroupBox::title { subcontrol-origin: margin; left:16px; padding:0 8px; color:#7dc4ff; font-weight:600; letter-spacing:0.6px; }\n"
+                "QGroupBox#RetakeActionGroup { background-color:#08172c; border:1px solid rgba(68,145,255,0.20); }\n"
+                "QGroupBox#ListenbackGroup { background-color:#08172c; }\n"
+                "QLabel { color:#f4f7ff; font-size:12px; }\n"
+                "QLabel#RetakeStatusLabel { color:#8ea3d4; font-style:italic; }\n"
+                "QDoubleSpinBox, QSpinBox { background:#060c17; border:1px solid #1d2a44; border-radius:10px; padding:4px 12px 4px 10px; font-weight:600; color:#f9fbff; selection-background-color:#2b60f5; selection-color:#f9fbff; }\n"
+                "QDoubleSpinBox:focus, QSpinBox:focus { border-color:#4c9bff; background-color:#0a1527; }\n"
+                "QFrame#SpinStepperPanel { border:1px solid #1c2842; border-radius:10px; background-color:#050b19; min-width:36px; }\n"
+                "QToolButton#SpinStepperButton { color:#a3c6ff; border:0px; border-radius:7px; font-weight:700; background:transparent; min-height:18px; }\n"
+                "QToolButton#SpinStepperButton[stepperRole=\"up\"] { border-bottom:1px solid rgba(255,255,255,0.05); }\n"
+                "QToolButton#SpinStepperButton:hover:!disabled { background-color:rgba(70,135,255,0.25); color:#e3ecff; }\n"
+                "QToolButton#SpinStepperButton:pressed { background-color:rgba(70,135,255,0.38); }\n"
+                "QToolButton#SpinStepperButton:disabled { color:#4e5b78; }\n"
+                "QPushButton { border-radius:10px; font-weight:600; padding:6px 14px; border:1px solid rgba(255,255,255,0.08); background-color:#132038; color:#f3f6ff; }\n"
+                "QPushButton:hover:!disabled { background-color:#1a2c4a; }\n"
+                "QPushButton:pressed { background-color:#0f1c32; }\n"
+                "QPushButton:disabled { background-color:#0c111c; color:#4f5f7d; border-color:rgba(255,255,255,0.04); }\n"
+                "QPushButton#RetakeStartButton { background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2563eb, stop:1 #1d9bf0); border:1px solid rgba(37,99,235,0.65); color:#f6fbff; }\n"
+                "QPushButton#RetakeStartButton:hover { background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #1f5edd, stop:1 #1a8fe0); }\n"
+                "QPushButton#RetakeClearButton { background-color:rgba(15,118,255,0.10); color:#8ecfff; border:1px solid rgba(143,188,255,0.35); }\n"
+                "QPushButton#RetakeClearButton:hover { background-color:rgba(15,118,255,0.20); }\n"
+                "QPushButton#RetakePauseButton { background-color:rgba(255,255,255,0.02); border:1px dashed rgba(168,184,227,0.65); color:#b4c1df; }\n"
+                "QPushButton#RetakePauseButton:hover { color:#e0e6ff; border-color:rgba(218,229,255,0.8); }\n"
+                "QProgressBar { background-color:#030912; border:1px solid #19263d; border-radius:10px; text-align:center; color:#cddfff; font-weight:600; }\n"
+                "QProgressBar#RetakeProgressBar::chunk { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #3b82f6, stop:1 #06b6d4); border-radius:10px; }\n"
+                "QSlider::groove:horizontal { background:#111a2e; height:6px; border-radius:3px; }\n"
+                "QSlider::handle:horizontal { background:radialgradient(cx:0.4, cy:0.4, radius:0.8, fx:0.4, fy:0.4, stop:0 #80d6ff, stop:1 #2c83fb); width:18px; margin:-6px 0; border-radius:9px; }\n"
+                "QSlider::sub-page:horizontal { background:#1d9bf0; border-radius:3px; }\n"
+                "QSlider#RetakeProgressSlider { margin-top:2px; }\n"
+                "QSlider#RetakeProgressSlider::groove:horizontal { background:#0d162a; height:6px; border-radius:3px; }\n"
+                "QSlider#RetakeProgressSlider::handle:horizontal { background:#4cc9ff; width:16px; margin:-5px 0; border-radius:8px; }\n"
+                "QSlider#RetakeProgressSlider::sub-page:horizontal { background:#2f7bff; border-radius:3px; }\n"
+                "QCheckBox { color:#f3f5ff; spacing:6px; }\n"
+                "QFrame#ListenbackProgressFrame { border:1px solid rgba(255,255,255,0.06); border-radius:12px; background-color:#071226; }\n"
+                "QFrame#ListenbackVolumeFrame { border-top:1px solid rgba(255,255,255,0.05); margin-top:4px; padding-top:6px; }\n"
+                "QToolTip { color:#0f141f; background:#f6faff; border:0px; padding:6px 8px; border-radius:6px; }"
+            )
+        except Exception:
+            pass
+
+    def _make_time_spinbox(self, object_name: str) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 6.0 * 60.0 * 60.0)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.1)
+        spin.setFixedHeight(34)
+        spin.setAccelerated(True)
+        spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        spin.setObjectName(object_name)
+        return spin
+
+    def _wrap_spinbox_with_stepper(self, spin: QDoubleSpinBox, *, suffix: str) -> QWidget:
+        container = QWidget()
+        container.setObjectName(f"RetakeSpinField{suffix}")
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(spin, 1)
+
+        stepper = QFrame()
+        stepper.setObjectName("SpinStepperPanel")
+        stepper_layout = QVBoxLayout(stepper)
+        stepper_layout.setContentsMargins(4, 4, 4, 4)
+        stepper_layout.setSpacing(4)
+
+        up_btn = QToolButton()
+        up_btn.setObjectName("SpinStepperButton")
+        up_btn.setProperty("stepperRole", "up")
+        up_btn.setText("+")
+        up_btn.setAutoRepeat(True)
+        up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        up_btn.clicked.connect(lambda _=False, s=spin: self._nudge_spinbox(s, 1))
+
+        down_btn = QToolButton()
+        down_btn.setObjectName("SpinStepperButton")
+        down_btn.setProperty("stepperRole", "down")
+        down_btn.setText("-")
+        down_btn.setAutoRepeat(True)
+        down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        down_btn.clicked.connect(lambda _=False, s=spin: self._nudge_spinbox(s, -1))
+
+        stepper_layout.addWidget(up_btn)
+        stepper_layout.addWidget(down_btn)
+        row.addWidget(stepper, 0)
+
+        def _sync_enabled(state: bool):
+            up_btn.setEnabled(state)
+            down_btn.setEnabled(state)
+
+        try:
+            spin.enabledChanged.connect(_sync_enabled)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        _sync_enabled(spin.isEnabled())
+        return container
+
+    @staticmethod
+    def _nudge_spinbox(spin: Optional[QDoubleSpinBox], steps: int) -> None:
+        if spin is None:
+            return
+        try:
+            new_value = spin.value() + spin.singleStep() * steps
+            decimals = spin.decimals()
+            spin.setValue(round(new_value, decimals))
+        except Exception:
+            pass
+
+    def _iter_listenback_widgets(self):
+        widgets = getattr(self, '_listenback_control_widgets', None)
+        if not widgets:
+            widgets = [
+                getattr(self, 'listenback_slider', None),
+                getattr(self, 'listenback_play_btn', None),
+                getattr(self, 'listenback_pause_btn', None),
+                getattr(self, 'listenback_backing_checkbox', None),
+                getattr(self, 'listenback_vocal_slider', None),
+                getattr(self, 'listenback_backing_slider', None)
+            ]
+        for widget in widgets:
+            if widget is not None:
+                yield widget
+
+    def _create_volume_slider(self, *, minimum: int, maximum: int, initial: int, tooltip: str, on_change):
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(minimum, maximum)
+        clamped = max(minimum, min(maximum, int(initial)))
+        slider.setValue(clamped)
+        slider.setToolTip(tooltip)
+        slider.valueChanged.connect(on_change)
+        value_label = QLabel(f"{clamped}%")
+        value_label.setFixedWidth(52)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return slider, value_label
+
+    def _get_vocal_gain_percent(self) -> int:
+        ap = getattr(self.main, 'audio_processor', None)
+        gain = 1.25
+        if ap is not None and hasattr(ap, 'get_listenback_vocal_gain'):
+            try:
+                gain = float(ap.get_listenback_vocal_gain())
+            except Exception:
+                gain = 1.25
+        return int(round(max(0.1, min(3.0, gain)) * 100.0))
+
+    def _get_backing_volume_percent(self) -> int:
+        try:
+            volume = float(getattr(self.main, 'backing_volume_accompaniment', 0.30))
+        except Exception:
+            volume = 0.30
+        return int(round(max(0.0, min(2.0, volume)) * 100.0))
+
+    def _sync_volume_sliders(self):
+        try:
+            self.listenback_vocal_slider.blockSignals(True)
+            self.listenback_vocal_slider.setValue(self._get_vocal_gain_percent())
+        finally:
+            self.listenback_vocal_slider.blockSignals(False)
+        self.listenback_vocal_value.setText(f"{self.listenback_vocal_slider.value()}%")
+        try:
+            self.listenback_backing_slider.blockSignals(True)
+            self.listenback_backing_slider.setValue(self._get_backing_volume_percent())
+        finally:
+            self.listenback_backing_slider.blockSignals(False)
+        self.listenback_backing_value.setText(f"{self.listenback_backing_slider.value()}%")
+
+    def _spinbox_has_user_focus(self, spin: Optional[QDoubleSpinBox]) -> bool:
+        if spin is None:
+            return False
+        try:
+            if spin.hasFocus():
+                return True
+        except Exception:
+            pass
+        try:
+            le = spin.lineEdit()
+            if le is not None and le.hasFocus():
+                return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _get_visualizer_retake_limit(viz) -> Optional[float]:
+        if viz is None:
+            return None
+        getter = getattr(viz, '_get_retake_right_limit', None)
+        if not callable(getter):
+            return None
+        try:
+            limit = getter()
+        except Exception:
+            return None
+        if limit is None:
+            return None
+        try:
+            return float(limit)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _get_min_retake_span(viz) -> float:
+        try:
+            return max(0.05, float(getattr(viz, '_retake_min_span', 0.35)))
+        except Exception:
+            return 0.35
+
+    def _on_listenback_vocal_volume_changed(self, value: int):
+        clamped = max(self.listenback_vocal_slider.minimum(), min(self.listenback_vocal_slider.maximum(), int(value)))
+        self.listenback_vocal_value.setText(f"{clamped}%")
+        ap = getattr(self.main, 'audio_processor', None)
+        if ap is not None and hasattr(ap, 'set_listenback_vocal_gain'):
+            try:
+                ap.set_listenback_vocal_gain(clamped / 100.0)
+            except Exception:
+                pass
+
+    def _on_listenback_backing_volume_changed(self, value: int):
+        clamped = max(self.listenback_backing_slider.minimum(), min(self.listenback_backing_slider.maximum(), int(value)))
+        self.listenback_backing_value.setText(f"{clamped}%")
+        try:
+            setattr(self.main, 'backing_volume_accompaniment', max(0.0, min(2.0, clamped / 100.0)))
+        except Exception:
+            pass
 
     def _set_listenback_slider_position(self, rel_sec: float, *, update_label: bool = True):
         if self._listenback_length <= 0.0:
@@ -35414,7 +38862,7 @@ class _RetakeControlWindow(QDialog):
             self._listenback_group.setEnabled(enabled)
         except Exception:
             pass
-        for widget in (self.listenback_slider, self.listenback_play_btn, self.listenback_pause_btn, self.listenback_backing_checkbox):
+        for widget in self._iter_listenback_widgets():
             widget.setEnabled(enabled)
         if not enabled:
             self.listenback_time_label.setText("进度: -- / --")
@@ -35733,6 +39181,12 @@ class _RetakeControlWindow(QDialog):
                 self.main._retake_control_win = None
         except Exception:
             pass
+        try:
+            handler = getattr(self.main, '_handle_retake_window_closed', None)
+            if callable(handler):
+                handler()
+        except Exception:
+            pass
         super().closeEvent(event)
 
 
@@ -35783,6 +39237,10 @@ class _BackingControlWindow(QDialog):
         time_row.addWidget(self.countdown_label)
         time_row.addStretch()
         layout.addLayout(time_row)
+        self._progress_title_default = self.progress_title.text()
+        self._progress_locked = False
+        self._lock_hint_timer = None
+        self._lock_hint_message_active = False
 
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 6 * 60 * 60 * 1000)  # 6 小时上限，毫秒精度
@@ -35986,6 +39444,50 @@ class _BackingControlWindow(QDialog):
         self.pause_btn.setEnabled(not paused)
         self.resume_btn.setEnabled(paused)
 
+    def set_progress_lock(self, locked: bool, hint: Optional[str] = None):
+        self._progress_locked = bool(locked)
+        try:
+            self.position_slider.setEnabled(not locked)
+        except Exception:
+            pass
+        suffix = hint or "重录锁定"
+        label_text = self._progress_title_default
+        if locked:
+            if suffix and len(suffix) > 18:
+                suffix = suffix[:18] + "…"
+            label_text = f"{self._progress_title_default}（{suffix}）"
+        self.progress_title.setText(label_text)
+        if not locked:
+            try:
+                if self._lock_hint_timer is not None:
+                    self._lock_hint_timer.stop()
+            except Exception:
+                pass
+            self._lock_hint_message_active = False
+            if not self._countdown_slider_active:
+                self.countdown_label.setVisible(False)
+
+    def flash_lock_hint(self, hint: Optional[str] = None):
+        if self._countdown_slider_active:
+            return
+        message = hint or "选区重录进行中，伴奏进度已锁定。"
+        self.countdown_label.setText(message)
+        self.countdown_label.setVisible(True)
+        if self._lock_hint_timer is None:
+            self._lock_hint_timer = QTimer(self)
+            self._lock_hint_timer.setSingleShot(True)
+            self._lock_hint_timer.timeout.connect(self._on_lock_hint_timeout)
+        try:
+            self._lock_hint_timer.start(1600)
+        except Exception:
+            pass
+        self._lock_hint_message_active = True
+
+    def _on_lock_hint_timeout(self):
+        self._lock_hint_message_active = False
+        if not self._countdown_slider_active:
+            self.countdown_label.setVisible(False)
+
     # ------------------------------ Countdown Indicator ------------------------------
 
     def set_countdown_indicator(
@@ -35997,6 +39499,12 @@ class _BackingControlWindow(QDialog):
     ):
         try:
             if active:
+                if self._lock_hint_timer is not None:
+                    try:
+                        self._lock_hint_timer.stop()
+                    except Exception:
+                        pass
+                self._lock_hint_message_active = False
                 if not self._countdown_slider_active:
                     combined = self._countdown_slider_stylesheet
                     if self._default_slider_stylesheet:
@@ -36018,7 +39526,8 @@ class _BackingControlWindow(QDialog):
                 if self._countdown_slider_active:
                     self.position_slider.setStyleSheet(self._default_slider_stylesheet)
                     self._countdown_slider_active = False
-                self.countdown_label.setVisible(False)
+                if not self._lock_hint_message_active:
+                    self.countdown_label.setVisible(False)
         except Exception:
             pass
 
