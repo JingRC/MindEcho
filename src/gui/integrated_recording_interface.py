@@ -1096,8 +1096,20 @@ class IntegratedAudioProcessor(QThread):
             data = self.get_audio_segment_by_abs(abs_start, abs_end)
             if data.size == 0:
                 print("⚠️ 回听：无可用音频数据或超出缓冲范围")
+                # 保持状态一致，避免残留旧数据导致行为异常
+                self._lb_state = 'stopped'
+                self._lb_data = None
+                self._lb_pos = 0
+                try:
+                    self._lb_data_abs_start = float(abs_start)
+                    self._lb_data_abs_end = float(abs_end)
+                except Exception:
+                    self._lb_data_abs_start = 0.0
+                    self._lb_data_abs_end = 0.0
                 return False
-                self._lb_data = data
+
+            # 关键：写入回听数据缓冲，供回调持续输出
+            self._lb_data = data
             self._lb_pos = 0
             self._lb_state = 'playing'
             try:
@@ -8067,6 +8079,11 @@ class IntegratedAudioProcessor(QThread):
                     overlay_handled = False
                     if not preview_only:
                         overlay_handled = self._delegate_overlay_pitch_packet(pitch_data)
+                        # 标记：若被覆盖缓冲接管，UI 层应跳过常规绘制（避免时间轴错位画到末尾）。
+                        try:
+                            pitch_data['_overlay_consumed'] = bool(overlay_handled)
+                        except Exception:
+                            pass
                         if not overlay_handled:
                             self.pitch_history.append({
                                 'frequency': smooth_frequency,
@@ -8111,6 +8128,14 @@ class IntegratedAudioProcessor(QThread):
                         vibrato_info={'has_vibrato': False}
                     )
                     timestamp_data = frame.to_dict()
+                    # 无音高帧也需要在重录覆盖时走同一套时间轴，否则 UI 仍可能推进到“末尾幽灵区”。
+                    try:
+                        overlay_handled = False
+                        if not preview_only:
+                            overlay_handled = self._delegate_overlay_pitch_packet(timestamp_data)
+                        timestamp_data['_overlay_consumed'] = bool(overlay_handled)
+                    except Exception:
+                        pass
                     try:
                         self._emit_pitch_data_throttled(timestamp_data)
                     except Exception:
@@ -33215,7 +33240,14 @@ class IntegratedRecordingInterface(QMainWindow):
     def _maybe_start_backing_playback(self):
         """在录音/分析开始时启动伴奏播放。"""
         try:
-            if getattr(self, '_backing_paused', False) or getattr(self, 'is_paused', False):
+            # 倒计时预卷/预览允许在 is_paused=True 时启动伴奏（用于 27→30s 的预放）；
+            # 真正“暂停”仍以 _backing_paused 为准。
+            if getattr(self, '_backing_paused', False):
+                return
+            if getattr(self, 'is_paused', False) and not (
+                getattr(self, '_backing_preview_active', False)
+                or getattr(self, '_retake_countdown_in_progress', False)
+            ):
                 return
             # 仅当处于录音或实时分析状态才允许播放伴奏/原唱
             if not (self.is_recording or self.is_analyzing or getattr(self, '_backing_preview_active', False)):
@@ -33329,7 +33361,8 @@ class IntegratedRecordingInterface(QMainWindow):
             with self._backing_lock:
                 if getattr(self, '_backing_paused', False):
                     return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
-                if not (self.is_recording or self.is_analyzing):
+                # 倒计时预卷/预览阶段也允许出声（不依赖 is_paused）
+                if not (self.is_recording or self.is_analyzing or getattr(self, '_backing_preview_active', False)):
                     return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
                 if self.backing_mode == 'off' or self.backing_pcm_accompaniment is None or self.backing_sample_rate is None:
                     return (_np.zeros(frame_count, dtype=_np.float32).tobytes(), 0)
@@ -34398,9 +34431,15 @@ class IntegratedRecordingInterface(QMainWindow):
                 viz._artist_times_dirty = True
         except Exception:
             pass
+        # 倒计时阶段避免高成本全量刷新（update_display 往往会触发较重绘制），
+        # 只做惰性重绘以减少 3 秒准备动画的卡顿。
         try:
-            if hasattr(viz, 'update_display'):
-                viz.update_display()
+            if getattr(self, '_retake_countdown_in_progress', False):
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+            else:
+                if hasattr(viz, 'update_display'):
+                    viz.update_display()
         except Exception:
             pass
 
@@ -34409,6 +34448,17 @@ class IntegratedRecordingInterface(QMainWindow):
         if viz is None:
             self._stop_retake_cleanup_watch()
             return
+        # 倒计时动画期间适度节流清理看门狗，避免频繁裁剪/刷新导致 UI 卡顿。
+        try:
+            if getattr(self, '_retake_countdown_in_progress', False):
+                import time as _t
+                now_wall = _t.time()
+                last_run = float(getattr(self, '_retake_cleanup_watch_last_run', 0.0))
+                if last_run and (now_wall - last_run) < 0.35:
+                    return
+                self._retake_cleanup_watch_last_run = now_wall
+        except Exception:
+            pass
         # 若回退后已开始写入新数据，则无需继续清理，立即停止看门狗以避免误删新点
         try:
             if getattr(viz, '_post_retake_new_data_started', False):
@@ -34657,7 +34707,7 @@ class IntegratedRecordingInterface(QMainWindow):
         snap = {
             'start': start,
             'end': end,
-            'original_duration': float(getattr(self, 'recording_duration', end)),
+            'original_duration': float(self._retake_resume_anchor_sec(end)),
             'total_pitches_before': int(getattr(self, 'total_pitches_detected', 0)),
             'audio_tail': [],
             'pitch_tail': [],
@@ -35551,6 +35601,13 @@ class IntegratedRecordingInterface(QMainWindow):
                     )
             except Exception:
                 pass
+            # 同步“暂停/继续”按钮（用户也可能通过主界面暂停/继续）
+            try:
+                refresher = getattr(win, '_refresh_pause_buttons', None)
+                if callable(refresher):
+                    refresher()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -35744,6 +35801,56 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             sr = 44100
         return max(1, sr)
+
+    def _recorded_audio_duration_sec(self) -> float:
+        """当前已录人声缓冲的真实时长（秒）。
+
+        说明：在伴奏/锁定时间轴模式下，`recording_duration` 可能跟随伴奏时间线，
+        并不等于真实人声缓冲长度。选区重录的“续录锚点/尾段快照”必须使用真实缓冲长度。
+        """
+        sr = self._effective_sample_rate()
+        buf = getattr(self, 'audio_buffer', None)
+        if buf is None:
+            return 0.0
+        try:
+            n = len(buf)
+        except Exception:
+            try:
+                n = len(list(buf))
+            except Exception:
+                return 0.0
+        try:
+            n = int(max(0, n))
+        except Exception:
+            n = 0
+        if n <= 0:
+            return 0.0
+        return float(n) / float(max(1, sr))
+
+    def _retake_resume_anchor_sec(self, fallback: float = 0.0) -> float:
+        """选区重录用于“继续/关闭窗口”对齐的锚点时间（秒）。"""
+        dur = 0.0
+        try:
+            dur = float(self._recorded_audio_duration_sec())
+        except Exception:
+            dur = 0.0
+        if dur > 0.0:
+            return dur
+        # audio_buffer 尚不可用时，回退到已有的时长字段。
+        for attr in ('recording_duration', 'current_duration', 'current_global_time'):
+            try:
+                val = float(getattr(self, attr, 0.0))
+                if math.isfinite(val):
+                    dur = max(dur, val)
+            except Exception:
+                pass
+        try:
+            fb = float(fallback)
+            if math.isfinite(fb):
+                dur = max(dur, fb)
+        except Exception:
+            pass
+        return max(0.0, float(dur))
 
     def _ensure_audio_buffer_list(self) -> List[float]:
         buf = getattr(self, 'audio_buffer', None)
@@ -36178,7 +36285,7 @@ class IntegratedRecordingInterface(QMainWindow):
             pass
         # 对齐录制进度到最新时长，确保“继续”从当前末尾开始绘制
         try:
-            rec_dur = float(getattr(self, 'recording_duration', 0.0))
+            rec_dur = float(self._retake_resume_anchor_sec(getattr(self, 'recording_duration', 0.0)))
         except Exception:
             rec_dur = 0.0
         if rec_dur > 0:
@@ -36241,7 +36348,7 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
         try:
-            rec_dur = float(getattr(self, 'recording_duration', 0.0))
+            rec_dur = float(self._retake_resume_anchor_sec(getattr(self, 'recording_duration', 0.0)))
         except Exception:
             rec_dur = 0.0
         try:
@@ -36250,7 +36357,15 @@ class IntegratedRecordingInterface(QMainWindow):
             self._pending_retake_resume_time = float(rec_dur)
             self._retake_countdown_pending_resume = True
             self._retake_countdown_target = float(rec_dur)
-            self._retake_countdown_preroll_start = float(rec_dur)
+            # 继续录制前的准备期需要播放「目标点之前」的伴奏（例如 27->30），
+            # 否则会把 30 秒处的音频提前播放，导致准备期与正式录制产生 3 秒重复。
+            try:
+                countdown = float(getattr(self, '_retake_countdown_seconds', 3.0))
+            except Exception:
+                countdown = 3.0
+            if countdown < 0.0:
+                countdown = 0.0
+            self._retake_countdown_preroll_start = float(max(0.0, float(rec_dur) - float(countdown)))
             # 对齐伴奏暂停位置，确保预卷/继续从末尾启动
             self._backing_pause_position_sec = float(rec_dur)
             try:
@@ -36441,7 +36556,7 @@ class IntegratedRecordingInterface(QMainWindow):
         state.paused_at = None
         viz = getattr(self, 'visualizer', None)
         try:
-            state.original_duration = float(getattr(self, 'recording_duration', state.end))
+            state.original_duration = float(self._retake_resume_anchor_sec(state.end))
         except Exception:
             state.original_duration = state.end
         try:
@@ -36750,8 +36865,10 @@ class IntegratedRecordingInterface(QMainWindow):
             return False
         if not self._retake_overlay_active():
             return False
+        # 覆盖会话已激活：无论是否进入正式录制阶段，都要“消费”输入，
+        # 否则倒计时/预卷期间会把麦克风数据继续写入主缓冲导致录音时长虚增。
         if not self._retake_is_recording_phase():
-            return False
+            return True
         return self._append_overlay_audio_samples(samples)
 
     def _capture_overlay_pitch_packet(self, packet: Dict[str, Any]) -> bool:
@@ -36759,8 +36876,10 @@ class IntegratedRecordingInterface(QMainWindow):
             return False
         if not self._retake_overlay_active():
             return False
+        # 与音频一致：倒计时/预卷阶段也必须消费掉音高包，避免 UI 走常规绘制路径
+        # 把点写到选区之外（例如 24-29s）造成“选区外被影响”。
         if not self._retake_is_recording_phase():
-            return False
+            return True
         return self._append_overlay_pitch_packet(packet)
 
     def _mirror_overlay_pitch_live(self, packet: Dict[str, Any]) -> None:
@@ -37230,7 +37349,7 @@ class IntegratedRecordingInterface(QMainWindow):
         # 在关闭保留模式前，记录重录后的续播时间（用于窗口关闭后恢复到录制最右端继续）。
         try:
             resume_after = max(
-                float(getattr(self, 'recording_duration', state.end)),
+                float(self._retake_resume_anchor_sec(state.end)),
                 float(getattr(state, 'end', 0.0))
             )
         except Exception:
@@ -37861,13 +37980,6 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
         should_auto_resume = bool(getattr(self, '_retake_should_auto_resume', True))
-        # 保证伴奏继续播放
-        if should_auto_resume and str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both') and self.backing_pcm_accompaniment is not None and self.backing_sample_rate is not None:
-            try:
-                self._backing_paused = False
-                self._maybe_start_backing_playback()
-            except Exception:
-                pass
         resumed = True
         if getattr(self, 'is_paused', False) and should_auto_resume:
             resumed = True
@@ -37911,6 +38023,13 @@ class IntegratedRecordingInterface(QMainWindow):
                         self.status_label.setText("录音继续")
                 except Exception:
                     pass
+        # 在解除 is_paused 之后再启动伴奏，避免被 _maybe_start_backing_playback 的 pause 门控挡住。
+        if should_auto_resume and str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both') and self.backing_pcm_accompaniment is not None and self.backing_sample_rate is not None:
+            try:
+                self._backing_paused = False
+                self._maybe_start_backing_playback()
+            except Exception:
+                pass
         if not should_auto_resume:
             try:
                 if str(getattr(self, 'backing_mode', '')).lower() in ('accompaniment', 'both'):
@@ -37938,16 +38057,6 @@ class IntegratedRecordingInterface(QMainWindow):
             import time as _t
             try:
                 self.start_time = _t.time() - self.current_global_time
-            except Exception:
-                pass
-            # 伴奏进度也同步到当前末尾，避免无声/不动
-            try:
-                if hasattr(self, 'backing_sample_rate') and self.backing_sample_rate:
-                    sr = float(self.backing_sample_rate)
-                    sample_idx = int(new_dur * sr)
-                    self.backing_play_position = sample_idx
-                    self._backing_start_position_override = sample_idx
-                    self._backing_pause_position_sec = new_dur
             except Exception:
                 pass
         except Exception:
@@ -39918,6 +40027,13 @@ class IntegratedRecordingInterface(QMainWindow):
             # 暂停时完全停止后续检测处理（不累积统计，不绘制，不更新时间）
             if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
                 return
+
+            # 若当前帧已被“选区重录覆盖缓冲”接管（负责写入正确的选区时间轴并实时绘制），
+            # 则 UI 层不要再走常规绘制路径；否则会把点按当前全局时长(如 30s+)画到错误区间。
+            try:
+                overlay_consumed = bool(pitch_data.get('_overlay_consumed', False))
+            except Exception:
+                overlay_consumed = False
             # 更新统计
             self.total_pitches_detected += 1
             
@@ -39996,6 +40112,10 @@ class IntegratedRecordingInterface(QMainWindow):
                     # 仍更新文本/统计，但跳过绘制，平衡CPU与流畅度
                     pass
                 else:
+                    # 重录覆盖接管时，跳过常规绘制（覆盖层会用正确的 10-15s 时间写入并绘制）
+                    if overlay_consumed:
+                        self._vis_last_draw_wall = now_wall
+                        return
                     base_payload = dict(pitch_data)
                     # 可选：使用SciPy作轻量平滑以减少细抖动（仅影响显示）
                     try:
@@ -40109,12 +40229,14 @@ class IntegratedRecordingInterface(QMainWindow):
             if preserve:
                 baseline = getattr(self, '_retake_preserved_recording_duration', None)
                 try:
-                    baseline_val = float(baseline) if baseline is not None else float(getattr(self, 'recording_duration', eff))
+                    baseline_val = float(baseline) if baseline is not None else float(getattr(self, 'recording_duration', 0.0))
                 except Exception:
-                    baseline_val = float(getattr(self, 'recording_duration', eff))
-                if baseline_val < eff:
-                    baseline_val = float(eff)
-                self.recording_duration = max(float(getattr(self, 'recording_duration', baseline_val)), baseline_val)
+                    baseline_val = float(getattr(self, 'recording_duration', 0.0))
+                # 选区重录期间：录音“总时长”应保持在进入重录前的末尾（baseline），
+                # 不随倒计时/预卷/伴奏时间线增长。
+                if not math.isfinite(baseline_val) or baseline_val < 0.0:
+                    baseline_val = 0.0
+                self.recording_duration = float(baseline_val)
                 self.current_duration = float(self.recording_duration)
                 self.current_global_time = float(self.recording_duration)
                 current = float(self.recording_duration)
@@ -41262,20 +41384,25 @@ class _RetakeControlWindow(QDialog):
                     main._set_backing_paused(False)
             except Exception:
                 pass
+        # 续录锚点：优先使用真实人声缓冲时长，避免 backing/锁定时间轴导致 recording_duration 虚高。
+        try:
+            true_dur = float(getattr(main, '_retake_resume_anchor_sec')(end))
+        except Exception:
+            true_dur = 0.0
         resume_time = None
         limit_getter = getattr(viz, '_get_retake_right_limit', None)
         if callable(limit_getter):
             try:
-                resume_time = float(limit_getter())
+                cand = float(limit_getter())
+                # 仅接受“接近真实缓冲长度”的右界，避免被错误的显示时间/伴奏锁定长度污染。
+                if math.isfinite(cand) and cand >= 0.0 and cand <= float(true_dur) + 0.75:
+                    resume_time = cand
             except Exception:
                 resume_time = None
         if resume_time is None:
-            try:
-                resume_time = float(getattr(main, 'recording_duration', end))
-            except Exception:
-                resume_time = float(end)
+            resume_time = float(true_dur) if float(true_dur) > 0.0 else float(end)
         try:
-            main._retake_resume_after_close_time = max(float(resume_time), float(end))
+            main._retake_resume_after_close_time = max(float(resume_time), float(end), float(true_dur))
         except Exception:
             main._retake_resume_after_close_time = float(end)
         try:
@@ -41288,7 +41415,7 @@ class _RetakeControlWindow(QDialog):
         self._set_rerecord_progress_state(0.0, "准备覆盖录制…")
         preserve_enabled = False
         try:
-            baseline = float(getattr(main, 'recording_duration', end))
+            baseline = float(true_dur) if float(true_dur) > 0.0 else float(getattr(main, 'recording_duration', end))
         except Exception:
             baseline = float(end)
         try:
@@ -42300,12 +42427,48 @@ class _BackingControlWindow(QDialog):
             pass
 
     def _refresh_pause_buttons(self):
+        # 需求：录制中应显示“暂停”；暂停状态显示“继续”。
         try:
             paused = bool(getattr(self.main, '_backing_paused', False) or getattr(self.main, 'is_paused', False))
         except Exception:
             paused = False
-        self.pause_btn.setEnabled(not paused)
-        self.resume_btn.setEnabled(paused)
+        try:
+            in_session = bool(
+                getattr(self.main, 'is_recording', False)
+                or getattr(self.main, 'is_analyzing', False)
+                or getattr(self.main, '_backing_preview_active', False)
+            )
+        except Exception:
+            in_session = True
+
+        try:
+            self.pause_btn.setText("暂停")
+            self.resume_btn.setText("继续")
+        except Exception:
+            pass
+
+        # 单按钮体验：只展示一个
+        try:
+            self.pause_btn.setVisible((not paused) and in_session)
+            self.resume_btn.setVisible(paused and in_session)
+        except Exception:
+            pass
+
+        try:
+            self.pause_btn.setEnabled((not paused) and in_session)
+            self.resume_btn.setEnabled(paused and in_session)
+        except Exception:
+            pass
+
+        # 未在录制/预览会话中：保留按钮但禁用，避免误解
+        if not in_session:
+            try:
+                self.pause_btn.setVisible(True)
+                self.resume_btn.setVisible(True)
+                self.pause_btn.setEnabled(False)
+                self.resume_btn.setEnabled(False)
+            except Exception:
+                pass
 
     def set_progress_lock(self, locked: bool, hint: Optional[str] = None):
         self._progress_locked = bool(locked)
