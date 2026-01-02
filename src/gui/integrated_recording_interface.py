@@ -32034,6 +32034,9 @@ class IntegratedRecordingInterface(QMainWindow):
         self.status_timer.timeout.connect(self.update_status_display)
         self.status_timer.start(100)
 
+        # 录音时长文本节流：避免频繁 setText 造成卡顿
+        self._last_time_label_seconds = None
+
         # 录音保存目录
         try:
             self.default_recordings_dir = project_root / "recordings"
@@ -35455,7 +35458,15 @@ class IntegratedRecordingInterface(QMainWindow):
                     pos_sec = float(self.backing_play_position) / float(self.backing_sample_rate)
                 except Exception:
                     pos_sec = 0.0
-            display_pos_sec = float(pos_sec)
+
+            # 统一：进度条/滑块显示以“绘制界面时间轴”为准
+            display_pos_sec = float(self._get_display_timeline_time())
+            # 兼容暂停：暂停时优先使用暂停快照，确保滑块冻结
+            if paused and pause_snapshot is not None:
+                try:
+                    display_pos_sec = float(pause_snapshot)
+                except Exception:
+                    pass
             try:
                 frozen = getattr(self, '_backing_display_frozen_pos', None)
                 if frozen is not None:
@@ -35988,6 +35999,64 @@ class IntegratedRecordingInterface(QMainWindow):
             pass
         return True
 
+    def _prepare_cleared_selection_for_new_retake(self, start: float, end: float) -> None:
+        """在“清除选区”后即将开始重录时，确保新细节点不会被软遮罩继续挡住。
+
+        说明：清除选区可能以“软遮罩”的方式隐藏旧点。如果保持遮罩不变，
+        后续在同一区间写入的新点也可能被遮罩，导致倒计时结束后看不到新绘制。
+        这里将软遮罩转换为硬清除（remove_range + purge），但仍保留 snapshot，
+        以便用户未开始下一次重录就关闭窗口时可以完整恢复原始内容。
+        """
+        snap = getattr(self, '_selection_clear_snapshot', None)
+        if not snap or snap.get('consumed'):
+            return
+        try:
+            s0 = float(snap.get('start', -1.0))
+            e0 = float(snap.get('end', -1.0))
+        except Exception:
+            return
+        try:
+            s1 = float(start)
+            e1 = float(end)
+        except Exception:
+            return
+        if e1 < s1:
+            s1, e1 = e1, s1
+        # 仅对同一选区（或几乎相同）执行，避免误操作其他范围。
+        if abs(s0 - s1) > 1e-3 or abs(e0 - e1) > 1e-3:
+            return
+        viz = getattr(self, 'visualizer', None)
+        if viz is None:
+            return
+        # 先解除遮罩（否则新点可能继续被遮），随后立刻硬清除，避免旧点“回潮”。
+        try:
+            self._release_selection_masks(snap)
+        except Exception:
+            pass
+        try:
+            snap['soft_mask_active'] = False
+            snap['viz_mask_ids'] = []
+            snap['viz_mask_label'] = None
+            snap['pitch_records_removed'] = True
+        except Exception:
+            pass
+        try:
+            viz.remove_range(float(s1), float(e1))
+        except Exception:
+            pass
+        try:
+            viz.purge_artists_in_range(float(s1), float(e1))
+        except Exception:
+            pass
+        try:
+            viz.update_listenback_artists()
+        except Exception:
+            pass
+        try:
+            self._refresh_visualizer_after_selection_edit(float(s1), float(e1))
+        except Exception:
+            pass
+
     def _refresh_visualizer_after_selection_edit(self, start: float, end: float) -> None:
         viz = getattr(self, 'visualizer', None)
         if viz is None:
@@ -36019,7 +36088,7 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
 
-    def _start_backing_control_sync_timer(self, interval_ms: int = 80):
+    def _start_backing_control_sync_timer(self, interval_ms: int = 33):
         """确保伴奏控制窗口的进度刷新定时器运行。"""
         try:
             from PyQt6.QtCore import QTimer, Qt
@@ -36032,8 +36101,8 @@ class IntegratedRecordingInterface(QMainWindow):
                     pass
                 timer.timeout.connect(self._backing_control_tick_sync)
                 self._backing_control_sync_timer = timer
-            if interval_ms < 30:
-                interval_ms = 30
+            if interval_ms < 16:
+                interval_ms = 16
             if not timer.isActive():
                 timer.start(int(interval_ms))
             self._backing_control_tick_sync()
@@ -40143,6 +40212,15 @@ class IntegratedRecordingInterface(QMainWindow):
     def get_effective_recording_time(self, fallback: float) -> float:
         """伴奏模式用伴奏播放位置其余用回调值；暂停时冻结。"""
         try:
+            # 统一：若可用，优先以“绘制界面时间轴”为准
+            try:
+                getter = getattr(self, '_get_display_timeline_time', None)
+                if callable(getter):
+                    t = float(getter())
+                    if t >= 0:
+                        return t
+            except Exception:
+                pass
             if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
                 return float(getattr(self, 'recording_duration', fallback))
             # 伴奏模式判断：存在 backing_play_position + backing_sample_rate
@@ -40159,7 +40237,10 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
                 return "检测频率: --"
-            dur = float(getattr(self, 'recording_duration', 0.0))
+            try:
+                dur = float(self._get_display_timeline_time())
+            except Exception:
+                dur = float(getattr(self, 'recording_duration', 0.0))
             if dur <= 0:
                 return "检测频率: 计算中..."
             total = int(getattr(self, 'total_pitches_detected', 0))
@@ -40203,10 +40284,19 @@ class IntegratedRecordingInterface(QMainWindow):
         """更新状态显示"""
         try:
             # 更新录音时长
-            if self.is_recording and self.recording_duration > 0:
-                minutes = int(self.recording_duration // 60)
-                seconds = int(self.recording_duration % 60)
-                self.recording_time_label.setText(f"录音时长: {minutes:02d}:{seconds:02d}")
+            if self.is_recording:
+                try:
+                    t = float(self._get_display_timeline_time())
+                except Exception:
+                    t = float(getattr(self, 'recording_duration', 0.0) or 0.0)
+                if t < 0:
+                    t = 0.0
+                sec_int = int(t)
+                if getattr(self, '_last_time_label_seconds', None) != sec_int:
+                    self._last_time_label_seconds = sec_int
+                    minutes = sec_int // 60
+                    seconds = sec_int % 60
+                    self.recording_time_label.setText(f"录音时长: {minutes:02d}:{seconds:02d}")
             
             # 更新当前音高
             if self.current_frequency > 0:
@@ -40221,6 +40311,54 @@ class IntegratedRecordingInterface(QMainWindow):
             
         except Exception as e:
             print(f"更新状态显示错误: {e}")
+
+
+    def _get_display_timeline_time(self) -> float:
+        """统一的 UI 时间轴（秒）。
+
+        录音时长、伴奏/播放进度条等显示统一以绘制界面时间轴为准（visualizer.current_global_time）。
+        """
+        t = None
+
+        # 1) 优先取可视化器时间轴
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                if getattr(viz, 'start_time', None) is not None:
+                    t = float(getattr(viz, 'current_global_time', 0.0) or 0.0)
+            except Exception:
+                t = None
+
+        # 2) 回退：使用缓存录音时长
+        if t is None:
+            try:
+                t = float(getattr(self, 'recording_duration', 0.0) or 0.0)
+            except Exception:
+                t = 0.0
+
+        # 3) 冻结时长优先（暂停/特定流程）
+        try:
+            if bool(getattr(self, '_is_duration_frozen', False)):
+                t = float(getattr(self, '_freeze_recording_duration', t))
+        except Exception:
+            pass
+
+        # 4) 伴奏轴锁定时做边界夹紧
+        try:
+            if bool(getattr(self, '_backing_axis_locked', False)):
+                length = float(getattr(self, '_backing_axis_length', 0.0) or 0.0)
+                if length > 0.0:
+                    t = max(0.0, min(float(t), length))
+        except Exception:
+            pass
+
+        try:
+            return float(max(0.0, t))
+        except Exception:
+            return 0.0
 
 
     def _advanced_electric_noise_detection(self, audio_data):
@@ -41166,6 +41304,12 @@ class _RetakeControlWindow(QDialog):
             except Exception:
                 pass
         try:
+            # 若用户此前“清除选区”采用了软遮罩，必须在开始重录前转换为硬清除，
+            # 否则新写入的细节点也可能被遮罩导致“倒计时后不绘制”。
+            try:
+                main._prepare_cleared_selection_for_new_retake(float(start), float(end))
+            except Exception:
+                pass
             main._activate_retake_overlay(start, end)
             try:
                 main._retake_overlay_virtual_time = float(start)
