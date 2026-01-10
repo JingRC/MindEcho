@@ -756,7 +756,9 @@ class IntegratedAudioProcessor(QThread):
             self._ensure_hover_highlight_artists()
         except Exception:
             pass
-        self.pitch_history = deque(maxlen=1000)
+        # 保留更长的音高历史，避免“选区重录/关闭后继续”场景下近期(如 25-30s)细节点被新点挤出而回看消失。
+        # 20000 约等于 300s * 64fps 的量级，与可视化器默认历史容量一致。
+        self.pitch_history = deque(maxlen=20000)
         self._ui_epoch = 0
 
         # 频率范围与算法阈值（供 PitchDetectionService 及其它模块使用）
@@ -11097,7 +11099,9 @@ class ECGStylePitchVisualizer(QWidget):
             'pitch_precision_log': False,
             'fft_log': False,
             'queue_log': False,
-            'artist_dump': False
+            'artist_dump': False,
+            # 选区重录/倒计时可视化诊断（默认关闭，避免刷屏）
+            'retake_visual_log': False
         }
         self._use_batched_points = True
         self._lazy_points_update_n = 3
@@ -11127,7 +11131,8 @@ class ECGStylePitchVisualizer(QWidget):
         self._last_log_times = {
             'vocal_protect': 0.0,
             'segment_draw': 0.0,
-            'display_diag': 0.0
+            'display_diag': 0.0,
+            'retake_visual': 0.0
         }
         self._pending_counts = {}
         self._stat_counters = {
@@ -11706,6 +11711,82 @@ class ECGStylePitchVisualizer(QWidget):
         - 记录回退方向用于后续策略微调（可选）。
         """
         try:
+            # ====== 暂停浏览保护（非破坏性 seek） ======
+            # 用户在暂停状态下拖动横轴/滚动条通常只是“查看历史”，不应触发 trim_after/cap 严格锁，
+            # 否则会把 25-30s 等未来点永久裁掉，表现为“暂停后滚动细节点凭空消失”。
+            try:
+                host = getattr(self, '_host_interface', None)
+            except Exception:
+                host = None
+            paused_browsing = False
+            destructive_seek_allowed = False
+            try:
+                paused_browsing = bool(host is not None and getattr(host, 'is_paused', False))
+            except Exception:
+                paused_browsing = False
+            try:
+                # 这些场景仍允许破坏性 seek：明确的回退清理/选区重录流程。
+                destructive_seek_allowed = bool(
+                    getattr(self, 'retake_selection_active', False)
+                    or getattr(host, '_retake_cleanup_in_progress', False) if host is not None else False
+                    or getattr(host, '_retake_preserve_timeline', False) if host is not None else False
+                    or getattr(host, '_retake_active_range', None) if host is not None else False
+                    or getattr(self, '_force_retake_backward_once', False)
+                    or getattr(self, '_force_retake_countdown_once', False)
+                )
+            except Exception:
+                destructive_seek_allowed = False
+
+            if paused_browsing and (not destructive_seek_allowed):
+                try:
+                    tgt = float(max(0.0, float(target_time)))
+                except Exception:
+                    tgt = 0.0
+                try:
+                    cur = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                except Exception:
+                    cur = 0.0
+                try:
+                    self._last_seek_backward = bool(tgt < cur - 1e-6)
+                except Exception:
+                    pass
+                try:
+                    self.current_global_time = tgt
+                except Exception:
+                    pass
+                # 仅调整视窗与滚动条，不做裁剪/严格锁
+                try:
+                    if hasattr(self, 'follow_playback_time'):
+                        self.follow_playback_time(tgt)
+                except Exception:
+                    pass
+                try:
+                    self._cap_visible_time_enabled = False
+                    self._cap_strict_lock = False
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_scrollbars'):
+                        self.update_scrollbars()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_guides'):
+                        self.update_guides()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'canvas') and self.canvas is not None:
+                        self.canvas.draw_idle()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_display'):
+                        self.update_display()
+                except Exception:
+                    pass
+                return
+
             # 内部工具：检测是否处于无头/测试环境（例如回归脚本使用 Agg 后端）
             def _is_headless_env_local() -> bool:
                 try:
@@ -13521,6 +13602,8 @@ class ECGStylePitchVisualizer(QWidget):
                 or getattr(self, '_retake_countdown_preserve_future', False)
                 or getattr(self, '_pending_retake_resume', False)
                 or getattr(self, '_retake_countdown_pending_resume', False)
+                or getattr(self, '_external_paused', False)
+                or getattr(self, 'is_backing_paused', False)
                 or getattr(self, 'retake_selection_active', False)
                 or getattr(self, '_retake_overlay_preview_active', False)
             )
@@ -13595,6 +13678,8 @@ class ECGStylePitchVisualizer(QWidget):
                 or getattr(self, '_retake_countdown_preserve_future', False)
                 or getattr(self, '_pending_retake_resume', False)
                 or getattr(self, '_retake_countdown_pending_resume', False)
+                or getattr(self, '_external_paused', False)
+                or getattr(self, 'is_backing_paused', False)
                 or getattr(self, 'retake_selection_active', False)
             )
             # 保留未来节点时跳过过滤，保持选区外细节点稳定。
@@ -13642,6 +13727,50 @@ class ECGStylePitchVisualizer(QWidget):
         - 若后续完整重帧刷新，会覆盖 _segments，不影响一致性。
         限制：忽略静音间隙造成的必要断开，这在重帧后被替换。"""
         try:
+            # 重录/倒计时/保留未来点期间，禁止快速段重建（该逻辑会裁到 <=cap 导致右侧历史闪烁/消失）
+            try:
+                preserve_future = bool(
+                    getattr(self, '_retake_force_preserve_future', False)
+                    or getattr(self, '_retake_countdown_preserve_future', False)
+                    or getattr(self, '_pending_retake_resume', False)
+                    or getattr(self, '_retake_countdown_pending_resume', False)
+                    or getattr(self, '_retake_countdown_active', False)
+                    or getattr(self, '_external_paused', False)
+                    or getattr(self, 'is_backing_paused', False)
+                    or getattr(self, 'retake_selection_active', False)
+                    or getattr(self, '_retake_overlay_preview_active', False)
+                )
+                if preserve_future:
+                    try:
+                        if bool(getattr(self, 'debug_flags', {}).get('retake_visual_log', False)):
+                            import time as _t
+                            now = _t.time()
+                            last = float(getattr(self, '_last_log_times', {}).get('retake_visual', 0.0))
+                            if now - last > 0.8:
+                                try:
+                                    active_range = self._get_active_retake_range()
+                                except Exception:
+                                    active_range = None
+                                try:
+                                    cap_now = float(getattr(self, '_max_visible_time', 0.0))
+                                except Exception:
+                                    cap_now = 0.0
+                                print(
+                                    "[RETAKE_VIS] skip_quick_rebuild preserve_future=1 "
+                                    f"countdown={int(bool(getattr(self,'_retake_countdown_active',False)))} "
+                                    f"sel_active={int(bool(getattr(self,'retake_selection_active',False)))} "
+                                    f"strict_lock={int(bool(getattr(self,'_cap_strict_lock',False)))} "
+                                    f"range={active_range} cap={cap_now:.3f}"
+                                )
+                                try:
+                                    self._last_log_times['retake_visual'] = now
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
             try:
                 mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式')
             except Exception:
@@ -14263,8 +14392,16 @@ class ECGStylePitchVisualizer(QWidget):
             preserve_future = bool(
                 getattr(self, '_retake_force_preserve_future', False)
                 or getattr(self, '_retake_countdown_preserve_future', False)
+                or getattr(self, '_pending_retake_resume', False)
+                or getattr(self, '_retake_countdown_pending_resume', False)
+                or getattr(self, '_external_paused', False)
+                or getattr(self, 'is_backing_paused', False)
+                or getattr(self, 'retake_selection_active', False)
+                or getattr(self, '_retake_overlay_preview_active', False)
             )
-            # 重录/倒计时保留未来节点时跳过 cap 过滤，避免选区外细节点被误裁剪。
+            # 关键修复：在“选区重录/关闭后继续的倒计时准备期/待恢复”窗口内，用户拖动水平滚动条会触发本函数。
+            # 若此时仍执行 cap 过滤，会把 cap 右侧(常见为选区长度 5s)的细节点/线段永久裁掉，且多次重录会累积成 10s/15s。
+            # 因此与 _purge_collections_beyond_cap 保持一致：只要处于任何需要保留未来点的状态，直接跳过。
             if preserve_future:
                 return
             if not getattr(self, '_cap_visible_time_enabled', False):
@@ -20915,6 +21052,20 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             add_receive_time = time.time()
+            # Host 侧重录阶段判定（用于“清除选区后仍在重录录制阶段”的场景）。
+            # 仅在录制阶段将其视为 retake_live，避免倒计时阶段误放开策略。
+            host_retake_recording = False
+            try:
+                host = getattr(self, '_host_interface', None)
+            except Exception:
+                host = None
+            if host is not None:
+                try:
+                    is_rec = getattr(host, '_retake_is_recording_phase', None)
+                    if callable(is_rec):
+                        host_retake_recording = bool(is_rec())
+                except Exception:
+                    host_retake_recording = False
             guard_now = add_receive_time
             guard_range = getattr(self, '_retake_block_range', None)
             guard_epoch = getattr(self, '_retake_epoch_guard_epoch', None)
@@ -20954,7 +21105,11 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
                 # 若正在重录/预览，关闭cap/守卫，避免新点被挡或截尾
                 try:
-                    retake_live = bool(getattr(self, '_retake_overlay_preview_active', False) or getattr(self, 'retake_selection_active', False))
+                    retake_live = bool(
+                        getattr(self, '_retake_overlay_preview_active', False)
+                        or getattr(self, 'retake_selection_active', False)
+                        or host_retake_recording
+                    )
                 except Exception:
                     retake_live = False
                 if retake_live:
@@ -21020,7 +21175,11 @@ class ECGStylePitchVisualizer(QWidget):
             audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
             retake_progress_time: Optional[float] = None
             try:
-                retake_live = bool(getattr(self, '_retake_overlay_preview_active', False) or getattr(self, 'retake_selection_active', False))
+                retake_live = bool(
+                    getattr(self, '_retake_overlay_preview_active', False)
+                    or getattr(self, 'retake_selection_active', False)
+                    or host_retake_recording
+                )
             except Exception:
                 retake_live = False
             # 回退守卫：过滤任何在回退壁钟之前生成的旧帧
@@ -21074,6 +21233,9 @@ class ECGStylePitchVisualizer(QWidget):
                             retake_live = bool(getattr(self, '_retake_overlay_preview_active', False) or getattr(self, 'retake_selection_active', False))
                         except Exception:
                             retake_live = False
+                        # 清除选区但仍在重录录制阶段：仍视为 retake_live，避免 cap/严格锁挡住新点
+                        if host_retake_recording:
+                            retake_live = True
                         if retake_live:
                             strict_lock_active = False
                             try:
@@ -21470,8 +21632,11 @@ class ECGStylePitchVisualizer(QWidget):
                             pos = self._get_retake_countdown_position()
                             freeze_t = float(pos if pos is not None else getattr(self, '_retake_countdown_freeze_time', tgt) or tgt)
                             self.current_global_time = freeze_t
+                            # 关键：倒计时预卷阶段允许“播放指针位于历史中间”，但仍需显示目标点之前的历史线段/细节点。
+                            # 因此这里不能把 last_pitch_time 夹回到 freeze_t（否则 27-30s 这段历史会被当作“未来”隐藏）。
                             try:
-                                if hasattr(self, 'last_pitch_time') and self.last_pitch_time > freeze_t:
+                                if getattr(self, 'last_pitch_time', None) is None:
+                                    # 若未初始化，则至少同步为 freeze_t，避免后续逻辑用 None。
                                     self.last_pitch_time = freeze_t
                             except Exception:
                                 pass
@@ -21585,8 +21750,25 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                     # 倒计时刚结束：保持严格锁由首个新点解除（与原策略一致），继续处理当前帧
-                    if getattr(self, '_cap_strict_lock', False):
+                    # 但在重录录制阶段（尤其“清除选区后继续重录”）不能把新数据阶段标记卡住，
+                    # 否则清理看门狗会持续 trim/purge，导致后续 30-35s 等区间细节点被误删/误隐藏。
+                    if getattr(self, '_cap_strict_lock', False) and (not host_retake_recording):
                         self._post_retake_new_data_started = False
+                    else:
+                        self._post_retake_new_data_started = True
+                    # 倒计时结束后的短暂宽限：即使首帧 pitch/conf 较弱也允许推进，避免“倒计时后完全不出点”。
+                    try:
+                        base_grace = int(getattr(self, '_retake_grace_frame_count', 12))
+                    except Exception:
+                        base_grace = 12
+                    try:
+                        cur_grace = int(getattr(self, '_retake_strict_grace_frames', 0))
+                    except Exception:
+                        cur_grace = 0
+                    try:
+                        self._retake_strict_grace_frames = max(cur_grace, max(4, base_grace))
+                    except Exception:
+                        pass
                     # 兜底：倒计时结束瞬间再净空一次所有集合并应用cap到主线，避免“解锁抖动”导致旧段复现
                     try:
                         if getattr(self, '_cap_visible_time_enabled', False):
@@ -21781,6 +21963,8 @@ class ECGStylePitchVisualizer(QWidget):
                 )
             except Exception:
                 retake_live_now = False
+            if host_retake_recording:
+                retake_live_now = True
             if retake_live_now:
                 try:
                     active_range = self._get_active_retake_range()
@@ -22032,6 +22216,8 @@ class ECGStylePitchVisualizer(QWidget):
                     retake_live = overlay_live or bool(getattr(self, 'retake_selection_active', False)) or bool(getattr(self, '_retake_countdown_active', False))
                 except Exception:
                     retake_live = overlay_live
+                if host_retake_recording:
+                    retake_live = True
                 if retake_live:
                     try:
                         self._retake_skip_gate_frames = 0
@@ -22620,18 +22806,57 @@ class ECGStylePitchVisualizer(QWidget):
         - 单步最大位移随 dt 与积压误差自适应，消除“跟随不够→粘滞感”。
         """
         try:
+            # 防御：任何路径传入的 xlim 都必须保证 start < end 且数值合理。
+            # 若不规范会导致 axisWin 反转/跳变，触发细节点“骤丢”(FINE_LOSS) 并引发后续错误裁剪。
+            def _normalize_xlim(_s: float, _e: float):
+                try:
+                    s0 = float(_s)
+                    e0 = float(_e)
+                except Exception:
+                    return None
+                try:
+                    import math as _m
+                    if (not _m.isfinite(s0)) or (not _m.isfinite(e0)):
+                        return None
+                except Exception:
+                    pass
+                if e0 <= s0 + 1e-9:
+                    try:
+                        tw0 = float(getattr(self, 'time_window', 16.0))
+                    except Exception:
+                        tw0 = 16.0
+                    if tw0 > 1e-6:
+                        # 以 start 为基准重建窗口
+                        e0 = s0 + tw0
+                    else:
+                        # 兜底：交换
+                        s0, e0 = min(s0, e0), max(s0, e0)
+                        if e0 <= s0 + 1e-9:
+                            e0 = s0 + 1.0
+                if s0 < 0.0:
+                    shift = -s0
+                    s0 = 0.0
+                    e0 = e0 + shift
+                return (s0, e0)
+
             lock = getattr(self, '_retake_axis_lock', None)
             if lock is None and getattr(self, '_retake_countdown_active', False):
                 lock = getattr(self, '_retake_countdown_locked_xlim', None)
             if lock is not None:
                 if hasattr(self, 'ax') and self.ax is not None:
                     try:
-                        start, end = float(lock[0]), float(lock[1])
-                        self.ax.set_xlim(start, end)
-                        self._retake_countdown_locked_xlim = (start, end)
+                        norm = _normalize_xlim(lock[0], lock[1])
+                        if norm is not None:
+                            start, end = norm
+                            self.ax.set_xlim(start, end)
+                            self._retake_countdown_locked_xlim = (start, end)
                     except Exception:
                         pass
-                self._smoothed_xlim = tuple(map(float, lock))
+                try:
+                    norm = _normalize_xlim(lock[0], lock[1])
+                    self._smoothed_xlim = norm if norm is not None else tuple(map(float, lock))
+                except Exception:
+                    self._smoothed_xlim = tuple(map(float, lock))
                 try:
                     import time as _lock_t
                     self._smooth_last_t = _lock_t.time()
@@ -22652,12 +22877,15 @@ class ECGStylePitchVisualizer(QWidget):
             if in_manual_window and (paused or backing_locked):
                 if hasattr(self, 'ax'):
                     try:
-                        self.ax.set_xlim(target_start, target_end)
+                        norm = _normalize_xlim(target_start, target_end)
+                        if norm is None:
+                            return
+                        self.ax.set_xlim(norm[0], norm[1])
                         if getattr(self, '_debug_axis_trace', False):
-                            print(f"[SMOOTH_BYPASS|manual] ({target_start:.2f},{target_end:.2f}) paused={paused} backing_locked={backing_locked}")
+                            print(f"[SMOOTH_BYPASS|manual] ({norm[0]:.2f},{norm[1]:.2f}) paused={paused} backing_locked={backing_locked}")
                         if hasattr(self, 'canvas'):
                             self.canvas.draw_idle()
-                        self._smoothed_xlim = (target_start, target_end)
+                        self._smoothed_xlim = (norm[0], norm[1])
                     except Exception:
                         pass
                 return
@@ -22718,9 +22946,12 @@ class ECGStylePitchVisualizer(QWidget):
             if getattr(self, '_suppress_next_smooth_xlim', False):
                 self._suppress_next_smooth_xlim = False
                 if hasattr(self, 'ax'):
-                    self.ax.set_xlim(target_start, target_end)
+                    norm = _normalize_xlim(target_start, target_end)
+                    if norm is None:
+                        return
+                    self.ax.set_xlim(norm[0], norm[1])
                     if getattr(self, '_debug_axis_trace', True):
-                        print(f"[SMOOTH_SKIP] direct_xlim=({target_start:.2f},{target_end:.2f})")
+                        print(f"[SMOOTH_SKIP] direct_xlim=({norm[0]:.2f},{norm[1]:.2f})")
                 return
             if not hasattr(self, 'ax'):
                 return
@@ -22733,9 +22964,12 @@ class ECGStylePitchVisualizer(QWidget):
                         cur0, cur1 = self.ax.get_xlim()
                         # 如果目标窗口起点与当前起点相差超过半个窗口，认定为大跨度手动seek
                         if abs(cur0 - target_start) > 0.5 * (target_end - target_start):
-                            self.ax.set_xlim(target_start, target_end)
+                            norm = _normalize_xlim(target_start, target_end)
+                            if norm is None:
+                                return
+                            self.ax.set_xlim(norm[0], norm[1])
                             if getattr(self, '_debug_axis_trace', True):
-                                print(f"[SMOOTH_BYPASS] manual_seek -> ({target_start:.2f},{target_end:.2f})")
+                                print(f"[SMOOTH_BYPASS] manual_seek -> ({norm[0]:.2f},{norm[1]:.2f})")
                             return
                     except Exception:
                         pass
@@ -22777,6 +23011,10 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             # 目标中心与宽度
+            norm_tar = _normalize_xlim(target_start, target_end)
+            if norm_tar is None:
+                return
+            target_start, target_end = norm_tar
             t_width = float(target_end - target_start)
             c_tar = (float(target_start) + float(target_end)) * 0.5
             c_cur = (float(s_cur) + float(e_cur)) * 0.5
@@ -22830,14 +23068,36 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             # 退回直接设置
             try:
-                self.ax.set_xlim(target_start, target_end)
+                try:
+                    # 这里也做一次兜底规范化
+                    import math as _m
+                    ts = float(target_start); te = float(target_end)
+                    if _m.isfinite(ts) and _m.isfinite(te):
+                        if te <= ts + 1e-9:
+                            try:
+                                tw = float(getattr(self, 'time_window', 16.0))
+                            except Exception:
+                                tw = 16.0
+                            te = ts + (tw if tw > 1e-6 else 1.0)
+                        if ts < 0.0:
+                            shift = -ts
+                            ts = 0.0
+                            te = te + shift
+                        self.ax.set_xlim(ts, te)
+                    else:
+                        return
+                except Exception:
+                    return
                 try:
                     self.update_guides()
                 except Exception:
                     pass
                 if hasattr(self, 'canvas'):
                     self.canvas.draw_idle()
-                self._smoothed_xlim = (target_start, target_end)
+                try:
+                    self._smoothed_xlim = (float(self.ax.get_xlim()[0]), float(self.ax.get_xlim()[1]))
+                except Exception:
+                    self._smoothed_xlim = (target_start, target_end)
                 import time as _t
                 self._smooth_last_t = _t.time()
             except Exception:
@@ -23577,6 +23837,54 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if not self.is_recording_active:
                 return
+
+            # 回录倒计时需要“按墙钟自动结束”。否则当外部逻辑（例如 overlay_consumed）
+            # 绕过 add_pitch_data 时，倒计时永远无法触发收尾，表现为：特效卡住 / 时间轴不推进 / 不出点。
+            try:
+                if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False):
+                    import time as _t
+                    now_wall = _t.time()
+                    end_wall = float(getattr(self, '_retake_countdown_end_wall', 0.0) or 0.0)
+                    if end_wall > 0.0 and now_wall >= end_wall:
+                        try:
+                            self._retake_countdown_block_add = False
+                            self._retake_countdown_active = False
+                            self._retake_countdown_freeze_time = None
+                        except Exception:
+                            pass
+                        try:
+                            self._retake_countdown_pause_started_at = 0.0
+                        except Exception:
+                            pass
+                        try:
+                            self._retake_playhead_freeze = None
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self, '_restore_retake_countdown_highlight'):
+                                self._restore_retake_countdown_highlight()
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self, '_manual_freeze_time'):
+                                delattr(self, '_manual_freeze_time')
+                        except Exception:
+                            try:
+                                setattr(self, '_manual_freeze_time', None)
+                            except Exception:
+                                pass
+                        try:
+                            self._force_redraw_on_next_update = True
+                            self._artist_times_dirty = True
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self, 'canvas') and self.canvas is not None:
+                                self.canvas.draw_idle()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             
             # 计算当前全局时间
             current_time = time.time()
@@ -23604,9 +23912,17 @@ class ECGStylePitchVisualizer(QWidget):
                         self.start_time = current_time - self.current_global_time
                 except Exception:
                     pass
+                # 关键：
+                # - 手动暂停：last_pitch_time 可以夹紧到冻结点，避免 UI 认为“有未来数据”。
+                # - 回录倒计时：播放指针会从 preroll_start 推进到 target，但历史数据本身应保持可见，
+                #   因此不能把 last_pitch_time 向回夹到播放指针位置。
                 try:
-                    if getattr(self, 'last_pitch_time', None) is None or self.last_pitch_time > self.current_global_time:
-                        self.last_pitch_time = self.current_global_time
+                    if manual_freeze:
+                        if getattr(self, 'last_pitch_time', None) is None or self.last_pitch_time > self.current_global_time:
+                            self.last_pitch_time = self.current_global_time
+                    else:
+                        if getattr(self, 'last_pitch_time', None) is None:
+                            self.last_pitch_time = self.current_global_time
                 except Exception:
                     pass
             else:
@@ -24553,7 +24869,9 @@ class ECGStylePitchVisualizer(QWidget):
         # 冻结时间轴并阻止新点写入
         try:
             self.current_global_time = target
-            if hasattr(self, 'last_pitch_time') and self.last_pitch_time > target:
+            # 关键：在“保留未来点(伴奏/陪练/选区外历史不应消失)”模式下，不能把 last_pitch_time 回夹到 target。
+            # 否则后续渲染/过滤会把 target 之后的已录历史(例如 25-30s)当作“未来”隐藏，甚至在滚动/刷新时被误裁。
+            if (not preserve_future_points) and hasattr(self, 'last_pitch_time') and self.last_pitch_time > target:
                 self.last_pitch_time = target
         except Exception:
             pass
@@ -25572,15 +25890,104 @@ class ECGStylePitchVisualizer(QWidget):
         times, pitches = snap
         if not times:
             return
+        # 保留未来点窗口：仅做“补回左侧历史”的非破坏性更新，禁止裁掉 cap 右侧既有图元。
+        try:
+            preserve_future = bool(
+                getattr(self, '_retake_force_preserve_future', False)
+                or getattr(self, '_retake_countdown_preserve_future', False)
+                or getattr(self, '_pending_retake_resume', False)
+                or getattr(self, '_retake_countdown_pending_resume', False)
+                or getattr(self, '_retake_countdown_active', False)
+                or getattr(self, '_external_paused', False)
+                or getattr(self, 'is_backing_paused', False)
+                or getattr(self, 'retake_selection_active', False)
+                or getattr(self, '_retake_overlay_preview_active', False)
+            )
+        except Exception:
+            preserve_future = False
+
+        # 调试：更明确地记录为何进入“保留未来点”分支（节流，避免刷屏）
+        try:
+            if preserve_future and bool(getattr(self, 'debug_flags', {}).get('retake_visual_log', False)):
+                import time as _t
+                now = _t.time()
+                last = float(getattr(self, '_last_log_times', {}).get('retake_visual', 0.0))
+                if now - last > 0.8:
+                    try:
+                        active_range = self._get_active_retake_range()
+                    except Exception:
+                        active_range = None
+                    try:
+                        line_last = None
+                        if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                            xd, _yd = self.pitch_line.get_data()
+                            if xd is not None and len(xd) > 0:
+                                line_last = float(xd[-1])
+                    except Exception:
+                        line_last = None
+                    try:
+                        fp = getattr(self, '_flat_points', None)
+                        flat_last = float(list(fp)[-1][0]) if fp else None
+                    except Exception:
+                        flat_last = None
+                    try:
+                        seg_n = len(getattr(self, '_segment_points', []) or [])
+                    except Exception:
+                        seg_n = -1
+                    print(
+                        "[RETAKE_VIS] apply_snapshot preserve_future=1 "
+                        f"countdown={int(bool(getattr(self,'_retake_countdown_active',False)))} "
+                        f"sel_active={int(bool(getattr(self,'retake_selection_active',False)))} "
+                        f"overlay_preview={int(bool(getattr(self,'_retake_overlay_preview_active',False)))} "
+                        f"pending_resume={int(bool(getattr(self,'_pending_retake_resume',False)))} "
+                        f"strict_lock={int(bool(getattr(self,'_cap_strict_lock',False)))} "
+                        f"range={active_range} "
+                        f"snap_cap={float(getattr(self,'_retake_history_snapshot_cap',0.0)):.3f} "
+                        f"pitch_line_last={line_last} flat_last={flat_last} seg_points={seg_n}"
+                    )
+                    try:
+                        self._last_log_times['retake_visual'] = now
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         cap_val = float(getattr(self, '_retake_history_snapshot_cap', times[-1]))
         pts = list(zip(times, pitches))
         maxlen = int(getattr(self, '_prefill_flat_cap', 6000))
         try:
-            if isinstance(getattr(self, '_flat_points', None), list):
-                self._flat_points = pts[-maxlen:]
+            if not preserve_future:
+                if isinstance(getattr(self, '_flat_points', None), list):
+                    self._flat_points = pts[-maxlen:]
+                else:
+                    from collections import deque as _dq
+                    self._flat_points = _dq(pts[-maxlen:], maxlen=maxlen)
             else:
-                from collections import deque as _dq
-                self._flat_points = _dq(pts[-maxlen:], maxlen=maxlen)
+                # 仅当 flat_points 为空/缺失时补回，避免覆盖掉右侧已存在点
+                need_seed = False
+                try:
+                    fp = getattr(self, '_flat_points', None)
+                    if not fp:
+                        need_seed = True
+                    else:
+                        try:
+                            last_t = float(list(fp)[-1][0])
+                        except Exception:
+                            last_t = None
+                        if last_t is None or last_t <= cap_val + 1e-6:
+                            need_seed = True
+                except Exception:
+                    need_seed = True
+                if need_seed:
+                    if isinstance(getattr(self, '_flat_points', None), list):
+                        self._flat_points = pts[-maxlen:]
+                    else:
+                        from collections import deque as _dq
+                        self._flat_points = _dq(pts[-maxlen:], maxlen=maxlen)
+                    try:
+                        if bool(getattr(self, 'debug_flags', {}).get('retake_visual_log', False)):
+                            print(f"[RETAKE_VIS] seed_flat_points cap={cap_val:.3f} seeded={min(len(pts), maxlen)}")
+                    except Exception:
+                        pass
         except Exception:
             pass
         try:
@@ -25590,40 +25997,68 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         try:
             if hasattr(self, 'pitch_line') and self.pitch_line is not None:
-                self.pitch_line.set_data(times, pitches)
-                self.pitch_line.set_alpha(1.0 if times else 0.0)
-        except Exception:
-            pass
-        # 清理现有分段散点，保持与快照一致
-        try:
-            if hasattr(self, '_segment_points') and self._segment_points:
-                import numpy as _np
-                kept = []
-                for coll in list(self._segment_points):
+                if not preserve_future:
+                    self.pitch_line.set_data(times, pitches)
+                    self.pitch_line.set_alpha(1.0 if times else 0.0)
+                else:
+                    # 仅当主线为空/缺失时才用快照补回，避免把右侧主线“缩短”到 cap
+                    apply_line = False
                     try:
-                        arr = _np.asarray(coll.get_offsets(), dtype=float)
-                        arr = arr[arr[:, 0] <= cap_val + 1e-9]
-                        if arr.size == 0:
-                            if coll in self.ax.collections:
-                                coll.remove()
+                        xdata, _ydata = self.pitch_line.get_data()
+                        if not xdata or len(xdata) == 0:
+                            apply_line = True
                         else:
-                            coll.set_offsets(arr)
-                            kept.append(coll)
+                            try:
+                                cur_last = float(xdata[-1])
+                            except Exception:
+                                cur_last = None
+                            if cur_last is None or cur_last <= cap_val + 1e-6:
+                                apply_line = True
                     except Exception:
+                        apply_line = True
+                    if apply_line:
+                        self.pitch_line.set_data(times, pitches)
+                        self.pitch_line.set_alpha(1.0 if times else 0.0)
                         try:
-                            if coll in self.ax.collections:
-                                coll.remove()
+                            if bool(getattr(self, 'debug_flags', {}).get('retake_visual_log', False)):
+                                print(f"[RETAKE_VIS] seed_pitch_line cap={cap_val:.3f} pts={len(times)}")
                         except Exception:
                             pass
-                self._segment_points = kept
         except Exception:
             pass
+        # 清理现有分段散点：仅在不需要保留未来点时执行。
+        if not preserve_future:
+            try:
+                if hasattr(self, '_segment_points') and self._segment_points:
+                    import numpy as _np
+                    kept = []
+                    for coll in list(self._segment_points):
+                        try:
+                            arr = _np.asarray(coll.get_offsets(), dtype=float)
+                            arr = arr[arr[:, 0] <= cap_val + 1e-9]
+                            if arr.size == 0:
+                                if coll in self.ax.collections:
+                                    coll.remove()
+                            else:
+                                coll.set_offsets(arr)
+                                kept.append(coll)
+                        except Exception:
+                            try:
+                                if coll in self.ax.collections:
+                                    coll.remove()
+                            except Exception:
+                                pass
+                    self._segment_points = kept
+            except Exception:
+                pass
         self._retake_history_snapshot_applied = True
-        try:
-            if hasattr(self, '_quick_rebuild_segments_upto_cap'):
-                self._quick_rebuild_segments_upto_cap()
-        except Exception:
-            pass
+        # 快速段重建会重建为 <=cap，从而把右侧未来点“瞬间隐藏”；仅在允许破坏性裁剪时启用。
+        if not preserve_future:
+            try:
+                if hasattr(self, '_quick_rebuild_segments_upto_cap'):
+                    self._quick_rebuild_segments_upto_cap()
+            except Exception:
+                pass
         if eager:
             try:
                 self._force_redraw_on_next_update = True
@@ -26488,8 +26923,48 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if hasattr(self, 'ax') and self.ax is not None:
                     if getattr(self, 'is_recording_active', False):
+                        # 自动跟随时对 time_offset 做“合理性纠偏”：
+                        # 某些竞态/锁定切换会导致 time_offset 出现 10x 跳变（例如 23.65 -> 233.65），
+                        # 进而让 axisWin 反转/越界并触发细节点骤丢。
+                        try:
+                            if (getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True)
+                                and (not manual_freeze)):
+                                # 以 cur_t 为基准计算期望 offset
+                                try:
+                                    tw = float(getattr(self, 'time_window', 16.0))
+                                except Exception:
+                                    tw = 16.0
+                                try:
+                                    center_t = float(getattr(self, 'center_display_time', 8.0))
+                                except Exception:
+                                    center_t = 8.0
+                                # 伴奏锁定优先采用锁定长度
+                                try:
+                                    if getattr(self, '_backing_axis_locked', False):
+                                        max_hist = float(getattr(self, '_backing_axis_length', getattr(self, 'max_history_time', cur_t)))
+                                    else:
+                                        max_hist = float(getattr(self, 'max_history_time', cur_t))
+                                except Exception:
+                                    max_hist = float(cur_t)
+                                max_offset = max(0.0, max_hist - tw)
+                                desired = 0.0 if cur_t <= center_t else max(0.0, min(cur_t - center_t, max_offset))
+                                cur_off = float(getattr(self, 'time_offset', 0.0))
+                                # 只有在“明显离谱”时才纠正，避免影响用户手动拖动
+                                if abs(cur_off - desired) > max(2.5, 1.5 * tw):
+                                    try:
+                                        self.time_offset = float(desired)
+                                    except Exception:
+                                        self.time_offset = desired
+                        except Exception:
+                            pass
                         axis_start = float(getattr(self, 'time_offset', 0.0))
                         axis_end = axis_start + float(getattr(self, 'time_window', 16.0))
+                        # 最终防御：保证 axis_start < axis_end
+                        try:
+                            if axis_end <= axis_start + 1e-9:
+                                axis_end = axis_start + float(getattr(self, 'time_window', 16.0) or 16.0)
+                        except Exception:
+                            pass
                         try:
                             s = float(getattr(self,'_smooth_strength',0.9))
                             m = float(getattr(self,'_smooth_max_step',0.05))
@@ -26500,6 +26975,12 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             self.ax.set_xlim(axis_start, axis_end)
                     else:
+                        # 停止态也做一次基本防御，避免外部写入导致反转
+                        try:
+                            if axis_end <= axis_start + 1e-9:
+                                axis_end = axis_start + float(getattr(self, 'time_window', 16.0) or 16.0)
+                        except Exception:
+                            pass
                         self.ax.set_xlim(axis_start, axis_end)
             except Exception:
                 pass
@@ -33576,12 +34057,37 @@ class IntegratedRecordingInterface(QMainWindow):
                 return True
         except Exception:
             pass
+        # overlay 正在接管输入（选区重录/覆盖预览）时，必须保留全局时间轴，
+        # 否则 on_recording_progress/_enforce_active_retake_bounds 可能把 recording_duration
+        # 回退到选区末端或预卷起点，造成：
+        # - 选区重录未到长度就提前 stop
+        # - 关闭后继续倒计时期间“录音时长 27/30 跳变”
+        # - 继续后暂停滚动时 25-30 细节点被 cap/trim 误隐藏
+        try:
+            if hasattr(self, '_retake_overlay_active') and callable(getattr(self, '_retake_overlay_active')):
+                if bool(self._retake_overlay_active()):
+                    return True
+        except Exception:
+            pass
+        # 继续/预卷倒计时：录音“总时长”仍应保持在末尾基线，直到倒计时结束后再增长。
+        try:
+            if bool(getattr(self, '_pending_retake_resume', False)):
+                return True
+            if bool(getattr(self, '_retake_countdown_pending_resume', False)):
+                return True
+            if bool(getattr(self, '_retake_countdown_in_progress', False)):
+                return True
+        except Exception:
+            pass
         viz = getattr(self, 'visualizer', None)
         try:
             if viz is not None:
                 if bool(getattr(viz, '_retake_countdown_preserve_future', False)):
                     return True
                 if bool(getattr(viz, 'retake_selection_active', False)):
+                    return True
+                # visualizer 侧倒计时也视为需要保留（有时 host 标志位滞后）
+                if bool(getattr(viz, '_retake_countdown_active', False)):
                     return True
         except Exception:
             pass
@@ -34608,21 +35114,75 @@ class IntegratedRecordingInterface(QMainWindow):
         already_latched = bool(getattr(self, '_retake_stop_latched', False))
         if already_latched:
             return
-        paused = bool(getattr(self, 'is_paused', False))
-        if not paused:
-            try:
-                self.pause_recording()
-            except Exception as exc:
-                try:
-                    print(f"[RETAKE_GUARD] 自动暂停失败: {exc}")
-                except Exception:
-                    pass
         try:
             self._retake_stop_latched = True
             self._retake_should_auto_resume = False
         except Exception:
             pass
-        self._notify_retake_boundary_latched(source)
+        # 重要：此方法可能被音频线程调用（overlay pitch/audio 回调）。
+        # Qt/Matplotlib 的 UI 更新必须在主线程执行，否则会触发 killTimer 警告甚至 draw 崩溃。
+        # 这里仅置位，由 UI 线程定时器（update_status_display）消费并完成暂停/提交/刷新。
+        try:
+            self._retake_boundary_pending = True
+            self._retake_boundary_pending_source = str(source)
+        except Exception:
+            pass
+        # 进一步兜底：立即投递到 UI 线程处理（暂停/提交/刷新），避免仅依赖状态刷新定时器导致延迟。
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self, self._process_pending_retake_boundary_latch)
+        except Exception:
+            pass
+        return
+
+    def _process_pending_retake_boundary_latch(self) -> bool:
+        """在 UI 线程处理“到右界”触发的暂停/提交/刷新。
+
+        说明：右界检测可能来自音频线程，必须把后续 UI 操作移回主线程。
+        """
+        pending = bool(getattr(self, '_retake_boundary_pending', False))
+        if not pending:
+            return False
+        try:
+            source = str(getattr(self, '_retake_boundary_pending_source', 'progress') or 'progress')
+        except Exception:
+            source = 'progress'
+        try:
+            self._retake_boundary_pending = False
+            self._retake_boundary_pending_source = None
+        except Exception:
+            pass
+
+        # 到右界后，应清理“倒计时/待恢复”标记，否则下一次点击开始会被 countdown_busy 拦截。
+        try:
+            if hasattr(self, '_cancel_retake_countdown'):
+                self._cancel_retake_countdown(keep_pending=False)
+        except Exception:
+            pass
+        for _attr, _val in (
+            ('_pending_retake_resume', False),
+            ('_pending_retake_resume_time', 0.0),
+            ('_retake_countdown_pending_resume', False),
+            ('_retake_countdown_in_progress', False),
+            ('_retake_manual_resume_required', False),
+        ):
+            try:
+                setattr(self, _attr, _val)
+            except Exception:
+                pass
+
+        # 强制暂停（在 UI 线程执行，避免 QObject::killTimer 跨线程警告）
+        try:
+            if not bool(getattr(self, 'is_paused', False)):
+                self.pause_recording()
+        except Exception:
+            pass
+
+        try:
+            self._notify_retake_boundary_latched(source)
+        except Exception:
+            pass
+        return True
 
     def _maybe_trigger_retake_stop(self, timestamp: float, *, source: str = "overlay") -> None:
         active = getattr(self, '_retake_active_range', None)
@@ -34794,7 +35354,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 hist = getattr(self, 'pitch_history', None)
                 if hist is None:
                     from collections import deque
-                    hist = deque(maxlen=1000)
+                    hist = deque(maxlen=20000)
                     self.pitch_history = hist
                 append = hist.append if hasattr(hist, 'append') else hist.append
                 for item in pitch_tail:
@@ -35736,6 +36296,45 @@ class IntegratedRecordingInterface(QMainWindow):
                 viz.deactivate_retake_selection()
         except Exception as exc:
             print(f"⚠️ 退出选区重录失败: {exc}")
+        # 无论是否关闭窗口，都要彻底停止重录相关的倒计时/清理/冻结，避免后续录制区间被误裁剪。
+        try:
+            self._cancel_retake_countdown(keep_pending=False)
+        except Exception:
+            pass
+        try:
+            self._stop_retake_cleanup_watch()
+        except Exception:
+            pass
+        try:
+            # 仅收尾会话状态；快照恢复仍由 restore_snapshot 参数控制
+            self._finalize_retake_session_context('deactivate-mode', restore_snapshot=False)
+        except Exception:
+            pass
+        if viz is not None:
+            for attr, value in (
+                ('_retake_countdown_active', False),
+                ('_retake_countdown_block_add', False),
+                ('_retake_guard_active', False),
+                ('_retake_block_old_history', False),
+                ('_retake_drop_until_timestamp', 0.0),
+                ('_retake_gate_suppress_until', 0.0),
+                ('_retake_skip_gate_frames', 0),
+                ('_post_retake_new_data_started', True),
+            ):
+                try:
+                    setattr(viz, attr, value)
+                except Exception:
+                    pass
+            try:
+                if hasattr(viz, '_clear_retake_history_snapshot'):
+                    viz._clear_retake_history_snapshot()
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_retake_live_last_time'):
+                    viz._retake_live_last_time = None
+            except Exception:
+                pass
         if restore_snapshot:
             try:
                 self._restore_selection_snapshot_if_pending(reason="deactivate-mode")
@@ -35826,6 +36425,43 @@ class IntegratedRecordingInterface(QMainWindow):
         if n <= 0:
             return 0.0
         return float(n) / float(max(1, sr))
+
+    def _pad_audio_buffer_to_duration(self, target_sec: float) -> None:
+        """将 audio_buffer 用静音补齐到指定时长（秒）。
+
+        在伴奏/锁定时间轴模式下，UI 的时间轴末端可能大于人声缓冲长度。
+        若“继续/倒计时锚点”误用较短的人声长度，会造成暂停+滚动查看历史时
+        末端(如 25-30s)被当作“未来”而被隐藏。
+        """
+        try:
+            tgt = float(target_sec)
+        except Exception:
+            return
+        if not (tgt > 0.0 and math.isfinite(tgt)):
+            return
+        sr = self._effective_sample_rate()
+        try:
+            target_n = int(round(tgt * float(sr)))
+        except Exception:
+            return
+        if target_n <= 0:
+            return
+        buf = self._ensure_audio_buffer_list()
+        try:
+            cur_n = int(len(buf))
+        except Exception:
+            return
+        need = target_n - cur_n
+        if need <= 0:
+            return
+        try:
+            buf.extend([0.0] * int(need))
+        except Exception:
+            try:
+                for _ in range(int(need)):
+                    buf.append(0.0)
+            except Exception:
+                return
 
     def _retake_resume_anchor_sec(self, fallback: float = 0.0) -> float:
         """选区重录用于“继续/关闭窗口”对齐的锚点时间（秒）。"""
@@ -35982,7 +36618,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 hist = getattr(self, 'pitch_history', None)
                 if hist is None:
                     from collections import deque
-                    hist = deque(maxlen=1000)
+                    hist = deque(maxlen=20000)
                     self.pitch_history = hist
                 items = list(hist) if hist else []
                 insert_idx = snapshot.get('pitch_history_insert_idx')
@@ -36055,10 +36691,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
         return restored
 
-    def clear_retake_selection_range(self, start: float, end: float) -> bool:
+    def clear_retake_selection_range(self, start: float, end: float, *, fast: bool = False) -> bool:
         snapshot = self._capture_selection_snapshot(start, end)
-        if snapshot is None:
-            return False
+        if snapshot is None: 
+            return False 
         viz = getattr(self, 'visualizer', None)
         if viz is None:
             return False
@@ -36094,19 +36730,31 @@ class IntegratedRecordingInterface(QMainWindow):
                 viz.purge_artists_in_range(snapshot['start'], snapshot['end'])
             except Exception:
                 pass
+        # 性能优化：自动开始重录时，这里可能触发全量 seek/cap 重建导致 UI 卡顿，
+        # 进而使倒计时 QTimer 不触发，出现“倒计时结束后仍不出点”。
+        # fast=True 时仅做最小可视化失效与局部 purge，重型重建延后由后续刷新触发。
         try:
             viz.update_listenback_artists()
+        except Exception:
+            pass
+        try:
+            viz._artist_times_dirty = True
+            viz._force_redraw_on_next_update = True
+        except Exception:
+            pass
+        try:
             if hasattr(viz, 'canvas') and viz.canvas is not None:
                 viz.canvas.draw_idle()
         except Exception:
             pass
-        try:
-            self._refresh_visualizer_after_selection_edit(snapshot['start'], snapshot['end'])
-        except Exception:
-            pass
+        if not fast:
+            try:
+                self._refresh_visualizer_after_selection_edit(snapshot['start'], snapshot['end'])
+            except Exception:
+                pass
         return True
 
-    def _prepare_cleared_selection_for_new_retake(self, start: float, end: float) -> None:
+    def _prepare_cleared_selection_for_new_retake(self, start: float, end: float, *, fast: bool = False) -> None:
         """在“清除选区”后即将开始重录时，确保新细节点不会被软遮罩继续挡住。
 
         说明：清除选区可能以“软遮罩”的方式隐藏旧点。如果保持遮罩不变，
@@ -36160,9 +36808,20 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
         try:
-            self._refresh_visualizer_after_selection_edit(float(s1), float(e1))
+            viz._artist_times_dirty = True
+            viz._force_redraw_on_next_update = True
         except Exception:
             pass
+        try:
+            if hasattr(viz, 'canvas') and viz.canvas is not None:
+                viz.canvas.draw_idle()
+        except Exception:
+            pass
+        if not fast:
+            try:
+                self._refresh_visualizer_after_selection_edit(float(s1), float(e1))
+            except Exception:
+                pass
 
     def _refresh_visualizer_after_selection_edit(self, start: float, end: float) -> None:
         viz = getattr(self, 'visualizer', None)
@@ -36283,12 +36942,32 @@ class IntegratedRecordingInterface(QMainWindow):
                 restorer(reinject=True, persist=False)
         except Exception:
             pass
-        # 对齐录制进度到最新时长，确保“继续”从当前末尾开始绘制
+        # 对齐录制进度到最新时长，确保“继续”从当前末尾开始绘制。
+        # 注意：这里必须以“时间轴末端基线(伴奏/保留时间轴)”为准，而不是 audio_buffer 的真实长度。
+        # 否则会出现：倒计时锚点回退(如 30->27)，暂停+滚动时末端点(25-30)被误隐藏。
         try:
-            rec_dur = float(self._retake_resume_anchor_sec(getattr(self, 'recording_duration', 0.0)))
+            rec_dur = 0.0
+            try:
+                rec_dur = max(rec_dur, float(getattr(self, 'recording_duration', 0.0) or 0.0))
+            except Exception:
+                pass
+            try:
+                rec_dur = max(rec_dur, float(getattr(self, '_retake_preserved_recording_duration', 0.0) or 0.0))
+            except Exception:
+                pass
+            try:
+                rec_dur = max(rec_dur, float(getattr(self, 'current_global_time', 0.0) or 0.0))
+            except Exception:
+                pass
+            if not math.isfinite(rec_dur):
+                rec_dur = 0.0
         except Exception:
             rec_dur = 0.0
         if rec_dur > 0:
+            try:
+                self._pad_audio_buffer_to_duration(rec_dur)
+            except Exception:
+                pass
             try:
                 self.current_global_time = rec_dur
             except Exception:
@@ -36301,7 +36980,9 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 viz = getattr(self, 'visualizer', None)
                 if viz is not None and hasattr(viz, 'time_offset'):
-                    viz.time_offset = max(float(getattr(viz, 'time_offset', 0.0)), rec_dur)
+                    # 不要把 time_offset 强推到末尾：这会污染后续“暂停+滚动查看历史”的路径，
+                    # 造成 segment/cache 只围绕末尾重建，从而出现 25-30s 细节点“凭空消失”的观感。
+                    pass
                 if viz is not None:
                     # 关闭任何cap锁，并让可视窗口跟到末尾
                     try:
@@ -36348,7 +37029,22 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
         try:
-            rec_dur = float(self._retake_resume_anchor_sec(getattr(self, 'recording_duration', 0.0)))
+            # 同上：关闭窗口后的继续锚点，使用时间轴末端基线
+            rec_dur = 0.0
+            try:
+                rec_dur = max(rec_dur, float(getattr(self, 'recording_duration', 0.0) or 0.0))
+            except Exception:
+                pass
+            try:
+                rec_dur = max(rec_dur, float(getattr(self, '_retake_preserved_recording_duration', 0.0) or 0.0))
+            except Exception:
+                pass
+            try:
+                rec_dur = max(rec_dur, float(getattr(self, 'current_global_time', 0.0) or 0.0))
+            except Exception:
+                pass
+            if not math.isfinite(rec_dur):
+                rec_dur = 0.0
         except Exception:
             rec_dur = 0.0
         try:
@@ -36469,7 +37165,33 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 viz.current_global_time = self.recording_duration
                 viz.deactivate_retake_selection()
-                viz.notify_seek(self.recording_duration)
+                # 关闭重录窗口属于“退出模式/回到正常录制”，这里不要触发 notify_seek 的
+                # 破坏性分支（cap/trim/清理）。改为非破坏性跟随并强制重建 artists。
+                try:
+                    if hasattr(viz, '_clear_retake_future_visibility_guard'):
+                        viz._clear_retake_future_visibility_guard()
+                except Exception:
+                    pass
+                try:
+                    viz._cap_visible_time_enabled = False
+                    viz._cap_strict_lock = False
+                except Exception:
+                    pass
+                try:
+                    if hasattr(viz, 'follow_playback_time'):
+                        viz.follow_playback_time(self.recording_duration)
+                except Exception:
+                    pass
+                try:
+                    viz._artist_times_dirty = True
+                    viz._force_redraw_on_next_update = True
+                    viz._last_heavy_redraw_time = 0.0
+                except Exception:
+                    pass
+                try:
+                    viz.refresh_artists()
+                except Exception:
+                    pass
             except Exception:
                 pass
         self._retake_resume_after_close_time = None
@@ -36482,8 +37204,20 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
 
-    def _handle_retake_clear_request(self, start: float, end: float) -> bool:
-        """Reset overlay buffer and reapply selection clear so用户可以再次重录。"""
+    def _handle_retake_clear_request(
+        self,
+        start: float,
+        end: float,
+        *,
+        restore_snapshot: bool = True,
+        fast: bool = False,
+        reason: str = "manual-clear",
+    ) -> bool:
+        """Reset overlay buffer and reapply selection clear so用户可以再次重录。
+
+        - 手动“清除选区”：默认 restore_snapshot=True，会恢复上一遍录制（拒绝覆盖）。
+        - “开始重录”触发的自动清除：应 restore_snapshot=False，只清空选区以便写入新点。
+        """
         overlay_reset = False
         if self._retake_overlay_requires_commit():
             try:
@@ -36491,13 +37225,18 @@ class IntegratedRecordingInterface(QMainWindow):
                 overlay_reset = True
             except Exception as exc:
                 print(f"⚠️ 清空覆盖缓冲失败: {exc}")
-        if not overlay_reset:
+        # 无论是否有待提交覆盖，都清掉预览残留，避免旧预览回潮/挡住新点。
+        try:
+            self._reset_retake_overlay_state(notify_visualizer=True)
+        except Exception:
+            pass
+        if restore_snapshot and (not overlay_reset):
             try:
-                overlay_reset = bool(self._restore_selection_snapshot_if_pending(reason="manual-clear"))
+                overlay_reset = bool(self._restore_selection_snapshot_if_pending(reason=reason))
             except Exception:
                 overlay_reset = False
         try:
-            return bool(self.clear_retake_selection_range(start, end))
+            return bool(self.clear_retake_selection_range(start, end, fast=fast))
         except Exception as exc:
             print(f"⚠️ 重新捕获选区快照失败: {exc}")
             return False
@@ -36533,6 +37272,16 @@ class IntegratedRecordingInterface(QMainWindow):
 
     def _activate_retake_overlay(self, start: float, end: float, *, reset_buffers: bool = True) -> RetakeOverlayState:
         state = self._overlay_state()
+        # 安全兜底：进入选区重录即启用 overlay 预览绘制，避免“重录无细节点预览”。
+        try:
+            if not hasattr(self, '_retake_overlay_preview_prev_enabled') or getattr(self, '_retake_overlay_preview_prev_enabled', None) is None:
+                self._retake_overlay_preview_prev_enabled = bool(getattr(self, '_retake_overlay_preview_enabled', False))
+        except Exception:
+            pass
+        try:
+            self._retake_overlay_preview_enabled = True
+        except Exception:
+            pass
         if reset_buffers:
             state.clear()
             self._retake_overlay_preview_payload.clear()
@@ -36572,6 +37321,13 @@ class IntegratedRecordingInterface(QMainWindow):
             state.original_time_offset = float(getattr(viz, 'time_offset', 0.0)) if viz is not None else 0.0
         except Exception:
             state.original_time_offset = 0.0
+        # 关键兜底：某些入口可能只走 _activate_retake_overlay 而未显式打开 visualizer 侧开关。
+        # 若 visualizer 的 _retake_overlay_preview_enabled 为 False，则 activate_retake_overlay_preview 会直接拒绝激活，导致“选区内无细节点/线”。
+        try:
+            if viz is not None:
+                setattr(viz, '_retake_overlay_preview_enabled', True)
+        except Exception:
+            pass
         begin_cb = getattr(viz, 'activate_retake_overlay_preview', None) if viz is not None else None
         if callable(begin_cb):
             try:
@@ -36579,6 +37335,18 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
         state.phase = self._retake_phase()
+        # 倒计时阶段必须“消费但不记录”：仅在倒计时完成后才允许 overlay 写入。
+        # 这样可以避免倒计时期间因竞态/门控误判导致 overlay 虚拟时间提前推进，出现“选区5秒只录2秒就结束”。
+        try:
+            self._retake_overlay_accepting_input = False
+        except Exception:
+            pass
+        # 同时重置映射锚点，确保倒计时结束后从选区左界重新对齐。
+        try:
+            self._retake_overlay_wall_anchor = None
+            self._retake_overlay_time_anchor = None
+        except Exception:
+            pass
         return state
 
     def _retake_overlay_sample_rate(self) -> int:
@@ -36661,6 +37429,12 @@ class IntegratedRecordingInterface(QMainWindow):
         if pkt_wall is not None:
             try:
                 wall_val = float(pkt_wall)
+                # 自适配时间戳单位：有些管线会给出 ms/ns 时间戳。
+                # 若不归一化，会导致 delta 极大，选区(如 5s)瞬间跑完并触发 boundary stop。
+                if wall_val > 1e14:
+                    wall_val = wall_val / 1e9
+                elif wall_val > 1e11:
+                    wall_val = wall_val / 1000.0
                 anchor_wall = getattr(self, '_retake_overlay_wall_anchor', None)
                 anchor_time = getattr(self, '_retake_overlay_time_anchor', None)
                 if anchor_wall is None or anchor_time is None:
@@ -36695,6 +37469,15 @@ class IntegratedRecordingInterface(QMainWindow):
             if axis_time <= last_ts:
                 axis_time = float(min(state.end, last_ts + min_step))
         axis_time = float(min(state.end, max(state.start, axis_time)))
+        # 将映射后的“选区时间轴”写入专用字段（供 UI 在 overlay_consumed=True 时推进播放指针）。
+        # 关键：不要覆写 packet['timestamp']/packet['global_time']：
+        # - timestamp 是墙钟/采集时间，用于回退门控与丢帧判断
+        # - global_time 是主时间线，覆写会误伤 25-30s 等历史区间
+        try:
+            packet['_overlay_axis_time'] = axis_time
+            packet['_retake_time'] = axis_time
+        except Exception:
+            pass
         if pkt_wall is not None:
             try:
                 clone['_retake_wall_ts'] = float(pkt_wall)
@@ -36762,8 +37545,9 @@ class IntegratedRecordingInterface(QMainWindow):
         # 推送到预览缓冲，实时绘制覆盖线+细节点
         try:
             self._retake_overlay_preview_payload.append(clone)
-            # 强制一次刷新，确保折线与散点同步可见
-            self._flush_overlay_preview_throttled(force=True)
+            # 避免每个包都 force 绘制导致卡顿：首个包强制一次，其余走节流(≈50Hz)。
+            force_flush = bool(getattr(self, '_retake_overlay_last_visual_refresh', 0.0) <= 0.0)
+            self._flush_overlay_preview_throttled(force=force_flush)
         except Exception:
             pass
         try:
@@ -36814,6 +37598,26 @@ class IntegratedRecordingInterface(QMainWindow):
                 viz._retake_force_preserve_future = True
             except Exception:
                 pass
+            # 倒计时结束后，确保不再被“倒计时冻结”残留挡住播放指针推进。
+            # 注意：这里只改属性，不直接触发绘制（可能在音频线程调用）。
+            try:
+                viz._retake_countdown_active = False
+                viz._retake_countdown_block_add = False
+                viz._retake_countdown_freeze_time = None
+            except Exception:
+                pass
+            try:
+                viz._retake_playhead_freeze = None
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_manual_freeze_time'):
+                    delattr(viz, '_manual_freeze_time')
+            except Exception:
+                try:
+                    setattr(viz, '_manual_freeze_time', None)
+                except Exception:
+                    pass
         # 关闭任何残留的回退/可视化锁，避免新点被挡或被截尾
         try:
             for attr, val in (
@@ -36857,7 +37661,14 @@ class IntegratedRecordingInterface(QMainWindow):
             self._retake_session_notify_preview(1)
         except Exception:
             pass
-        self._mirror_overlay_pitch_live(clone)
+        # 若启用覆盖预览绘制，则不要把“回录区间(10-15s)”的新点镜像写回主时间线。
+        # 否则会触发一次“回退/清理未来点”的重逻辑，导致选区外点闪烁/消失并显著卡顿。
+        try:
+            preview_enabled = bool(getattr(self, '_retake_overlay_preview_enabled', True))
+        except Exception:
+            preview_enabled = True
+        if not preview_enabled:
+            self._mirror_overlay_pitch_live(clone)
         return True
 
     def _capture_overlay_audio_chunk(self, samples) -> bool:
@@ -36867,8 +37678,50 @@ class IntegratedRecordingInterface(QMainWindow):
             return False
         # 覆盖会话已激活：无论是否进入正式录制阶段，都要“消费”输入，
         # 否则倒计时/预卷期间会把麦克风数据继续写入主缓冲导致录音时长虚增。
-        if not self._retake_is_recording_phase():
-            return True
+        accepting = bool(getattr(self, '_retake_overlay_accepting_input', False))
+        if (not self._retake_is_recording_phase()) or (not accepting):
+            # 倒计时/预卷阶段：只消费，不写入 overlay，不推进虚拟时间。
+            # 兜底：若倒计时实际已结束但 phase 未切到 RECORDING，强制接管为 RECORDING，避免“倒计时后不出细节点/不自动停止”。
+            if self._retake_overlay_should_accept_post_countdown_packets():
+                try:
+                    active = getattr(self, '_retake_active_range', None)
+                    if active:
+                        s0 = float(active[0])
+                        self._retake_overlay_wall_anchor = None
+                        self._retake_overlay_time_anchor = None
+                        self._retake_overlay_virtual_time = s0
+                        try:
+                            state = getattr(self, '_retake_overlay_state', None)
+                            if state is not None:
+                                state.last_timestamp = s0
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    self._retake_set_phase(RetakePhase.RECORDING, status="recording-fallback")
+                except Exception:
+                    pass
+                try:
+                    self._retake_overlay_accepting_input = True
+                except Exception:
+                    pass
+                # 解除倒计时阻塞标志（Host + Visualizer），避免新点仍被 block_add 拦截。
+                try:
+                    self._retake_countdown_in_progress = False
+                    self._retake_countdown_pending_resume = False
+                except Exception:
+                    pass
+                try:
+                    viz = getattr(self, 'visualizer', None)
+                    if viz is not None:
+                        setattr(viz, '_retake_countdown_active', False)
+                        setattr(viz, '_retake_countdown_block_add', False)
+                except Exception:
+                    pass
+                accepting = True
+            else:
+                return True
         return self._append_overlay_audio_samples(samples)
 
     def _capture_overlay_pitch_packet(self, packet: Dict[str, Any]) -> bool:
@@ -36876,11 +37729,95 @@ class IntegratedRecordingInterface(QMainWindow):
             return False
         if not self._retake_overlay_active():
             return False
-        # 与音频一致：倒计时/预卷阶段也必须消费掉音高包，避免 UI 走常规绘制路径
-        # 把点写到选区之外（例如 24-29s）造成“选区外被影响”。
-        if not self._retake_is_recording_phase():
-            return True
+        # 与音频一致：倒计时/预卷阶段也必须“消费”音高包，避免 UI 走常规绘制路径
+        # 把点写到主时间线（例如 24-29s）造成“选区外被影响”。
+        accepting = bool(getattr(self, '_retake_overlay_accepting_input', False))
+        if (not self._retake_is_recording_phase()) or (not accepting):
+            # 倒计时/预卷阶段：只消费，不写入 overlay，不推进虚拟时间。
+            # 满足“3 秒准备期选区内保持空白”。
+            # 兜底：若倒计时已结束但 phase 没切换，强制允许 overlay 写入。
+            if self._retake_overlay_should_accept_post_countdown_packets():
+                try:
+                    active = getattr(self, '_retake_active_range', None)
+                    if active:
+                        s0 = float(active[0])
+                        self._retake_overlay_wall_anchor = None
+                        self._retake_overlay_time_anchor = None
+                        self._retake_overlay_virtual_time = s0
+                        try:
+                            state = getattr(self, '_retake_overlay_state', None)
+                            if state is not None:
+                                state.last_timestamp = s0
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    self._retake_set_phase(RetakePhase.RECORDING, status="recording-fallback")
+                except Exception:
+                    pass
+                try:
+                    self._retake_overlay_accepting_input = True
+                except Exception:
+                    pass
+                try:
+                    self._retake_countdown_in_progress = False
+                    self._retake_countdown_pending_resume = False
+                except Exception:
+                    pass
+                try:
+                    viz = getattr(self, 'visualizer', None)
+                    if viz is not None:
+                        setattr(viz, '_retake_countdown_active', False)
+                        setattr(viz, '_retake_countdown_block_add', False)
+                except Exception:
+                    pass
+                accepting = True
+            else:
+                return True
         return self._append_overlay_pitch_packet(packet)
+
+    def _retake_overlay_should_accept_post_countdown_packets(self) -> bool:
+        """兜底判断：倒计时已结束但 phase 仍未进入 RECORDING。
+
+        用于修复边界条件下倒计时 UI 结束了但 ctx.phase 仍停留在 COUNTDOWN，
+        导致 overlay 不追加点/线，从而出现“倒计时后仍不出细节点”。
+        """
+        try:
+            if not self._retake_overlay_active():
+                return False
+        except Exception:
+            return False
+        try:
+            if self._retake_is_recording_phase():
+                return False
+        except Exception:
+            pass
+        try:
+            # 若倒计时 QTimer 因 UI 卡顿未及时 tick，in_progress 标志可能残留。
+            # 这里以 deadline 为准：deadline 已过则允许接管为 RECORDING。
+            import time as _t
+            now = _t.time()
+            deadline = float(getattr(self, '_retake_countdown_deadline', 0.0) or 0.0)
+            if deadline > 0.0 and now >= deadline:
+                return True
+            if bool(getattr(self, '_retake_countdown_in_progress', False)):
+                return False
+            if bool(getattr(self, '_retake_countdown_pending_resume', False)):
+                return False
+        except Exception:
+            return False
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                if bool(getattr(viz, '_retake_countdown_active', False)) and bool(getattr(viz, '_retake_countdown_block_add', False)):
+                    return False
+            except Exception:
+                pass
+        return True
 
     def _mirror_overlay_pitch_live(self, packet: Dict[str, Any]) -> None:
         state = getattr(self, '_retake_overlay_state', None)
@@ -36924,8 +37861,46 @@ class IntegratedRecordingInterface(QMainWindow):
         payload = self._retake_overlay_preview_payload[:]
         self._retake_overlay_preview_payload.clear()
         self._retake_overlay_last_visual_refresh = now
+        # 重要：音频/分析线程可能直接调用到这里；Matplotlib/Qt 绘制必须在 GUI 线程执行。
+        # 否则会出现“倒计时结束后仍不出细节点/折线”，且异常常被 try/except 吞掉。
         try:
-            append_cb(payload)
+            from PyQt6.QtCore import QTimer
+        except Exception:
+            QTimer = None
+        def _deliver(packets):
+            try:
+                append_cb(packets)
+            except Exception:
+                pass
+        delivered = False
+        if QTimer is not None and viz is not None:
+            try:
+                # 投递到 viz 所在线程（GUI线程）执行。
+                QTimer.singleShot(0, viz, lambda packets=payload: _deliver(packets))
+                delivered = True
+            except Exception:
+                delivered = False
+        if not delivered:
+            try:
+                _deliver(payload)
+            except Exception:
+                pass
+        # 轻量诊断（默认关闭）：确认 payload 是否形成/是否投递
+        try:
+            df = getattr(viz, 'debug_flags', {}) if viz is not None else {}
+            if bool(getattr(df, 'get', lambda *_: False)('retake_visual_log', False)):
+                last = float(getattr(self, '_retake_overlay_last_visual_debug', 0.0) or 0.0)
+                if now - last >= 0.6:
+                    self._retake_overlay_last_visual_debug = now
+                    try:
+                        active = bool(getattr(viz, '_retake_overlay_preview_active', False)) if viz is not None else False
+                    except Exception:
+                        active = False
+                    try:
+                        rng = getattr(viz, '_retake_overlay_preview_range', None) if viz is not None else None
+                    except Exception:
+                        rng = None
+                    print(f"[RETAKE_VIS] overlay_flush packets={len(payload)} queued={delivered} active={active} range={rng}")
         except Exception:
             pass
 
@@ -37056,6 +38031,43 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._restore_selection_snapshot_if_pending(reason=f"session-{reason}")
             except Exception:
                 pass
+        # 恢复 overlay 预览开关到进入回录前状态（默认关闭，避免影响普通录制性能）。
+        try:
+            prev = getattr(self, '_retake_overlay_preview_prev_enabled', None)
+        except Exception:
+            prev = None
+        if prev is not None:
+            try:
+                self._retake_overlay_preview_enabled = bool(prev)
+            except Exception:
+                pass
+            try:
+                delattr(self, '_retake_overlay_preview_prev_enabled')
+            except Exception:
+                try:
+                    setattr(self, '_retake_overlay_preview_prev_enabled', None)
+                except Exception:
+                    pass
+
+        # 同步恢复 Visualizer 侧的 overlay 预览开关（若我们在重录期间强制启用了它）。
+        try:
+            viz_prev = getattr(self, '_retake_overlay_preview_prev_enabled_viz', None)
+        except Exception:
+            viz_prev = None
+        if viz_prev is not None:
+            try:
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None:
+                    setattr(viz, '_retake_overlay_preview_enabled', bool(viz_prev))
+            except Exception:
+                pass
+            try:
+                delattr(self, '_retake_overlay_preview_prev_enabled_viz')
+            except Exception:
+                try:
+                    setattr(self, '_retake_overlay_preview_prev_enabled_viz', None)
+                except Exception:
+                    pass
         if not committed and not discarded:
             try:
                 self._set_selection_preserve_mode(False)
@@ -37161,7 +38173,7 @@ class IntegratedRecordingInterface(QMainWindow):
         hist = getattr(self, 'pitch_history', None)
         if hist is None:
             from collections import deque
-            hist = deque(maxlen=1000)
+            hist = deque(maxlen=20000)
             self.pitch_history = hist
         appended = 0
         viz = getattr(self, 'visualizer', None) if notify_visualizer else None
@@ -37235,6 +38247,17 @@ class IntegratedRecordingInterface(QMainWindow):
         end_idx = target_end_idx
         original_audio = list(audio_buf[start_idx:end_idx])
         replacement = list(state.audio_samples)
+        # 关键修复：Python 切片赋值若 replacement 更短会“缩短” audio_buf，导致总时长回退、末尾(如 28-30s)音调线细节点消失。
+        # 这里强制把 replacement 补齐到选区长度（未录满部分补 0），确保时间轴长度不变。
+        try:
+            expected = max(0, int(end_idx - start_idx))
+        except Exception:
+            expected = 0
+        if expected > 0:
+            if len(replacement) < expected:
+                replacement = replacement + [0.0] * (expected - len(replacement))
+            elif len(replacement) > expected:
+                replacement = replacement[:expected]
         audio_buf[start_idx:end_idx] = replacement
         try:
             new_duration = len(audio_buf) / sr if sr > 0 else float(state.end)
@@ -37261,6 +38284,54 @@ class IntegratedRecordingInterface(QMainWindow):
             added = len(state.pitch_packets)
         else:
             added = self._apply_overlay_pitch_packets(state.pitch_packets, notify_visualizer=True)
+
+        # 若本次覆盖录制未到达选区右界（例如异常提前结束），恢复选区内未录到的原始音高点，避免出现“录了多久就缺多久/末尾缺点”。
+        try:
+            sr_float = float(sr) if sr else 0.0
+        except Exception:
+            sr_float = 0.0
+        try:
+            recorded_end = float(state.start)
+            # 音频覆盖的有效时长
+            if sr_float > 0.0 and state.audio_samples:
+                recorded_end = max(recorded_end, float(state.start) + (len(state.audio_samples) / sr_float))
+            # 音高包覆盖的最远时间
+            if state.pitch_packets:
+                mx = None
+                for pkt in state.pitch_packets:
+                    if not isinstance(pkt, dict):
+                        continue
+                    for key in ('_retake_time', 'global_time', 'timestamp'):
+                        if key not in pkt:
+                            continue
+                        try:
+                            val = float(pkt.get(key))
+                        except Exception:
+                            continue
+                        if mx is None or val > mx:
+                            mx = val
+                if mx is not None:
+                    recorded_end = max(recorded_end, float(mx))
+            recorded_end = float(min(float(state.end), max(float(state.start), recorded_end)))
+        except Exception:
+            recorded_end = float(state.end)
+        try:
+            if removed_entries and recorded_end < float(state.end) - 0.05:
+                keep_original = []
+                eps = 1e-6
+                for item in removed_entries:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        ts_val = float(item.get('timestamp', -1.0))
+                    except Exception:
+                        continue
+                    if ts_val >= recorded_end - eps:
+                        keep_original.append(dict(item))
+                if keep_original:
+                    self._apply_overlay_pitch_packets(keep_original, notify_visualizer=True)
+        except Exception:
+            pass
         pitch_backup: List[Dict[str, Any]] = []
         for pkt in removed_entries:
             if isinstance(pkt, dict):
@@ -37285,7 +38356,6 @@ class IntegratedRecordingInterface(QMainWindow):
         self._persist_retake_event('commit', start=state.start, end=state.end, take=take_id)
         self._reset_retake_overlay_state()
         self._retake_overlay_virtual_time = None
-        self._retake_tail_snapshot = None
         try:
             self._finalize_retake_session_context("overlay-commit", committed=True)
         except Exception:
@@ -37467,7 +38537,7 @@ class IntegratedRecordingInterface(QMainWindow):
         hist = getattr(self, 'pitch_history', None)
         if hist is None:
             from collections import deque
-            hist = deque(maxlen=1000)
+            hist = deque(maxlen=20000)
             self.pitch_history = hist
         seq = list(hist)
         insert_idx = int(entry.get('pitch_insert_idx', len(seq)))
@@ -37964,6 +39034,94 @@ class IntegratedRecordingInterface(QMainWindow):
         self._retake_countdown_pending_resume = False
         self._retake_manual_resume_required = False
         self._retake_set_phase(RetakePhase.RECORDING, status="recording")
+
+        # 倒计时阶段可能提前渲染了预览点：进入录制阶段后重置预览映射锚点，确保时间从选区起点重新对齐。
+        try:
+            self._retake_preview_wall_anchor = None
+            self._retake_preview_time_anchor = None
+        except Exception:
+            pass
+
+        # 关键修复：正式进入录制阶段时，必须从选区左界开始推进 overlay 虚拟时间。
+        # 否则一旦倒计时阶段因竞态提前写入 overlay（或锚点残留），会出现“选区5秒只录2秒就结束”。
+        try:
+            state = getattr(self, '_retake_overlay_state', None)
+            active = getattr(self, '_retake_active_range', None)
+            if state is not None and getattr(state, 'active', False) and active:
+                s0 = float(active[0])
+                # 严格从左界开始：重置映射锚点与虚拟时间
+                self._retake_overlay_wall_anchor = None
+                self._retake_overlay_time_anchor = None
+                self._retake_overlay_virtual_time = float(s0)
+                try:
+                    state.last_timestamp = float(s0)
+                except Exception:
+                    pass
+                # 若倒计时阶段意外写入过数据（历史问题），这里清空以保证倒计时“空白”语义
+                try:
+                    if getattr(state, 'audio_samples', None):
+                        state.audio_samples = []
+                except Exception:
+                    pass
+                try:
+                    if getattr(state, 'pitch_packets', None):
+                        state.pitch_packets = []
+                except Exception:
+                    pass
+                try:
+                    state.requires_commit = False
+                except Exception:
+                    pass
+                try:
+                    self._retake_overlay_preview_payload.clear()
+                except Exception:
+                    pass
+                # 只在倒计时完成后才允许 overlay 写入
+                try:
+                    self._retake_overlay_accepting_input = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 兜底：极端情况下 active_range/state 条件不满足会导致 accepting_input 未打开，
+        # 从而“倒计时结束后仍不出点”。此处只要 overlay 已激活就允许写入。
+        try:
+            state = getattr(self, '_retake_overlay_state', None)
+            if state is not None and getattr(state, 'active', False):
+                if not bool(getattr(self, '_retake_overlay_accepting_input', False)):
+                    self._retake_overlay_accepting_input = True
+        except Exception:
+            pass
+
+        # 进入正式录制阶段：确保 overlay 预览真正处于 active 且范围正确。
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                setattr(viz, '_retake_overlay_preview_enabled', True)
+            except Exception:
+                pass
+            try:
+                setattr(viz, '_cap_visible_time_enabled', False)
+                setattr(viz, '_cap_strict_lock', False)
+            except Exception:
+                pass
+            try:
+                active = getattr(self, '_retake_active_range', None)
+                if active:
+                    s0 = float(active[0]); e0 = float(active[1])
+                    begin_cb = getattr(viz, 'activate_retake_overlay_preview', None)
+                    if callable(begin_cb):
+                        begin_cb(s0, e0)
+                    try:
+                        viz._max_visible_time = max(float(getattr(viz, '_max_visible_time', 0.0)), e0 + 0.25)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         # 录制开始前解除所有门控/丢弃阈值，确保新点畅通写入。
         try:
             self._retake_countdown_block_add = False
@@ -38114,6 +39272,12 @@ class IntegratedRecordingInterface(QMainWindow):
             or getattr(self, '_pending_retake_resume', False)
             or getattr(self, '_retake_countdown_pending_resume', False)
         )
+        # 选区重录（overlay）期间必须强制保留未来点：否则会触发 trim_after(tgt)
+        # 导致 25-30s 在“暂停后滚动重建”时消失。
+        try:
+            preserve_future = bool(preserve_future or self._retake_overlay_active() or getattr(self, '_retake_active_range', None))
+        except Exception:
+            pass
         progress_handle: Optional[IntegratedRecordingInterface._CleanupProgressHandle] = None
         cleanup_guard_hint = 0.45
         try:
@@ -38358,7 +39522,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
         finally:
             try:
-                self._leave_retake_cleanup(progress_handle, guard_extra=max(0.3, cleanup_guard_hint * 0.6))
+                self._leave_retake_cleanup(progress_handle, guard_extra=max(0.35, cleanup_guard_hint * 0.5))
             except Exception:
                 pass
 
@@ -38369,13 +39533,6 @@ class IntegratedRecordingInterface(QMainWindow):
             prev_paused = bool(getattr(self, '_backing_paused', False))
             state_changed = (paused_flag != prev_paused)
             self._backing_paused = paused_flag
-
-            if paused_flag:
-                try:
-                    if getattr(self, '_pending_retake_resume', False) or getattr(self, '_retake_countdown_pending_resume', False):
-                        self._require_manual_retake_resume("backing-paused")
-                except Exception:
-                    pass
 
             if paused_flag and state_changed:
                 try:
@@ -40115,6 +41272,65 @@ class IntegratedRecordingInterface(QMainWindow):
                     # 重录覆盖接管时，跳过常规绘制（覆盖层会用正确的 10-15s 时间写入并绘制）
                     if overlay_consumed:
                         self._vis_last_draw_wall = now_wall
+                        # 关键修复：overlay 接管时依旧需要推进播放指针/时间显示，
+                        # 否则用户会看到时间轴停在选区左框线处直到本次重录结束。
+                        try:
+                            viz = getattr(self, 'visualizer', None)
+                        except Exception:
+                            viz = None
+                        if viz is not None:
+                            try:
+                                # overlay_consumed 的包不应依赖 global_time/timestamp（它们代表主时间线/墙钟）。
+                                # 用覆盖层映射时间推进播放指针，避免误伤回退门控与历史点。
+                                t = pitch_data.get('_overlay_axis_time')
+                                if t is None:
+                                    t = pitch_data.get('_retake_time')
+                                t_val = float(t) if t is not None else None
+                            except Exception:
+                                t_val = None
+                            if t_val is not None:
+                                try:
+                                    last = float(getattr(self, '_retake_overlay_follow_last_wall', 0.0) or 0.0)
+                                except Exception:
+                                    last = 0.0
+                                # 节流：仅推进指针/辅助线，不做重型重绘
+                                if (now_wall - last) >= max(0.03, float(getattr(self, '_vis_min_interval_sec', 0.018))):
+                                    try:
+                                        self._retake_overlay_follow_last_wall = now_wall
+                                    except Exception:
+                                        pass
+                                    try:
+                                        viz.current_global_time = float(max(0.0, t_val))
+                                    except Exception:
+                                        pass
+                                    # 清理可能残留的冻结标志，避免 update_time_axis 一直走 freeze 分支
+                                    try:
+                                        viz._retake_countdown_active = False
+                                        viz._retake_countdown_block_add = False
+                                        viz._retake_countdown_freeze_time = None
+                                    except Exception:
+                                        pass
+                                    try:
+                                        viz._retake_playhead_freeze = None
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if hasattr(viz, '_manual_freeze_time'):
+                                            delattr(viz, '_manual_freeze_time')
+                                    except Exception:
+                                        try:
+                                            setattr(viz, '_manual_freeze_time', None)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        viz.update_guides()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if hasattr(viz, 'canvas') and viz.canvas is not None:
+                                            viz.canvas.draw_idle()
+                                    except Exception:
+                                        pass
                         return
                     base_payload = dict(pitch_data)
                     # 可选：使用SciPy作轻量平滑以减少细抖动（仅影响显示）
@@ -40405,6 +41621,13 @@ class IntegratedRecordingInterface(QMainWindow):
     def update_status_display(self):
         """更新状态显示"""
         try:
+            # 处理选区重录右界触发（必须在 UI 线程）
+            try:
+                if hasattr(self, '_process_pending_retake_boundary_latch'):
+                    self._process_pending_retake_boundary_latch()
+            except Exception:
+                pass
+
             # 更新录音时长
             if self.is_recording:
                 try:
@@ -40441,6 +41664,18 @@ class IntegratedRecordingInterface(QMainWindow):
         录音时长、伴奏/播放进度条等显示统一以绘制界面时间轴为准（visualizer.current_global_time）。
         """
         t = None
+
+        # 0) 选区重录：保留全局时间线（录音时长应保持在开始重录前的基线）
+        try:
+            if bool(getattr(self, '_retake_preserve_timeline', False)):
+                preserved = getattr(self, '_retake_preserved_recording_duration', None)
+                if preserved is not None:
+                    try:
+                        return float(max(0.0, float(preserved)))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         # 1) 优先取可视化器时间轴
         try:
@@ -41361,29 +42596,26 @@ class _RetakeControlWindow(QDialog):
         if not active_session:
             self.status_label.setText("当前未在录音或分析状态，无法重录。")
             return
-        # 若全局处于暂停状态，自动恢复，确保倒计时立即启动
-        session_paused = bool(getattr(main, 'is_paused', False))
-        manual_resume_required = session_paused
-        if manual_resume_required:
-            try:
-                main._require_manual_retake_resume("retake-start-paused")
-            except Exception:
-                pass
-        else:
-            try:
-                main._acknowledge_manual_retake_resume()
-            except Exception:
-                pass
+        # 若当前暂停，点击“开始重录”应直接进入下一轮重录：先自动恢复录音，再启动倒计时。
+        # 否则用户会被迫多点一次“继续”，也会造成“只能点一次”的错觉。
         try:
-            main._retake_should_auto_resume = not manual_resume_required
+            if bool(getattr(main, 'is_paused', False)):
+                main.pause_recording()  # toggle -> resume
         except Exception:
             pass
-        if not manual_resume_required:
-            try:
-                if hasattr(main, '_set_backing_paused'):
-                    main._set_backing_paused(False)
-            except Exception:
-                pass
+        try:
+            main._acknowledge_manual_retake_resume()
+        except Exception:
+            pass
+        try:
+            main._retake_should_auto_resume = True
+        except Exception:
+            pass
+        try:
+            if hasattr(main, '_set_backing_paused'):
+                main._set_backing_paused(False)
+        except Exception:
+            pass
         # 续录锚点：优先使用真实人声缓冲时长，避免 backing/锁定时间轴导致 recording_duration 虚高。
         try:
             true_dur = float(getattr(main, '_retake_resume_anchor_sec')(end))
@@ -41431,10 +42663,65 @@ class _RetakeControlWindow(QDialog):
             except Exception:
                 pass
         try:
+            # 点击“开始重录”时，如用户尚未清除选区，则自动先执行清除选区。
+            # 这样选区内会先变为空白，再实时绘制新细节点；也符合“开始重录会先执行清除选区”的预期。
+            try:
+                cleared = False
+                handler = getattr(main, '_handle_retake_clear_request', None)
+                if callable(handler):
+                    cleared = bool(handler(float(start), float(end), restore_snapshot=False, fast=True, reason="auto-start"))
+                elif hasattr(main, 'clear_retake_selection_range'):
+                    cleared = bool(main.clear_retake_selection_range(float(start), float(end), fast=True))
+                if not cleared:
+                    self.status_label.setText("清除选区失败，无法开始重录。")
+                    return
+            except Exception:
+                # 若清除失败则不继续，避免旧点遮挡/回潮导致“选区内不识别”错觉
+                self.status_label.setText("清除选区失败，无法开始重录。")
+                return
+
             # 若用户此前“清除选区”采用了软遮罩，必须在开始重录前转换为硬清除，
             # 否则新写入的细节点也可能被遮罩导致“倒计时后不绘制”。
             try:
-                main._prepare_cleared_selection_for_new_retake(float(start), float(end))
+                main._prepare_cleared_selection_for_new_retake(float(start), float(end), fast=True)
+            except Exception:
+                pass
+            # 启用回录覆盖的独立预览绘制（线+细节点），避免把 10-15s 的新点写回主时间线
+            # 触发“回退/清理未来点”导致选区外消失与卡顿。
+            try:
+                if not hasattr(main, '_retake_overlay_preview_prev_enabled') or getattr(main, '_retake_overlay_preview_prev_enabled', None) is None:
+                    main._retake_overlay_preview_prev_enabled = bool(getattr(main, '_retake_overlay_preview_enabled', False))
+            except Exception:
+                try:
+                    main._retake_overlay_preview_prev_enabled = bool(getattr(main, '_retake_overlay_preview_enabled', False))
+                except Exception:
+                    pass
+            try:
+                main._retake_overlay_preview_enabled = True
+            except Exception:
+                pass
+
+            # Visualizer 侧也需要显式启用 overlay preview，否则预览绘制可能被直接短路或被 cap/锁裁剪。
+            try:
+                if not hasattr(main, '_retake_overlay_preview_prev_enabled_viz') or getattr(main, '_retake_overlay_preview_prev_enabled_viz', None) is None:
+                    main._retake_overlay_preview_prev_enabled_viz = bool(getattr(viz, '_retake_overlay_preview_enabled', True))
+            except Exception:
+                try:
+                    main._retake_overlay_preview_prev_enabled_viz = bool(getattr(viz, '_retake_overlay_preview_enabled', True))
+                except Exception:
+                    pass
+            try:
+                setattr(viz, '_retake_overlay_preview_enabled', True)
+            except Exception:
+                pass
+            # 解锁可视上限，避免新预览点被严格 cap 立刻裁掉
+            try:
+                setattr(viz, '_cap_visible_time_enabled', False)
+                setattr(viz, '_cap_strict_lock', False)
+                try:
+                    viz._max_visible_time = max(float(getattr(viz, '_max_visible_time', 0.0)), float(end) + 0.25)
+                except Exception:
+                    pass
             except Exception:
                 pass
             main._activate_retake_overlay(start, end)
@@ -41470,15 +42757,24 @@ class _RetakeControlWindow(QDialog):
             try:
                 countdown_active = bool(getattr(main, '_retake_countdown_in_progress', False))
                 pending_resume = bool(getattr(main, '_retake_countdown_pending_resume', False))
-                auto_resume = bool(getattr(main, '_retake_should_auto_resume', True))
-                if not countdown_active and pending_resume and auto_resume:
-                    main._process_pending_retake_countdown_on_resume()
+                # 若由于 pause/backing 标记导致倒计时被挂起，这里强制启动一次，
+                # 避免一直停留在 COUNTDOWN 而 overlay 点从未被真正写入。
+                if (not countdown_active) and pending_resume:
+                    try:
+                        main._retake_manual_resume_required = False
+                    except Exception:
+                        pass
+                    try:
+                        main._retake_should_auto_resume = True
+                    except Exception:
+                        pass
+                    try:
+                        main._process_pending_retake_countdown_on_resume()
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            if manual_resume_required:
-                self.status_label.setText(f"已进入覆盖录制准备，起点 {start:.2f}s。点击“继续”后开始倒计时。")
-            else:
-                self.status_label.setText(f"已进入覆盖录制准备，起点 {start:.2f}s。")
+            self.status_label.setText(f"已进入覆盖录制准备，起点 {start:.2f}s。")
             try:
                 viz.set_retake_range(
                     start,
