@@ -23520,7 +23520,15 @@ class ECGStylePitchVisualizer(QWidget):
                 mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
             except Exception:
                 mode = "普通模式"
-            if mode == "普通模式":
+            try:
+                retake_active = bool(
+                    getattr(self, 'retake_selection_active', False)
+                    or getattr(self, '_retake_overlay_preview_active', False)
+                    or getattr(self, '_retake_countdown_active', False)
+                )
+            except Exception:
+                retake_active = False
+            if mode == "普通模式" and not retake_active:
                 return
             # 录音停止后：使用分段散点高保真显示，不再使用批量集合
             if not getattr(self, 'is_recording_active', False):
@@ -23617,10 +23625,22 @@ class ECGStylePitchVisualizer(QWidget):
                 # 录音态批量点作背景，保持较高可见度（略提亮，保持白色）
                 self._batched_points.set_alpha(0.92 if not preserve_future else 0.90)
                 self._batched_points.set_zorder(14)
+                # 缓存上一帧细节点，供倒计时期间稳定显示
+                try:
+                    self._batched_points_last_offsets = arr.copy()
+                    self._batched_points_last_sizes = s_val_global
+                except Exception:
+                    pass
             else:
                 # 倒计时/选区保留未来点期间，保留上一帧，避免细节点闪烁
                 if preserve_future:
                     try:
+                        cached = getattr(self, '_batched_points_last_offsets', None)
+                        if cached is not None:
+                            self._batched_points.set_offsets(cached)
+                            sz = float(getattr(self, '_batched_points_last_sizes', 0.0) or 0.0)
+                            if sz > 0.0:
+                                self._batched_points.set_sizes([sz] * len(cached))
                         self._batched_points.set_visible(True)
                         self._batched_points.set_alpha(0.90)
                         self._batched_points.set_zorder(14)
@@ -23691,7 +23711,8 @@ class ECGStylePitchVisualizer(QWidget):
                         try:
                             _cgx = float(getattr(self, 'current_global_time', 0.0))
                             _active = bool(getattr(self, 'is_recording_active', False) or getattr(self, 'is_recording', False) or getattr(self, 'is_analyzing', False))
-                            if _active and (_cgx - _ph_x) > 0.20:
+                            _lb_mode = bool(getattr(self, 'listenback_enabled', False) and getattr(self, 'selection_mode', None) == 'listenback')
+                            if _lb_mode and _active and (_cgx - _ph_x) > 0.20:
                                 xlim = self.ax.get_xlim() if hasattr(self, 'ax') else (0.0, 0.0)
                                 x0, x1 = float(xlim[0]), float(xlim[1])
                                 _newx = max(x0, min(x1, _cgx))
@@ -26469,6 +26490,15 @@ class ECGStylePitchVisualizer(QWidget):
         # 若在 seek / trim 后的强制执行窗口内，先对所有现有对象执行一次 cap 过滤
         try:
             if getattr(self, '_cap_visible_time_enabled', False):
+                try:
+                    if getattr(self, '_retake_countdown_active', False) and (
+                        getattr(self, '_retake_countdown_preserve_future', False)
+                        or getattr(self, '_retake_force_preserve_future', False)
+                    ):
+                        raise RuntimeError("skip_cap_enforce_during_countdown")
+                except Exception as _skip_cap:
+                    if str(_skip_cap) == "skip_cap_enforce_during_countdown":
+                        raise
                 import time as _t
                 now_cap = _t.time()
                 enforce = False
@@ -26899,7 +26929,15 @@ class ECGStylePitchVisualizer(QWidget):
                             _mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
                         except Exception:
                             _mode = "普通模式"
-                        if _mode == "普通模式":
+                        try:
+                            retake_active = bool(
+                                getattr(self, 'retake_selection_active', False)
+                                or getattr(self, '_retake_overlay_preview_active', False)
+                                or getattr(self, '_retake_countdown_active', False)
+                            )
+                        except Exception:
+                            retake_active = False
+                        if _mode == "普通模式" and not retake_active:
                             # 普通模式：确保隐藏任何批量/兜底散点
                             try:
                                 if hasattr(self, '_batched_points') and self._batched_points is not None:
@@ -27005,6 +27043,12 @@ class ECGStylePitchVisualizer(QWidget):
                                         s_val_global = _calc_marker_size()
                                         self._batched_points.set_offsets(arr)
                                         self._batched_points.set_sizes([s_val_global] * len(arr))
+                                        # 记录上一帧细节点用于倒计时稳定显示
+                                        try:
+                                            self._batched_points_last_offsets = arr.copy()
+                                            self._batched_points_last_sizes = s_val_global
+                                        except Exception:
+                                            pass
                                         # 跳转后短时稍微提高批量点亮度，确保“先有点可见”
                                         try:
                                             import time as _t
@@ -27028,6 +27072,12 @@ class ECGStylePitchVisualizer(QWidget):
                                             self._batched_points.set_alpha((0.22 if pts_boost else 0.14) if getattr(self, 'is_recording_active', False) else 0.0)
                                         else:
                                             try:
+                                                cached = getattr(self, '_batched_points_last_offsets', None)
+                                                if cached is not None:
+                                                    self._batched_points.set_offsets(cached)
+                                                    sz = float(getattr(self, '_batched_points_last_sizes', 0.0) or 0.0)
+                                                    if sz > 0.0:
+                                                        self._batched_points.set_sizes([sz] * len(cached))
                                                 self._batched_points.set_alpha(0.90)
                                                 self._batched_points.set_visible(True)
                                                 self._batched_points.set_zorder(14)
@@ -43566,6 +43616,22 @@ class _RetakeControlWindow(QDialog):
                 )
             try:
                 _apply_range()
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, '_ensure_playhead'):
+                    viz._ensure_playhead()
+                if hasattr(viz, '_lb_playhead') and viz._lb_playhead is not None:
+                    xL = float(getattr(viz, 'sel_start', start))
+                    viz._lb_playhead.set_xdata([xL, xL])
+                    viz._lb_playhead.set_ydata([0.0, 1.0])
+                    viz._lb_playhead.set_visible(True)
+                    viz._lb_playhead.set_zorder(148)
+                try:
+                    viz._lb_user_moved_playhead = False
+                    viz._lb_resume_abs_start = None
+                except Exception:
+                    pass
             except Exception:
                 pass
             if not getattr(viz, 'retake_selection_active', False):
