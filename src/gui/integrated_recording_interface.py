@@ -13154,7 +13154,7 @@ class ECGStylePitchVisualizer(QWidget):
         if line is None:
             lw = max(0.8, float(getattr(self, 'current_linewidth', 1.0)))
             line, = ax.plot([], [], color=self._retake_overlay_preview_color(), linewidth=lw,
-                              alpha=0.95, zorder=160, solid_capstyle='round')
+                              alpha=float(getattr(self, '_stable_line_alpha', 0.85)), zorder=13, solid_capstyle='round')
             line.set_visible(False)
             self._retake_overlay_preview_line = line
         scatter = getattr(self, '_retake_overlay_preview_scatter', None)
@@ -13169,8 +13169,9 @@ class ECGStylePitchVisualizer(QWidget):
             scatter = None
             self._retake_overlay_preview_scatter = None
         if scatter is None:
-            scatter = ax.scatter([], [], s=self._retake_overlay_point_size(), color=self._retake_overlay_preview_color(),
-                                 alpha=0.92, edgecolors='none', linewidths=0, zorder=162)
+            detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
+            scatter = ax.scatter([], [], s=self._retake_overlay_point_size(), color=detail_rgb,
+                                 alpha=0.98, edgecolors='none', linewidths=0, zorder=14)
             scatter.set_visible(False)
             self._retake_overlay_preview_scatter = scatter
 
@@ -13205,6 +13206,11 @@ class ECGStylePitchVisualizer(QWidget):
         self._retake_overlay_preview_range = (start, end)
         self._retake_overlay_preview_points = []
         self._retake_overlay_preview_last_draw = 0.0
+        try:
+            self._retake_overlay_last_point_time = None
+            self._retake_overlay_last_point_y = None
+        except Exception:
+            pass
         self._ensure_overlay_preview_artists()
         self._update_overlay_preview_artists()
 
@@ -13219,6 +13225,11 @@ class ECGStylePitchVisualizer(QWidget):
         self._retake_overlay_preview_points = []
         self._retake_overlay_preview_range = (0.0, 0.0)
         self._retake_overlay_preview_last_draw = 0.0
+        try:
+            self._retake_overlay_last_point_time = None
+            self._retake_overlay_last_point_y = None
+        except Exception:
+            pass
         self._discard_overlay_preview_artists()
         canvas = getattr(self, 'canvas', None)
         if canvas is not None:
@@ -13256,7 +13267,7 @@ class ECGStylePitchVisualizer(QWidget):
                 candidate = float(packet[key])
             except Exception:
                 continue
-            if key == 'pitch' and candidate > 20.0:
+            if key in ('pitch', 'pitch_value') and candidate > 20.0:
                 y_val = self._freq_to_axis_y(candidate)
             else:
                 y_val = candidate
@@ -13305,13 +13316,15 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _retake_overlay_point_size(self) -> float:
         try:
+            base_w = float(getattr(self, 'current_linewidth', 0.6))
+        except Exception:
+            base_w = 0.6
+        try:
             zoom = float(getattr(self, 'zoom_level', 1.0))
         except Exception:
             zoom = 1.0
-        base = 12.0
-        if zoom > 1.0:
-            base *= min(1.8, zoom)
-        return max(8.0, base)
+        diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+        return float(diameter ** 2)
 
     def render_retake_overlay_points(self, packets: Union[List[Dict[str, Any]], Dict[str, Any]]):
         if not getattr(self, '_retake_overlay_preview_enabled', True):
@@ -13352,6 +13365,13 @@ class ECGStylePitchVisualizer(QWidget):
         cap = int(self._retake_overlay_preview_cap or 0) or 2400
         if len(self._retake_overlay_preview_points) > cap:
             self._retake_overlay_preview_points = self._retake_overlay_preview_points[-cap:]
+        try:
+            if self._retake_overlay_preview_points:
+                last_t, last_y, _c = self._retake_overlay_preview_points[-1]
+                self._retake_overlay_last_point_time = float(last_t)
+                self._retake_overlay_last_point_y = float(last_y)
+        except Exception:
+            pass
         self._update_overlay_preview_artists()
 
     def _update_overlay_preview_artists(self) -> None:
@@ -13390,9 +13410,9 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 line.set_data(times, pitches)
                 line.set_color(self._retake_overlay_preview_color())
-                line.set_alpha(0.95)
+                line.set_alpha(float(getattr(self, '_stable_line_alpha', 0.85)))
                 line.set_visible(True)
-                line.set_zorder(160)
+                line.set_zorder(13)
             except Exception:
                 pass
         if scatter is not None:
@@ -13400,16 +13420,12 @@ class ECGStylePitchVisualizer(QWidget):
                 offsets = np.column_stack((times, pitches))
                 scatter.set_offsets(offsets)
                 scatter.set_sizes(np.full(len(points), self._retake_overlay_point_size(), dtype=float))
-                base_rgba = self._retake_overlay_base_rgba()
-                r, g, b, _a = base_rgba
-                colors = []
-                for strength in strengths:
-                    s = max(0.15, min(1.0, strength))
-                    colors.append((r, g, b, min(1.0, 0.45 + 0.45 * s)))
-                scatter.set_facecolors(colors)
+                detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
+                scatter.set_color(detail_rgb)
+                scatter.set_alpha(0.98)
                 scatter.set_linewidths(0.0)
                 scatter.set_visible(True)
-                scatter.set_zorder(162)
+                scatter.set_zorder(14)
             except Exception:
                 pass
         canvas = getattr(self, 'canvas', None)
@@ -14761,6 +14777,11 @@ class ECGStylePitchVisualizer(QWidget):
             return False
         try:
             self._refresh_time_bins()
+        except Exception:
+            pass
+        try:
+            last_t = self._pitch_store.last_time()
+            self._last_added_time = float(last_t) if last_t is not None else -1.0
         except Exception:
             pass
         try:
@@ -16255,8 +16276,101 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
 
+        # 选区重录期间：锁定视窗到选区范围，避免自动跟随跳回录音末端导致“点消失”
+        overlay_active = False
+        try:
+            overlay_active = bool(getattr(self, '_retake_overlay_preview_active', False) or getattr(self, 'retake_selection_active', False))
+        except Exception:
+            overlay_active = False
+        if overlay_active:
+            try:
+                rng = getattr(self, '_retake_overlay_preview_range', None)
+            except Exception:
+                rng = None
+            if not rng or len(rng) < 2:
+                try:
+                    rng = self._get_active_retake_range()
+                except Exception:
+                    rng = None
+            if rng and len(rng) >= 2:
+                try:
+                    s0 = float(rng[0]); e0 = float(rng[1])
+                    if e0 < s0:
+                        s0, e0 = e0, s0
+                except Exception:
+                    s0, e0 = None, None
+                if s0 is not None and e0 is not None and (e0 > s0 + 1e-6):
+                    try:
+                        win = float(getattr(self, 'time_window', 16.0))
+                    except Exception:
+                        win = 16.0
+                    if win <= 1e-6:
+                        win = 16.0
+                    try:
+                        max_hist = float(getattr(self, 'max_history_time', max(e0, win)))
+                    except Exception:
+                        max_hist = max(e0, win)
+                    try:
+                        tgt = getattr(self, '_retake_overlay_last_point_time', None)
+                        if tgt is None:
+                            tgt = getattr(self, '_retake_overlay_virtual_time', None)
+                        if tgt is None:
+                            tgt = (s0 + e0) * 0.5
+                        tgt = float(tgt)
+                    except Exception:
+                        tgt = (s0 + e0) * 0.5
+                    # 以窗口宽度锁定，并保证覆盖选区
+                    if (e0 - s0) < win:
+                        lock_start = max(0.0, tgt - 0.5 * win)
+                        lock_end = lock_start + win
+                        if lock_end < e0:
+                            lock_start += (e0 - lock_end)
+                            lock_end = e0
+                        if lock_start > s0:
+                            lock_start = max(0.0, s0)
+                            lock_end = lock_start + win
+                        if lock_end > max_hist:
+                            lock_end = max_hist
+                            lock_start = max(0.0, lock_end - win)
+                    else:
+                        # 选区较宽：保持当前窗口宽度，平移保证覆盖
+                        try:
+                            cur_start = float(getattr(self, 'time_offset', 0.0))
+                        except Exception:
+                            cur_start = s0
+                        cur_end = cur_start + win
+                        if s0 < cur_start:
+                            shift = cur_start - s0
+                            cur_start -= shift
+                            cur_end -= shift
+                        if e0 > cur_end:
+                            shift = e0 - cur_end
+                            cur_start += shift
+                            cur_end += shift
+                        if cur_start < 0.0:
+                            cur_end -= cur_start
+                            cur_start = 0.0
+                        if cur_end > max_hist:
+                            overflow = cur_end - max_hist
+                            cur_start = max(0.0, cur_start - overflow)
+                            cur_end = max_hist
+                        lock_start, lock_end = cur_start, cur_end
+                    self._retake_axis_lock = (lock_start, lock_end)
+                    self._retake_countdown_locked_xlim = self._retake_axis_lock
+                    self._smoothed_xlim = self._retake_axis_lock
+                    try:
+                        self.time_offset = float(lock_start)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, 'ax') and self.ax is not None:
+                            self.ax.set_xlim(lock_start, lock_end)
+                    except Exception:
+                        pass
         # 是否处于手动滚动冻结期（2秒内不自动改写 time_offset）
         manual_freeze = (now_ts - getattr(self, '_last_manual_scroll_time', 0)) < 2.0
+        if overlay_active:
+            manual_freeze = True
         if countdown_freeze:
             manual_freeze = True
         pinned_origin = bool(getattr(self, '_backing_axis_origin_pinned', False))
@@ -17699,6 +17813,8 @@ class ECGStylePitchVisualizer(QWidget):
         saved_segment_lines = []
         saved_segment_points = []
         saved_head_points_scatter = None
+        saved_overlay_preview_line = None
+        saved_overlay_preview_scatter = None
 
         try:
             if hasattr(self, '_segment_lines') and self._segment_lines:
@@ -17726,6 +17842,19 @@ class ECGStylePitchVisualizer(QWidget):
             if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
                 if self._head_points_scatter in self.ax.collections:
                     saved_head_points_scatter = self._head_points_scatter
+            # 回录覆盖预览：保留线条与细节点，避免清轴后“闪现/消失”
+            try:
+                line = getattr(self, '_retake_overlay_preview_line', None)
+                if line is not None and line in self.ax.lines:
+                    saved_overlay_preview_line = line
+            except Exception:
+                pass
+            try:
+                sc = getattr(self, '_retake_overlay_preview_scatter', None)
+                if sc is not None and sc in self.ax.collections:
+                    saved_overlay_preview_scatter = sc
+            except Exception:
+                pass
             # 临时叠加线：直接移除并清空，杜绝同窗双线与跨窗连线
             if hasattr(self, '_provisional_line') and self._provisional_line is not None:
                 try:
@@ -17815,6 +17944,45 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             except Exception:
                 pass
+
+        # 恢复回录覆盖预览线与散点，避免选区内线条闪烁/丢失
+        if saved_overlay_preview_line is not None:
+            try:
+                if getattr(saved_overlay_preview_line, 'axes', None) is None:
+                    self.ax.add_line(saved_overlay_preview_line)
+                self._retake_overlay_preview_line = saved_overlay_preview_line
+                try:
+                    saved_overlay_preview_line.set_visible(True)
+                    saved_overlay_preview_line.set_zorder(160)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if saved_overlay_preview_scatter is not None:
+            try:
+                if saved_overlay_preview_scatter not in self.ax.collections:
+                    self.ax.add_collection(saved_overlay_preview_scatter)
+                self._retake_overlay_preview_scatter = saved_overlay_preview_scatter
+                try:
+                    saved_overlay_preview_scatter.set_visible(True)
+                    saved_overlay_preview_scatter.set_zorder(162)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        # 覆盖预览激活时：确保清轴后重新挂载/更新 overlay 预览图元
+        try:
+            if getattr(self, '_retake_overlay_preview_active', False):
+                try:
+                    self._ensure_overlay_preview_artists()
+                except Exception:
+                    pass
+                try:
+                    self._update_overlay_preview_artists()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def setup_ecg_grid(self, create_pitch_line: bool = True):
         """设置心电图式网格（智能标注）
@@ -23697,8 +23865,14 @@ class ECGStylePitchVisualizer(QWidget):
             #   - >8s 且自动跟随：将视觉位置锁定在图表像素中心，避免因 xlim 微抖导致的“左右晃动”
             time_start, time_end = self.ax.get_xlim() if hasattr(self, 'ax') else (self.time_offset, self.time_offset + self.time_window)
             cur_t = getattr(self, 'current_global_time', 0.0)
+            overlay_active = False
+            try:
+                overlay_active = bool(getattr(self, '_retake_overlay_preview_active', False))
+            except Exception:
+                overlay_active = False
             want_center = (cur_t > getattr(self, 'center_display_time', 8.0) and
-                           getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True))
+                           getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
+                           (not overlay_active))
             # 计算目标 x（数据坐标）
             # 优先：如果存在“播放指针”(_lb_playhead)且可见，则以其 x 作为目标；
             # 同时在录音/分析活跃时，如检测到其明显落后 current_global_time，则立刻追齐
@@ -23724,7 +23898,26 @@ class ECGStylePitchVisualizer(QWidget):
                             pass
             except Exception:
                 _ph_x = None
-            if _ph_x is not None:
+            if overlay_active:
+                v_target = None
+                try:
+                    v_target = getattr(self, '_retake_overlay_last_point_time', None)
+                    if v_target is not None:
+                        v_target = float(v_target)
+                except Exception:
+                    v_target = None
+                if v_target is None:
+                    try:
+                        v_target = float(getattr(self, '_retake_overlay_virtual_time', 0.0))
+                    except Exception:
+                        v_target = None
+                if v_target is None:
+                    try:
+                        v_target = float(getattr(self, '_retake_overlay_preview_range', (time_start, time_end))[0])
+                    except Exception:
+                        v_target = time_start
+                v_target = min(max(time_start, v_target), time_end)
+            elif _ph_x is not None:
                 v_target = min(max(time_start, _ph_x), time_end)
             elif want_center:
                 # 优先用像素中心反变换得到的数据坐标，确保辅助线始终位于图表正中像素
@@ -23786,7 +23979,10 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 横向：自适应平滑的目标 y（提灵敏，降抖动）
             try:
-                h_target = float(self.last_active_pitch_y)
+                if overlay_active and getattr(self, '_retake_overlay_last_point_y', None) is not None:
+                    h_target = float(getattr(self, '_retake_overlay_last_point_y'))
+                else:
+                    h_target = float(self.last_active_pitch_y)
             except Exception:
                 h_target = float(getattr(self, 'current_pitch_y', self.y_view_center))
             try:
@@ -25060,6 +25256,70 @@ class ECGStylePitchVisualizer(QWidget):
             self._retake_countdown_preserve_future = True
         except Exception:
             pass
+        try:
+            self._retake_freeze_points_during_countdown = True
+        except Exception:
+            pass
+        # 倒计时开始前缓存当前可视细节点，避免准备期闪烁/丢失
+        try:
+            import time as _t
+            self._force_points_visible_until = max(float(getattr(self, '_force_points_visible_until', 0.0)), _t.time() + max(0.2, span + 0.2))
+        except Exception:
+            pass
+        try:
+            cached = None
+            cached_size = None
+            if hasattr(self, '_batched_points') and self._batched_points is not None:
+                try:
+                    offs = self._batched_points.get_offsets()
+                except Exception:
+                    offs = None
+                if offs is not None:
+                    try:
+                        import numpy as _np
+                        arr = _np.asarray(offs, dtype=float)
+                        if arr.size > 0 and arr.shape[1] >= 2:
+                            cached = arr.copy()
+                    except Exception:
+                        try:
+                            offs_list = list(offs)
+                            if offs_list:
+                                cached = offs_list
+                        except Exception:
+                            pass
+                try:
+                    sizes = self._batched_points.get_sizes()
+                    if sizes is not None and len(sizes):
+                        cached_size = float(sizes[0])
+                except Exception:
+                    cached_size = None
+            if cached is None:
+                try:
+                    if hasattr(self, 'ax') and self.ax is not None:
+                        x0, x1 = self.ax.get_xlim()
+                    else:
+                        x0, x1 = None, None
+                except Exception:
+                    x0, x1 = None, None
+                try:
+                    fp = getattr(self, '_flat_points', None)
+                    if fp:
+                        pts = list(fp)
+                        if x0 is not None and x1 is not None:
+                            pts = [(t, p) for (t, p) in pts if x0 <= t <= x1]
+                        if pts:
+                            cached = pts
+                except Exception:
+                    pass
+            if cached is not None:
+                try:
+                    self._batched_points_last_offsets = cached
+                    if cached_size is not None:
+                        self._batched_points_last_sizes = cached_size
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         for attr, val in (
             ('_retake_countdown_duration', span),
@@ -25322,6 +25582,16 @@ class ECGStylePitchVisualizer(QWidget):
                 self._clear_retake_future_overlay()
             except Exception:
                 pass
+            # 仍需缓存左侧历史，避免倒计时期间左侧细节点偶发消失
+            try:
+                try:
+                    cap_for_snapshot = float(min(float(getattr(self, '_max_visible_time', target)), target))
+                except Exception:
+                    cap_for_snapshot = float(target)
+                self._capture_retake_history_snapshot(cap_for_snapshot)
+                self._apply_retake_history_snapshot(force=True, eager=False)
+            except Exception:
+                pass
 
         # 重置叠加元素以强制重新创建，顺便移除遗留对象
         for attr in ('_retake_countdown_bg', '_retake_countdown_line', '_retake_countdown_progress',
@@ -25368,6 +25638,16 @@ class ECGStylePitchVisualizer(QWidget):
         return True
 
     def _retake_hard_purge_future(self, cap: float, *, range_end: Optional[float] = None, range_start: Optional[float] = None):
+        try:
+            if bool(
+                getattr(self, '_retake_force_preserve_future', False)
+                or getattr(self, '_retake_countdown_preserve_future', False)
+                or getattr(self, 'retake_selection_active', False)
+                or getattr(self, '_retake_countdown_active', False)
+            ):
+                return
+        except Exception:
+            pass
         try:
             cap_val = float(cap)
         except Exception:
@@ -25455,6 +25735,16 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _retake_force_clear_future_data(self, cap: float, *, reset_coverage: bool = True, range_end: Optional[float] = None, range_start: Optional[float] = None):
         """彻底清理回退点之后的所有数据与缓存，防止旧音调点在重录阶段复现。"""
+        try:
+            if bool(
+                getattr(self, '_retake_force_preserve_future', False)
+                or getattr(self, '_retake_countdown_preserve_future', False)
+                or getattr(self, 'retake_selection_active', False)
+                or getattr(self, '_retake_countdown_active', False)
+            ):
+                return
+        except Exception:
+            pass
         try:
             cap_val = float(cap)
         except Exception:
@@ -25954,6 +26244,18 @@ class ECGStylePitchVisualizer(QWidget):
             or getattr(self, '_retake_force_preserve_future', False)
             or self._retake_should_preserve_timeline()
         )
+        try:
+            rng = self._get_active_retake_range()
+        except Exception:
+            rng = None
+        if rng:
+            preserve_future = True
+        else:
+            try:
+                if getattr(self, '_retake_active_range_hint', None):
+                    preserve_future = True
+            except Exception:
+                pass
         # 确保倒计时结束后时间轴从左边界重新计时，避免起点偏移导致的点位消失。
         try:
             rng = self._get_active_retake_range()
@@ -26026,6 +26328,14 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         try:
             self._retake_countdown_preserve_future = False
+        except Exception:
+            pass
+        try:
+            self._retake_freeze_points_during_countdown = False
+        except Exception:
+            pass
+        try:
+            self._clear_retake_history_overlay()
         except Exception:
             pass
         try:
@@ -26458,6 +26768,193 @@ class ECGStylePitchVisualizer(QWidget):
             self._retake_history_snapshot_applied = False
             self._apply_retake_history_snapshot(force=True, eager=False)
 
+    def _retake_left_history_missing(self, cap: float) -> bool:
+        try:
+            cap_val = float(cap)
+        except Exception:
+            cap_val = 0.0
+        eps = 1e-6
+        try:
+            if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                xdata, _ = self.pitch_line.get_data()
+                if xdata is not None and len(xdata) > 0:
+                    try:
+                        import numpy as _np
+                        if float(_np.min(_np.asarray(xdata, dtype=float))) <= cap_val + eps:
+                            return False
+                    except Exception:
+                        try:
+                            if float(min(xdata)) <= cap_val + eps:
+                                return False
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        collections = []
+        try:
+            bp = getattr(self, '_batched_points', None)
+            if bp is not None:
+                collections.append(bp)
+        except Exception:
+            pass
+        try:
+            segs = list(getattr(self, '_segment_points', []) or [])
+            collections.extend(segs)
+        except Exception:
+            pass
+        for coll in collections:
+            if coll is None:
+                continue
+            try:
+                offs = coll.get_offsets()
+                if offs is None:
+                    continue
+                import numpy as _np
+                arr = _np.asarray(offs, dtype=float)
+                if arr.size == 0 or arr.shape[1] < 1:
+                    continue
+                if float(_np.min(arr[:, 0])) <= cap_val + eps:
+                    return False
+            except Exception:
+                continue
+        return True
+
+    def _clear_retake_history_overlay(self) -> None:
+        for attr in ('_retake_history_overlay_line', '_retake_history_overlay_scatter'):
+            try:
+                obj = getattr(self, attr, None)
+            except Exception:
+                obj = None
+            if obj is not None:
+                try:
+                    if hasattr(obj, 'remove'):
+                        obj.remove()
+                except Exception:
+                    pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+
+    def _render_retake_history_overlay(self) -> None:
+        if not getattr(self, '_retake_countdown_active', False):
+            self._clear_retake_history_overlay()
+            return
+        snap = getattr(self, '_retake_history_snapshot', None)
+        if not snap:
+            self._clear_retake_history_overlay()
+            return
+        try:
+            cap_val = float(getattr(self, '_retake_countdown_target_time', getattr(self, 'current_global_time', 0.0)))
+        except Exception:
+            cap_val = 0.0
+        try:
+            active_range = self._get_active_retake_range()
+        except Exception:
+            active_range = None
+        if active_range:
+            try:
+                cap_val = float(min(cap_val, active_range[0]))
+            except Exception:
+                pass
+        if not self._retake_left_history_missing(cap_val):
+            try:
+                if getattr(self, '_retake_history_overlay_line', None) is not None:
+                    self._retake_history_overlay_line.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if getattr(self, '_retake_history_overlay_scatter', None) is not None:
+                    self._retake_history_overlay_scatter.set_visible(False)
+            except Exception:
+                pass
+            return
+        times, pitches = snap
+        if not times:
+            self._clear_retake_history_overlay()
+            return
+        np_mod = None
+        try:
+            import numpy as _np
+            np_mod = _np
+            arr_t = _np.asarray(times, dtype=float)
+            arr_p = _np.asarray(pitches, dtype=float)
+            mask = arr_t <= cap_val + 1e-6
+            if not mask.any():
+                self._clear_retake_history_overlay()
+                return
+            xs = arr_t[mask]
+            ys = arr_p[mask]
+        except Exception:
+            xs, ys = [], []
+            for t, p in zip(times, pitches):
+                try:
+                    if float(t) <= cap_val + 1e-6:
+                        xs.append(float(t))
+                        ys.append(float(p))
+                except Exception:
+                    continue
+            if not xs:
+                self._clear_retake_history_overlay()
+                return
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+        except Exception:
+            return
+        try:
+            if hasattr(self, '_segment_points') and self._segment_points:
+                s_existing = None
+                try:
+                    s_existing = self._segment_points[0].get_sizes()
+                except Exception:
+                    s_existing = None
+                if s_existing is not None and len(s_existing):
+                    s_val = float(s_existing[0])
+                else:
+                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                    diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                    s_val = diameter ** 2
+            else:
+                base_w = float(getattr(self, 'current_linewidth', 0.6))
+                zoom = float(getattr(self, 'zoom_level', 1.0))
+                diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                s_val = diameter ** 2
+        except Exception:
+            s_val = 9.0
+        line = getattr(self, '_retake_history_overlay_line', None)
+        if line is None:
+            try:
+                line, = self.ax.plot(xs, ys, color='#F5F5F5', linewidth=1.1, alpha=0.65, zorder=7)
+                self._retake_history_overlay_line = line
+            except Exception:
+                line = None
+        if line is not None:
+            try:
+                line.set_data(xs, ys)
+                line.set_alpha(0.65)
+                line.set_visible(True)
+            except Exception:
+                pass
+        scatter = getattr(self, '_retake_history_overlay_scatter', None)
+        if scatter is None:
+            try:
+                scatter = self.ax.scatter(xs, ys, s=s_val, color='#FFFFFF', alpha=0.78, linewidths=0, edgecolors='none', zorder=10)
+                self._retake_history_overlay_scatter = scatter
+            except Exception:
+                scatter = None
+        if scatter is not None:
+            try:
+                if np_mod is not None:
+                    scatter.set_offsets(np_mod.column_stack([xs, ys]))
+                else:
+                    scatter.set_offsets(list(zip(xs, ys)))
+                scatter.set_alpha(0.78)
+                scatter.set_visible(True)
+            except Exception:
+                pass
+
     def _clear_retake_history_snapshot(self):
         try:
             self._retake_history_snapshot = None
@@ -26487,6 +26984,59 @@ class ECGStylePitchVisualizer(QWidget):
             self._cleanup_detached_collections()
         except Exception:
             pass
+        # 倒计时/选区重录期间强制保留选区外细节点，避免闪烁或被 cap 过滤
+        try:
+            retake_guard = bool(
+                getattr(self, '_retake_countdown_active', False)
+                or getattr(self, '_retake_countdown_pending_resume', False)
+                or getattr(self, 'retake_selection_active', False)
+                or getattr(self, '_retake_active_range', None)
+            )
+        except Exception:
+            retake_guard = False
+        if retake_guard:
+            try:
+                self._retake_force_preserve_future = True
+            except Exception:
+                pass
+            try:
+                self._cap_visible_time_enabled = False
+                self._cap_strict_lock = False
+            except Exception:
+                pass
+            try:
+                import time as _t
+                self._force_points_visible_until = max(float(getattr(self, '_force_points_visible_until', 0.0)), _t.time() + 0.8)
+            except Exception:
+                pass
+        # 覆盖重录预览期间：禁用常规细节点/临时线，确保只显示覆盖预览样式
+        try:
+            overlay_preview = bool(getattr(self, '_retake_overlay_preview_active', False))
+        except Exception:
+            overlay_preview = False
+        if overlay_preview:
+            try:
+                if hasattr(self, '_batched_points') and self._batched_points is not None:
+                    self._batched_points.set_alpha(0.0)
+                    self._batched_points.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
+                    self._browse_points_fallback.set_alpha(0.0)
+                    self._browse_points_fallback.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_provisional_line') and self._provisional_line is not None:
+                    self._provisional_line.set_visible(False)
+                    self._provisional_line.set_data([], [])
+            except Exception:
+                pass
+            try:
+                self._update_overlay_preview_artists()
+            except Exception:
+                pass
         # 若在 seek / trim 后的强制执行窗口内，先对所有现有对象执行一次 cap 过滤
         try:
             if getattr(self, '_cap_visible_time_enabled', False):
@@ -26541,6 +27091,27 @@ class ECGStylePitchVisualizer(QWidget):
                 if self._retake_snapshot_active():
                     if not bool(getattr(self, '_retake_history_snapshot_applied', False)):
                         self._apply_retake_history_snapshot(force=True, eager=False)
+        except Exception:
+            pass
+        try:
+            self._render_retake_history_overlay()
+        except Exception:
+            pass
+        # 倒计时期间强制使用缓存细节点，避免无交互时仍出现闪烁
+        try:
+            if getattr(self, '_retake_countdown_active', False):
+                cached = getattr(self, '_batched_points_last_offsets', None)
+                if cached is not None and hasattr(self, '_batched_points') and self._batched_points is not None:
+                    try:
+                        self._batched_points.set_offsets(cached)
+                        sz = float(getattr(self, '_batched_points_last_sizes', 0.0) or 0.0)
+                        if sz > 0.0:
+                            self._batched_points.set_sizes([sz] * len(cached))
+                        self._batched_points.set_alpha(0.90)
+                        self._batched_points.set_visible(True)
+                        self._batched_points.set_zorder(14)
+                    except Exception:
+                        pass
         except Exception:
             pass
         if len(self.pitch_data) == 0:
@@ -26937,7 +27508,25 @@ class ECGStylePitchVisualizer(QWidget):
                             )
                         except Exception:
                             retake_active = False
-                        if _mode == "普通模式" and not retake_active:
+                        try:
+                            overlay_preview_active = bool(getattr(self, '_retake_overlay_preview_active', False))
+                        except Exception:
+                            overlay_preview_active = False
+                        if overlay_preview_active:
+                            # 覆盖预览阶段仅显示 overlay 线+细节点，隐藏常规细节点集合
+                            try:
+                                if hasattr(self, '_batched_points') and self._batched_points is not None:
+                                    self._batched_points.set_alpha(0.0)
+                                    self._batched_points.set_visible(False)
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
+                                    self._browse_points_fallback.set_alpha(0.0)
+                                    self._browse_points_fallback.set_visible(False)
+                            except Exception:
+                                pass
+                        elif _mode == "普通模式" and not retake_active:
                             # 普通模式：确保隐藏任何批量/兜底散点
                             try:
                                 if hasattr(self, '_batched_points') and self._batched_points is not None:
@@ -26981,6 +27570,24 @@ class ECGStylePitchVisualizer(QWidget):
                             if self._batched_points is not None:
                                 try:
                                     import numpy as _np
+                                    # 倒计时期间冻结细节点：直接使用缓存，避免闪烁
+                                    freeze_applied = False
+                                    try:
+                                        if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_freeze_points_during_countdown', False):
+                                            cached = getattr(self, '_batched_points_last_offsets', None)
+                                            if cached is not None:
+                                                self._batched_points.set_offsets(cached)
+                                                sz = float(getattr(self, '_batched_points_last_sizes', 0.0) or 0.0)
+                                                if sz > 0.0:
+                                                    self._batched_points.set_sizes([sz] * len(cached))
+                                                self._batched_points.set_alpha(0.90)
+                                                self._batched_points.set_visible(True)
+                                                self._batched_points.set_zorder(14)
+                                                freeze_applied = True
+                                    except Exception:
+                                        freeze_applied = False
+                                    if freeze_applied:
+                                        raise RuntimeError('retake_countdown_points_frozen')
                                     x0, x1 = self.ax.get_xlim()
                                     # 优先用扁平缓冲，避免逐段扫描；使用向量化过滤
                                     use_flat = hasattr(self, '_flat_points') and self._flat_points is not None and len(self._flat_points) > 0
@@ -27249,11 +27856,11 @@ class ECGStylePitchVisualizer(QWidget):
                     avg_latency*1000, p50_latency*1000, p90_latency*1000, p95_latency*1000, len(self._diag_add_to_display_latencies)))
                 self._diag_last_report = now
             # 🚀 智能更新优化：避免过度重复计算
-            current_data_size = len(self.pitch_data)
+            current_data_size = len(self.pitch_data)  
             current_time_window = (self.time_offset, self.time_offset + self.time_window)
             current_y_center = self.y_view_center  # 添加Y轴中心到状态检查
             
-            # 检查是否需要更新（避免无意义的重复计算）
+            # 检查是否需要更新（避免无意义的重复计算） 
             # 🔥 修复闪烁问题：添加强制重绘标志，确保滚动后重新绘制
             force_redraw = getattr(self, '_force_redraw_on_next_update', False)
             scroll_triggered = getattr(self, '_scroll_triggered_redraw', False)
@@ -34513,6 +35120,16 @@ class IntegratedRecordingInterface(QMainWindow):
                 return True
         except Exception:
             pass
+        try:
+            if bool(getattr(self, 'retake_selection_active', False)):
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_retake_active_range', None):
+                return True
+        except Exception:
+            pass
         # overlay 正在接管输入（选区重录/覆盖预览）时，必须保留全局时间轴，
         # 否则 on_recording_progress/_enforce_active_retake_bounds 可能把 recording_duration
         # 回退到选区末端或预卷起点，造成：
@@ -38686,6 +39303,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._clear_visualizer_retake_guard(viz)
             except Exception:
                 pass
+        use_batch_restore = bool(viz is not None and hasattr(viz, 'restore_pitch_points'))
+        batch_records: List[Tuple[float, float, float, Any]] = []
         for pkt in packets:
             try:
                 clone = dict(pkt)
@@ -38699,6 +39318,49 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception:
                     pass
             appended += 1
+            if use_batch_restore:
+                try:
+                    payload = dict(clone) if isinstance(clone, dict) else {'timestamp': clone}
+                except Exception:
+                    payload = {'timestamp': clone}
+                try:
+                    ts = payload.get('_retake_time', payload.get('global_time', payload.get('timestamp')))
+                    ts_val = float(ts)
+                except Exception:
+                    ts_val = None
+                if ts_val is not None:
+                    y_val = None
+                    for key in ('pitch_y', 'note_y', 'pitch_value', 'pitch_semitones', 'pitch'):
+                        if key not in payload:
+                            continue
+                        try:
+                            candidate = float(payload.get(key))
+                        except Exception:
+                            continue
+                        if key in ('pitch', 'pitch_value') and candidate > 20.0 and hasattr(viz, '_freq_to_axis_y'):
+                            try:
+                                y_val = viz._freq_to_axis_y(candidate)
+                            except Exception:
+                                y_val = None
+                        else:
+                            y_val = candidate
+                        if y_val is not None:
+                            break
+                    if y_val is None:
+                        freq = payload.get('frequency') or payload.get('frequency_hz')
+                        if freq is not None and hasattr(viz, '_freq_to_axis_y'):
+                            try:
+                                y_val = viz._freq_to_axis_y(float(freq))
+                            except Exception:
+                                y_val = None
+                    if y_val is not None:
+                        try:
+                            conf = float(payload.get('confidence', 0.6) or 0.6)
+                        except Exception:
+                            conf = 0.6
+                        note_info = payload.get('note_info') or payload.get('note')
+                        batch_records.append((ts_val, float(y_val), max(0.0, min(1.0, conf)), note_info))
+                continue
             if viz is not None and hasattr(viz, 'add_pitch_data'):
                 payload = dict(clone)
                 if payload.get('_epoch') is None:
@@ -38708,6 +39370,20 @@ class IntegratedRecordingInterface(QMainWindow):
                         payload['_epoch'] = 0
                 try:
                     viz.add_pitch_data(payload)
+                except Exception:
+                    pass
+        if use_batch_restore and viz is not None and batch_records:
+            try:
+                batch_records.sort(key=lambda item: float(item[0]))
+            except Exception:
+                pass
+            try:
+                viz.restore_pitch_points(batch_records)
+            except Exception:
+                # 回退：若批量恢复失败，逐条追加
+                try:
+                    for rec in batch_records:
+                        viz.add_pitch_data({'timestamp': rec[0], 'pitch_y': rec[1], 'confidence': rec[2], 'note_info': rec[3]})
                 except Exception:
                     pass
         if appended:
@@ -39779,6 +40455,64 @@ class IntegratedRecordingInterface(QMainWindow):
         self._retake_manual_resume_required = False
         self._retake_set_phase(RetakePhase.RECORDING, status="recording")
 
+        # 倒计时结束：立即清理可视化倒计时状态与残留叠加，避免动画卡住
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                viz._retake_countdown_active = False
+                viz._retake_countdown_block_add = False
+                viz._retake_countdown_start_wall = 0.0
+                viz._retake_countdown_end_wall = 0.0
+                viz._retake_countdown_freeze_time = None
+                viz._retake_countdown_last_raw = None
+                viz._retake_countdown_display_pos = None
+            except Exception:
+                pass
+            for attr in (
+                '_retake_countdown_line',
+                '_retake_countdown_progress',
+                '_retake_countdown_start_line',
+                '_retake_countdown_goal_line',
+            ):
+                try:
+                    obj = getattr(viz, attr, None)
+                except Exception:
+                    obj = None
+                if obj is not None:
+                    try:
+                        if hasattr(obj, 'remove'):
+                            obj.remove()
+                    except Exception:
+                        pass
+                try:
+                    setattr(viz, attr, None)
+                except Exception:
+                    pass
+            for attr in ('_retake_countdown_bg', '_retake_countdown_text', '_retake_countdown_hint'):
+                try:
+                    obj = getattr(viz, attr, None)
+                except Exception:
+                    obj = None
+                if obj is not None:
+                    try:
+                        if hasattr(obj, 'set_alpha'):
+                            obj.set_alpha(0.0)
+                    except Exception:
+                        pass
+            try:
+                if hasattr(viz, '_restore_retake_countdown_highlight'):
+                    viz._restore_retake_countdown_highlight()
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+            except Exception:
+                pass
+
         # 进入录制后：确保 overlay 预览重新激活并锁定视图在选区内
         try:
             self._retake_overlay_preview_enabled = True
@@ -39799,7 +40533,6 @@ class IntegratedRecordingInterface(QMainWindow):
             if active and len(active) >= 2:
                 s0 = float(active[0])
                 e0 = float(active[1])
-                viz = getattr(self, 'visualizer', None)
                 if viz is not None:
                     try:
                         begin_cb = getattr(viz, 'activate_retake_overlay_preview', None)
@@ -42189,6 +42922,48 @@ class IntegratedRecordingInterface(QMainWindow):
                                             viz.canvas.draw_idle()
                                     except Exception:
                                         pass
+                            # 兜底：若 overlay 预览未被投递成功，尝试在 GUI 线程补绘细节点
+                            try:
+                                retake_live = bool(
+                                    getattr(self, '_retake_overlay_active', lambda: False)()
+                                    or getattr(self, '_retake_active_range', None)
+                                    or getattr(viz, 'retake_selection_active', False)
+                                )
+                            except Exception:
+                                retake_live = False
+                            if retake_live:
+                                try:
+                                    if not getattr(viz, '_retake_overlay_preview_active', False):
+                                        rng = None
+                                        try:
+                                            rng = self._get_active_retake_range()
+                                        except Exception:
+                                            rng = None
+                                        if rng and len(rng) >= 2:
+                                            try:
+                                                viz.activate_retake_overlay_preview(float(rng[0]), float(rng[1]))
+                                            except Exception:
+                                                pass
+                                    payload = dict(pitch_data)
+                                    if '_retake_time' not in payload:
+                                        try:
+                                            if payload.get('_overlay_axis_time') is not None:
+                                                payload['_retake_time'] = float(payload.get('_overlay_axis_time'))
+                                        except Exception:
+                                            pass
+                                    if '_retake_time' not in payload:
+                                        try:
+                                            vt = getattr(self, '_retake_overlay_virtual_time', None)
+                                            if vt is not None:
+                                                payload['_retake_time'] = float(vt)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        viz.render_retake_overlay_points(payload)
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
                         return
                     base_payload = dict(pitch_data)
                     # 可选：使用SciPy作轻量平滑以减少细抖动（仅影响显示）
