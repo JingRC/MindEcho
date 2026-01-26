@@ -23405,6 +23405,26 @@ class ECGStylePitchVisualizer(QWidget):
                 # 🎯 关键修复：保持完整的MIDI音符精度，不进行整数化
                 octave_exact = midi_number / 12 - 1  # 保持小数精度的八度
                 y_pos = octave_exact  # 直接使用精确的八度值作为Y轴位置
+
+                # 噪声跳变抑制：大幅跨越且低置信度/低能量时丢弃该点（避免异常大跳线）
+                try:
+                    prev_y = getattr(self, 'last_active_pitch_y', None)
+                    if prev_y is not None:
+                        jump_semi = abs((float(y_pos) - float(prev_y)) * 12.0)
+                        jump_thr = float(getattr(self, '_noise_jump_semitones', getattr(self, '_fade_thr_one_oct', 12.0)))
+                        conf_thr = float(getattr(self, '_noise_jump_confidence', 0.35))
+                        rms_thr = float(getattr(self, '_noise_jump_rms', 0.004))
+                        if jump_thr < 0.0:
+                            jump_thr = 0.0
+                        if jump_semi >= jump_thr and (confidence < conf_thr) and (audio_rms < rms_thr):
+                            self.current_pitch_active = False
+                            try:
+                                self.update_guides()
+                            except Exception:
+                                pass
+                            return
+                except Exception:
+                    pass
                 
                 # 🔥 调试：每50个点打印一次精度对比
                 if len(self.pitch_data) % 50 == 0:
@@ -24058,6 +24078,20 @@ class ECGStylePitchVisualizer(QWidget):
         - 自动挂载到轴，避免被 clear 后丢失。
         """
         try:
+            # 倒计时准备期：禁用头部即时点，避免额外白点闪烁
+            try:
+                if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_freeze_points_during_countdown', False):
+                    if getattr(self, '_head_points_scatter', None) is not None:
+                        try:
+                            import numpy as _np
+                            self._head_points_scatter.set_offsets(_np.empty((0, 2)))
+                            self._head_points_scatter.set_alpha(0.0)
+                            self._head_points_scatter.set_visible(False)
+                        except Exception:
+                            pass
+                    return
+            except Exception:
+                pass
             if not hasattr(self, 'ax') or self.ax is None:
                 return
             import numpy as _np
@@ -24192,6 +24226,19 @@ class ECGStylePitchVisualizer(QWidget):
     def _refresh_batched_points_for_current_xlim(self):
         """轻量刷新：根据当前 xlim 更新批量细节点集合，用于手动水平滚动/拖拽时保持细节点可见。"""
         try:
+            # 倒计时准备期：冻结批量细节点，避免额外白点闪烁
+            try:
+                if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_freeze_points_during_countdown', False):
+                    cached = getattr(self, '_batched_points_last_offsets', None)
+                    if hasattr(self, '_batched_points') and self._batched_points is not None:
+                        try:
+                            self._batched_points.set_alpha(0.0)
+                            self._batched_points.set_visible(False)
+                        except Exception:
+                            pass
+                    return
+            except Exception:
+                pass
             # 普通模式下完全禁用该功能，避免出现灰/淡细点与重复
             try:
                 mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
@@ -24373,7 +24420,6 @@ class ECGStylePitchVisualizer(QWidget):
             #   - ≤8s：跟随当前时间（夹紧到窗口）
             #   - >8s 且自动跟随：将视觉位置锁定在图表像素中心，避免因 xlim 微抖导致的“左右晃动”
             time_start, time_end = self.ax.get_xlim() if hasattr(self, 'ax') else (self.time_offset, self.time_offset + self.time_window)
-            cur_t = getattr(self, 'current_global_time', 0.0)
             overlay_active = False
             try:
                 overlay_active = bool(getattr(self, '_retake_overlay_preview_active', False))
@@ -24384,6 +24430,15 @@ class ECGStylePitchVisualizer(QWidget):
                 countdown_freeze = bool(getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False))
             except Exception:
                 countdown_freeze = False
+            cur_t = getattr(self, 'current_global_time', 0.0)
+            # 重录进行中：用墙钟时间驱动时间线，避免依赖点更新导致卡顿式推进
+            try:
+                if overlay_active and not countdown_freeze:
+                    st = getattr(self, 'start_time', None)
+                    if st is not None:
+                        cur_t = max(0.0, float(time.time()) - float(st))
+            except Exception:
+                pass
             want_center = (cur_t > getattr(self, 'center_display_time', 8.0) and
                            getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
                            (not overlay_active))
@@ -24415,21 +24470,29 @@ class ECGStylePitchVisualizer(QWidget):
             if overlay_active:
                 v_target = None
                 try:
-                    v_target = getattr(self, '_retake_overlay_last_point_time', None)
-                    if v_target is not None:
-                        v_target = float(v_target)
+                    rng = getattr(self, '_retake_overlay_preview_range', (time_start, time_end))
+                    s0 = float(rng[0]); e0 = float(rng[1])
+                    if e0 < s0:
+                        s0, e0 = e0, s0
                 except Exception:
-                    v_target = None
+                    s0, e0 = time_start, time_end
+                try:
+                    end_wall = float(getattr(self, '_retake_countdown_end_wall', 0.0) or 0.0)
+                except Exception:
+                    end_wall = 0.0
+                if end_wall > 0.0:
+                    try:
+                        now_wall = float(time.time())
+                        elapsed = max(0.0, now_wall - end_wall)
+                        span = max(0.0, e0 - s0)
+                        v_target = s0 + min(span, elapsed)
+                    except Exception:
+                        v_target = s0
                 if v_target is None:
                     try:
-                        v_target = float(getattr(self, '_retake_overlay_virtual_time', 0.0))
+                        v_target = float(getattr(self, '_retake_overlay_virtual_time', s0))
                     except Exception:
-                        v_target = None
-                if v_target is None:
-                    try:
-                        v_target = float(getattr(self, '_retake_overlay_preview_range', (time_start, time_end))[0])
-                    except Exception:
-                        v_target = time_start
+                        v_target = s0
                 v_target = min(max(time_start, v_target), time_end)
                 if countdown_freeze:
                     try:
@@ -24479,6 +24542,12 @@ class ECGStylePitchVisualizer(QWidget):
                 else:
                     base_alpha = float(getattr(self, '_guide_vx_alpha', params['base_alpha']))
                     base_max_step = float(getattr(self, '_guide_vx_max_step', params['base_max_step']))
+                    try:
+                        if overlay_active and not countdown_freeze:
+                            base_alpha = max(base_alpha, 0.75)
+                            base_max_step = max(base_max_step, 0.25)
+                    except Exception:
+                        pass
                     prev = getattr(self, '_smoothed_vx', None)
                     if prev is None:
                         v_x = v_target
@@ -25492,6 +25561,13 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _render_retake_future_overlay(self) -> None:
         """使用灰阶折线展示暂存的未来节点，保持用户对右侧状态的认知。"""
+        # 倒计时准备期：不显示未来叠加点，避免额外细节点闪烁
+        try:
+            if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_freeze_points_during_countdown', False):
+                self._clear_retake_future_overlay()
+                return
+        except Exception:
+            pass
         data = list(getattr(self, '_retake_future_buffer_records', []))
         if not data:
             self._clear_retake_future_overlay()
@@ -25869,6 +25945,45 @@ class ECGStylePitchVisualizer(QWidget):
                         self._batched_points_last_sizes = cached_size
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # 倒计时开始前缓存逐段细节点，避免选区外点在准备期闪烁
+        try:
+            seg_cached = []
+            seg_sizes = []
+            if hasattr(self, '_segment_points') and self._segment_points:
+                for coll in self._segment_points:
+                    if coll is None or not hasattr(coll, 'get_offsets'):
+                        seg_cached.append(None)
+                        seg_sizes.append(None)
+                        continue
+                    try:
+                        offs = coll.get_offsets()
+                    except Exception:
+                        offs = None
+                    if offs is not None:
+                        try:
+                            import numpy as _np
+                            arr = _np.asarray(offs, dtype=float)
+                            if arr.size > 0 and arr.shape[1] >= 2:
+                                seg_cached.append(arr.copy())
+                            else:
+                                seg_cached.append(_np.empty((0, 2), dtype=float))
+                        except Exception:
+                            seg_cached.append(None)
+                    else:
+                        seg_cached.append(None)
+                    try:
+                        sz = coll.get_sizes()
+                        if sz is not None and len(sz):
+                            seg_sizes.append(float(sz[0]))
+                        else:
+                            seg_sizes.append(None)
+                    except Exception:
+                        seg_sizes.append(None)
+            if seg_cached:
+                self._segment_points_last_offsets = seg_cached
+                self._segment_points_last_sizes = seg_sizes
         except Exception:
             pass
 
@@ -27391,6 +27506,13 @@ class ECGStylePitchVisualizer(QWidget):
         if not getattr(self, '_retake_countdown_active', False):
             self._clear_retake_history_overlay()
             return
+        # 倒计时准备期冻结细节点时，禁用历史叠加点，避免出现“额外白点”闪烁
+        try:
+            if bool(getattr(self, '_retake_freeze_points_during_countdown', False)):
+                self._clear_retake_history_overlay()
+                return
+        except Exception:
+            pass
         snap = getattr(self, '_retake_history_snapshot', None)
         if not snap:
             self._clear_retake_history_overlay()
@@ -27651,16 +27773,45 @@ class ECGStylePitchVisualizer(QWidget):
         # 倒计时期间强制使用缓存细节点，避免无交互时仍出现闪烁
         try:
             if getattr(self, '_retake_countdown_active', False):
-                cached = getattr(self, '_batched_points_last_offsets', None)
-                if cached is not None and hasattr(self, '_batched_points') and self._batched_points is not None:
+                    # 倒计时期间隐藏批量点，避免额外白点闪烁（以逐段细节点为准）
                     try:
-                        self._batched_points.set_offsets(cached)
-                        sz = float(getattr(self, '_batched_points_last_sizes', 0.0) or 0.0)
-                        if sz > 0.0:
-                            self._batched_points.set_sizes([sz] * len(cached))
-                        self._batched_points.set_alpha(0.90)
-                        self._batched_points.set_visible(True)
-                        self._batched_points.set_zorder(14)
+                        if hasattr(self, '_batched_points') and self._batched_points is not None:
+                            self._batched_points.set_alpha(0.0)
+                            self._batched_points.set_visible(False)
+                    except Exception:
+                        pass
+                    # 同步冻结逐段细节点
+                    try:
+                        seg_cached = getattr(self, '_segment_points_last_offsets', None)
+                        seg_sizes = getattr(self, '_segment_points_last_sizes', None)
+                        if seg_cached is not None and hasattr(self, '_segment_points') and self._segment_points:
+                            for i, coll in enumerate(self._segment_points):
+                                if coll is None:
+                                    continue
+                                if i >= len(seg_cached):
+                                    continue
+                                offs = seg_cached[i]
+                                if offs is None:
+                                    continue
+                                try:
+                                    coll.set_offsets(offs)
+                                    sz = None
+                                    if seg_sizes is not None and i < len(seg_sizes):
+                                        sz = seg_sizes[i]
+                                    if sz is None or sz <= 0.0:
+                                        sz = float(getattr(self, 'current_linewidth', 0.6))
+                                        try:
+                                            zoom = float(getattr(self, 'zoom_level', 1.0))
+                                        except Exception:
+                                            zoom = 1.0
+                                        diameter = max(2.0, min(sz * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                                        sz = diameter ** 2
+                                    coll.set_sizes([sz] * (len(offs) if hasattr(offs, '__len__') else 1))
+                                    coll.set_alpha(0.98 if getattr(offs, 'size', 0) > 0 else 0.0)
+                                    coll.set_visible(True)
+                                    coll.set_zorder(14)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
         except Exception:
@@ -29661,6 +29812,51 @@ class ECGStylePitchVisualizer(QWidget):
                 self._ensure_pitch_line(alpha=0.0)
             except Exception:
                 pass
+            # 倒计时准备期：冻结细节点/分段更新，保持选区外点稳定，避免闪烁
+            try:
+                freeze_points = bool(getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_freeze_points_during_countdown', False))
+            except Exception:
+                freeze_points = False
+            if freeze_points:
+                try:
+                    if hasattr(self, '_segment_points') and self._segment_points:
+                        for coll in self._segment_points:
+                            if coll is None:
+                                continue
+                            try:
+                                coll.set_visible(True)
+                                coll.set_zorder(14)
+                            except Exception:
+                                pass
+                    if hasattr(self, '_batched_points') and self._batched_points is not None:
+                        try:
+                            self._batched_points.set_visible(True)
+                            self._batched_points.set_zorder(14)
+                        except Exception:
+                            pass
+                    # 倒计时期间隐藏其他散点集合，避免额外白点出现
+                    try:
+                        for attr in ('_head_points_scatter', 'gradient_overlay_points', 'gradient_scatter', 'confidence_scatter',
+                                     '_retake_future_overlay_scatter'):
+                            coll = getattr(self, attr, None)
+                            if coll is not None:
+                                try:
+                                    coll.set_alpha(0.0)
+                                    coll.set_visible(False)
+                                except Exception:
+                                    pass
+                        try:
+                            line = getattr(self, '_retake_future_overlay_line', None)
+                            if line is not None:
+                                line.set_alpha(0.0)
+                                line.set_visible(False)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                return
             # 如存在“浏览点兜底”集合，恢复断续段绘制时应取消它，避免与逐段散点重复
             try:
                 if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
@@ -30491,6 +30687,30 @@ class ECGStylePitchVisualizer(QWidget):
                         line.set_alpha(0.0)
                     # 处理散点
                     old_pts = self._segment_points[i]
+                    # 倒计时准备期：冻结逐段细节点，使用缓存避免闪烁
+                    try:
+                        if getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_freeze_points_during_countdown', False):
+                            cached_list = getattr(self, '_segment_points_last_offsets', None)
+                            cached_sizes = getattr(self, '_segment_points_last_sizes', None)
+                            if cached_list is not None and i < len(cached_list):
+                                cached = cached_list[i]
+                                if cached is not None:
+                                    old_pts.set_offsets(cached)
+                                    try:
+                                        sz = None
+                                        if cached_sizes is not None and i < len(cached_sizes):
+                                            sz = cached_sizes[i]
+                                        if sz is None or sz <= 0.0:
+                                            sz = s_val_global
+                                        old_pts.set_sizes([sz] * (len(cached) if hasattr(cached, '__len__') else 1))
+                                    except Exception:
+                                        pass
+                                    old_pts.set_alpha(0.98 if getattr(cached, 'size', 0) > 0 else 0.0)
+                                    old_pts.set_visible(True)
+                                    old_pts.set_zorder(14)
+                                    continue
+                    except Exception:
+                        pass
                     if old_pts not in self.ax.collections:
                         try:
                             self.ax.add_collection(old_pts)
