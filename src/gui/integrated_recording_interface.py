@@ -11172,6 +11172,11 @@ class ECGStylePitchVisualizer(QWidget):
         self._retake_overlay_preview_range = (0.0, 0.0)
         self._retake_overlay_preview_points = []
         self._retake_overlay_preview_cap = getattr(self, '_retake_overlay_preview_cap', 2400)
+        self._retake_overlay_preview_cap_max = getattr(self, '_retake_overlay_preview_cap_max', 50000)
+        self._retake_overlay_preview_min_spacing = getattr(self, '_retake_overlay_preview_min_spacing', 0.001)
+        self._retake_overlay_preview_min_interval = getattr(self, '_retake_overlay_preview_min_interval', 0.033)
+        self._retake_overlay_preview_last_len = 0
+        self._retake_overlay_preview_last_time = None
         self._retake_overlay_preview_line = None
         self._retake_overlay_preview_scatter = None
         self._retake_overlay_preview_last_draw = 0.0
@@ -11219,7 +11224,7 @@ class ECGStylePitchVisualizer(QWidget):
                             rng = (float(getattr(st, 'start', 0.0)), float(getattr(st, 'end', 0.0)))
                 if rng and len(rng) >= 2:
                     try:
-                        self.activate_retake_overlay_preview(float(rng[0]), float(rng[1]))
+                        self.activate_retake_overlay_preview(float(rng[0]), float(rng[1]), keep_points=True)
                     except Exception:
                         pass
         except Exception:
@@ -13191,7 +13196,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
 
-    def activate_retake_overlay_preview(self, start: float, end: float):
+    def activate_retake_overlay_preview(self, start: float, end: float, *, keep_points: bool = False):
         if not getattr(self, '_retake_overlay_preview_enabled', True):
             self._retake_overlay_preview_active = False
             self._retake_overlay_preview_points = []
@@ -13202,9 +13207,15 @@ class ECGStylePitchVisualizer(QWidget):
             end = float(max(start, end))
         except Exception:
             start, end = 0.0, 0.0
+        prev_range = getattr(self, '_retake_overlay_preview_range', (0.0, 0.0))
+        try:
+            prev_same = (abs(float(prev_range[0]) - start) <= 1e-4 and abs(float(prev_range[1]) - end) <= 1e-4)
+        except Exception:
+            prev_same = False
         self._retake_overlay_preview_active = True
         self._retake_overlay_preview_range = (start, end)
-        self._retake_overlay_preview_points = []
+        if not (keep_points or prev_same):
+            self._retake_overlay_preview_points = []
         self._retake_overlay_preview_last_draw = 0.0
         try:
             self._retake_overlay_last_point_time = None
@@ -13326,11 +13337,28 @@ class ECGStylePitchVisualizer(QWidget):
         diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
         return float(diameter ** 2)
 
-    def render_retake_overlay_points(self, packets: Union[List[Dict[str, Any]], Dict[str, Any]]):
+    def render_retake_overlay_points(self, packets: Union[List[Dict[str, Any]], Dict[str, Any]], *, force_preview: bool = False):
         if not getattr(self, '_retake_overlay_preview_enabled', True):
             return
         if not getattr(self, '_retake_overlay_preview_active', False):
             return
+        # 倒计时准备期：禁止绘制，避免左框线堆点
+        if not force_preview:
+            try:
+                if bool(getattr(self, '_retake_countdown_active', False)) and bool(getattr(self, '_retake_countdown_block_add', False)):
+                    return
+            except Exception:
+                pass
+            try:
+                host = getattr(self, '_host_interface', None)
+            except Exception:
+                host = None
+            if host is not None:
+                try:
+                    if bool(getattr(host, '_retake_countdown_in_progress', False)) or bool(getattr(host, '_retake_countdown_active', False)):
+                        return
+                except Exception:
+                    pass
         if isinstance(packets, dict):
             seq = [packets]
         else:
@@ -13338,31 +13366,182 @@ class ECGStylePitchVisualizer(QWidget):
         if not seq:
             return
         start, end = self._retake_overlay_preview_range
+        try:
+            if float(end) <= float(start) + 1e-6:
+                host = getattr(self, '_host_interface', None)
+                rng = None
+                if host is not None:
+                    rng = getattr(host, '_retake_active_range', None)
+                    if not rng:
+                        st = getattr(host, '_retake_overlay_state', None)
+                        if st is not None and getattr(st, 'active', False):
+                            rng = (float(getattr(st, 'start', 0.0)), float(getattr(st, 'end', 0.0)))
+                if rng and len(rng) >= 2:
+                    start, end = float(rng[0]), float(rng[1])
+                    self._retake_overlay_preview_range = (start, end)
+        except Exception:
+            pass
         new_points = []
+        try:
+            min_conf = float(getattr(self, '_retake_overlay_preview_min_conf', 0.12))
+        except Exception:
+            min_conf = 0.12
+        if min_conf < 0.0:
+            min_conf = 0.0
+        try:
+            edge_eps = float(getattr(self, '_retake_overlay_preview_edge_eps', 0.008))
+        except Exception:
+            edge_eps = 0.008
+        if edge_eps < 0.0:
+            edge_eps = 0.0
         for pkt in seq:
+            if isinstance(pkt, dict):
+                if pkt.get('has_pitch') is False:
+                    ts_gap = None
+                    try:
+                        ts_gap = pkt.get('_retake_time')
+                        if ts_gap is None:
+                            ts_gap = pkt.get('global_time')
+                        if ts_gap is None:
+                            raw_ts = pkt.get('timestamp')
+                            start_time = getattr(self, 'start_time', None)
+                            if raw_ts is not None and start_time is not None:
+                                ts_gap = float(raw_ts) - float(start_time)
+                            elif raw_ts is not None:
+                                ts_gap = raw_ts
+                    except Exception:
+                        ts_gap = None
+                    if ts_gap is not None:
+                        try:
+                            ts_gap = float(ts_gap)
+                            new_points.append((ts_gap, float('nan'), 0.0))
+                        except Exception:
+                            pass
+                    continue
+                try:
+                    if pkt.get('has_pitch') is False:
+                        continue
+                except Exception:
+                    pass
+                conf_raw = pkt.get('confidence', pkt.get('probability', None))
+                if conf_raw is not None:
+                    try:
+                        if float(conf_raw) < min_conf:
+                            ts_gap = None
+                            try:
+                                ts_gap = pkt.get('_retake_time')
+                                if ts_gap is None:
+                                    ts_gap = pkt.get('global_time')
+                                if ts_gap is None:
+                                    raw_ts = pkt.get('timestamp')
+                                    start_time = getattr(self, 'start_time', None)
+                                    if raw_ts is not None and start_time is not None:
+                                        ts_gap = float(raw_ts) - float(start_time)
+                                    elif raw_ts is not None:
+                                        ts_gap = raw_ts
+                            except Exception:
+                                ts_gap = None
+                            if ts_gap is not None:
+                                try:
+                                    ts_gap = float(ts_gap)
+                                    new_points.append((ts_gap, float('nan'), 0.0))
+                                except Exception:
+                                    pass
+                            continue
+                    except Exception:
+                        pass
             point = self._coerce_overlay_packet_point(pkt)
             if point is None:
                 continue
             ts_val, y_val, conf_val = point
-            if ts_val < start - 1e-3 or ts_val > end + 1e-3:
-                continue
+            try:
+                if float(end) > float(start) + 1e-6:
+                    if ts_val < start - 1e-3 or ts_val > end + 1e-3:
+                        continue
+            except Exception:
+                pass
+            # 边界去粘：左/右框线附近已有点时，避免重复贴边
+            try:
+                if edge_eps > 0.0 and self._retake_overlay_preview_points:
+                    if ts_val <= float(start) + edge_eps:
+                        last_t = float(self._retake_overlay_preview_points[-1][0])
+                        if last_t <= float(start) + edge_eps:
+                            continue
+                    if ts_val >= float(end) - edge_eps:
+                        last_t = float(self._retake_overlay_preview_points[-1][0])
+                        if last_t >= float(end) - edge_eps:
+                            continue
+            except Exception:
+                pass
             new_points.append((ts_val, y_val, conf_val))
         if not new_points:
             return
-        self._retake_overlay_preview_points.extend(new_points)
-        # 稍作去重：相邻时间戳过近（<5ms）时仅保留最新点，避免“同一时刻多个细节点”抖动
-        pts = sorted(self._retake_overlay_preview_points, key=lambda item: item[0])
-        deduped = []
-        last_t = None
-        for t_val, y_val, c_val in pts:
-            if last_t is not None and abs(t_val - last_t) < 0.005:
-                deduped[-1] = (t_val, y_val, c_val)
-                last_t = t_val
-                continue
-            deduped.append((t_val, y_val, c_val))
-            last_t = t_val
-        self._retake_overlay_preview_points = deduped
-        cap = int(self._retake_overlay_preview_cap or 0) or 2400
+        # 增量追加：避免每帧全量排序导致卡顿
+        try:
+            dedup_thr = float(getattr(self, '_retake_overlay_preview_min_spacing', 0.001))
+        except Exception:
+            dedup_thr = 0.001
+        if dedup_thr <= 0.0:
+            dedup_thr = 0.001
+        existing = self._retake_overlay_preview_points
+        try:
+            last_existing_t = float(existing[-1][0]) if existing else None
+        except Exception:
+            last_existing_t = None
+        try:
+            new_points_sorted = sorted(new_points, key=lambda item: item[0])
+        except Exception:
+            new_points_sorted = new_points
+        if last_existing_t is not None and new_points_sorted:
+            try:
+                if float(new_points_sorted[0][0]) >= last_existing_t - dedup_thr:
+                    # 仅做边界去重 + 追加
+                    for t_val, y_val, c_val in new_points_sorted:
+                        try:
+                            if existing and abs(float(t_val) - float(existing[-1][0])) < dedup_thr:
+                                existing[-1] = (t_val, y_val, c_val)
+                                continue
+                        except Exception:
+                            pass
+                        existing.append((t_val, y_val, c_val))
+                else:
+                    raise ValueError("out-of-order")
+            except Exception:
+                existing.extend(new_points_sorted)
+                existing.sort(key=lambda item: item[0])
+                # 全量去重（仅在乱序时触发）
+                deduped = []
+                last_t = None
+                for t_val, y_val, c_val in existing:
+                    if last_t is not None and abs(t_val - last_t) < dedup_thr:
+                        deduped[-1] = (t_val, y_val, c_val)
+                        last_t = t_val
+                        continue
+                    deduped.append((t_val, y_val, c_val))
+                    last_t = t_val
+                existing[:] = deduped
+        else:
+            existing.extend(new_points_sorted)
+        self._retake_overlay_preview_points = existing
+        base_cap = int(self._retake_overlay_preview_cap or 0) or 2400
+        try:
+            span = float(max(0.0, end - start))
+        except Exception:
+            span = 0.0
+        try:
+            min_spacing = float(getattr(self, '_retake_overlay_preview_min_spacing', 0.005))
+        except Exception:
+            min_spacing = 0.005
+        if min_spacing <= 0.0:
+            min_spacing = 0.005
+        dynamic_cap = int(max(0.0, span) / min_spacing) + 24
+        cap = max(base_cap, dynamic_cap)
+        try:
+            cap_max = int(getattr(self, '_retake_overlay_preview_cap_max', 12000) or 0)
+        except Exception:
+            cap_max = 12000
+        if cap_max > 0:
+            cap = min(cap, cap_max)
         if len(self._retake_overlay_preview_points) > cap:
             self._retake_overlay_preview_points = self._retake_overlay_preview_points[-cap:]
         try:
@@ -13403,27 +13582,357 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
             return
-        times = [pt[0] for pt in points]
-        pitches = [pt[1] for pt in points]
-        strengths = [pt[2] for pt in points]
+        try:
+            last_t = points[-1][0]
+            last_len = len(points)
+            if (last_len == int(getattr(self, '_retake_overlay_preview_last_len', 0)) and
+                    last_t == getattr(self, '_retake_overlay_preview_last_time', None)):
+                return
+            self._retake_overlay_preview_last_len = int(last_len)
+            self._retake_overlay_preview_last_time = last_t
+        except Exception:
+            pass
+        # ===== 参考主绘制逻辑：构建分段、剔除微段、合并小缺口、平滑与抽样 =====
+        segments_orig = []
+        cur_t = []
+        cur_p = []
+        for t_val, y_val, _c_val in points:
+            try:
+                t_f = float(t_val)
+            except Exception:
+                continue
+            try:
+                y_f = float(y_val)
+            except Exception:
+                y_f = float('nan')
+            if not math.isfinite(y_f):
+                if cur_t:
+                    segments_orig.append((cur_t, cur_p))
+                    cur_t, cur_p = [], []
+                continue
+            cur_t.append(t_f)
+            cur_p.append(y_f)
+        if cur_t:
+            segments_orig.append((cur_t, cur_p))
+
+        # 终端防抖1：剔除换气孤立微段（与主绘制一致）
+        try:
+            import numpy as _np
+            dur_max = float(getattr(self, '_micro_seg_dur_max', 0.05))
+            iso_gap = float(getattr(self, '_micro_seg_isolation_gap', 0.16))
+            semi_thr = float(getattr(self, '_micro_seg_neighbor_semi', 6.5))
+            dur_max3 = float(getattr(self, '_micro_seg_dur_max3', 0.06))
+            iso_single = float(getattr(self, '_micro_seg_iso_single_gap', 0.18))
+            semi_thr3 = float(getattr(self, '_micro_seg_neighbor_semi3', 7.2))
+            filtered_segments = []
+            S = len(segments_orig)
+            for idx, (ts, ps) in enumerate(segments_orig):
+                n = len(ts)
+                keep = True
+                if n <= 2:
+                    dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                    left_gap = float('inf')
+                    right_gap = float('inf')
+                    left_semi = float('inf')
+                    right_semi = float('inf')
+                    if idx - 1 >= 0 and len(segments_orig[idx-1][0]) > 0:
+                        prev_t = segments_orig[idx-1][0][-1]
+                        prev_p = segments_orig[idx-1][1][-1]
+                        left_gap = float(ts[0]) - float(prev_t)
+                        if n >= 1:
+                            try:
+                                left_semi = abs(12.0 * _np.log2(max(1e-9, float(ps[0]) / max(float(prev_p), 1e-9))))
+                            except Exception:
+                                left_semi = float('inf')
+                    if idx + 1 < S and len(segments_orig[idx+1][0]) > 0:
+                        next_t = segments_orig[idx+1][0][0]
+                        next_p = segments_orig[idx+1][1][0]
+                        right_gap = float(next_t) - float(ts[-1])
+                        try:
+                            right_semi = abs(12.0 * _np.log2(max(1e-9, float(next_p) / max(float(ps[-1]), 1e-9))))
+                        except Exception:
+                            right_semi = float('inf')
+                    iso_ok_left = (left_gap >= iso_gap) if left_gap != float('inf') else True
+                    iso_ok_right = (right_gap >= iso_gap) if right_gap != float('inf') else True
+                    semi_ok_left = (left_semi >= semi_thr) if left_semi != float('inf') else True
+                    semi_ok_right = (right_semi >= semi_thr) if right_semi != float('inf') else True
+                    if (dur <= dur_max) and iso_ok_left and iso_ok_right and semi_ok_left and semi_ok_right:
+                        keep = False
+                elif n <= 3:
+                    dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                    left_gap = float('inf')
+                    right_gap = float('inf')
+                    left_semi = float('inf')
+                    right_semi = float('inf')
+                    if idx - 1 >= 0 and len(segments_orig[idx-1][0]) > 0:
+                        prev_t = segments_orig[idx-1][0][-1]
+                        prev_p = segments_orig[idx-1][1][-1]
+                        left_gap = float(ts[0]) - float(prev_t)
+                        try:
+                            left_semi = abs(12.0 * _np.log2(max(1e-9, float(ps[0]) / max(float(prev_p), 1e-9))))
+                        except Exception:
+                            left_semi = float('inf')
+                    if idx + 1 < S and len(segments_orig[idx+1][0]) > 0:
+                        next_t = segments_orig[idx+1][0][0]
+                        next_p = segments_orig[idx+1][1][0]
+                        right_gap = float(next_t) - float(ts[-1])
+                        try:
+                            right_semi = abs(12.0 * _np.log2(max(1e-9, float(next_p) / max(float(ps[-1]), 1e-9))))
+                        except Exception:
+                            right_semi = float('inf')
+                    one_side_iso_and_far = ((left_gap >= iso_single and left_semi >= semi_thr3) or
+                                            (right_gap >= iso_single and right_semi >= semi_thr3))
+                    if (dur <= dur_max3) and one_side_iso_and_far:
+                        keep = False
+                if keep:
+                    filtered_segments.append((ts, ps))
+            if len(filtered_segments) != len(segments_orig):
+                segments_orig = filtered_segments
+        except Exception:
+            pass
+
+        # 终端防抖1.5：小缺口跨段合并（重录预览默认关闭，避免换气被强行连线）
+        try:
+            no_merge = bool(getattr(self, '_retake_overlay_no_merge', True))
+        except Exception:
+            no_merge = True
+        if not no_merge:
+            try:
+                import numpy as _np
+                mgap = float(getattr(self, '_merge_gap_time', 0.20))
+                msemi = float(getattr(self, '_merge_gap_semi', 3.8))
+                merged = []
+                for ts, ps in segments_orig:
+                    if not ts:
+                        continue
+                    if merged:
+                        last_ts, last_ps = merged[-1]
+                        try:
+                            dt = float(ts[0]) - float(last_ts[-1])
+                            sdiff = abs((float(ps[0]) - float(last_ps[-1])) * 12.0)
+                        except Exception:
+                            dt = 999.0
+                            sdiff = 999.0
+                        if dt <= mgap and sdiff <= msemi:
+                            last_ts.extend(ts)
+                            last_ps.extend(ps)
+                            continue
+                    merged.append((list(ts), list(ps)))
+                segments_orig = merged
+            except Exception:
+                pass
+
+        # 主绘制的可视化平滑/抽样
+        def _prepare_segment_for_render(seg_times, seg_pitches):
+            try:
+                import numpy as _np
+                n = len(seg_times)
+                if n <= 2:
+                    return seg_times, seg_pitches
+                t = _np.asarray(seg_times, dtype=_np.float32)
+                y = _np.asarray(seg_pitches, dtype=_np.float32)
+                dt = _np.diff(t, prepend=t[0])
+                dy = _np.diff(y, prepend=y[0])
+                high_thr = float(getattr(self, '_high_pitch_threshold', 5.5))
+                beta_base = float(getattr(self, '_vis_ema_beta_base', 0.45))
+                beta_high_scale = float(getattr(self, '_vis_ema_beta_high_scale', 0.72))
+                dense_dt_thr = float(getattr(self, '_vis_dense_dt_thr', 0.006))
+                jitter_semi_thr = float(getattr(self, '_vis_jitter_semi_thr', 5.5))
+                min_step_base = float(getattr(self, '_vis_min_spacing_base', 0.0035))
+                min_step_high = float(getattr(self, '_vis_min_spacing_high', 0.0065))
+                slope_keep_semi = float(getattr(self, '_vis_keep_slope_semi', 10.0))
+                seg_cap = int(getattr(self, '_vis_segment_points_cap', 2400))
+                y_med = float(_np.median(y))
+                is_high = y_med >= high_thr
+                y_s = _np.empty_like(y)
+                y_s[0] = y[0]
+                for k in range(1, n):
+                    beta = beta_base
+                    if is_high:
+                        beta *= beta_high_scale
+                    if dt[k] < dense_dt_thr:
+                        beta *= 0.80
+                    if abs((y[k] - y[k-1]) * 12.0) > jitter_semi_thr and dt[k] < 0.020:
+                        beta *= 0.70
+                    beta = max(0.08, min(0.85, beta))
+                    y_s[k] = y_s[k-1] + beta * (y[k] - y_s[k-1])
+                min_step = min_step_high if is_high else min_step_base
+                keep_idx = [0]
+                last_keep_t = t[0]
+                for k in range(1, n-1):
+                    slope_semi = abs((y_s[k] - y_s[k-1]) * 12.0)
+                    if slope_semi >= slope_keep_semi:
+                        keep_idx.append(k)
+                        last_keep_t = t[k]
+                        continue
+                    if (t[k] - last_keep_t) >= min_step:
+                        keep_idx.append(k)
+                        last_keep_t = t[k]
+                if n-1 not in keep_idx:
+                    keep_idx.append(n-1)
+                rt = t[keep_idx].tolist()
+                rp = y_s[keep_idx].tolist()
+                if len(rt) > seg_cap:
+                    step = int(_np.ceil(len(rt) / seg_cap))
+                    rt = rt[::step]
+                    rp = rp[::step]
+                return rt, rp
+            except Exception:
+                return seg_times, seg_pitches
+
+        render_segments = []
+        for _seg_times, _seg_pitches in segments_orig:
+            r_t, r_p = _prepare_segment_for_render(_seg_times, _seg_pitches)
+            if r_t:
+                render_segments.append((r_t, r_p))
+
+        # 将渲染段展平成一条线（用 NaN 断开），并应用换气断开逻辑
+        times = []
+        pitches = []
+        strengths = []
+        try:
+            breath_gap = float(getattr(self, '_breath_gap_threshold', 0.14))
+        except Exception:
+            breath_gap = 0.14
+        if breath_gap < 0.0:
+            breath_gap = 0.0
+        try:
+            bridge_scale = float(getattr(self, '_bridge_time_scale', 1.15))
+        except Exception:
+            bridge_scale = 1.15
+        try:
+            bridge_semi_thr = float(getattr(self, '_bridge_semi_thr', 3.2))
+        except Exception:
+            bridge_semi_thr = 3.2
+        for idx, (seg_times, seg_pitches) in enumerate(render_segments):
+            if not seg_times:
+                continue
+            if times:
+                times.append(float('nan'))
+                pitches.append(float('nan'))
+                strengths.append(0.0)
+            if len(seg_times) >= 2:
+                lt, ly = [], []
+                for j, (tx, py) in enumerate(zip(seg_times, seg_pitches)):
+                    lt.append(tx)
+                    ly.append(py)
+                    if j + 1 < len(seg_times):
+                        dt_gap = float(seg_times[j+1]) - float(tx)
+                        if dt_gap > breath_gap:
+                            try:
+                                semi_jump = abs((float(seg_pitches[j+1]) - float(py)) * 12.0)
+                            except Exception:
+                                semi_jump = 999.0
+                            if not (dt_gap <= breath_gap * bridge_scale and semi_jump <= bridge_semi_thr):
+                                lt.append(float('nan'))
+                                ly.append(float('nan'))
+                times.extend(lt)
+                pitches.extend(ly)
+                strengths.extend([1.0] * len(lt))
+            else:
+                times.extend(seg_times)
+                pitches.extend(seg_pitches)
+                strengths.extend([1.0] * len(seg_times))
         if line is not None:
             try:
-                line.set_data(times, pitches)
-                line.set_color(self._retake_overlay_preview_color())
-                line.set_alpha(float(getattr(self, '_stable_line_alpha', 0.85)))
-                line.set_visible(True)
-                line.set_zorder(13)
+                if not times or not pitches:
+                    line.set_data([], [])
+                    line.set_visible(False)
+                else:
+                    line.set_data(times, pitches)
+                curve_rgb = tuple(c/255.0 for c in (0, 191, 255))
+                line.set_color(curve_rgb)
+                try:
+                    pl = getattr(self, 'pitch_line', None)
+                    alpha = pl.get_alpha() if pl is not None else None
+                except Exception:
+                    alpha = None
+                if alpha is None or float(alpha) <= 0.08:
+                    alpha = float(getattr(self, '_uniform_line_alpha', getattr(self, '_stable_line_alpha', 0.85)))
+                line.set_alpha(float(alpha))
+                try:
+                    line.set_linewidth(float(getattr(self, 'current_linewidth', 0.6)))
+                except Exception:
+                    pass
+                if times and pitches:
+                    line.set_visible(True)
+                    line.set_zorder(13)
             except Exception:
                 pass
         if scatter is not None:
             try:
-                offsets = np.column_stack((times, pitches))
+                # 轻量下采样散点：保持全范围可见但控制点数，避免边录边消失
+                try:
+                    scatter_cap = int(getattr(self, '_retake_overlay_preview_scatter_cap', 1200))
+                except Exception:
+                    scatter_cap = 1200
+                try:
+                    window_cap = int(getattr(self, '_window_points_downsample_target', 0) or 0)
+                except Exception:
+                    window_cap = 0
+                if window_cap > 0:
+                    scatter_cap = min(scatter_cap, window_cap)
+                if scatter_cap <= 0:
+                    scatter_cap = 1200
+                # 参照主绘制逻辑：视口内密集段下采样
+                try:
+                    x0, x1 = self.ax.get_xlim() if hasattr(self, 'ax') else (None, None)
+                except Exception:
+                    x0, x1 = None, None
+                dense_thr = int(getattr(self, '_dense_segment_threshold', 400))
+                cap_in_view = int(getattr(self, '_segment_points_cap_in_view', 450))
+                if cap_in_view > 0:
+                    scatter_cap = min(scatter_cap, cap_in_view)
+                s_times = []
+                s_pitches = []
+                for seg_times, seg_pitches in render_segments:
+                    if not seg_times:
+                        continue
+                    if x0 is not None and x1 is not None:
+                        if seg_times[-1] < x0 or seg_times[0] > x1:
+                            continue
+                    # 视口内密集段按主逻辑抽样
+                    if len(seg_times) > dense_thr and scatter_cap > 0:
+                        t_arr = np.asarray(seg_times, dtype=np.float32)
+                        y_arr = np.asarray(seg_pitches, dtype=np.float32)
+                        if x0 is not None and x1 is not None:
+                            mask = (t_arr >= x0) & (t_arr <= x1)
+                            t_arr = t_arr[mask]
+                            y_arr = y_arr[mask]
+                        if t_arr.size > 0:
+                            step = max(1, int(math.ceil(t_arr.size / float(scatter_cap))))
+                            t_arr = t_arr[::step]
+                            y_arr = y_arr[::step]
+                        s_times.extend(t_arr.tolist())
+                        s_pitches.extend(y_arr.tolist())
+                    else:
+                        if x0 is not None and x1 is not None:
+                            for tv, yv in zip(seg_times, seg_pitches):
+                                if tv < x0 or tv > x1:
+                                    continue
+                                s_times.append(tv)
+                                s_pitches.append(yv)
+                        else:
+                            s_times.extend(seg_times)
+                            s_pitches.extend(seg_pitches)
+                offsets = np.column_stack((s_times, s_pitches))
                 scatter.set_offsets(offsets)
-                scatter.set_sizes(np.full(len(points), self._retake_overlay_point_size(), dtype=float))
+                try:
+                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                except Exception:
+                    base_w = 0.6
+                try:
+                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                except Exception:
+                    zoom = 1.0
+                diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                s_val_global = float(diameter ** 2)
+                scatter.set_sizes(np.full(len(s_times), s_val_global, dtype=float))
                 detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
                 scatter.set_color(detail_rgb)
-                scatter.set_alpha(0.98)
+                scatter.set_alpha(0.98 if offsets.size > 0 else 0.0)
                 scatter.set_linewidths(0.0)
+                scatter.set_edgecolors('none')
                 scatter.set_visible(True)
                 scatter.set_zorder(14)
             except Exception:
@@ -23870,6 +24379,11 @@ class ECGStylePitchVisualizer(QWidget):
                 overlay_active = bool(getattr(self, '_retake_overlay_preview_active', False))
             except Exception:
                 overlay_active = False
+            countdown_freeze = False
+            try:
+                countdown_freeze = bool(getattr(self, '_retake_countdown_active', False) and getattr(self, '_retake_countdown_block_add', False))
+            except Exception:
+                countdown_freeze = False
             want_center = (cur_t > getattr(self, 'center_display_time', 8.0) and
                            getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
                            (not overlay_active))
@@ -23917,6 +24431,12 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         v_target = time_start
                 v_target = min(max(time_start, v_target), time_end)
+                if countdown_freeze:
+                    try:
+                        frozen_v = float(getattr(self, '_retake_overlay_preview_range', (time_start, time_end))[0])
+                    except Exception:
+                        frozen_v = time_start
+                    v_target = min(max(time_start, frozen_v), time_end)
             elif _ph_x is not None:
                 v_target = min(max(time_start, _ph_x), time_end)
             elif want_center:
@@ -23932,6 +24452,23 @@ class ECGStylePitchVisualizer(QWidget):
                     v_target = (time_start + time_end) * 0.5
             else:
                 v_target = min(max(time_start, cur_t), time_end)
+
+            # 倒计时冻结：纵向线固定在选区左框线，横向线固定在进入倒计时瞬间的音高
+            if countdown_freeze:
+                try:
+                    frozen_v = float(getattr(self, '_retake_overlay_preview_range', (v_target, v_target))[0])
+                except Exception:
+                    frozen_v = v_target
+                try:
+                    self._retake_countdown_frozen_vx = float(frozen_v)
+                except Exception:
+                    pass
+            else:
+                if hasattr(self, '_retake_countdown_frozen_vx'):
+                    try:
+                        self._retake_countdown_frozen_vx = None
+                    except Exception:
+                        pass
 
             # 轻量平滑与最大步长限制：仅在“未进入中心模式”时生效；中心模式锁定在像素中心
             try:
@@ -23979,12 +24516,26 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 横向：自适应平滑的目标 y（提灵敏，降抖动）
             try:
-                if overlay_active and getattr(self, '_retake_overlay_last_point_y', None) is not None:
+                if countdown_freeze:
+                    frozen_h = getattr(self, '_retake_countdown_frozen_hy', None)
+                    if frozen_h is None:
+                        frozen_h = float(self.last_active_pitch_y)
+                        try:
+                            self._retake_countdown_frozen_hy = float(frozen_h)
+                        except Exception:
+                            pass
+                    h_target = float(frozen_h)
+                elif overlay_active and getattr(self, '_retake_overlay_last_point_y', None) is not None:
                     h_target = float(getattr(self, '_retake_overlay_last_point_y'))
                 else:
                     h_target = float(self.last_active_pitch_y)
             except Exception:
                 h_target = float(getattr(self, 'current_pitch_y', self.y_view_center))
+            if not countdown_freeze and hasattr(self, '_retake_countdown_frozen_hy'):
+                try:
+                    self._retake_countdown_frozen_hy = None
+                except Exception:
+                    pass
             try:
                 base_h_alpha = float(params.get('base_alpha', 0.40))
                 base_h_step = float(params.get('base_max_step', 0.12))
@@ -35120,16 +35671,6 @@ class IntegratedRecordingInterface(QMainWindow):
                 return True
         except Exception:
             pass
-        try:
-            if bool(getattr(self, 'retake_selection_active', False)):
-                return True
-        except Exception:
-            pass
-        try:
-            if getattr(self, '_retake_active_range', None):
-                return True
-        except Exception:
-            pass
         # overlay 正在接管输入（选区重录/覆盖预览）时，必须保留全局时间轴，
         # 否则 on_recording_progress/_enforce_active_retake_bounds 可能把 recording_duration
         # 回退到选区末端或预卷起点，造成：
@@ -35156,8 +35697,6 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             if viz is not None:
                 if bool(getattr(viz, '_retake_countdown_preserve_future', False)):
-                    return True
-                if bool(getattr(viz, 'retake_selection_active', False)):
                     return True
                 # visualizer 侧倒计时也视为需要保留（有时 host 标志位滞后）
                 if bool(getattr(viz, '_retake_countdown_active', False)):
@@ -38523,6 +39062,13 @@ class IntegratedRecordingInterface(QMainWindow):
                     wall_val = wall_val / 1e9
                 elif wall_val > 1e11:
                     wall_val = wall_val / 1000.0
+                # 额外兜底：若仍可能是毫秒时间戳（如 3000 表示 3s），做一次范围判断
+                try:
+                    span = float(max(0.1, float(state.end) - float(state.start)))
+                except Exception:
+                    span = 5.0
+                if wall_val > 1000.0 and wall_val < 1e9 and span <= 120.0:
+                    wall_val = wall_val / 1000.0
                 anchor_wall = getattr(self, '_retake_overlay_wall_anchor', None)
                 anchor_time = getattr(self, '_retake_overlay_time_anchor', None)
                 if anchor_wall is None or anchor_time is None:
@@ -38531,6 +39077,20 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._retake_overlay_wall_anchor = anchor_wall
                     self._retake_overlay_time_anchor = anchor_time
                 delta = wall_val - float(anchor_wall)
+                # 若 delta 异常过大，尝试按毫秒缩放（防止过早粘到右边界）
+                try:
+                    span = float(max(0.1, float(state.end) - float(state.start)))
+                except Exception:
+                    span = 5.0
+                if delta > (span * 3.0) and wall_val < 1e9:
+                    try:
+                        wall_val = wall_val / 1000.0
+                        if float(anchor_wall) > 1000.0:
+                            anchor_wall = float(anchor_wall) / 1000.0
+                            self._retake_overlay_wall_anchor = anchor_wall
+                        delta = wall_val - float(anchor_wall)
+                    except Exception:
+                        pass
                 if delta < 0 and abs(delta) < 0.35:
                     delta = 0.0
                 axis_time = float(anchor_time + max(0.0, delta))
@@ -38544,6 +39104,29 @@ class IntegratedRecordingInterface(QMainWindow):
                 axis_time = float(virtual)
             except Exception:
                 axis_time = float(state.start)
+        # 结合音频推进时间：若墙钟异常跳变，则以音频推进为准
+        try:
+            virtual = getattr(self, '_retake_overlay_virtual_time', None)
+        except Exception:
+            virtual = None
+        if virtual is not None:
+            try:
+                v_time = float(virtual)
+            except Exception:
+                v_time = None
+            if v_time is not None:
+                try:
+                    span = float(max(0.1, float(state.end) - float(state.start)))
+                except Exception:
+                    span = 5.0
+                if axis_time is None:
+                    axis_time = v_time
+                else:
+                    try:
+                        if abs(float(axis_time) - v_time) > max(0.08, span * 0.15):
+                            axis_time = v_time
+                    except Exception:
+                        pass
         # 防止时间回跳，保持覆盖点单调递增
         try:
             last_ts = float(getattr(state, 'last_timestamp', None))
@@ -38551,9 +39134,10 @@ class IntegratedRecordingInterface(QMainWindow):
             last_ts = None
         if last_ts is not None:
             try:
-                min_step = max(1e-3, min(0.04, 1.0 / float(sr)))
+                min_spacing = float(getattr(self, '_retake_overlay_preview_min_spacing', 0.001))
+                min_step = max(min_spacing, max(1e-3, min(0.04, 1.0 / float(sr))))
             except Exception:
-                min_step = 0.01
+                min_step = 0.001
             if axis_time <= last_ts:
                 axis_time = float(min(state.end, last_ts + min_step))
         axis_time = float(min(state.end, max(state.start, axis_time)))
@@ -38764,6 +39348,24 @@ class IntegratedRecordingInterface(QMainWindow):
             return False
         if not self._retake_overlay_active():
             return False
+        # 倒计时/预卷阶段：一律只消费、不写入，避免在左框线堆积
+        try:
+            if bool(getattr(self, '_retake_countdown_in_progress', False)) or bool(getattr(self, '_retake_countdown_active', False)):
+                return True
+            if bool(getattr(self, '_retake_countdown_block_add', False)):
+                return True
+        except Exception:
+            pass
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                if (not self._retake_is_recording_phase()) and (bool(getattr(viz, '_retake_countdown_active', False)) or bool(getattr(viz, '_retake_countdown_block_add', False))):
+                    return True
+            except Exception:
+                pass
         # 覆盖会话已激活：无论是否进入正式录制阶段，都要“消费”输入，
         # 否则倒计时/预卷期间会把麦克风数据继续写入主缓冲导致录音时长虚增。
         accepting = bool(getattr(self, '_retake_overlay_accepting_input', False))
@@ -38817,6 +39419,24 @@ class IntegratedRecordingInterface(QMainWindow):
             return False
         if not self._retake_overlay_active():
             return False
+        # 倒计时/预卷阶段：一律只消费、不写入，避免在左框线堆积
+        try:
+            if bool(getattr(self, '_retake_countdown_in_progress', False)) or bool(getattr(self, '_retake_countdown_active', False)):
+                return True
+            if bool(getattr(self, '_retake_countdown_block_add', False)):
+                return True
+        except Exception:
+            pass
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                if (not self._retake_is_recording_phase()) and (bool(getattr(viz, '_retake_countdown_active', False)) or bool(getattr(viz, '_retake_countdown_block_add', False))):
+                    return True
+            except Exception:
+                pass
         # 与音频一致：倒计时/预卷阶段也必须“消费”音高包，避免 UI 走常规绘制路径
         # 把点写到主时间线（例如 24-29s）造成“选区外被影响”。
         accepting = bool(getattr(self, '_retake_overlay_accepting_input', False))
@@ -38956,7 +39576,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._retake_overlay_preview_payload.clear()
             return
         now = time.time()
-        if (not force) and (now - self._retake_overlay_last_visual_refresh) < 0.02:
+        min_interval = float(getattr(self, '_retake_overlay_preview_min_interval', 0.033))
+        if min_interval < 0.01:
+            min_interval = 0.01
+        if (not force) and (now - self._retake_overlay_last_visual_refresh) < min_interval:
             return
         payload = self._retake_overlay_preview_payload[:]
         self._retake_overlay_preview_payload.clear()
@@ -39532,6 +40155,10 @@ class IntegratedRecordingInterface(QMainWindow):
             'original_pitch_count': int(getattr(state, 'original_pitch_count', len(getattr(self, 'pitch_history', []) or []))),
             'original_time_offset': float(getattr(state, 'original_time_offset', 0.0)),
         }
+        try:
+            committed_preview_packets = list(state.pitch_packets or [])
+        except Exception:
+            committed_preview_packets = []
         take_id = self._retake_overlay_history_push(history_entry)
         self._persist_retake_event('commit', start=state.start, end=state.end, take=take_id)
         self._reset_retake_overlay_state()
@@ -39570,6 +40197,65 @@ class IntegratedRecordingInterface(QMainWindow):
                     viz.canvas.draw_idle()
         except Exception:
             pass
+        # 选区重录窗口仍开启时，保证选区内可见本次重录的点（即使主线尚未刷新到位）
+        try:
+            win = getattr(self, '_retake_control_win', None)
+        except Exception:
+            win = None
+        if win is not None and viz is not None:
+            try:
+                setattr(viz, '_retake_overlay_preview_enabled', True)
+            except Exception:
+                pass
+            try:
+                viz.activate_retake_overlay_preview(float(state.start), float(state.end), keep_points=False)
+            except Exception:
+                pass
+            try:
+                packets = []
+                for pkt in committed_preview_packets:
+                    if not isinstance(pkt, dict):
+                        continue
+                    payload = dict(pkt)
+                    if '_retake_time' not in payload:
+                        try:
+                            payload['_retake_time'] = float(payload.get('timestamp', payload.get('global_time', 0.0)))
+                        except Exception:
+                            payload['_retake_time'] = None
+                    payload['_retake_force_preview'] = True
+                    packets.append(payload)
+                if not packets and hasattr(viz, 'collect_pitch_points_in_range'):
+                    records = list(viz.collect_pitch_points_in_range(float(state.start), float(state.end)))
+                    for rec in records:
+                        try:
+                            t_val, p_val, c_val, n_val = rec
+                        except Exception:
+                            continue
+                        try:
+                            p_num = float(p_val)
+                        except Exception:
+                            p_num = None
+                        y_val = None
+                        if p_num is not None:
+                            if p_num > 20.0 and hasattr(viz, '_freq_to_axis_y'):
+                                try:
+                                    y_val = viz._freq_to_axis_y(p_num)
+                                except Exception:
+                                    y_val = None
+                            else:
+                                y_val = p_num
+                        pkt = {
+                            '_retake_time': float(t_val),
+                            'pitch_y': float(y_val) if y_val is not None else None,
+                            'confidence': float(c_val) if c_val is not None else 0.6,
+                            'note_info': n_val,
+                            '_retake_force_preview': True,
+                        }
+                        packets.append(pkt)
+                if packets:
+                    viz.render_retake_overlay_points(packets, force_preview=True)
+            except Exception:
+                pass
         win = getattr(self, '_retake_control_win', None)
         if win is not None:
             try:
@@ -40471,6 +41157,40 @@ class IntegratedRecordingInterface(QMainWindow):
                 viz._retake_countdown_display_pos = None
             except Exception:
                 pass
+            # 清理倒计时覆盖层与高亮，避免动画残留
+            try:
+                for attr in ('_retake_countdown_bg', '_retake_countdown_hint', '_retake_countdown_text'):
+                    try:
+                        overlay = getattr(viz, attr, None)
+                    except Exception:
+                        overlay = None
+                    if overlay is not None and hasattr(overlay, 'set_alpha'):
+                        try:
+                            overlay.set_alpha(0.0)
+                        except Exception:
+                            pass
+                for attr in ('_retake_countdown_line', '_retake_countdown_progress', '_retake_countdown_start_line', '_retake_countdown_goal_line'):
+                    try:
+                        obj = getattr(viz, attr, None)
+                    except Exception:
+                        obj = None
+                    if obj is not None:
+                        try:
+                            if hasattr(obj, 'remove'):
+                                obj.remove()
+                        except Exception:
+                            pass
+                    try:
+                        setattr(viz, attr, None)
+                    except Exception:
+                        pass
+                if hasattr(viz, '_restore_retake_countdown_highlight'):
+                    try:
+                        viz._restore_retake_countdown_highlight()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             for attr in (
                 '_retake_countdown_line',
                 '_retake_countdown_progress',
@@ -41121,6 +41841,33 @@ class IntegratedRecordingInterface(QMainWindow):
             state_changed = (paused_flag != prev_paused)
             self._backing_paused = paused_flag
 
+            if paused_flag:
+                # 先对齐录音时长到当前播放进度，避免暂停后回退到旧基线
+                try:
+                    cur_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                except Exception:
+                    cur_time = 0.0
+                try:
+                    viz = getattr(self, 'visualizer', None)
+                except Exception:
+                    viz = None
+                try:
+                    if viz is not None:
+                        cur_time = max(cur_time, float(getattr(viz, 'current_global_time', 0.0) or 0.0))
+                except Exception:
+                    pass
+                try:
+                    self.recording_duration = max(float(getattr(self, 'recording_duration', 0.0) or 0.0), cur_time)
+                    self.current_duration = float(self.recording_duration)
+                    self.current_global_time = float(self.recording_duration)
+                except Exception:
+                    pass
+                try:
+                    if viz is not None:
+                        viz.current_global_time = float(getattr(self, 'recording_duration', cur_time) or cur_time)
+                except Exception:
+                    pass
+
             if paused_flag and state_changed:
                 try:
                     self._stop_backing_playback()
@@ -41165,6 +41912,22 @@ class IntegratedRecordingInterface(QMainWindow):
                     pause_sec = 0.0
                 pause_sec = float(max(0.0, pause_sec))
                 self._backing_pause_position_sec = pause_sec
+                try:
+                    dur = float(getattr(self, 'recording_duration', 0.0) or 0.0)
+                except Exception:
+                    dur = 0.0
+                try:
+                    dur = max(dur, pause_sec)
+                    self.recording_duration = dur
+                    self.current_duration = float(dur)
+                    self.current_global_time = float(dur)
+                except Exception:
+                    pass
+                try:
+                    if viz is not None:
+                        viz.current_global_time = float(dur)
+                except Exception:
+                    pass
                 if state_changed and sr and sr > 0:
                     try:
                         sample_idx = int(round(pause_sec * sr))
@@ -42303,6 +43066,16 @@ class IntegratedRecordingInterface(QMainWindow):
                 if ok:
                     # 标记全局暂停，供检测/显示层早退
                     self.is_paused = True
+                    # 暂停前对齐录音时长，避免回录后暂停时回退到旧基线
+                    try:
+                        cur_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    except Exception:
+                        cur_time = 0.0
+                    try:
+                        self.recording_duration = max(float(getattr(self, 'recording_duration', 0.0) or 0.0), cur_time)
+                        self.current_duration = float(self.recording_duration)
+                    except Exception:
+                        pass
                     try:
                         if getattr(self, '_pending_retake_resume', False) or getattr(self, '_retake_countdown_pending_resume', False):
                             self._require_manual_retake_resume("main-pause")
@@ -42941,7 +43714,7 @@ class IntegratedRecordingInterface(QMainWindow):
                                             rng = None
                                         if rng and len(rng) >= 2:
                                             try:
-                                                viz.activate_retake_overlay_preview(float(rng[0]), float(rng[1]))
+                                                viz.activate_retake_overlay_preview(float(rng[0]), float(rng[1]), keep_points=True)
                                             except Exception:
                                                 pass
                                     payload = dict(pitch_data)
