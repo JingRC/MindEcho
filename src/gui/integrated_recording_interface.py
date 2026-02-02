@@ -11106,6 +11106,7 @@ class ECGStylePitchVisualizer(QWidget):
             'fft_log': False,
             'queue_log': False,
             'artist_dump': False,
+            'hover_magnifier_log': False,
             # 选区重录/倒计时可视化诊断（默认关闭，避免刷屏）
             'retake_visual_log': False
         }
@@ -11200,6 +11201,33 @@ class ECGStylePitchVisualizer(QWidget):
         self._hover_ring = None   # PathCollection (scatter)
         self._hover_highlight_last_xy = None
 
+        # 自定义“蓝色羽毛”鼠标指针
+        self._cursor_feather_blue = None
+        self._cursor_is_feather = False
+        # 放大镜（局部放大视图）
+        self._magnifier_ax = None          # inset axes
+        self._magnifier_border = None      # 圆形边框 Patch
+        self._magn_line = None             # 局部放大线（截图式后保持隐藏）
+        self._magn_points = None           # 局部放大散点（截图式后保持隐藏）
+        self._magn_image = None            # 镜片截图图像 (AxesImage)
+        self._magn_hi_ring = None          # 放大区悬停高亮环
+        self._magn_text = None             # 放大区内的说明文字
+        self._magn_size_px = 180           # 放大镜直径（像素）
+        self._magn_zoom = 2.6              # 放大倍率（相对主视图/像素）
+        # 放大镜窗口：X 轴固定约 2 秒宽（用户需求：显示约 1 秒邻域，面板长度约其 2 倍）；Y 轴按像素缩放
+        self._magn_target_window_sec = 2.0  # 镜内 X 轴宽度（秒）
+        self._magn_focus_window_sec = 1.0   # 镜内“焦点”参考宽度（秒），用于淡色高亮带
+        self._magn_focus_band = None        # 镜内 1 秒淡色带（补初始化）
+        self._magn_vline = None             # 镜内垂直投影线（补初始化）
+        self._magn_visible = False
+        # 主轴备用放大镜（AnnotationBbox + OffsetImage）
+        self._magn_ab = None
+        self._magn_ab_image = None
+        self._magn_ab_frame = None
+        # Qt 叠加放大镜（最终兜底显示）
+        self._magn_overlay_label = None
+        self._magn_overlay_window = None
+
         # overlay 预览点：跨线程信号投递（自动排队到 GUI 线程）
         try:
             self.retake_overlay_points.connect(self._on_retake_overlay_points)
@@ -11233,25 +11261,6 @@ class ECGStylePitchVisualizer(QWidget):
             self.render_retake_overlay_points(payload)  # type: ignore[arg-type]
         except Exception:
             pass
-        # 自定义“蓝色羽毛”鼠标指针
-        self._cursor_feather_blue = None
-        self._cursor_is_feather = False
-        # 放大镜（局部放大视图）
-        self._magnifier_ax = None          # inset axes
-        self._magnifier_border = None      # 圆形边框 Patch
-        self._magn_line = None             # 局部放大线（截图式后保持隐藏）
-        self._magn_points = None           # 局部放大散点（截图式后保持隐藏）
-        self._magn_image = None            # 镜片截图图像 (AxesImage)
-        self._magn_hi_ring = None          # 放大区悬停高亮环
-        self._magn_text = None             # 放大区内的说明文字
-        self._magn_size_px = 180           # 放大镜直径（像素）
-        self._magn_zoom = 2.6              # 放大倍率（相对主视图/像素）
-        # 放大镜窗口：X 轴固定约 2 秒宽（用户需求：显示约 1 秒邻域，面板长度约其 2 倍）；Y 轴按像素缩放
-        self._magn_target_window_sec = 2.0  # 镜内 X 轴宽度（秒）
-        self._magn_focus_window_sec = 1.0   # 镜内“焦点”参考宽度（秒），用于淡色高亮带
-        self._magn_focus_band = None        # 镜内 1 秒淡色带（补初始化）
-        self._magn_vline = None             # 镜内垂直投影线（补初始化）
-        self._magn_visible = False
         # 显示诊断容器
         self._diag_last_display_time = None
         self._diag_display_intervals = []
@@ -13280,6 +13289,12 @@ class ECGStylePitchVisualizer(QWidget):
                 continue
             if key in ('pitch', 'pitch_value') and candidate > 20.0:
                 y_val = self._freq_to_axis_y(candidate)
+            elif key == 'pitch_semitones' and candidate > 20.0:
+                # pitch_semitones 常为 MIDI 编号（0-127），需映射到 0-8 八度轴
+                try:
+                    y_val = max(0.0, min(8.0, (candidate - 12.0) / 12.0))
+                except Exception:
+                    y_val = None
             else:
                 y_val = candidate
             if y_val is not None:
@@ -13804,6 +13819,18 @@ class ECGStylePitchVisualizer(QWidget):
             bridge_semi_thr = float(getattr(self, '_bridge_semi_thr', 3.2))
         except Exception:
             bridge_semi_thr = 3.2
+        try:
+            jump_semi_thr = float(getattr(self, '_retake_overlay_jump_break_semi', getattr(self, '_max_step_semitones', 7.0) * 1.25))
+        except Exception:
+            jump_semi_thr = 8.75
+        try:
+            jump_dt = float(getattr(self, '_retake_overlay_jump_break_dt', 0.12))
+        except Exception:
+            jump_dt = 0.12
+        if jump_semi_thr < 0.0:
+            jump_semi_thr = 0.0
+        if jump_dt < 0.0:
+            jump_dt = 0.0
         for idx, (seg_times, seg_pitches) in enumerate(render_segments):
             if not seg_times:
                 continue
@@ -13824,6 +13851,15 @@ class ECGStylePitchVisualizer(QWidget):
                             except Exception:
                                 semi_jump = 999.0
                             if not (dt_gap <= breath_gap * bridge_scale and semi_jump <= bridge_semi_thr):
+                                lt.append(float('nan'))
+                                ly.append(float('nan'))
+                        else:
+                            # 参考主绘制：短时间内出现超大跳变时断线，避免跨幅过大的连线
+                            try:
+                                semi_jump = abs((float(seg_pitches[j+1]) - float(py)) * 12.0)
+                            except Exception:
+                                semi_jump = 0.0
+                            if jump_semi_thr > 0.0 and dt_gap <= jump_dt and semi_jump >= jump_semi_thr:
                                 lt.append(float('nan'))
                                 ly.append(float('nan'))
                 times.extend(lt)
@@ -16030,9 +16066,39 @@ class ECGStylePitchVisualizer(QWidget):
         else:
             self.selection_mode = None
             self.selection_active = False
+        # 退出重录：清除覆盖预览与冻结，确保纵向辅助线回到当前录制位置
+        try:
+            self._retake_playhead_freeze = None
+        except Exception:
+            pass
+        try:
+            self.clear_retake_overlay_preview()
+        except Exception:
+            pass
+        try:
+            if not self.listenback_enabled:
+                target_t = float(getattr(self, 'current_global_time', getattr(self, 'last_pitch_time', 0.0)))
+                if not math.isfinite(target_t):
+                    target_t = float(getattr(self, 'last_pitch_time', 0.0))
+                self._ensure_playhead()
+                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                    self._lb_playhead.set_xdata([target_t, target_t])
+                    self._lb_playhead.set_ydata([0.0, 1.0])
+                    self._lb_playhead.set_visible(True)
+                    self._lb_playhead.set_zorder(148)
+                try:
+                    self._lb_user_moved_playhead = False
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self._sel_hover_side = None
         try:
             self.update_listenback_artists()
+        except Exception:
+            pass
+        try:
+            self.update_guides()
         except Exception:
             pass
         if hasattr(self, 'canvas'):
@@ -18208,6 +18274,12 @@ class ECGStylePitchVisualizer(QWidget):
         # 创建图形
         self.figure = Figure(figsize=(14, 8), facecolor=self.bg_color)
         self.canvas = FigureCanvas(self.figure)
+
+        # 预创建叠加放大镜标签，避免悬停时创建失败
+        try:
+            self._ensure_magn_overlay_label()
+        except Exception:
+            pass
         
         # 创建坐标轴
         self.ax = self.figure.add_subplot(111, facecolor=self.bg_color)
@@ -19727,6 +19799,18 @@ class ECGStylePitchVisualizer(QWidget):
     # ================= 悬停提示实现 =================
     def _hover_gating_allowed(self) -> bool:
         try:
+            # 0) 选区/回听/重录交互阶段：允许悬停放大镜（避免被录音态误判而关闭）
+            try:
+                if bool(getattr(self, 'selection_active', False)) or bool(getattr(self, 'retake_selection_active', False)) or bool(getattr(self, 'listenback_enabled', False)):
+                    return True
+            except Exception:
+                pass
+            # 0.5) 外部/伴奏/录音暂停标记：允许悬停浏览
+            try:
+                if bool(getattr(self, '_external_paused', False)) or bool(getattr(self, 'is_backing_paused', False)) or bool(getattr(self, 'is_recording_paused', False)):
+                    return True
+            except Exception:
+                pass
             # 1) 直接使用本组件自身的暂停/录音状态（优先级最高，最直观符合用户期望）
             try:
                 if bool(getattr(self, 'is_paused', False)):
@@ -20129,7 +20213,7 @@ class ECGStylePitchVisualizer(QWidget):
                 # 可见的浅蓝色细边框（满足“最外层浅蓝色很细边框”的视觉要求）
                 try:
                     border = Circle((0.5, 0.5), 0.5, transform=ax.transAxes, fill=False,
-                                     edgecolor=(0.45, 0.75, 1.0, 0.38), linewidth=0.9, zorder=9980)
+                                     edgecolor=(0.50, 0.80, 1.0, 0.85), linewidth=1.1, zorder=9980)
                     ax.add_patch(border)
                     self._magnifier_visible_ring = border
                 except Exception:
@@ -20215,6 +20299,27 @@ class ECGStylePitchVisualizer(QWidget):
             if ax is None or ax_main is None or event is None:
                 return
             fig = self.figure
+            # 主动隐藏所有叠加通道，确保只显示 inset 放大镜
+            try:
+                if self._magn_ab is not None:
+                    self._magn_ab.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if self._magn_ab_frame is not None:
+                    self._magn_ab_frame.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if self._magn_overlay_label is not None:
+                    self._magn_overlay_label.hide()
+            except Exception:
+                pass
+            try:
+                if self._magn_overlay_window is not None:
+                    self._magn_overlay_window.hide()
+            except Exception:
+                pass
             # 计算像素尺寸占比
             w_frac = max(0.06, min(0.6, float(self._magn_size_px) / float(fig.bbox.width)))
             h_frac = max(0.06, min(0.6, float(self._magn_size_px) / float(fig.bbox.height)))
@@ -20321,7 +20426,7 @@ class ECGStylePitchVisualizer(QWidget):
                 col0 = int(max(0, min(fig_w_px, ix0)))
                 col1 = int(max(0, min(fig_w_px, ix1)))
                 if row1 <= row0 or col1 <= col0:
-                    # 无有效区域，直接隐藏
+                    # 无有效区域：直接隐藏
                     if self._magn_image is not None:
                         self._magn_image.set_visible(False)
                     self._magn_visible = False
@@ -20400,7 +20505,7 @@ class ECGStylePitchVisualizer(QWidget):
                     xL_eff, xR_eff, yB_eff, yT_eff = xL, xR, yB, yT
                 _magn_eff_window = (xL_eff, xR_eff, yB_eff, yT_eff)
                 self._magn__last_eff_window = _magn_eff_window
-                # 更新镜片图像，使用归一 extent 以便 (fx,fy) 直接用轴坐标
+                # 更新镜片图像（截图模式）
                 if self._magn_image is not None:
                     self._magn_image.set_data(crop)
                     try:
@@ -20495,8 +20600,466 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             self._magn_visible = False
+            try:
+                if self._magn_ab is not None:
+                    self._magn_ab.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if self._magn_ab_frame is not None:
+                    self._magn_ab_frame.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if self._magn_overlay_label is not None:
+                    self._magn_overlay_label.hide()
+            except Exception:
+                pass
+            try:
+                if self._magn_overlay_window is not None:
+                    self._magn_overlay_window.hide()
+            except Exception:
+                pass
         except Exception:
             pass
+
+    # ============ Qt 叠加放大镜（兜底显示） ============
+    def _ensure_magn_overlay_label(self):
+        try:
+            if self._magn_overlay_label is not None:
+                return self._magn_overlay_label
+            try:
+                from PyQt6.QtWidgets import QLabel
+                from PyQt6.QtCore import Qt
+            except Exception:
+                from PyQt5.QtWidgets import QLabel  # type: ignore
+                from PyQt5.QtCore import Qt  # type: ignore
+            # 使用主窗口作为父控件，避免被画布遮挡
+            lbl = QLabel(self)
+            try:
+                lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                lbl.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                lbl.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            except Exception:
+                try:
+                    lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                    lbl.setAttribute(Qt.WA_NoSystemBackground, True)
+                    lbl.setAttribute(Qt.WA_TranslucentBackground, True)
+                except Exception:
+                    pass
+            lbl.setStyleSheet("background: transparent;")
+            lbl.hide()
+            self._magn_overlay_label = lbl
+            return lbl
+        except Exception as _e:
+            try:
+                if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                    print(f"[HOVER_DIAG] overlay=0 reason=create_fail err={_e}")
+            except Exception:
+                pass
+            self._magn_overlay_label = None
+            return None
+
+    def _ensure_magn_overlay_window(self):
+        try:
+            if self._magn_overlay_window is not None:
+                return self._magn_overlay_window
+            try:
+                from PyQt6.QtWidgets import QLabel
+                from PyQt6.QtCore import Qt
+                from PyQt6.QtGui import QGuiApplication
+            except Exception:
+                from PyQt5.QtWidgets import QLabel  # type: ignore
+                from PyQt5.QtCore import Qt  # type: ignore
+                from PyQt5.QtGui import QGuiApplication  # type: ignore
+            w = QLabel(None)
+            try:
+                w.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.ToolTip | Qt.WindowType.WindowStaysOnTopHint)
+                w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                w.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                try:
+                    w.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    w.setWindowFlags(Qt.FramelessWindowHint | Qt.ToolTip | Qt.WindowStaysOnTopHint)
+                    w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                    w.setAttribute(Qt.WA_TranslucentBackground, True)
+                except Exception:
+                    pass
+            try:
+                w.setScaledContents(True)
+            except Exception:
+                pass
+            w.hide()
+            self._magn_overlay_window = w
+            return w
+        except Exception:
+            self._magn_overlay_window = None
+            return None
+
+    def _update_magn_overlay_window(self, event, pm=None):
+        try:
+            win = self._ensure_magn_overlay_window()
+            if win is None:
+                return
+            canvas = getattr(self, 'canvas', None)
+            if canvas is None or event is None:
+                return
+            try:
+                from PyQt6.QtCore import QPoint
+                from PyQt6.QtGui import QGuiApplication
+            except Exception:
+                from PyQt5.QtCore import QPoint  # type: ignore
+                from PyQt5.QtGui import QGuiApplication  # type: ignore
+            try:
+                dpr = float(getattr(canvas, 'devicePixelRatio', lambda: 1.0)())
+            except Exception:
+                try:
+                    dpr = float(getattr(canvas, 'devicePixelRatioF', lambda: 1.0)())
+                except Exception:
+                    dpr = 1.0
+            if dpr <= 0:
+                dpr = 1.0
+            cx = float(event.x) / dpr
+            cy = float(event.y) / dpr
+            ch = float(canvas.height()) if canvas is not None else 0.0
+            qt_y = (ch - cy) if ch > 0 else cy
+            size_px = int(getattr(self, '_magn_size_px', 180))
+            size_px = max(80, min(320, size_px))
+            win.resize(size_px, size_px)
+            # 圆形镜框样式
+            win.setStyleSheet(
+                "background: transparent;"
+                f"border: 2px solid rgba(128,200,255,230);"
+                f"border-radius: {size_px//2}px;"
+            )
+            if pm is not None:
+                try:
+                    win.setPixmap(pm)
+                except Exception:
+                    pass
+            # 全局坐标
+            try:
+                global_pos = canvas.mapToGlobal(QPoint(int(cx), int(qt_y)))
+            except Exception:
+                return
+            x = int(global_pos.x() + 24)
+            y = int(global_pos.y() + 24)
+            # 限制在屏幕可见区域
+            try:
+                screen = QGuiApplication.primaryScreen()
+                if screen is not None:
+                    geo = screen.availableGeometry()
+                    max_x = int(geo.x() + geo.width() - size_px)
+                    max_y = int(geo.y() + geo.height() - size_px)
+                    x = max(int(geo.x()), min(x, max_x))
+                    y = max(int(geo.y()), min(y, max_y))
+                    # 调试：固定到右上角，排除坐标偏移
+                    try:
+                        if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                            x = max_x
+                            y = int(geo.y())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                win.move(x, y)
+                win.show()
+                win.raise_()
+                try:
+                    if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                        print(f"[HOVER_DIAG] overlay_window_pos=({x},{y}) size={size_px}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _update_magn_overlay_label(self, event, crop, x: float = None, y: float = None):
+        try:
+            lbl = self._ensure_magn_overlay_label()
+            if lbl is None:
+                try:
+                    if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                        print("[HOVER_DIAG] overlay=0 reason=no_label")
+                except Exception:
+                    pass
+                return
+            try:
+                import numpy as _np
+            except Exception:
+                try:
+                    if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                        print("[HOVER_DIAG] overlay=0 reason=no_numpy")
+                except Exception:
+                    pass
+                return
+            # 若没有传入截图，则尝试从主轴截图
+            if crop is None and (x is not None) and (y is not None):
+                try:
+                    crop = self._capture_magnifier_crop(float(x), float(y))
+                except Exception:
+                    crop = None
+            has_crop = isinstance(crop, _np.ndarray) and crop.ndim == 3 and crop.shape[2] == 4
+            if has_crop:
+                h, w = int(crop.shape[0]), int(crop.shape[1])
+                if h <= 2 or w <= 2:
+                    has_crop = False
+            try:
+                from PyQt6.QtGui import QImage, QPixmap, QPainter, QPainterPath, QPen, QColor
+                from PyQt6.QtCore import Qt
+            except Exception:
+                from PyQt5.QtGui import QImage, QPixmap, QPainter, QPainterPath, QPen, QColor  # type: ignore
+                from PyQt5.QtCore import Qt  # type: ignore
+            # QImage 格式兼容（PyQt6: QImage.Format.Format_RGBA8888; PyQt5: QImage.Format_RGBA8888）
+            try:
+                qimg_fmt = getattr(QImage, 'Format_RGBA8888', None)
+                if qimg_fmt is None:
+                    qimg_fmt = QImage.Format.Format_RGBA8888
+            except Exception:
+                qimg_fmt = None
+            size_px = int(getattr(self, '_magn_size_px', 180))
+            size_px = max(80, min(320, size_px))
+            # 透明画布
+            pm = QPixmap(size_px, size_px)
+            pm.fill(Qt.GlobalColor.transparent)
+            painter = None
+            try:
+                painter = QPainter(pm)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                # 裁剪圆形
+                path = QPainterPath()
+                try:
+                    path.addEllipse(0, 0, int(size_px), int(size_px))
+                except Exception:
+                    pass
+                painter.setClipPath(path)
+                if has_crop:
+                    # 构建 QImage
+                    try:
+                        if qimg_fmt is not None:
+                            img = QImage(crop.data, w, h, w * 4, qimg_fmt)
+                        else:
+                            img = QImage(crop.data, w, h, w * 4, QImage.Format_ARGB32)
+                    except Exception:
+                        try:
+                            img = QImage(crop.data, w, h, w * 4, QImage.Format_ARGB32)
+                        except Exception:
+                            img = None
+                    if img is None:
+                        return
+                    # 缩放
+                    try:
+                        img_scaled = img.scaled(size_px, size_px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    except Exception:
+                        img_scaled = img.scaled(size_px, size_px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    # 居中绘制
+                    dx = (size_px - img_scaled.width()) // 2
+                    dy = (size_px - img_scaled.height()) // 2
+                    painter.drawImage(int(dx), int(dy), img_scaled)
+                if not has_crop and (x is not None) and (y is not None):
+                    # 无截图时：用数据点绘制简化放大内容
+                    try:
+                        ax = getattr(self, 'ax', None)
+                        if ax is not None:
+                            x0, x1 = ax.get_xlim()
+                            y0, y1 = ax.get_ylim()
+                        else:
+                            x0, x1, y0, y1 = 0.0, 1.0, 0.0, 1.0
+                    except Exception:
+                        x0, x1, y0, y1 = 0.0, 1.0, 0.0, 1.0
+                    try:
+                        target_sec = float(getattr(self, '_magn_target_window_sec', 2.0))
+                    except Exception:
+                        target_sec = 2.0
+                    half_w = 0.5 * target_sec
+                    # 依据主视图纵横比估算 y 半高
+                    try:
+                        dy = (y1 - y0) / max(1e-6, (x1 - x0)) * (half_w * 2.0)
+                        half_h = 0.5 * dy
+                    except Exception:
+                        half_h = 0.5
+                    xL, xR = float(x) - half_w, float(x) + half_w
+                    yB, yT = float(y) - half_h, float(y) + half_h
+                    # 取附近点
+                    pts = []
+                    try:
+                        segs = getattr(self, '_segment_points', []) or []
+                        for sc in segs:
+                            try:
+                                offsets = sc.get_offsets()
+                            except Exception:
+                                offsets = None
+                            if offsets is None:
+                                continue
+                            for ox, oy in offsets:
+                                if ox >= xL and ox <= xR and oy >= yB and oy <= yT:
+                                    pts.append((float(ox), float(oy)))
+                    except Exception:
+                        pts = []
+                    # fallback to line
+                    if not pts:
+                        try:
+                            ln = getattr(self, 'pitch_line', None)
+                            if ln is not None:
+                                xs = ln.get_xdata()
+                                ys = ln.get_ydata()
+                                if xs is not None and ys is not None:
+                                    for ox, oy in zip(xs, ys):
+                                        try:
+                                            oxf = float(ox); oyf = float(oy)
+                                        except Exception:
+                                            continue
+                                        if oxf >= xL and oxf <= xR and oyf >= yB and oyf <= yT:
+                                            pts.append((oxf, oyf))
+                        except Exception:
+                            pts = []
+                    # 画线与点
+                    if pts:
+                        try:
+                            pts.sort(key=lambda v: v[0])
+                        except Exception:
+                            pass
+                        def _map(px, py):
+                            fx = (px - xL) / max(1e-6, (xR - xL))
+                            fy = (py - yB) / max(1e-6, (yT - yB))
+                            # y 反转到像素
+                            return (int(fx * size_px), int((1.0 - fy) * size_px))
+                        # 线
+                        try:
+                            path2 = QPainterPath()
+                            mx0, my0 = _map(pts[0][0], pts[0][1])
+                            path2.moveTo(mx0, my0)
+                            for px, py in pts[1:]:
+                                mx, my = _map(px, py)
+                                path2.lineTo(mx, my)
+                            pen_line = QPen(QColor(160, 220, 255, 200))
+                            pen_line.setWidthF(1.2)
+                            pen_line.setCosmetic(True)
+                            painter.setPen(pen_line)
+                            painter.drawPath(path2)
+                        except Exception:
+                            pass
+                        # 点
+                        try:
+                            pen_pt = QPen(QColor(255, 255, 255, 230))
+                            pen_pt.setWidthF(1.0)
+                            pen_pt.setCosmetic(True)
+                            painter.setPen(pen_pt)
+                            for px, py in pts[:: max(1, int(len(pts)/80))]:
+                                mx, my = _map(px, py)
+                                painter.drawEllipse(mx-1, my-1, 2, 2)
+                        except Exception:
+                            pass
+                # 画圆形外框（平滑）
+                pen = QPen(QColor(128, 200, 255, 230))
+                pen.setWidthF(1.6)
+                try:
+                    pen.setCosmetic(True)
+                except Exception:
+                    pass
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(1, 1, int(size_px - 2), int(size_px - 2))
+                # 顶部文本信息
+                try:
+                    if (x is not None) and (y is not None):
+                        txt = self._format_magnifier_text(float(y), float(x))
+                    else:
+                        txt = ""
+                    if txt:
+                        painter.setPen(QPen(QColor(220, 240, 255, 230)))
+                        try:
+                            painter.drawText(8, 18, txt)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            finally:
+                try:
+                    if painter is not None:
+                        painter.end()
+                except Exception:
+                    pass
+            # 设置并显示
+            if lbl is not None:
+                try:
+                    lbl.setPixmap(pm)
+                    lbl.resize(size_px, size_px)
+                except Exception:
+                    pass
+            try:
+                if self._magn_overlay_window is not None:
+                    self._magn_overlay_window.hide()
+            except Exception:
+                pass
+            # 仅使用主窗口叠加层显示，避免顶层窗口被系统遮挡
+            # 位置：以 event.x/y 为左下坐标 -> 转换为 Qt 左上
+            try:
+                canvas = getattr(self, 'canvas', None)
+                try:
+                    dpr = float(getattr(canvas, 'devicePixelRatio', lambda: 1.0)()) if canvas is not None else 1.0
+                except Exception:
+                    try:
+                        dpr = float(getattr(canvas, 'devicePixelRatioF', lambda: 1.0)()) if canvas is not None else 1.0
+                    except Exception:
+                        dpr = 1.0
+                if dpr <= 0:
+                    dpr = 1.0
+                cx = float(event.x) / dpr
+                cy = float(event.y) / dpr
+            except Exception:
+                return
+            try:
+                ch = float(canvas.height()) if canvas is not None else 0.0
+            except Exception:
+                ch = 0.0
+            # Matplotlib y 原点在底部，Qt 原点在顶部
+            qt_y = (ch - cy) if ch > 0 else cy
+            # 与细节点拉开距离
+            x = int(cx + 40)
+            y = int(qt_y + 40)
+            # 越界修正
+            try:
+                cw = int(canvas.width()) if canvas is not None else 0
+                ch = int(canvas.height()) if canvas is not None else 0
+                if x + size_px > cw:
+                    x = max(0, int(cx - 40 - size_px))
+                if y + size_px > ch:
+                    y = max(0, int(qt_y - 40 - size_px))
+            except Exception:
+                pass
+            if lbl is not None:
+                try:
+                    if canvas is not None:
+                        try:
+                            from PyQt6.QtCore import QPoint
+                        except Exception:
+                            from PyQt5.QtCore import QPoint  # type: ignore
+                        global_pos = canvas.mapToGlobal(QPoint(x, y))
+                        local_pos = self.mapFromGlobal(global_pos)
+                        lbl.move(int(local_pos.x()), int(local_pos.y()))
+                    else:
+                        lbl.move(x, y)
+                    lbl.raise_()
+                    lbl.show()
+                except Exception:
+                    pass
+            try:
+                if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                    print(f"[HOVER_DIAG] overlay=1 has_crop={int(has_crop)} pos=({x},{y}) size={size_px} canvas=({cw},{ch})")
+            except Exception:
+                pass
+        except Exception as _e:
+            try:
+                if bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False)):
+                    print(f"[HOVER_DIAG] overlay=0 reason=exception err={_e}")
+            except Exception:
+                pass
 
     def _find_nearest_point(self, event, max_pixel_dist=12):
         try:
@@ -20745,8 +21308,80 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             return s
 
+    def _capture_magnifier_crop(self, x: float, y: float):
+        """从主轴截图裁剪出放大镜窗口内容（返回 RGBA ndarray 或 None）。"""
+        try:
+            ax_main = getattr(self, 'ax', None)
+            fig = getattr(self, 'figure', None)
+            if ax_main is None or fig is None:
+                return None
+            # 计算窗口范围
+            try:
+                x0, x1 = ax_main.get_xlim()
+                y0, y1 = ax_main.get_ylim()
+            except Exception:
+                return None
+            main_w_px = float(ax_main.bbox.width)
+            main_h_px = float(ax_main.bbox.height)
+            if main_w_px <= 0 or main_h_px <= 0:
+                return None
+            try:
+                target_sec = float(getattr(self, '_magn_target_window_sec', 2.0))
+            except Exception:
+                target_sec = 2.0
+            half_w = 0.5 * target_sec
+            try:
+                dy = (y1 - y0) / max(1e-6, (x1 - x0)) * (half_w * 2.0)
+                half_h = 0.5 * dy
+            except Exception:
+                half_h = 0.5
+            xL, xR = float(x) - half_w, float(x) + half_w
+            yB, yT = float(y) - half_h, float(y) + half_h
+            # 转到显示像素
+            import numpy as _np
+            p0 = ax_main.transData.transform([(xL, yB), (xR, yT)])
+            (xL_px, yB_px), (xR_px, yT_px) = p0[0], p0[1]
+            ab = ax_main.get_window_extent()
+            ax_x0, ax_y0, ax_x1, ax_y1 = float(ab.x0), float(ab.y0), float(ab.x1), float(ab.y1)
+            ix0 = int(_np.floor(max(min(xL_px, xR_px), ax_x0)))
+            ix1 = int(_np.ceil(min(max(xL_px, xR_px), ax_x1)))
+            iy0 = int(_np.floor(max(min(yB_px, yT_px), ax_y0)))
+            iy1 = int(_np.ceil(min(max(yB_px, yT_px), ax_y1)))
+            if ix1 <= ix0 or iy1 <= iy0:
+                return None
+            # 强制刷新画布，避免拿到旧帧
+            try:
+                fig.canvas.draw()
+            except Exception:
+                pass
+            fig_w_px = int(_np.round(fig.bbox.width))
+            fig_h_px = int(_np.round(fig.bbox.height))
+            buf = None
+            try:
+                mem = fig.canvas.buffer_rgba()
+                buf = _np.frombuffer(mem, dtype=_np.uint8).reshape(fig_h_px, fig_w_px, 4)
+            except Exception:
+                try:
+                    _renderer = getattr(fig.canvas, 'renderer', None) or fig.canvas.get_renderer()
+                    buf = _np.asarray(_renderer.buffer_rgba())
+                except Exception:
+                    buf = None
+            if buf is None:
+                return None
+            row0 = int(max(0, min(fig_h_px, _np.floor(fig_h_px - iy1))))
+            row1 = int(max(0, min(fig_h_px, _np.ceil(fig_h_px - iy0))))
+            col0 = int(max(0, min(fig_w_px, ix0)))
+            col1 = int(max(0, min(fig_w_px, ix1)))
+            if row1 <= row0 or col1 <= col0:
+                return None
+            crop = buf[row0:row1, col0:col1, :]
+            return crop
+        except Exception:
+            return None
+
     def _handle_hover_tooltip(self, event):
         try:
+            dbg_hover = bool(getattr(self, 'debug_flags', {}).get('hover_magnifier_log', False))
             # 清轴或切换后确保注解/高亮图元存在
             try:
                 self._ensure_hover_annot()
@@ -20757,6 +21392,36 @@ class ECGStylePitchVisualizer(QWidget):
                 return
             # 门控
             if not self._hover_gating_allowed():
+                if dbg_hover:
+                    try:
+                        now = time.time()
+                        last = float(getattr(self, '_last_log_times', {}).get('hover_magnifier', 0.0))
+                        if now - last > 0.6:
+                            try:
+                                ap = getattr(self, 'audio_processor', None)
+                            except Exception:
+                                ap = None
+                            print(
+                                "[HOVER_DIAG] gate=0 "
+                                f"is_paused={int(bool(getattr(self,'is_paused',False)))} "
+                                f"is_rec={int(bool(getattr(self,'is_recording',False)))} "
+                                f"is_rec_active={int(bool(getattr(self,'is_recording_active',False)))} "
+                                f"rec_paused={int(bool(getattr(self,'is_recording_paused',False)))} "
+                                f"ext_paused={int(bool(getattr(self,'_external_paused',False)))} "
+                                f"back_paused={int(bool(getattr(self,'is_backing_paused',False)))} "
+                                f"sel_active={int(bool(getattr(self,'selection_active',False)))} "
+                                f"retake_active={int(bool(getattr(self,'retake_selection_active',False)))} "
+                                f"listenback={int(bool(getattr(self,'listenback_enabled',False)))} "
+                                f"ap_rec={int(bool(getattr(ap,'is_recording',False)) if ap else 0)} "
+                                f"ap_paused={int(bool(getattr(ap,'is_paused',False)) if ap else 0)} "
+                                f"lb_state={getattr(self,'_lb_state',None)} lb_user_paused={int(bool(getattr(self,'_lb_user_paused',False)))}"
+                            )
+                            try:
+                                self._last_log_times['hover_magnifier'] = now
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 if self._hover_annot.get_visible():
                     self._hover_annot.set_visible(False)
                 try:
@@ -20770,6 +21435,18 @@ class ECGStylePitchVisualizer(QWidget):
                 return
             # 正在拖拽则不显示
             if getattr(self, 'dragging', False) or getattr(self, '_sel_dragging_side', None) is not None or getattr(self, '_dragging_playhead', False):
+                if dbg_hover:
+                    try:
+                        now = time.time()
+                        last = float(getattr(self, '_last_log_times', {}).get('hover_magnifier', 0.0))
+                        if now - last > 0.6:
+                            print("[HOVER_DIAG] gate=1 drag=1")
+                            try:
+                                self._last_log_times['hover_magnifier'] = now
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 if self._hover_annot.get_visible():
                     self._hover_annot.set_visible(False)
                 try:
@@ -20798,6 +21475,21 @@ class ECGStylePitchVisualizer(QWidget):
             if not hit:
                 if self._hover_annot.get_visible():
                     self._hover_annot.set_visible(False)
+                if dbg_hover:
+                    try:
+                        now = time.time()
+                        last = float(getattr(self, '_last_log_times', {}).get('hover_magnifier', 0.0))
+                        if now - last > 0.6:
+                            cols = self._collect_visible_point_collections()
+                            segs = getattr(self, '_segment_points', None)
+                            seg_n = len(segs) if isinstance(segs, (list, tuple)) else 0
+                            print(f"[HOVER_DIAG] gate=1 hit=0 cols={len(cols)} seg_points={seg_n} inaxes={int(bool(event.inaxes==self.ax))}")
+                            try:
+                                self._last_log_times['hover_magnifier'] = now
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 try:
                     self._hide_hover_highlight()
                 except Exception:
@@ -20852,6 +21544,26 @@ class ECGStylePitchVisualizer(QWidget):
                 self._update_magnifier(event, x, y, mag_text)
             except Exception:
                 pass
+            if dbg_hover:
+                try:
+                    now = time.time()
+                    last = float(getattr(self, '_last_log_times', {}).get('hover_magnifier', 0.0))
+                    if now - last > 0.6:
+                        print(f"[HOVER_DIAG] gate=1 hit=1 x={x:.3f} y={y:.3f} magn_visible={int(bool(getattr(self,'_magn_visible',False)))}")
+                        try:
+                            ol = getattr(self, '_magn_overlay_label', None)
+                            ow = getattr(self, '_magn_overlay_window', None)
+                            ol_vis = int(bool(ol is not None and getattr(ol, 'isVisible', lambda: False)()))
+                            ow_vis = int(bool(ow is not None and getattr(ow, 'isVisible', lambda: False)()))
+                            print(f"[HOVER_DIAG] overlay_label={ol_vis} overlay_window={ow_vis}")
+                        except Exception:
+                            pass
+                        try:
+                            self._last_log_times['hover_magnifier'] = now
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             # 轻量刷新
             self.canvas.draw_idle()
         except Exception:
@@ -24488,6 +25200,22 @@ class ECGStylePitchVisualizer(QWidget):
                         v_target = s0 + min(span, elapsed)
                     except Exception:
                         v_target = s0
+                # 覆盖录制期间优先使用“墙钟推进”，避免因细节点绘制/换气导致纵向线粘滞
+                if v_target is None and not countdown_freeze:
+                    try:
+                        anchor_wall = getattr(self, '_retake_overlay_wall_anchor', None)
+                        anchor_time = getattr(self, '_retake_overlay_time_anchor', None)
+                        if anchor_wall is None or anchor_time is None:
+                            anchor_wall = float(time.time())
+                            anchor_time = float(s0)
+                            self._retake_overlay_wall_anchor = anchor_wall
+                            self._retake_overlay_time_anchor = anchor_time
+                        now_wall = float(time.time())
+                        span = max(0.0, e0 - s0)
+                        elapsed = max(0.0, now_wall - float(anchor_wall))
+                        v_target = float(anchor_time) + min(span, elapsed)
+                    except Exception:
+                        v_target = None
                 if v_target is None:
                     try:
                         v_target = float(getattr(self, '_retake_overlay_virtual_time', s0))
@@ -34191,7 +34919,7 @@ class IntegratedRecordingInterface(QMainWindow):
         # === 基础状态 ===
         self.is_recording = False
         self.is_analyzing = False
-        self.should_save_recording = True
+        self.should_save_recording = False
         self._pitch_precision_debug_counter = 0
         self._record_epoch = 0
         self._ui_epoch = 0
@@ -34764,6 +35492,48 @@ class IntegratedRecordingInterface(QMainWindow):
         eg.addLayout(row_env)
         eg.addWidget(status_lbl)
         v.addWidget(env_group)
+
+        # 调试选项
+        debug_group = QGroupBox("调试选项")
+        debug_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
+        dbg_layout = QVBoxLayout(debug_group)
+        dbg_layout.addWidget(QLabel("说明：开启后会输出调试日志（用于排查悬停放大镜等问题），可能略有性能开销。"))
+        dbg_row = QHBoxLayout()
+        dbg_hover_chk = QCheckBox("开启悬停放大镜调试日志")
+        try:
+            dbg_hover_chk.setChecked(False)
+            try:
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None and hasattr(viz, 'debug_flags'):
+                    viz.debug_flags['hover_magnifier_log'] = False
+            except Exception:
+                pass
+            try:
+                settings = QSettings("MindEcho", "IntegratedRecorder")
+                settings.setValue("debug_hover_magnifier_log", False)
+            except Exception:
+                pass
+        except Exception:
+            dbg_hover_chk.setChecked(False)
+
+        def _toggle_hover_debug(checked: bool):
+            try:
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None and hasattr(viz, 'debug_flags'):
+                    viz.debug_flags['hover_magnifier_log'] = bool(checked)
+            except Exception:
+                pass
+            try:
+                settings = QSettings("MindEcho", "IntegratedRecorder")
+                settings.setValue("debug_hover_magnifier_log", bool(checked))
+            except Exception:
+                pass
+
+        dbg_hover_chk.toggled.connect(_toggle_hover_debug)
+        dbg_row.addWidget(dbg_hover_chk)
+        dbg_row.addStretch()
+        dbg_layout.addLayout(dbg_row)
+        v.addWidget(debug_group)
 
         # 采集逻辑：通过音频处理线程累计帧并计算噪声谱/峰，异步轮询状态
         _poll_timer = QTimer(dlg)
@@ -42265,6 +43035,10 @@ class IntegratedRecordingInterface(QMainWindow):
         recording_layout.addWidget(QLabel("录音模式:"))
         self.recording_mode = QComboBox()
         self.recording_mode.addItems(["录音+分析+保存", "仅分析(不保存)", "录音+保存(不分析)"])
+        try:
+            self.recording_mode.setCurrentIndex(1)
+        except Exception:
+            pass
         self.recording_mode.currentTextChanged.connect(self.on_recording_mode_changed)
         recording_layout.addWidget(self.recording_mode)
 
@@ -42319,7 +43093,7 @@ class IntegratedRecordingInterface(QMainWindow):
         params_layout.addWidget(self.filename_prefix)
 
         params_layout.addWidget(QLabel("保存录音:"))
-        self.save_checkbox = QCheckBox(); self.save_checkbox.setChecked(True); self.save_checkbox.toggled.connect(self.on_save_mode_changed)
+        self.save_checkbox = QCheckBox(); self.save_checkbox.setChecked(False); self.save_checkbox.toggled.connect(self.on_save_mode_changed)
         params_layout.addWidget(self.save_checkbox)
 
         params_layout.addWidget(QLabel("降噪模式:"))
@@ -43314,6 +44088,14 @@ class IntegratedRecordingInterface(QMainWindow):
                             self.visualizer._external_paused = True  # add_pitch_data 会检查该标志
                         except Exception:
                             pass
+                        try:
+                            self.visualizer.is_paused = True
+                        except Exception:
+                            pass
+                        try:
+                            self.visualizer.is_recording_paused = True
+                        except Exception:
+                            pass
                     # 清空当前音高显示
                     try:
                         self.current_pitch_label.setText("当前音高: -- Hz")
@@ -43357,6 +44139,14 @@ class IntegratedRecordingInterface(QMainWindow):
                     if hasattr(self, 'visualizer'):
                         try:
                             self.visualizer._external_paused = False
+                        except Exception:
+                            pass
+                        try:
+                            self.visualizer.is_paused = False
+                        except Exception:
+                            pass
+                        try:
+                            self.visualizer.is_recording_paused = False
                         except Exception:
                             pass
                     overlay_state = getattr(self, '_retake_overlay_state', None)
