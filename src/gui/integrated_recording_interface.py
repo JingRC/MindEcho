@@ -13639,6 +13639,11 @@ class ECGStylePitchVisualizer(QWidget):
             dur_max3 = float(getattr(self, '_micro_seg_dur_max3', 0.06))
             iso_single = float(getattr(self, '_micro_seg_iso_single_gap', 0.18))
             semi_thr3 = float(getattr(self, '_micro_seg_neighbor_semi3', 7.2))
+            # 换气噪声微段过滤（更保守的短段去除）
+            noise_dur_max = float(getattr(self, '_breath_noise_seg_dur_max', 0.12))
+            noise_points_max = int(getattr(self, '_breath_noise_seg_points_max', 6))
+            noise_jump_semi = float(getattr(self, '_breath_noise_jump_semi', 8.5))
+            noise_iso_gap = float(getattr(self, '_breath_noise_seg_iso_gap', 0.12))
             filtered_segments = []
             S = len(segments_orig)
             for idx, (ts, ps) in enumerate(segments_orig):
@@ -13699,6 +13704,34 @@ class ECGStylePitchVisualizer(QWidget):
                                             (right_gap >= iso_single and right_semi >= semi_thr3))
                     if (dur <= dur_max3) and one_side_iso_and_far:
                         keep = False
+                if keep:
+                    # 终端防抖2：短时抖动噪声段（呼吸/环境噪声）剔除
+                    try:
+                        if n > 0 and n <= noise_points_max:
+                            dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                            if dur <= noise_dur_max:
+                                max_jump = 0.0
+                                if n >= 2:
+                                    for j in range(1, n):
+                                        try:
+                                            dj = abs((float(ps[j]) - float(ps[j-1])) * 12.0)
+                                        except Exception:
+                                            dj = 0.0
+                                        if dj > max_jump:
+                                            max_jump = dj
+                                if max_jump >= noise_jump_semi:
+                                    left_gap = float('inf')
+                                    right_gap = float('inf')
+                                    if idx - 1 >= 0 and len(segments_orig[idx-1][0]) > 0:
+                                        prev_t = segments_orig[idx-1][0][-1]
+                                        left_gap = float(ts[0]) - float(prev_t)
+                                    if idx + 1 < S and len(segments_orig[idx+1][0]) > 0:
+                                        next_t = segments_orig[idx+1][0][0]
+                                        right_gap = float(next_t) - float(ts[-1])
+                                    if (left_gap >= noise_iso_gap) or (right_gap >= noise_iso_gap):
+                                        keep = False
+                    except Exception:
+                        pass
                 if keep:
                     filtered_segments.append((ts, ps))
             if len(filtered_segments) != len(segments_orig):
@@ -15695,6 +15728,7 @@ class ECGStylePitchVisualizer(QWidget):
         self._selection_visibility_hold_window = 0.35
         self._retake_default_span = 5.0
         self._retake_anchor_time = 0.0
+        self._listenback_default_span = 5.0
         self.sel_start = 0.0
         self.sel_end = 0.0
         self._sel_line_left = None
@@ -15801,43 +15835,88 @@ class ECGStylePitchVisualizer(QWidget):
             if not hasattr(self, 'ax') or self.ax is None:
                 return
             x0, x1 = self.ax.get_xlim()
-            span = 5.0
-            # 计算基于“已有音频”的合理初始区间：优先贴近最新数据
+            span = float(getattr(self, '_listenback_default_span', 5.0))
+            if span <= 0.05:
+                span = 5.0
+            # 优先基于当前可视窗：左边框线 = 当前视窗中心，右边框线 = 左 + span
+            if (x1 - x0) < span:
+                # 扩展右边界以容纳初始跨度
+                x1 = x0 + span
+                try:
+                    self.ax.set_xlim(x0, x1)
+                except Exception:
+                    pass
+            mid = (x0 + x1) * 0.5
+            sel_start = float(mid)
+            sel_end = float(sel_start + span)
+
+            # 右侧上限：优先以回听缓冲最新结束时间 + 最大历史时长裁剪
+            right_limit = None
             ap = getattr(self, 'audio_processor', None)
-            sel_start = None
-            sel_end = None
             try:
                 if ap is not None and hasattr(ap, '_listenback_chunks') and ap._listenback_chunks:
-                    # 取缓冲中最新包的结束时间（绝对）
                     last_end_abs = float(ap._listenback_chunks[-1][1])
-                    # 需要 start_time 将绝对时间映射到可视化x轴
                     if hasattr(self, 'start_time') and self.start_time is not None:
                         last_end_rel = last_end_abs - float(self.start_time)
-                        sel_end = last_end_rel
-                        sel_start = max(sel_end - span, 0.0)
+                        right_limit = last_end_rel
+            except Exception:
+                right_limit = None
+            try:
+                mh = float(getattr(self, 'max_history_time', None))
+                if right_limit is None or mh < right_limit:
+                    right_limit = mh
             except Exception:
                 pass
 
-            if sel_start is None or sel_end is None:
-                # 回退：仍按当前可视窗口中部
-                if (x1 - x0) < span:
-                    # 扩展右边界以容纳初始跨度
-                    x1 = x0 + span
-                    try:
-                        self.ax.set_xlim(x0, x1)
-                    except Exception:
-                        pass
-                mid = (x0 + x1) * 0.5
-                sel_start = mid - span * 0.5
-                sel_end = mid + span * 0.5
+            if right_limit is not None:
+                if sel_end > right_limit:
+                    shift = sel_end - right_limit
+                    sel_start -= shift
+                    sel_end -= shift
+            if sel_start < 0.0:
+                shift = -sel_start
+                sel_start += shift
+                sel_end += shift
+            if right_limit is not None and sel_end > right_limit:
+                sel_end = right_limit
+                sel_start = max(0.0, sel_end - span)
+            if sel_end <= sel_start:
+                sel_end = sel_start + span
 
             self.sel_start = float(sel_start)
             self.sel_end = float(sel_end)
+            # 初始化时重置播放头/恢复点
+            try:
+                self._lb_resume_abs_start = None
+                self._lb_user_moved_playhead = False
+            except Exception:
+                pass
             # 创建或更新图元
             self._ensure_listenback_patches()
             self.update_listenback_artists()
         except Exception as e:
             print(f"⚠️ 初始化回听选区失败: {e}")
+
+    def _get_listenback_right_limit(self) -> Optional[float]:
+        """返回回听可用的最右侧相对时间上限（秒）。"""
+        right_limit = None
+        ap = getattr(self, 'audio_processor', None)
+        try:
+            if ap is not None and hasattr(ap, '_listenback_chunks') and ap._listenback_chunks:
+                last_end_abs = float(ap._listenback_chunks[-1][1])
+                if hasattr(self, 'start_time') and self.start_time is not None:
+                    right_limit = last_end_abs - float(self.start_time)
+        except Exception:
+            right_limit = None
+        try:
+            mh = float(getattr(self, 'max_history_time', None))
+            if right_limit is None or mh < right_limit:
+                right_limit = mh
+        except Exception:
+            pass
+        if right_limit is not None and right_limit < 0.0:
+            right_limit = 0.0
+        return right_limit
 
     def activate_retake_selection(self, anchor_time: Optional[float] = None, initial_span: Optional[float] = None):
         """进入区间重录模式，基于 anchor_time 构建默认选区。"""
@@ -19341,11 +19420,6 @@ class ECGStylePitchVisualizer(QWidget):
                             except Exception:
                                 pass
                             return
-                        # 区间整体拖动：重录模式下点击选区任意位置即可左右平移
-                        if selection_mode == 'retake' and start <= x <= end:
-                            self._sel_dragging_side = 'block'
-                            self._sel_dragging_last_x = x
-                            return
                     # 播放头命中检测（仅 listenback 需要）
                     if selection_mode == 'listenback':
                         try:
@@ -19367,6 +19441,12 @@ class ECGStylePitchVisualizer(QWidget):
                                     return
                         except Exception:
                             pass
+                    # 区间整体拖动：点击选区中间（非播放按钮区域）即可左右平移
+                    if x is not None and start is not None and end is not None and start <= x <= end:
+                        if selection_mode in ('retake', 'listenback'):
+                            self._sel_dragging_side = 'block'
+                            self._sel_dragging_last_x = x
+                            return
         except Exception:
             pass
 
@@ -19440,11 +19520,14 @@ class ECGStylePitchVisualizer(QWidget):
                     new_start = float(self.sel_start) + delta
                     new_end = new_start + span
                     # 保证不越界
-                    max_time = getattr(self, 'max_history_time', None)
-                    try:
-                        max_time = float(max_time) if max_time is not None else None
-                    except Exception:
-                        max_time = None
+                    if mode == 'listenback':
+                        max_time = self._get_listenback_right_limit()
+                    else:
+                        max_time = getattr(self, 'max_history_time', None)
+                        try:
+                            max_time = float(max_time) if max_time is not None else None
+                        except Exception:
+                            max_time = None
                     if new_start < 0.0:
                         shift = -new_start
                         new_start += shift
@@ -19455,7 +19538,32 @@ class ECGStylePitchVisualizer(QWidget):
                         new_end -= shift
                         if new_start < 0.0:
                             new_start = 0.0
-                    self.set_retake_range(new_start, new_end, refresh=False, sync_playhead=False, anchor_side='block')
+                    if mode == 'retake':
+                        self.set_retake_range(new_start, new_end, refresh=False, sync_playhead=False, anchor_side='block')
+                    else:
+                        self.sel_start = new_start
+                        self.sel_end = new_end
+                        # 选区调整后，清除恢复点并标记为“用户移动”，确保可多次回听
+                        try:
+                            self._lb_resume_abs_start = None
+                            self._lb_user_moved_playhead = True
+                        except Exception:
+                            pass
+                        # 播放头随选区平移（非拖动状态）
+                        try:
+                            ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
+                            if ap_state != 'playing' and not getattr(self, '_dragging_playhead', False):
+                                self._ensure_playhead()
+                                if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                                    phx_data = self._lb_playhead.get_xdata()
+                                    phx = float(phx_data[0]) if phx_data is not None and len(phx_data) > 0 else float(self.sel_start)
+                                    phx = min(max(phx + delta, self.sel_start), self.sel_end)
+                                    self._lb_playhead.set_xdata([phx, phx])
+                                    self._lb_playhead.set_ydata([0.0, 1.0])
+                                    self._lb_playhead.set_visible(True)
+                                    self._lb_playhead.set_zorder(148)
+                        except Exception:
+                            pass
                     self._sel_dragging_last_x = x
                     self.update_listenback_artists()
                     if hasattr(self, 'canvas'):
@@ -19467,6 +19575,12 @@ class ECGStylePitchVisualizer(QWidget):
                         self.set_retake_range(new_start, self.sel_end, refresh=False, sync_playhead=True, anchor_side='left')
                     else:
                         self.sel_start = min(x, self.sel_end)
+                        # 清除恢复点，避免复用旧播放位置
+                        try:
+                            self._lb_resume_abs_start = None
+                            self._lb_user_moved_playhead = True
+                        except Exception:
+                            pass
                         # 联动播放头：未播放时播放头起点跟随左边线
                         try:
                             ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
@@ -19484,7 +19598,16 @@ class ECGStylePitchVisualizer(QWidget):
                     if mode == 'retake':
                         self.set_retake_range(self.sel_start, new_end, refresh=False, sync_playhead=False, anchor_side='right')
                     else:
-                        self.sel_end = max(x, self.sel_start)
+                        # listenback 右边界限制
+                        max_time = self._get_listenback_right_limit()
+                        if max_time is not None:
+                            new_end = min(new_end, max_time)
+                        self.sel_end = max(new_end, self.sel_start)
+                        try:
+                            self._lb_resume_abs_start = None
+                            self._lb_user_moved_playhead = True
+                        except Exception:
+                            pass
                 self.update_listenback_artists()
                 if hasattr(self, 'canvas'):
                     self.canvas.draw_idle()
@@ -31046,6 +31169,11 @@ class ECGStylePitchVisualizer(QWidget):
                 dur_max3 = float(getattr(self, '_micro_seg_dur_max3', 0.06))
                 iso_single = float(getattr(self, '_micro_seg_iso_single_gap', 0.18))
                 semi_thr3 = float(getattr(self, '_micro_seg_neighbor_semi3', 7.2))
+                # 换气噪声微段过滤（更保守的短段去除）
+                noise_dur_max = float(getattr(self, '_breath_noise_seg_dur_max', 0.12))
+                noise_points_max = int(getattr(self, '_breath_noise_seg_points_max', 6))
+                noise_jump_semi = float(getattr(self, '_breath_noise_jump_semi', 8.5))
+                noise_iso_gap = float(getattr(self, '_breath_noise_seg_iso_gap', 0.12))
                 filtered_segments = []
                 S = len(segments_orig)
                 for idx, (ts, ps) in enumerate(segments_orig):
@@ -31109,6 +31237,34 @@ class ECGStylePitchVisualizer(QWidget):
                                                 (right_gap >= iso_single and right_semi >= semi_thr3))
                         if (dur <= dur_max3) and one_side_iso_and_far:
                             keep = False
+                    if keep:
+                        # 终端防抖2：短时抖动噪声段（呼吸/环境噪声）剔除
+                        try:
+                            if n > 0 and n <= noise_points_max:
+                                dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                                if dur <= noise_dur_max:
+                                    max_jump = 0.0
+                                    if n >= 2:
+                                        for j in range(1, n):
+                                            try:
+                                                dj = abs((float(ps[j]) - float(ps[j-1])) * 12.0)
+                                            except Exception:
+                                                dj = 0.0
+                                            if dj > max_jump:
+                                                max_jump = dj
+                                    if max_jump >= noise_jump_semi:
+                                        left_gap = float('inf')
+                                        right_gap = float('inf')
+                                        if idx - 1 >= 0 and len(segments_orig[idx-1][0]) > 0:
+                                            prev_t = segments_orig[idx-1][0][-1]
+                                            left_gap = float(ts[0]) - float(prev_t)
+                                        if idx + 1 < S and len(segments_orig[idx+1][0]) > 0:
+                                            next_t = segments_orig[idx+1][0][0]
+                                            right_gap = float(next_t) - float(ts[-1])
+                                        if (left_gap >= noise_iso_gap) or (right_gap >= noise_iso_gap):
+                                            keep = False
+                        except Exception:
+                            pass
                     if keep:
                         filtered_segments.append((ts, ps))
                 if len(filtered_segments) != len(segments_orig):
