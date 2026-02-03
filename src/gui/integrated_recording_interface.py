@@ -11068,6 +11068,28 @@ class ECGStylePitchVisualizer(QWidget):
         self.pitch_data = self._pitch_store.create_view("pitch")
         self.confidence_data = self._pitch_store.create_view("confidence")
         self.note_data = self._pitch_store.create_view("note")
+        # 专业模式：多频段候选历史（time, freq, confidence）
+        try:
+            self.harmonic_history = deque(maxlen=200000)
+        except Exception:
+            self.harmonic_history = []
+        # 专业模式：待处理队列与热力图缓存
+        try:
+            self._professional_pending = deque()
+        except Exception:
+            self._professional_pending = []
+        self._professional_heat_buffer = None
+        self._professional_last_x0 = None
+        self._professional_last_update_t = 0.0
+        self._professional_min_update_interval = 0.06
+        self._professional_keep_history = True
+        self._professional_trail_decay = 0.985
+        self._professional_blur_mode = "fast"  # fast | gaussian | none
+        self._professional_blur_strength = 1.0
+        self._professional_pending_limit = 6000
+        self._professional_use_gpu = False
+        self._professional_gpu_min_size = 80000
+        self._professional_fixed_window = True
         self._timebin_eps = 0.01
         self._added_time_bins = set()
 
@@ -17837,10 +17859,12 @@ class ECGStylePitchVisualizer(QWidget):
             self._diag_add_to_display_latencies = []
         self._diag_pending_points = 0
         # 下拉框：显示模式
+        controls_row1_layout.addWidget(QLabel("模式:"))
         self.display_mode = QComboBox()
         self.display_mode.addItems([
             "普通模式",
-            "彩色渐变"
+            "彩色渐变",
+            "专业模式"
         ])
         self.display_mode.currentTextChanged.connect(self.on_display_mode_changed)
         controls_row1_layout.addWidget(self.display_mode)
@@ -18191,6 +18215,13 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 创建matplotlib图形
         self.create_ecg_plot()
+        # 创建专业模式绘图区域（独立画布，避免与主绘制冲突）
+        try:
+            self.create_professional_plot()
+        except Exception:
+            self.professional_canvas = None
+            self.professional_ax = None
+            self.professional_figure = None
         
         # 垂直滚动条（右侧）- 控制音高范围
         self.v_scrollbar = QScrollBar(Qt.Orientation.Vertical)
@@ -18256,8 +18287,8 @@ class ECGStylePitchVisualizer(QWidget):
         corner.setStyleSheet("background-color: rgba(0, 0, 0, 0.2);")
         container_layout.addWidget(corner, 1, 1)
     
-    def switch_display_widget(self, use_pyqtgraph=False):
-        """切换显示组件：PyQtGraph vs Matplotlib"""
+    def switch_display_widget(self, use_pyqtgraph=False, target: Optional[str] = None):
+        """切换显示组件：PyQtGraph / Matplotlib / Professional"""
         if not hasattr(self, 'plot_container') or not hasattr(self, 'main_plot_area'):
             return
         
@@ -18267,7 +18298,11 @@ class ECGStylePitchVisualizer(QWidget):
         container_layout.removeWidget(self.main_plot_area)
         self.main_plot_area.setParent(None)
         
-        if use_pyqtgraph and self.pyqtgraph_gradient_widget is not None:
+        if target == "professional" and getattr(self, 'professional_canvas', None) is not None:
+            # 切换到专业模式画布
+            self.main_plot_area = self.professional_canvas
+            print("🧭 切换到专业模式显示")
+        elif use_pyqtgraph and self.pyqtgraph_gradient_widget is not None:
             # 切换到PyQtGraph彩色渐变
             self.main_plot_area = self.pyqtgraph_gradient_widget
             print("🌈 切换到PyQtGraph彩色渐变显示")
@@ -18450,6 +18485,654 @@ class ECGStylePitchVisualizer(QWidget):
         # 初始化一次辅助线
         try:
             self.update_guides()
+        except Exception:
+            pass
+
+    def create_professional_plot(self):
+        """创建专业模式绘图区域（多频段可视化）"""
+        try:
+            # 专业模式使用独立画布，避免与主绘制冲突
+            self.professional_figure = Figure(figsize=(14, 8), facecolor="#0b0f14")
+            self.professional_canvas = FigureCanvas(self.professional_figure)
+            self.professional_ax = self.professional_figure.add_subplot(111, facecolor="#0b0f14")
+            try:
+                self.professional_figure.set_tight_layout(False)
+                self.professional_canvas.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+            except Exception:
+                pass
+            try:
+                self.professional_ax.set_xlabel('时间 (秒)', fontsize=11, color="#d7dbe2")
+                self.professional_ax.set_ylabel('频率 (Hz)', fontsize=11, color="#d7dbe2")
+                self.professional_ax.set_title('专业模式 · 多频段发声可视化', fontsize=14, fontweight='bold', color="#f0f3f7")
+                self.professional_ax.tick_params(colors="#c9d1d9")
+            except Exception:
+                pass
+            self._professional_im = None
+            self._professional_main_line = None
+            self._professional_cmap = None
+            self._professional_time_bin = 0.05
+            self._professional_freq_bins = 96
+            self._professional_colorbar = None
+            self._professional_grid_artists = []
+            self._professional_grid_range = None
+        except Exception:
+            self.professional_canvas = None
+            self.professional_ax = None
+            self.professional_figure = None
+
+    def _professional_get_freq_range(self) -> Tuple[float, float]:
+        try:
+            if getattr(self, 'audio_processor', None) is not None:
+                ap = self.audio_processor
+                min_f = float(getattr(ap, 'min_frequency', 80.0))
+                max_f = float(getattr(ap, 'max_frequency', 1047.0))
+            else:
+                min_f = float(getattr(self, 'min_frequency', 80.0))
+                max_f = float(getattr(self, 'max_frequency', 1047.0))
+        except Exception:
+            min_f, max_f = 80.0, 1047.0
+        # 专业模式建议略放宽上限以容纳谐波
+        max_f = max(max_f, min_f * 4.0, 3000.0)
+        return max(20.0, min_f), max_f
+
+    def _note_label_from_freq(self, freq: float) -> str:
+        try:
+            if freq <= 0:
+                return ""
+            semitones = int(round(12.0 * math.log2(float(freq) / 440.0)))
+            midi = 69 + semitones
+            note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+            note = note_names[midi % 12]
+            octave = int(midi // 12) - 1
+            return f"{note}{octave}"
+        except Exception:
+            return ""
+
+    def _professional_enqueue(self, t: float, f: float, c: float) -> None:
+        try:
+            if f <= 0:
+                return
+            c = max(0.0, min(1.0, float(c)))
+            item = (float(t), float(f), float(c))
+            if isinstance(self._professional_pending, list):
+                self._professional_pending.append(item)
+            else:
+                self._professional_pending.append(item)
+        except Exception:
+            pass
+
+    def _capture_harmonic_candidates(self, pitch_data: dict) -> None:
+        """采集多频段候选（用于专业模式）"""
+        try:
+            ts = float(pitch_data.get('_professional_time', pitch_data.get('global_time', pitch_data.get('timestamp', time.time()))))
+        except Exception:
+            ts = time.time()
+        # 若为绝对时间戳且存在 start_time，则转为相对时间轴
+        try:
+            st = float(getattr(self, 'start_time', 0.0) or 0.0)
+            if ts > 1e8 and st > 1e8:
+                ts = ts - st
+        except Exception:
+            pass
+        try:
+            candidates = pitch_data.get('harmonic_candidates') or pitch_data.get('harmonics')
+        except Exception:
+            candidates = None
+        if candidates:
+            try:
+                for cand in candidates:
+                    try:
+                        freq = float(cand.get('frequency', cand.get('freq', 0.0)) or 0.0)
+                        conf = float(cand.get('confidence', cand.get('energy', 0.6)) or 0.0)
+                    except Exception:
+                        continue
+                    if freq > 0:
+                        if isinstance(self.harmonic_history, list):
+                            self.harmonic_history.append((ts, freq, conf))
+                        else:
+                            self.harmonic_history.append((ts, freq, conf))
+                        self._professional_enqueue(ts, freq, conf)
+                return
+            except Exception:
+                pass
+        # 兜底：没有多候选时，用单频作为一条候选
+        try:
+            freq = float(pitch_data.get('frequency', 0.0) or 0.0)
+            conf = float(pitch_data.get('confidence', 0.6) or 0.0)
+            if freq > 0:
+                if isinstance(self.harmonic_history, list):
+                    self.harmonic_history.append((ts, freq, conf))
+                else:
+                    self.harmonic_history.append((ts, freq, conf))
+                self._professional_enqueue(ts, freq, conf)
+                # 轻量生成谐波候选，增强多频段可视化
+                try:
+                    min_f, max_f = self._professional_get_freq_range()
+                    base = float(freq)
+                    base_conf = max(0.05, min(1.0, conf))
+                    for k in range(2, 6):
+                        hf = base * k
+                        if hf > max_f * 1.02:
+                            break
+                        hconf = base_conf * (0.65 ** (k - 1))
+                        if isinstance(self.harmonic_history, list):
+                            self.harmonic_history.append((ts, hf, hconf))
+                        else:
+                            self.harmonic_history.append((ts, hf, hconf))
+                        self._professional_enqueue(ts, hf, hconf)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def update_professional_display(self):
+        """刷新专业模式显示（多频段点云）"""
+        if getattr(self, 'professional_ax', None) is None or getattr(self, 'professional_canvas', None) is None:
+            return
+        try:
+            force_redraw = bool(getattr(self, '_professional_force_redraw', False))
+        except Exception:
+            force_redraw = False
+        try:
+            force_rebuild = bool(getattr(self, '_professional_force_rebuild', False))
+        except Exception:
+            force_rebuild = False
+        # 节流刷新，降低卡顿（强制重绘/重建时跳过节流）
+        try:
+            now_t = time.time()
+            if (now_t - float(getattr(self, '_professional_last_update_t', 0.0))) < float(getattr(self, '_professional_min_update_interval', 0.05)):
+                if not (force_redraw or force_rebuild):
+                    return
+            self._professional_last_update_t = now_t
+        except Exception:
+            pass
+        try:
+            # 时间窗口
+            x0 = float(getattr(self, 'time_offset', 0.0))
+            x1 = x0 + float(getattr(self, 'time_window', 16.0))
+        except Exception:
+            x0, x1 = 0.0, 16.0
+        # 录音中才自动跟随到最新时间，避免停止后无法回到 0s
+        try:
+            recording = bool(getattr(self, 'is_recording_active', False))
+        except Exception:
+            recording = False
+        try:
+            keep_history = bool(getattr(self, '_professional_keep_history', True))
+        except Exception:
+            keep_history = True
+        try:
+            fixed_window = bool(getattr(self, '_professional_fixed_window', True))
+        except Exception:
+            fixed_window = True
+        try:
+            auto_follow = bool(getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True))
+        except Exception:
+            auto_follow = True
+        try:
+            if isinstance(self._professional_pending, list):
+                pending_len = len(self._professional_pending)
+            else:
+                pending_len = len(self._professional_pending)
+        except Exception:
+            pending_len = 0
+        try:
+            backlog_limit = int(getattr(self, '_professional_pending_limit', 6000))
+            if backlog_limit <= 0:
+                backlog_limit = 6000
+        except Exception:
+            backlog_limit = 6000
+        if recording and auto_follow and pending_len > backlog_limit * 2:
+            auto_follow = False
+        if recording and auto_follow:
+            try:
+                last_item = None
+                try:
+                    last_item = self.harmonic_history[-1]
+                except Exception:
+                    last_item = None
+                if last_item:
+                    last_t = float(last_item[0])
+                    if last_t > x1:
+                        x1 = last_t
+                        x0 = x1 - float(getattr(self, 'time_window', 16.0))
+            except Exception:
+                pass
+        # 保留历史：若固定窗口则不改动 x0/x1（与普通模式一致，仅滚动查看）
+        if keep_history and (not fixed_window):
+            try:
+                last_item = None
+                try:
+                    last_item = self.harmonic_history[-1]
+                except Exception:
+                    last_item = None
+                if last_item is not None:
+                    last_t = float(last_item[0])
+                else:
+                    last_t = float(getattr(self, 'current_global_time', 0.0))
+                if last_t > x1:
+                    x1 = last_t
+                if x0 != 0.0:
+                    x0 = 0.0
+            except Exception:
+                pass
+        else:
+            # 非录音态：若无新点且窗口未变，跳过重绘以减少卡顿
+            try:
+                if not force_redraw:
+                    if not (isinstance(self._professional_pending, list) and self._professional_pending) and (
+                        not isinstance(self._professional_pending, list) and len(self._professional_pending) == 0
+                    ):
+                        last_x0 = getattr(self, '_professional_last_x0', None)
+                        if last_x0 is not None and abs(float(last_x0) - float(x0)) < 1e-6:
+                            return
+            except Exception:
+                pass
+
+        # 频率范围与log轴
+        min_f, max_f = self._professional_get_freq_range()
+        y0 = math.log2(min_f)
+        y1 = math.log2(max_f)
+
+        # 时间分箱
+        try:
+            bin_w = float(getattr(self, '_professional_time_bin', 0.05))
+        except Exception:
+            bin_w = 0.05
+        bin_w = max(0.02, min(0.10, bin_w))
+        span = max(1.0, (x1 - x0))
+        # 历史模式下自适应分箱（非固定窗口时启用）
+        try:
+            max_bins = int(getattr(self, '_professional_max_bins', 512))
+        except Exception:
+            max_bins = 512
+        if keep_history and (not fixed_window) and span > float(getattr(self, 'time_window', 16.0)):
+            bin_w = max(bin_w, span / float(max_bins))
+        time_bins = max(64, min(max_bins, int(span / bin_w)))
+        freq_bins = int(getattr(self, '_professional_freq_bins', 96) or 96)
+        freq_bins = max(48, min(160, freq_bins))
+
+        # 初始化热力图缓存
+        try:
+            import numpy as _np
+            need_rebuild = False
+            if self._professional_heat_buffer is None or self._professional_heat_buffer.shape != (time_bins, freq_bins):
+                self._professional_heat_buffer = _np.zeros((time_bins, freq_bins), dtype=_np.float32)
+                self._professional_last_x0 = float(x0)
+                need_rebuild = True
+        except Exception:
+            self._professional_heat_buffer = np.zeros((time_bins, freq_bins), dtype=np.float32)
+            self._professional_last_x0 = float(x0)
+            need_rebuild = True
+        if force_rebuild:
+            need_rebuild = True
+
+        # 非录音且固定窗口：按窗口重建历史（支持滚动查看）
+        rebuild_from_history = False
+        if keep_history and fixed_window and (not recording):
+            try:
+                last_x0 = float(self._professional_last_x0) if self._professional_last_x0 is not None else None
+                if force_rebuild or (last_x0 is None) or abs(float(x0) - float(last_x0)) > (bin_w * 0.1):
+                    rebuild_from_history = True
+            except Exception:
+                rebuild_from_history = True
+
+        if keep_history and (need_rebuild or rebuild_from_history):
+            try:
+                import numpy as _np
+                self._professional_heat_buffer[:] = 0.0
+                for t, f, c in list(getattr(self, 'harmonic_history', [])):
+                    try:
+                        if t < x0 - bin_w or t > x1 + bin_w:
+                            continue
+                        xi = int((float(t) - x0) / bin_w)
+                        if xi < 0 or xi >= time_bins:
+                            continue
+                        ylog = math.log2(max(1.0, float(f)))
+                        if ylog < y0 or ylog > y1:
+                            continue
+                        yi = int((ylog - y0) / (y1 - y0) * (freq_bins - 1))
+                        c = max(0.0, min(1.0, float(c)))
+                        c = c ** 0.6
+                        self._professional_heat_buffer[xi, yi] += c
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                self._professional_force_rebuild = False
+            except Exception:
+                pass
+            try:
+                self._professional_last_x0 = float(x0)
+            except Exception:
+                pass
+
+        # 窗口滑动：按 bin 移动缓存（历史重建时跳过）
+        if not rebuild_from_history:
+            try:
+                import numpy as _np
+                last_x0 = float(self._professional_last_x0) if self._professional_last_x0 is not None else float(x0)
+                shift_bins = int(round((x0 - last_x0) / bin_w))
+                if abs(shift_bins) >= time_bins:
+                    self._professional_heat_buffer[:] = 0.0
+                elif shift_bins != 0:
+                    if shift_bins > 0:
+                        self._professional_heat_buffer[:-shift_bins, :] = self._professional_heat_buffer[shift_bins:, :]
+                        self._professional_heat_buffer[-shift_bins:, :] = 0.0
+                    else:
+                        sb = abs(shift_bins)
+                        self._professional_heat_buffer[sb:, :] = self._professional_heat_buffer[:-sb, :]
+                        self._professional_heat_buffer[:sb, :] = 0.0
+                    self._professional_last_x0 = last_x0 + shift_bins * bin_w
+                else:
+                    self._professional_last_x0 = last_x0
+            except Exception:
+                pass
+
+        # 轻量衰减（可选，保留历史时不衰减）
+        if recording and not keep_history:
+            try:
+                import numpy as _np
+                decay = float(getattr(self, '_professional_trail_decay', 0.985))
+                self._professional_heat_buffer *= decay
+            except Exception:
+                pass
+
+        # 增量写入新点（历史重建时跳过）
+        try:
+            import numpy as _np
+            if not rebuild_from_history:
+                pending = []
+                if isinstance(self._professional_pending, list):
+                    pending = self._professional_pending
+                    self._professional_pending = []
+                else:
+                    while self._professional_pending:
+                        pending.append(self._professional_pending.popleft())
+                if pending:
+                    pending_len = len(pending)
+                    max_items = int(getattr(self, '_professional_pending_limit', 6000))
+                    if max_items <= 0:
+                        max_items = 6000
+                    if pending_len > max_items:
+                        max_items = min(max_items + pending_len // 3, 20000)
+                    leftovers = []
+                    for idx, item in enumerate(pending):
+                        if idx >= max_items:
+                            leftovers.append(item)
+                            continue
+                        t, f, c = item
+                        try:
+                            if t < x0 - bin_w:
+                                continue
+                            if t > x1 + bin_w:
+                                # 未来点暂存，等待窗口追上
+                                if isinstance(self._professional_pending, list):
+                                    self._professional_pending.append((t, f, c))
+                                else:
+                                    self._professional_pending.append((t, f, c))
+                                continue
+                            # 计算 bin
+                            xi = int((t - x0) / bin_w)
+                            if xi < 0 or xi >= time_bins:
+                                continue
+                            ylog = math.log2(max(1.0, float(f)))
+                            if ylog < y0 or ylog > y1:
+                                continue
+                            yi = int((ylog - y0) / (y1 - y0) * (freq_bins - 1))
+                            c = max(0.0, min(1.0, float(c)))
+                            c = c ** 0.6
+                            self._professional_heat_buffer[xi, yi] += c
+                        except Exception:
+                            continue
+                    if leftovers:
+                        try:
+                            if isinstance(self._professional_pending, list):
+                                self._professional_pending.extend(leftovers)
+                            else:
+                                for it in leftovers:
+                                    self._professional_pending.append(it)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        heat = self._professional_heat_buffer
+
+        # 初始化色表
+        if self._professional_cmap is None:
+            try:
+                from matplotlib.colors import LinearSegmentedColormap
+                colors = [
+                    (0.02, 0.03, 0.05),
+                    (0.03, 0.08, 0.16),
+                    (0.05, 0.22, 0.35),
+                    (0.00, 0.55, 0.55),
+                    (0.55, 0.80, 0.20),
+                    (0.95, 0.60, 0.10),
+                    (0.98, 0.30, 0.20),
+                    (1.00, 1.00, 1.00),
+                ]
+                self._professional_cmap = LinearSegmentedColormap.from_list("pro_heat", colors, N=256)
+            except Exception:
+                self._professional_cmap = None
+
+        # 绘制热力图
+        if heat is None:
+            heat = np.zeros((time_bins, freq_bins), dtype=np.float32)
+        else:
+            # 轻量模糊（优先快速路径，避免卡顿）
+            try:
+                import numpy as _np
+                blur_mode = str(getattr(self, '_professional_blur_mode', 'fast')).lower()
+                blur_strength = float(getattr(self, '_professional_blur_strength', 1.0))
+                blur_strength = max(0.0, min(1.0, blur_strength))
+                if blur_mode == 'fast' and blur_strength > 0.0:
+                    base = heat
+                    hx1 = _np.roll(base, 1, axis=0)
+                    hx2 = _np.roll(base, -1, axis=0)
+                    hy1 = _np.roll(base, 1, axis=1)
+                    hy2 = _np.roll(base, -1, axis=1)
+                    blurred = (base * 4.0 + hx1 + hx2 + hy1 + hy2) / 8.0
+                    # 修正边界，避免环绕伪影
+                    blurred[0, :] = base[0, :]
+                    blurred[-1, :] = base[-1, :]
+                    blurred[:, 0] = base[:, 0]
+                    blurred[:, -1] = base[:, -1]
+                    heat = base * (1.0 - blur_strength) + blurred * blur_strength
+                elif blur_mode == 'gaussian' and blur_strength > 0.0:
+                    kernel = _np.array([1.0, 2.0, 1.0], dtype=_np.float32)
+                    kernel = kernel / kernel.sum()
+                    heat = _np.apply_along_axis(lambda m: _np.convolve(m, kernel, mode='same'), 0, heat)
+                    heat = _np.apply_along_axis(lambda m: _np.convolve(m, kernel, mode='same'), 1, heat)
+            except Exception:
+                pass
+        # 动态范围压缩（提升弱谐波）
+        try:
+            use_gpu = bool(getattr(self, '_professional_use_gpu', False))
+        except Exception:
+            use_gpu = False
+        gpu_done = False
+        if use_gpu:
+            try:
+                import cupy as _cp
+                min_size = int(getattr(self, '_professional_gpu_min_size', 80000))
+                if heat is not None and heat.size >= min_size:
+                    h_gpu = _cp.asarray(heat)
+                    h_gpu = _cp.log1p(h_gpu * 6.0)
+                    floor_p = 25.0 if keep_history else 40.0
+                    floor = float(_cp.percentile(h_gpu, floor_p)) if h_gpu.size else 0.0
+                    h_gpu = _cp.maximum(h_gpu - floor, 0.0)
+                    heat = _cp.asnumpy(h_gpu)
+                    gpu_done = True
+            except Exception:
+                gpu_done = False
+        if not gpu_done:
+            try:
+                import numpy as _np
+                heat = _np.log1p(heat * 6.0)
+                floor_p = 25.0 if keep_history else 40.0
+                floor = float(_np.percentile(heat, floor_p)) if heat.size else 0.0
+                heat = _np.maximum(heat - floor, 0.0)
+            except Exception:
+                pass
+        if self._professional_im is None:
+            self.professional_ax.cla()
+            try:
+                self.professional_ax.set_facecolor("#0b0f14")
+            except Exception:
+                pass
+            self._professional_im = self.professional_ax.imshow(
+                heat.T,
+                origin='lower',
+                aspect='auto',
+                extent=[x0, x1, y0, y1],
+                cmap=self._professional_cmap,
+                interpolation='bicubic'
+            )
+            try:
+                if self._professional_colorbar is None:
+                    self._professional_colorbar = self.professional_figure.colorbar(
+                        self._professional_im, ax=self.professional_ax, fraction=0.03, pad=0.02
+                    )
+                    self._professional_colorbar.set_label('能量/置信度', fontsize=10, color="#d7dbe2")
+                    try:
+                        self._professional_colorbar.ax.yaxis.set_tick_params(color="#c9d1d9")
+                        for lab in self._professional_colorbar.ax.get_yticklabels():
+                            lab.set_color("#c9d1d9")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            try:
+                self._professional_im.set_data(heat.T)
+                self._professional_im.set_extent([x0, x1, y0, y1])
+            except Exception:
+                pass
+            try:
+                if self._professional_colorbar is not None:
+                    self._professional_colorbar.update_normal(self._professional_im)
+            except Exception:
+                pass
+        # 动态对比度（避免满屏同色）
+        try:
+            import numpy as _np
+            vmax = float(_np.percentile(heat, 99.0)) if heat.size else 1.0
+            vmax = max(vmax, 1e-4)
+            self._professional_im.set_clim(0.0, vmax)
+        except Exception:
+            pass
+
+        # 轴与标签
+        try:
+            self.professional_ax.set_xlim(x0, x1)
+            self.professional_ax.set_ylim(y0, y1)
+            self.professional_ax.set_xlabel('时间 (秒)', fontsize=11, color="#d7dbe2")
+            self.professional_ax.set_ylabel('频率 (Hz)', fontsize=11, color="#d7dbe2")
+            self.professional_ax.set_title('专业模式 · 多频段发声可视化', fontsize=14, fontweight='bold', color="#f0f3f7")
+            self.professional_ax.tick_params(colors="#c9d1d9")
+        except Exception:
+            pass
+
+        # 音名刻度（按八度显示）
+        try:
+            ticks = []
+            labels = []
+            base_freq = 32.703  # C1
+            while base_freq < min_f:
+                base_freq *= 2.0
+            f = base_freq
+            while f <= max_f * 1.01:
+                ticks.append(math.log2(f))
+                labels.append(self._note_label_from_freq(f))
+                f *= 2.0
+            self.professional_ax.set_yticks(ticks)
+            self.professional_ax.set_yticklabels(labels, color="#c9d1d9")
+        except Exception:
+            pass
+
+        # 辅助网格线（按半音/音阶）
+        try:
+            grid_key = (round(min_f, 3), round(max_f, 3))
+            if self._professional_grid_range != grid_key:
+                # 清理旧网格线
+                for ln in list(getattr(self, '_professional_grid_artists', []) or []):
+                    try:
+                        if ln is not None and ln in getattr(self.professional_ax, 'lines', []):
+                            ln.remove()
+                    except Exception:
+                        pass
+                self._professional_grid_artists = []
+                self._professional_grid_range = grid_key
+
+                # 半音网格
+                try:
+                    n0 = int(math.floor(12.0 * math.log2(min_f / 440.0)))
+                    n1 = int(math.ceil(12.0 * math.log2(max_f / 440.0)))
+                    for n in range(n0, n1 + 1):
+                        f = 440.0 * (2.0 ** (n / 12.0))
+                        if f < min_f or f > max_f:
+                            continue
+                        y = math.log2(f)
+                        is_oct = (n % 12 == 0)
+                        alpha = 0.22 if is_oct else 0.08
+                        lw = 0.9 if is_oct else 0.45
+                        ln = self.professional_ax.axhline(y=y, color=(1, 1, 1), alpha=alpha, linewidth=lw, zorder=2)
+                        self._professional_grid_artists.append(ln)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 叠加主音轨迹（与现有音调体系结合）
+        try:
+            times = list(getattr(self, 'time_data', []))
+            pitches = list(getattr(self, 'pitch_data', []))
+            if times and pitches and len(times) == len(pitches):
+                line_x = []
+                line_y = []
+                for t, p in zip(times, pitches):
+                    try:
+                        if x0 <= float(t) <= x1 and float(p) > 0:
+                            line_x.append(float(t))
+                            line_y.append(math.log2(float(p)))
+                    except Exception:
+                        continue
+                if line_x and line_y:
+                    try:
+                        import numpy as _np
+                        from matplotlib.collections import LineCollection
+                        if hasattr(self, '_professional_main_collection') and self._professional_main_collection is not None:
+                            try:
+                                if self._professional_main_collection in getattr(self.professional_ax, 'collections', []):
+                                    self._professional_main_collection.remove()
+                            except Exception:
+                                pass
+                        pts = _np.column_stack([line_x, line_y]).reshape(-1, 1, 2)
+                        segs = _np.concatenate([pts[:-1], pts[1:]], axis=1) if len(pts) > 1 else _np.empty((0, 2, 2))
+                        if segs.size > 0:
+                            colors = []
+                            for yv in line_y[:-1]:
+                                hue = ((yv - y0) / max(1e-6, (y1 - y0)))
+                                hue = max(0.0, min(1.0, hue))
+                                colors.append((1.0, 1.0 - 0.55*hue, 0.45 + 0.55*hue))
+                            lc = LineCollection(segs, colors=colors, linewidths=1.4, alpha=0.95, zorder=15)
+                            self.professional_ax.add_collection(lc)
+                            self._professional_main_collection = lc
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            self.professional_canvas.draw_idle()
+        except Exception:
+            pass
+        try:
+            if force_redraw:
+                self._professional_force_redraw = False
         except Exception:
             pass
         # 初始化细节点悬停提示（优雅浮窗 + 三角指示）
@@ -22871,6 +23554,14 @@ class ECGStylePitchVisualizer(QWidget):
                     global_time = float(timestamp)
                 except Exception:
                     global_time = 0.0
+            try:
+                pitch_data['_professional_time'] = float(global_time)
+            except Exception:
+                pass
+            try:
+                self._capture_harmonic_candidates(pitch_data)
+            except Exception:
+                pass
             if getattr(self, '_retake_dual_mode_active', False):
                 try:
                     origin = float(getattr(self, '_retake_dual_start', 0.0))
@@ -28505,6 +29196,17 @@ class ECGStylePitchVisualizer(QWidget):
             self._in_update_display = False
             return
         try:
+            _mode_now = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
+        except Exception:
+            _mode_now = "普通模式"
+        if _mode_now == "专业模式":
+            try:
+                self.update_professional_display()
+            except Exception:
+                pass
+            self._in_update_display = False
+            return
+        try:
             self._cleanup_detached_collections()
         except Exception:
             pass
@@ -30545,12 +31247,16 @@ class ECGStylePitchVisualizer(QWidget):
                 # 尝试添加超细平滑的渐变效果（断续版本）
                 gradient_success = False
                 try:
-                    # 为每个音调段创建渐变效果
-                    if hasattr(self, '_segments') and self._segments:
-                        for seg_times, seg_pitches in self._segments:
-                            result = self.update_beautiful_pitch_line(seg_times, seg_pitches, 
-                                                                    [0.8] * len(seg_pitches))
-                            gradient_success = (result is not False)
+                    # 按当前主绘制逻辑的分段结果生成渐变（避免跨段连线）
+                    seg_source = None
+                    try:
+                        seg_source = segments if 'segments' in locals() else None
+                    except Exception:
+                        seg_source = None
+                    if not seg_source:
+                        seg_source = getattr(self, '_segments', None)
+                    if seg_source:
+                        gradient_success = bool(self.update_beautiful_pitch_segments(seg_source))
                         if gradient_success:
                             print("✅ 断续彩色渐变LineCollection创建成功")
                 except Exception as e:
@@ -32132,6 +32838,211 @@ class ECGStylePitchVisualizer(QWidget):
             # 在彩色渐变模式下，返回失败状态而不是强制回退
             print("⚠️ 彩色渐变失败，调用方将处理回退")
             return False  # 返回失败状态
+
+    def update_beautiful_pitch_segments(self, segments):
+        """基于分段数据绘制彩色渐变（与主绘制逻辑一致，避免跨段连线）。"""
+        try:
+            if not segments:
+                return False
+        except Exception:
+            return False
+
+        try:
+            # 清理旧的渐变效果与叠加点
+            if hasattr(self, 'gradient_lines'):
+                for line in list(self.gradient_lines) if isinstance(self.gradient_lines, (list, tuple)) else [self.gradient_lines]:
+                    try:
+                        if line is not None and hasattr(self, 'ax') and line in getattr(self.ax, 'collections', []):
+                            line.remove()
+                    except Exception:
+                        pass
+            self.gradient_lines = []
+
+            if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+                try:
+                    if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                        self.gradient_overlay_points.remove()
+                except Exception:
+                    pass
+                self.gradient_overlay_points = None
+
+            if hasattr(self, 'gradient_scatter') and self.gradient_scatter is not None:
+                try:
+                    if self.gradient_scatter in getattr(self.ax, 'collections', []):
+                        self.gradient_scatter.remove()
+                except Exception:
+                    pass
+                self.gradient_scatter = None
+
+            # 渐变模式下避免冲突：隐藏其他点集合
+            try:
+                if hasattr(self, '_batched_points') and self._batched_points is not None:
+                    self._batched_points.set_alpha(0.0)
+                    try:
+                        self._batched_points.set_visible(False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_segment_points') and isinstance(self._segment_points, list):
+                    for coll in self._segment_points:
+                        try:
+                            coll.set_alpha(0.0)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # 渐变模式下避免复合线：隐藏分段线/临时线/主线
+            try:
+                if hasattr(self, '_segment_lines') and isinstance(self._segment_lines, list):
+                    for ln in list(self._segment_lines):
+                        try:
+                            if ln is not None and hasattr(self, 'ax') and ln in getattr(self.ax, 'lines', []):
+                                ln.set_alpha(0.0)
+                                ln.set_visible(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_provisional_line') and self._provisional_line is not None:
+                    try:
+                        self._provisional_line.set_alpha(0.0)
+                        self._provisional_line.set_visible(False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'pitch_line') and self.pitch_line is not None:
+                    try:
+                        self.pitch_line.set_data([], [])
+                        self.pitch_line.set_alpha(0.0)
+                        self.pitch_line.set_visible(False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                    self._head_points_scatter.set_alpha(0.0)
+            except Exception:
+                pass
+
+            from matplotlib.collections import LineCollection
+            import colorsys
+
+            overlay_times = []
+            overlay_pitches = []
+            gradient_created = False
+
+            for seg_times, seg_pitches in segments:
+                try:
+                    times = list(seg_times)
+                    pitches = list(seg_pitches)
+                except Exception:
+                    continue
+
+                if len(times) < 2:
+                    continue
+
+                # 应用遮罩（若启用）
+                try:
+                    if getattr(self, '_pitch_masks_active', False):
+                        filtered = self._apply_pitch_masks_to_series(list(times), list(pitches), None)
+                        times = filtered[0]
+                        pitches = filtered[1] if len(filtered) > 1 else []
+                except Exception:
+                    pass
+
+                if len(times) < 2:
+                    continue
+
+                # cap 过滤，防回退后越界连线
+                try:
+                    if getattr(self, '_cap_visible_time_enabled', False):
+                        import numpy as _np
+                        cap = float(getattr(self, '_max_visible_time', float('inf')))
+                        ta = _np.asarray(list(times), dtype=_np.float32)
+                        ya = _np.asarray(list(pitches), dtype=_np.float32)
+                        m = (ta <= cap)
+                        times = ta[m].tolist()
+                        pitches = ya[m].tolist()
+                except Exception:
+                    pass
+
+                if len(times) < 2:
+                    continue
+
+                # 插值仅限单段内部，避免跨段
+                if len(times) >= 2 and SCIPY_AVAILABLE and len(times) < 100:
+                    interp_times = np.linspace(times[0], times[-1], len(times) * 3)
+                    if len(times) >= 4:
+                        interp_pitches = interp1d(times, pitches, kind='cubic')(interp_times)
+                    else:
+                        interp_pitches = interp1d(times, pitches, kind='linear')(interp_times)
+                else:
+                    interp_times = times
+                    interp_pitches = pitches
+
+                points = np.array([interp_times, interp_pitches]).T.reshape(-1, 1, 2)
+                if len(points) < 2:
+                    continue
+                segs = np.concatenate([points[:-1], points[1:]], axis=1)
+
+                # 颜色映射
+                colors = []
+                for i in range(len(segs)):
+                    try:
+                        mid_pitch = (interp_pitches[i] + interp_pitches[i + 1]) / 2
+                    except Exception:
+                        mid_pitch = interp_pitches[i] if i < len(interp_pitches) else 0.0
+                    hue = ((mid_pitch - 1.0) % 6.0) / 6.0
+                    rgb = colorsys.hsv_to_rgb(hue, 0.95, 1.0)
+                    colors.append(rgb)
+
+                if colors:
+                    line_collection = LineCollection(
+                        segs,
+                        colors=colors,
+                        linewidths=self.current_linewidth,
+                        alpha=0.95,
+                        zorder=10,
+                        capstyle='round',
+                        joinstyle='round'
+                    )
+                    self.ax.add_collection(line_collection)
+                    self.gradient_lines.append(line_collection)
+                    gradient_created = True
+
+                # 叠加点：使用原始段点，保持与主逻辑一致
+                overlay_times.extend(times)
+                overlay_pitches.extend(pitches)
+
+            if overlay_times:
+                try:
+                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                    diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                    marker_s = diameter ** 2
+                except Exception:
+                    marker_s = 9.0
+                self.gradient_overlay_points = self.ax.scatter(
+                    overlay_times,
+                    overlay_pitches,
+                    s=marker_s,
+                    color=(1.0, 1.0, 1.0),
+                    alpha=0.92,
+                    linewidths=0,
+                    edgecolors='none',
+                    zorder=14
+                )
+
+            return bool(gradient_created)
+        except Exception as e:
+            print(f"❌ 分段彩色渐变更新错误: {e}")
+            return False
     
     def fallback_simple_line(self, times, pitches):
         """回退到简单线条显示"""
@@ -32377,6 +33288,12 @@ class ECGStylePitchVisualizer(QWidget):
         # 重置线条样式
         if hasattr(self, 'pitch_line') and self.pitch_line is not None:
             self.pitch_line.set_drawstyle('default')
+        # 若从专业模式切回，恢复主画布
+        try:
+            if mode != "专业模式" and getattr(self, 'main_plot_area', None) is getattr(self, 'professional_canvas', None):
+                self.switch_display_widget(use_pyqtgraph=False)
+        except Exception:
+            pass
         
         # 安全地移除gradient_scatter（如果存在）
         if hasattr(self, 'gradient_scatter') and self.gradient_scatter is not None:
@@ -32427,6 +33344,15 @@ class ECGStylePitchVisualizer(QWidget):
                             coll.set_zorder(14)
                         except Exception:
                             pass
+            elif mode == "专业模式":
+                try:
+                    self.switch_display_widget(target="professional")
+                except Exception:
+                    pass
+                try:
+                    self.update_professional_display()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -44174,6 +45100,14 @@ class IntegratedRecordingInterface(QMainWindow):
             
             # 停止时间追踪
             self.visualizer.stop_time_tracking()
+            # 专业模式：停止后强制刷新一次历史热力线
+            try:
+                if hasattr(self, 'visualizer') and self.visualizer is not None:
+                    setattr(self.visualizer, '_professional_force_redraw', True)
+                    setattr(self.visualizer, '_professional_force_rebuild', True)
+                    QTimer.singleShot(0, self.visualizer.update_professional_display)
+            except Exception:
+                pass
             # 解除伴奏时间轴锁定
             try:
                 if getattr(self, '_backing_axis_locked', False):
@@ -45107,6 +46041,15 @@ class IntegratedRecordingInterface(QMainWindow):
             # 系统状态标签
             try:
                 self.system_status_label.setText("状态: 就绪")
+            except Exception:
+                pass
+
+            # 专业模式：停止后强制刷新一次历史热力线
+            try:
+                if hasattr(self, 'visualizer') and self.visualizer is not None:
+                    setattr(self.visualizer, '_professional_force_redraw', True)
+                    setattr(self.visualizer, '_professional_force_rebuild', True)
+                    QTimer.singleShot(0, self.visualizer.update_professional_display)
             except Exception:
                 pass
 
