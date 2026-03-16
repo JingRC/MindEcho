@@ -16,6 +16,12 @@ matplotlib>=3.5.0
 # librosa>=0.8.0  # 高级音频分析
 # pydub>=0.25.0   # 音频文件格式转换
 
+# GPU加速（可选）
+# NVIDIA + Windows/Linux（推荐）：
+# cupy-cuda12x>=13.4.0
+# OpenCL（跨平台备选）：
+# pyopencl>=2024.1
+
 # Python 3.12+ 兼容性说明:
 # - numpy, scipy: 完全兼容
 # - sounddevice: 完全兼容 

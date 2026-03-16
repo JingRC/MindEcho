@@ -851,6 +851,26 @@ class IntegratedAudioProcessor(QThread):
 
         self._log_rate_limit = _log_rate_limit
 
+        # 监听日志开关：默认安静模式，仅输出关键结果。
+        # 可通过环境变量 MINDECHO_VERBOSE_MONITOR=1 开启详细探测日志。
+        try:
+            self.monitor_log_verbose = str(os.environ.get('MINDECHO_VERBOSE_MONITOR', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+        except Exception:
+            self.monitor_log_verbose = False
+
+        def _monitor_log(key: str, msg: str, interval: float = 0.8, burst: int = 1, verbose: bool = False):
+            try:
+                if verbose and (not bool(getattr(self, 'monitor_log_verbose', False))):
+                    return
+                self._log_rate_limit(f"monitor_{key}", msg, interval=interval, burst=burst)
+            except Exception:
+                try:
+                    print(msg)
+                except Exception:
+                    pass
+
+        self._monitor_log = _monitor_log
+
         # Scroll日志去重签名
         self._last_scroll_signature = None
         self._last_scroll_log_time = 0.0
@@ -867,6 +887,20 @@ class IntegratedAudioProcessor(QThread):
         self.headroom_db = -6.0
         # VRMS限幅器状态
         self._vrms_state = {}
+
+        # ===== 多频真实峰检测（专业模式）=====
+        self._enable_true_multi_peaks = True
+        self._true_peak_fft_size = 2048
+        self._true_peak_max = 6
+        self._true_peak_rel_thr = 0.12
+        self._true_peak_abs_thr = 0.002
+        self._true_peak_min_sep_semi = 0.8
+        self._true_peaks_allow_fast = True
+        self._fast_change_semi_thr = 0.65
+        self._fast_change_dt = 0.12
+        self._fast_change_alpha_boost = 0.18
+        self._fast_change_rate_thr = 7.5
+        self._fast_change_active_until = 0.0
 
         # ===== 调试标志（处理线程本地）=====
         # 防止在回调中访问 self.debug_flags 抛出 AttributeError
@@ -2198,10 +2232,15 @@ class IntegratedAudioProcessor(QThread):
             device_name = device.get('name', '').lower()
             if 'hecate' in device_name and 'g4 pro' in device_name:
                 print(f"🎧 验证HECATE G4 Pro设备{device_id}: {device.get('name', 'Unknown')}")
+                hostapis = sd.query_hostapis()
+                host_idx = int(device.get('hostapi', -1))
+                host_name = hostapis[host_idx]['name'] if 0 <= host_idx < len(hostapis) else 'Unknown'
+                is_wasapi_host = 'wasapi' in str(host_name).lower()
                 
                 # 获取设备的原生采样率
                 native_sr = device.get('default_samplerate', 192000)
                 print(f"   设备原生采样率: {native_sr}Hz")
+                print(f"   主机接口: {host_name}")
                 
                 # 🎯 HECATE专用快速测试：直接测试192kHz/32样本（根据测试结果优化）
                 if native_sr >= 192000:
@@ -2221,21 +2260,24 @@ class IntegratedAudioProcessor(QThread):
                 for i, config in enumerate(test_configs):
                     try:
                         print(f"   🧪 测试 {config['sr']}Hz/{config['bs']}样本/{config['mode']}...")
-                        
-                        if config['mode'] == 'shared':
-                            settings = sd.WasapiSettings(exclusive=False)
-                        else:
-                            settings = sd.WasapiSettings(exclusive=True)
+                        settings = None
+                        if is_wasapi_host:
+                            if config['mode'] == 'shared':
+                                settings = sd.WasapiSettings(exclusive=False)
+                            else:
+                                settings = sd.WasapiSettings(exclusive=True)
                         
                         # 创建并测试流
-                        test_stream = sd.InputStream(
-                            device=device_id,
-                            channels=1,
-                            samplerate=config['sr'],
-                            blocksize=config['bs'],
-                            dtype='float32',
-                            extra_settings=settings
-                        )
+                        stream_kwargs = {
+                            'device': device_id,
+                            'channels': 1,
+                            'samplerate': config['sr'],
+                            'blocksize': config['bs'],
+                            'dtype': 'float32',
+                        }
+                        if settings is not None:
+                            stream_kwargs['extra_settings'] = settings
+                        test_stream = sd.InputStream(**stream_kwargs)
                         
                         # 快速启动测试（0.05秒）
                         test_stream.start()
@@ -2477,7 +2519,13 @@ class IntegratedAudioProcessor(QThread):
             hostapi_lower = hostapi_name_str.lower()
             is_wdm_host = 'wdm' in hostapi_lower or 'kernel' in hostapi_lower
             if is_wdm_host:
-                print(f"   ℹ️ {device_name} 当前使用 {device.get('hostapi')} 接口，限制测试组合以避免WDM-KS大量失败")
+                self._monitor_log(
+                    'bt_wdm_hint',
+                    f"   ℹ️ {device_name} 当前使用 {device.get('hostapi')} 接口，限制测试组合以避免WDM-KS大量失败",
+                    interval=0.0,
+                    burst=999,
+                    verbose=True,
+                )
 
             test_sample_rates = []
             if base_sample_rate:
@@ -2522,8 +2570,26 @@ class IntegratedAudioProcessor(QThread):
                 if added >= 3:
                     break
                 if fatal_abort:
-                    print("   ⚠️ 检测到底层主机接口不可恢复错误，提前结束蓝牙配置尝试")
+                    self._monitor_log('bt_fatal_abort', "   ⚠️ 检测到底层主机接口不可恢复错误，提前结束蓝牙配置尝试", interval=0.0, burst=999, verbose=True)
                     break
+            # 蓝牙路径兜底：即使探测失败，也保留一个保守输入配置，避免监听链路无配置可用
+            if added == 0:
+                fallback_sr = int(base_sample_rate) if int(base_sample_rate or 0) > 0 else 16000
+                fallback_sr = max(8000, min(48000, fallback_sr))
+                fallback_cfg = {
+                    'name': f'蓝牙语音兼容兜底 - {device_name}',
+                    'device': device_id,
+                    'samplerate': fallback_sr,
+                    'blocksize': 512,
+                    'settings': None,
+                    'expected_latency': 'fallback',
+                    'expected_latency_ms': 512 / fallback_sr * 1000,
+                    'quality_score': device.get('score', 40),
+                    'driver': str(device.get('hostapi', 'Unknown')),
+                    'driver_mode': 'compat-fallback'
+                }
+                configs.append(fallback_cfg)
+                print(f"   🛟 蓝牙配置探测失败，注入兜底配置: {fallback_sr}Hz/512样本")
 
         else:
             # 通用设备配置
@@ -2617,7 +2683,13 @@ class IntegratedAudioProcessor(QThread):
             last_error = None
             error_hint = None
             for attempt_label, settings in attempts:
-                print(f"   🧪 测试 {sample_rate}Hz/{block_size}样本/{attempt_label}...", end='')
+                self._monitor_log(
+                    'compat_try',
+                    f"   🧪 测试 {sample_rate}Hz/{block_size}样本/{attempt_label}...",
+                    interval=0.0,
+                    burst=999,
+                    verbose=True,
+                )
                 try:
                     stream_kwargs = dict(
                         device=device_id,
@@ -2630,39 +2702,44 @@ class IntegratedAudioProcessor(QThread):
                         stream_kwargs['extra_settings'] = settings
                     stream = sd.InputStream(**stream_kwargs)
                     stream.close()
-                    print(" ✅")
+                    self._monitor_log('compat_try_ok', "   ✅ 兼容性测试通过", interval=0.0, burst=999, verbose=True)
                     return True, settings, host_name, attempt_label, None
                 except Exception as e:
                     error_str = str(e)
                     last_error = error_str
                     error_lower = error_str.lower()
                     if "Invalid sample rate" in error_str or "PaErrorCode -9997" in error_str:
-                        print(f" ❌ 不支持采样率{sample_rate}Hz")
+                        self._monitor_log('compat_err_sr', f"   ❌ 不支持采样率{sample_rate}Hz", interval=0.0, burst=999, verbose=True)
                         error_hint = 'unsupported_sample_rate'
                         return False, None, host_name, attempt_label, error_hint
                     elif "Invalid device" in error_str or "PaErrorCode -9996" in error_str:
-                        print(" ❌ 设备不可用")
+                        self._monitor_log('compat_err_dev', "   ❌ 设备不可用", interval=0.0, burst=999, verbose=True)
                         error_hint = 'device_unavailable'
                         return False, None, host_name, attempt_label, error_hint
                     elif "exclusive" in error_lower:
-                        print(" ❌ 独占模式不可用")
+                        self._monitor_log('compat_err_ex', "   ❌ 独占模式不可用", interval=0.0, burst=999, verbose=True)
                         error_hint = 'exclusive_not_available'
                         return False, None, host_name, attempt_label, error_hint
                     elif "incompatible host api" in error_lower and settings is not None and not exclusive:
-                        print(" ❌ 主机接口不兼容，尝试备用方案")
+                        self._monitor_log('compat_err_hostapi', "   ❌ 主机接口不兼容，尝试备用方案", interval=0.0, burst=999, verbose=True)
                         error_hint = 'incompatible_hostapi'
                         continue
                     elif "unanticipated host error" in error_lower or "paerrorcode -9999" in error_lower:
-                        print(" ❌ 主机接口出现未预期错误")
+                        # WDM-KS/Kernel Streaming 上该错误常为瞬时或采样率组合不匹配，不应直接判定致命
+                        if ('wdm' in host_name_lower) or ('kernel' in host_name_lower):
+                            self._monitor_log('compat_err_wdm', "   ❌ 主机接口出现未预期错误（WDM-KS，继续尝试下一组合）", interval=0.0, burst=999, verbose=True)
+                            error_hint = 'other_error'
+                            continue
+                        self._monitor_log('compat_err_host', "   ❌ 主机接口出现未预期错误", interval=0.0, burst=999, verbose=True)
                         error_hint = 'fatal_host_error'
                         return False, None, host_name, attempt_label, error_hint
                     else:
-                        print(f" ❌ {error_str[:60]}")
+                        self._monitor_log('compat_err_other', f"   ❌ {error_str[:60]}", interval=0.0, burst=999, verbose=True)
                         error_hint = 'other_error'
                         continue
 
             if last_error is not None:
-                print(f"   ❌ 流创建失败: {last_error[:60]}")
+                self._monitor_log('compat_err_final', f"   ❌ 流创建失败: {last_error[:60]}", interval=0.0, burst=999, verbose=True)
             return False, None, host_name, None, error_hint or ('other_error' if last_error else None)
 
         except Exception as outer_e:
@@ -2871,10 +2948,50 @@ class IntegratedAudioProcessor(QThread):
         ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
         fs_name = '_mon_freq_smooth' if preview_only else '_freq_smooth'
         lfr_name = '_mon_last_frame_rms' if preview_only else '_last_frame_rms'
+        lr_name = '_mon_last_raw_frequency' if preview_only else '_last_raw_frequency'
+        lrt_name = '_mon_last_raw_frequency_t' if preview_only else '_last_raw_frequency_t'
+        pro_mode = False
+        try:
+            host = getattr(self, '_host_interface', None)
+            if host is not None:
+                viz = getattr(host, 'visualizer', None)
+                if viz is not None and hasattr(viz, 'display_mode'):
+                    pro_mode = (viz.display_mode.currentText() == "专业模式")
+        except Exception:
+            pro_mode = False
         if not hasattr(self, ls_name):
             setattr(self, ls_name, 0.0)
         if not hasattr(self, fs_name):
             setattr(self, fs_name, 0.0)
+
+        # 识别快速变化（转音/滑音/颤音），临时提高跟随性
+        fast_change = False
+        try:
+            now_t = time.time()
+            last_raw = float(getattr(self, lr_name, 0.0) or 0.0)
+            last_rt = float(getattr(self, lrt_name, 0.0) or 0.0)
+            if last_raw > 0 and now_t > last_rt:
+                dt = now_t - last_rt
+                semi = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
+                semi_thr = float(getattr(self, '_fast_change_semi_thr', 0.65))
+                dt_thr = float(getattr(self, '_fast_change_dt', 0.12))
+                # 变化速度阈值：小幅但极快变化也视为转音
+                try:
+                    rate_thr = float(getattr(self, '_fast_change_rate_thr', 7.5))
+                except Exception:
+                    rate_thr = 7.5
+                rate = semi / max(dt, 1e-6)
+                if (dt <= dt_thr and semi >= semi_thr) or (rate >= rate_thr and semi >= 0.35):
+                    fast_change = True
+            setattr(self, lr_name, float(raw_frequency))
+            setattr(self, lrt_name, float(now_t))
+        except Exception:
+            pass
+        try:
+            if fast_change:
+                self._fast_change_active_until = max(float(getattr(self, '_fast_change_active_until', 0.0) or 0.0), now_t + 0.25)
+        except Exception:
+            pass
 
         # 针对简化YIN模式，采用更轻的平滑，不做强跳变压制，避免“水平直线”与慢跟随
         try:
@@ -2902,6 +3019,11 @@ class IntegratedAudioProcessor(QThread):
                 alpha = 0.88
             else:
                 alpha = 0.82
+            if pro_mode:
+                alpha = min(0.99, alpha + 0.06)
+            if fast_change:
+                boost = float(getattr(self, '_fast_change_alpha_boost', 0.18))
+                alpha = min(0.98, alpha + boost)
             # 低电平时提高跟随，减少“直线化”
             if float(getattr(self, lfr_name, getattr(self, '_last_frame_rms', 0.0) or 0.0)) < 0.02:
                 alpha = min(0.96, alpha + 0.03)
@@ -2914,6 +3036,10 @@ class IntegratedAudioProcessor(QThread):
             # 微变化注入：在变化很小时保留少量原始细节，避免水平
             if delta_hz < 3.0:
                 smooth = 0.94 * smooth + 0.06 * raw_frequency
+            if fast_change:
+                smooth = 0.10 * smooth + 0.90 * raw_frequency
+            elif pro_mode and delta_hz > 4.0:
+                smooth = 0.20 * smooth + 0.80 * raw_frequency
             smooth = max(50, min(2500, smooth))
             setattr(self, fs_name, smooth)
             setattr(self, ls_name, smooth)
@@ -2933,10 +3059,13 @@ class IntegratedAudioProcessor(QThread):
             return raw_frequency
 
         # 跳变抑制
-        if _last_stable_frequency > 0:
+        if _last_stable_frequency > 0 and (not fast_change):
             jump = abs(raw_frequency - _last_stable_frequency)
             if jump > max(150, _last_stable_frequency * 0.35):  # 更温和参数
-                raw_frequency = _last_stable_frequency + (raw_frequency - _last_stable_frequency) * 0.25
+                ratio = 0.25
+                if pro_mode:
+                    ratio = 0.55
+                raw_frequency = _last_stable_frequency + (raw_frequency - _last_stable_frequency) * ratio
 
         # 指数平滑（自适应）：小幅变化时提高alpha保留细微起伏，较大变化时保守平滑
         if not hasattr(self, lfr_name):
@@ -2948,6 +3077,11 @@ class IntegratedAudioProcessor(QThread):
             alpha = 0.45
         else:
             alpha = 0.28
+        if pro_mode:
+            alpha = min(0.85, alpha + 0.10)
+        if fast_change:
+            boost = float(getattr(self, '_fast_change_alpha_boost', 0.18))
+            alpha = min(0.85, alpha + boost)
         # 低电平段适当提高alpha，避免“直线化”
         if float(getattr(self, lfr_name, 0.0)) < 0.02:
             alpha = min(0.70, alpha + 0.10)
@@ -2965,6 +3099,9 @@ class IntegratedAudioProcessor(QThread):
         if raw_frequency > 0 and raw_frequency > _last_stable_frequency * 1.8:
             # 加速上行：重新加权
             smooth = _last_stable_frequency * 0.4 + raw_frequency * 0.6
+
+        if fast_change:
+            smooth = 0.15 * smooth + 0.85 * raw_frequency
 
         # 合理范围裁剪
         smooth = max(50, min(2500, smooth))
@@ -3799,7 +3936,10 @@ class IntegratedAudioProcessor(QThread):
                     'expected_latency': 'auto'
                 }]
             
-            for config in audio_configs:
+            failed_attempts = []
+            safe_fallback_tried = False
+
+            for cfg_index, config in enumerate(audio_configs):
                 try:
                     # 构建音频流参数
                     stream_params = {
@@ -3911,17 +4051,117 @@ class IntegratedAudioProcessor(QThread):
                     except Exception:
                         pass
 
+                    # 关键修复：必须在候选循环内验证 start() 成功。
+                    # 否则会出现“创建成功但启动失败(-9999)”且无法继续尝试后续配置的问题。
+                    try:
+                        self.audio_stream.start()
+                    except Exception as start_e:
+                        try:
+                            self.audio_stream.close()
+                        except Exception:
+                            pass
+                        self.audio_stream = None
+                        raise Exception(f"Error starting stream: {start_e}")
+
                     audio_stream_created = True
                     break
                     
                 except Exception as e:
-                    print(f"⚠️ {config['name']}失败: {str(e)[:100]}...")
+                    err_text = str(e)
+                    cfg_name = config.get('name', f'配置#{cfg_index + 1}')
+                    failed_attempts.append(f"{cfg_name}: {err_text}")
+                    print(f"⚠️ {cfg_name}失败: {err_text[:140]}...")
+
+                    # 所有常规配置失败后，做一次安全兜底：
+                    # 1) 取消特殊驱动设置 2) 选择首个可输入设备 3) 采用保守采样率/块大小。
+                    is_last = (cfg_index >= (len(audio_configs) - 1))
+                    if is_last and not safe_fallback_tried:
+                        safe_fallback_tried = True
+                        try:
+                            safe_params = {
+                                'callback': audio_callback,
+                                'channels': 1,
+                                'samplerate': 44100,
+                                'blocksize': 1024,
+                                'latency': 'high',
+                                'dtype': np.float32,
+                            }
+
+                            # 优先选取非WASAPI可输入设备（如MME/DirectSound）；
+                            # 若找不到，再回退到任意可输入设备；仍失败则让 sounddevice 走系统默认输入。
+                            safe_device = None
+                            try:
+                                devices = sd.query_devices()
+                                hostapis = sd.query_hostapis()
+
+                                def _host_name(dev_obj):
+                                    try:
+                                        hidx = int(dev_obj.get('hostapi', -1))
+                                        if 0 <= hidx < len(hostapis):
+                                            return str(hostapis[hidx].get('name', '')).lower()
+                                    except Exception:
+                                        pass
+                                    return ''
+
+                                for dev_idx, dev in enumerate(devices):
+                                    if int(dev.get('max_input_channels', 0) or 0) < 1:
+                                        continue
+                                    hname = _host_name(dev)
+                                    if 'wasapi' in hname:
+                                        continue
+                                    safe_device = dev_idx
+                                    break
+
+                                if safe_device is None:
+                                    for dev_idx, dev in enumerate(devices):
+                                        if int(dev.get('max_input_channels', 0) or 0) >= 1:
+                                            safe_device = dev_idx
+                                            break
+                            except Exception:
+                                safe_device = None
+
+                            if safe_device is not None:
+                                safe_params['device'] = safe_device
+
+                            self.audio_stream = sd.InputStream(**safe_params)
+                            self._active_monitoring_config = {
+                                'name': '安全兜底输入流',
+                                'device': safe_params.get('device', None),
+                                'samplerate': safe_params['samplerate'],
+                                'blocksize': safe_params['blocksize'],
+                                'settings': None,
+                                'expected_latency': 'safe-fallback'
+                            }
+
+                            try:
+                                self.active_input_device_id = int(safe_params.get('device')) if 'device' in safe_params else None
+                            except Exception:
+                                self.active_input_device_id = None
+                            self.active_input_samplerate = int(safe_params['samplerate'])
+                            self.active_input_channels = int(safe_params['channels'])
+                            self.active_blocksize = int(safe_params['blocksize'])
+
+                            try:
+                                self.audio_stream.start()
+                            except Exception as safe_start_e:
+                                try:
+                                    self.audio_stream.close()
+                                except Exception:
+                                    pass
+                                self.audio_stream = None
+                                raise Exception(f"Error starting stream: {safe_start_e}")
+
+                            print("✅ 安全兜底输入流启动成功: 44100Hz / 1024样本 / 单声道")
+                            audio_stream_created = True
+                            break
+                        except Exception as safe_e:
+                            failed_attempts.append(f"安全兜底输入流: {safe_e}")
+                            print(f"⚠️ 安全兜底输入流也失败: {safe_e}")
                     continue
             
             if not audio_stream_created:
-                raise Exception("所有音频驱动配置都失败，请检查音频设备")
-            
-            self.audio_stream.start()
+                brief = " | ".join(failed_attempts[-3:]) if failed_attempts else "未知错误"
+                raise Exception(f"所有音频驱动配置都失败，请检查音频设备。最近错误: {brief}")
             
             # 启动异步音频处理线程
             self.start_audio_processing_thread()
@@ -4447,14 +4687,20 @@ class IntegratedAudioProcessor(QThread):
                         self._monitoring_processing_times = self._monitoring_processing_times[-50:]
                     
                     # 延迟报告节流：每800次或显著超出理论延迟(>理论+0.5ms)
-                    theoretical_latency = (self.chunk_size / self.sample_rate) * 1000
+                    # 使用回调实际帧长与当前输入采样率，避免与配置值不一致导致“理论延迟”失真。
+                    try:
+                        active_sr = int(getattr(self, 'active_input_samplerate', 0) or getattr(self, 'sample_rate', 48000) or 48000)
+                    except Exception:
+                        active_sr = int(getattr(self, 'sample_rate', 48000) or 48000)
+                    theoretical_latency = (float(frames) / float(max(1, active_sr))) * 1000.0
                     avg_monitoring_time = np.mean(self._monitoring_processing_times)
                     max_monitoring_time = np.max(self._monitoring_processing_times)
                     total_monitoring_latency = theoretical_latency + avg_monitoring_time
                     need_report = (self._monitoring_callback_counter % 800 == 0) or (total_monitoring_latency > theoretical_latency + 0.8)
                     if need_report:
                         self._log_rate_limit('latency_report', f"🎧 延迟#{self._monitoring_callback_counter} 理论:{theoretical_latency:.2f}ms 处理:{avg_monitoring_time:.2f}/{max_monitoring_time:.2f}ms 总:{total_monitoring_latency:.2f}ms", interval=1.0, burst=1)
-                        if total_monitoring_latency > 1.0:
+                        # 1ms 阈值过于激进，会造成误报警；将告警阈值提升到更贴近实时监听的 8ms
+                        if total_monitoring_latency > 8.0:
                             if self.debug_flags.get('latency_warn_verbose'):
                                 self._log_rate_limit('high_latency_monitor', f"⚠️ 监听延迟偏高 {total_monitoring_latency:.2f}ms", interval=1.0)
                             self._stat_counters['high_latency'] += 1
@@ -4470,8 +4716,12 @@ class IntegratedAudioProcessor(QThread):
                 monitoring_configs = self._collect_monitoring_configs()
                 if monitoring_configs:
                     try:
-                        preview = ", ".join(str(cfg.get('name', '未命名')) for cfg in monitoring_configs[:5])
-                        print(f"🎛️ 监听配置优先级链: {preview}")
+                        names = [str(cfg.get('name', '未命名')) for cfg in monitoring_configs]
+                        if bool(getattr(self, 'monitor_log_verbose', False)):
+                            preview = ", ".join(names[:8])
+                            print(f"🎛️ 监听配置优先级链: {preview}")
+                        else:
+                            print(f"🎛️ 监听配置候选: {len(names)} 个（已启用安静日志模式）")
                     except Exception:
                         pass
                 else:
@@ -4485,15 +4735,20 @@ class IntegratedAudioProcessor(QThread):
                         'expected_latency': 'auto'
                     }]
 
-                # 如检测到蓝牙语音配置，优先尝试蓝牙配置，避免被延迟评分挤到后面
+                # 如检测到蓝牙语音配置，按策略决定是否优先（仅在自动链路中优先，显式兜底链路保持原优先级）
                 try:
                     bt_cfgs = [c for c in monitoring_configs if self._is_bt_config(c)]
                     non_bt_cfgs = [c for c in monitoring_configs if not self._is_bt_config(c)]
-                    if bt_cfgs:
+                    mode_override_now = str(getattr(self, '_monitoring_mode_override', '') or '').lower()
+                    has_explicit_chain = bool(getattr(self, '_preferred_monitoring_configs', None))
+                    bt_priority_allowed = (mode_override_now not in ('unified-fallback', 'unified')) and (not has_explicit_chain)
+                    if bt_cfgs and bt_priority_allowed:
                         print(f"🎧 检测到 {len(bt_cfgs)} 个蓝牙语音输入候选，将在监听中优先尝试它们")
                         monitoring_configs = bt_cfgs + non_bt_cfgs
                         _prefer_bt_for_monitor = True
                     else:
+                        if bt_cfgs and (not bt_priority_allowed):
+                            self._monitor_log('bt_priority_skip', f"🎧 检测到蓝牙候选 {len(bt_cfgs)} 个，但当前模式保持非蓝牙配置优先", interval=2.0)
                         _prefer_bt_for_monitor = False
                 except Exception as _bt_e:
                     print(f"⚠️ 蓝牙配置优先级处理失败，退回基准排序: {_bt_e}")
@@ -4982,6 +5237,54 @@ class IntegratedAudioProcessor(QThread):
                                 self._monitor_output_enabled = False
                                 print(f"⚠️ 分离式耳返创建失败: {_sep_e}")
 
+                            # 最终兜底：若仍未建立任何回传链路，尝试默认输出的保守双工监听
+                            if (not created_duplex) and (not bool(getattr(self, '_monitor_output_enabled', False))):
+                                try:
+                                    _in_dev = stream_params.get('device', None)
+                                    try:
+                                        _din, _dout = sd.default.device
+                                    except Exception:
+                                        _dout = None
+                                    if _dout is not None:
+                                        _out_info = sd.query_devices(_dout)
+                                        _duplex_sr = int(float(_out_info.get('default_samplerate', 0) or 0))
+                                        if _duplex_sr <= 0:
+                                            _duplex_sr = int(getattr(self, 'sample_rate', 48000))
+                                        _duplex_bs = max(128, int(stream_params.get('blocksize', self.chunk_size)))
+
+                                        def monitoring_callback_duplex_fallback(indata, outdata, frames, time_info, status):
+                                            monitoring_callback(indata, frames, time_info, status)
+                                            try:
+                                                raw_audio = indata[:, 0] if len(indata.shape) > 1 else indata
+                                                audio_out = np.clip(raw_audio, -1.0, 1.0)
+                                                if outdata.shape[1] == 1:
+                                                    outdata[:, 0] = audio_out
+                                                else:
+                                                    outdata[:, 0] = audio_out
+                                                    outdata[:, 1] = audio_out
+                                            except Exception:
+                                                outdata.fill(0)
+
+                                        try:
+                                            if self.audio_stream is not None:
+                                                self.audio_stream.close()
+                                        except Exception:
+                                            pass
+                                        self.audio_stream = sd.Stream(
+                                            device=(_in_dev, _dout),
+                                            channels=(self.channels, 2),
+                                            samplerate=_duplex_sr,
+                                            blocksize=_duplex_bs,
+                                            dtype=np.float32,
+                                            callback=monitoring_callback_duplex_fallback,
+                                            latency='low'
+                                        )
+                                        created_duplex = True
+                                        self.monitor_audio_passthrough = True
+                                        print(f"🛟 已启用监听回传兜底: 输入{_in_dev} -> 输出{_dout} @{_duplex_sr}Hz/{_duplex_bs}")
+                                except Exception as _fb_duplex_e:
+                                    print(f"⚠️ 监听回传兜底失败，将仅进行输入分析: {_fb_duplex_e}")
+
                         # 记录监听输入设备信息并检测是否为蓝牙/低采样率语音通道
                         try:
                             self.active_input_device_id = int(stream_params.get('device')) if 'device' in stream_params else None
@@ -5047,8 +5350,11 @@ class IntegratedAudioProcessor(QThread):
                             cfg_snapshot['created_duplex'] = created_duplex
                             cfg_snapshot['verified_latency_ms'] = verified_latency
                             self._active_monitoring_config = cfg_snapshot
+                            # 同步给通用延迟测试与UI读取，避免“当前没有选定配置”
+                            self._selected_device_config = dict(cfg_snapshot)
                         except Exception:
                             self._active_monitoring_config = dict(config)
+                            self._selected_device_config = dict(config)
 
                         monitoring_stream_created = True
                         break
@@ -5330,9 +5636,17 @@ class IntegratedAudioProcessor(QThread):
                 
                 print("�🎧 正在启动HECATE G4 Pro优化监听...")
                 
-                # 启动WASAPI诊断系统（安全模式）：避免递归打印
+                # 启动WASAPI诊断系统（安全模式）：避免每次启动都大量刷屏
                 try:
-                    self.diagnose_wasapi_issues()
+                    now_diag = time.time()
+                    last_diag = float(getattr(self, '_wasapi_diag_last_t', 0.0) or 0.0)
+                    diag_interval = 600.0  # 10分钟内最多一次
+                    force_diag = bool(getattr(self, 'monitor_log_verbose', False))
+                    if force_diag or (now_diag - last_diag >= diag_interval):
+                        self.diagnose_wasapi_issues()
+                        self._wasapi_diag_last_t = now_diag
+                    else:
+                        self._monitor_log('diag_skip', 'ℹ️ 跳过重复WASAPI诊断（安静日志模式）', interval=5.0)
                 except RecursionError:
                     # 避免递归错误继续扩大
                     print("❌ WASAPI诊断过程中出现递归错误，已跳过详细追踪。")
@@ -7869,6 +8183,25 @@ class IntegratedAudioProcessor(QThread):
                 return
 
             # Phase1: 后处理（跳变抑制 + 平滑）仅在非假高频情况下执行
+            true_candidates = []
+            try:
+                if bool(getattr(self, '_enable_true_multi_peaks', True)):
+                    allow_fast = bool(getattr(self, '_true_peaks_allow_fast', True))
+                    if (not fast_path) or allow_fast:
+                        try:
+                            ui_min_f, ui_max_f = self.get_frequency_range()
+                        except Exception:
+                            ui_min_f = float(getattr(self, 'min_frequency', 80.0))
+                            ui_max_f = float(getattr(self, 'max_frequency', 1047.0))
+                        true_candidates = self._extract_true_multi_candidates(
+                            np.asarray(processed_audio, dtype=np.float64),
+                            float(ui_min_f),
+                            float(ui_max_f),
+                            include_freq=float(raw_frequency or 0.0)
+                        )
+            except Exception:
+                true_candidates = []
+
             smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only) if raw_frequency > 0 else 0.0
 
             # ========= 换气抑制：低能量 + 短时多半音跨幅（轻量规则） ========= #
@@ -8076,6 +8409,16 @@ class IntegratedAudioProcessor(QThread):
                     vibrato_info=vibrato_info
                 )
                 pitch_data = frame.to_dict()
+                try:
+                    fc_until = float(getattr(self, '_fast_change_active_until', 0.0) or 0.0)
+                    pitch_data['_fast_change'] = bool(current_time <= fc_until)
+                except Exception:
+                    pass
+                try:
+                    if true_candidates:
+                        pitch_data['harmonic_candidates'] = true_candidates
+                except Exception:
+                    pass
                 
                 # 🔥 强制保存历史数据和发送信号
                 try:
@@ -8222,6 +8565,16 @@ class IntegratedAudioProcessor(QThread):
                 self._ui_emit_min_interval = float(getattr(self, '_ui_emit_min_interval_default', 0.03))
                 self._ui_last_emit_t = 0.0
                 self._ui_pending = None
+            # 专业模式降低节流，提高实时感
+            try:
+                host = getattr(self, '_host_interface', None)
+                if host is not None:
+                    viz = getattr(host, 'visualizer', None)
+                    if viz is not None and hasattr(viz, 'display_mode'):
+                        if viz.display_mode.currentText() == "专业模式":
+                            self._ui_emit_min_interval = min(self._ui_emit_min_interval, 0.02)
+            except Exception:
+                pass
             # 到达最小间隔则发射，否则合并为待发，保留最新
             if (now - getattr(self, '_ui_last_emit_t', 0.0)) >= self._ui_emit_min_interval:
                 try:
@@ -9111,6 +9464,90 @@ class IntegratedAudioProcessor(QThread):
             if self._detection_counter % 100 == 0:
                 print(f"❌ 音高检测总体错误: {e}")
             return 0
+
+    def _extract_true_multi_candidates(self, audio_data: np.ndarray, min_f: float, max_f: float, *, include_freq: float = 0.0) -> List[Dict[str, float]]:
+        """从FFT中提取多个真实峰值候选（用于专业模式多主线显示）。"""
+        try:
+            if audio_data is None:
+                return []
+            x = np.asarray(audio_data, dtype=np.float64)
+            if x.size < 256:
+                return []
+            try:
+                n = int(getattr(self, '_true_peak_fft_size', 2048))
+            except Exception:
+                n = 2048
+            n = max(256, min(int(n), x.size))
+            sr = float(getattr(self, 'sample_rate', 48000) or 48000.0)
+            seg = x[-n:]
+            seg = seg - float(np.mean(seg))
+            win = np.hanning(n)
+            spec = np.fft.rfft(seg * win)
+            mag = np.abs(spec)
+            freqs = np.fft.rfftfreq(n, 1.0 / sr)
+            mask = (freqs >= float(min_f)) & (freqs <= float(max_f))
+            if not np.any(mask):
+                return []
+            vf = freqs[mask]
+            vm = mag[mask]
+            if vm.size < 3:
+                return []
+            # 轻度平滑，减少雪花
+            try:
+                kernel = np.array([1.0, 2.0, 1.0], dtype=np.float64)
+                kernel = kernel / kernel.sum()
+                vm_s = np.convolve(vm, kernel, mode='same')
+            except Exception:
+                vm_s = vm
+            # 局部峰值
+            peaks = (vm_s[1:-1] > vm_s[:-2]) & (vm_s[1:-1] >= vm_s[2:])
+            idx = np.where(peaks)[0] + 1
+            if idx.size == 0:
+                return []
+            vmax = float(np.max(vm_s)) if vm_s.size else 0.0
+            try:
+                rel_thr = float(getattr(self, '_true_peak_rel_thr', 0.12))
+                abs_thr = float(getattr(self, '_true_peak_abs_thr', 0.002))
+                max_peaks = int(getattr(self, '_true_peak_max', 6))
+                min_sep_semi = float(getattr(self, '_true_peak_min_sep_semi', 0.8))
+            except Exception:
+                rel_thr, abs_thr, max_peaks, min_sep_semi = 0.12, 0.002, 6, 0.8
+            try:
+                if bool(getattr(self, 'is_recording', False)):
+                    rel_thr = max(0.06, rel_thr * 0.85)
+                    abs_thr = max(0.0008, abs_thr * 0.8)
+                    max_peaks = min(10, max_peaks + 1)
+            except Exception:
+                pass
+            min_sep_ratio = 2 ** (min_sep_semi / 12.0)
+            # 阈值过滤
+            sel = [i for i in idx if vm_s[i] >= max(abs_thr, vmax * rel_thr)]
+            if not sel:
+                return []
+            # 按能量排序
+            sel.sort(key=lambda i: vm_s[i], reverse=True)
+            picked = []
+            for i in sel:
+                f = float(vf[i])
+                # 去重：半音内合并
+                if any(max(f, 1e-6) / max(pf, 1e-6) < min_sep_ratio and max(pf, 1e-6) / max(f, 1e-6) < min_sep_ratio for pf, _ in picked):
+                    continue
+                picked.append((f, float(vm_s[i])))
+                if len(picked) >= max_peaks:
+                    break
+            if include_freq and include_freq > 0:
+                f0 = float(include_freq)
+                if not any(max(f0, 1e-6) / max(pf, 1e-6) < min_sep_ratio and max(pf, 1e-6) / max(f0, 1e-6) < min_sep_ratio for pf, _ in picked):
+                    picked.append((f0, vmax))
+            # 归一化置信度
+            max_val = max([p[1] for p in picked] + [1e-9])
+            out = []
+            for f, val in picked:
+                conf = float(val / max_val)
+                out.append({'frequency': float(f), 'confidence': conf, 'source': 'true'})
+            return out
+        except Exception:
+            return []
 
     # ========= 监听耳返专用：呼吸期轻微电流/滋啦抑制（零感知延迟） ========= #
     def _apply_breath_noise_suppress(self, audio_data: np.ndarray, key: str = 'default') -> np.ndarray:
@@ -11073,6 +11510,14 @@ class ECGStylePitchVisualizer(QWidget):
             self.harmonic_history = deque(maxlen=200000)
         except Exception:
             self.harmonic_history = []
+        try:
+            self._professional_raw_history = deque(maxlen=200000)
+        except Exception:
+            self._professional_raw_history = []
+        try:
+            self._professional_base_history = deque(maxlen=200000)
+        except Exception:
+            self._professional_base_history = []
         # 专业模式：待处理队列与热力图缓存
         try:
             self._professional_pending = deque()
@@ -11081,15 +11526,145 @@ class ECGStylePitchVisualizer(QWidget):
         self._professional_heat_buffer = None
         self._professional_last_x0 = None
         self._professional_last_update_t = 0.0
-        self._professional_min_update_interval = 0.06
+        self._professional_min_update_interval = 0.03
         self._professional_keep_history = True
         self._professional_trail_decay = 0.985
         self._professional_blur_mode = "fast"  # fast | gaussian | none
         self._professional_blur_strength = 1.0
         self._professional_pending_limit = 6000
+        self._professional_pending_budget = 4000
         self._professional_use_gpu = False
         self._professional_gpu_min_size = 80000
         self._professional_fixed_window = True
+        self._professional_true_min_conf = 0.03
+        self._professional_harmonic_weight = 0.58
+        self._professional_harmonic_min_conf = 0.035
+        self._professional_harmonic_count = 12
+        self._professional_harmonic_realtime_enabled = True
+        self._professional_harmonic_recording_count_cap = 4
+        self._professional_harmonic_fast_count_cap = 2
+        self._professional_harmonic_recording_min_conf = 0.08
+        self._professional_harmonic_drop_when_backlog = 1500
+        self._professional_harmonic_emit_min_dt = 0.018
+        self._professional_harmonic_last_emit_t = 0.0
+        self._professional_pending_hard_cap = 9000
+        self._professional_pending_realtime_keep_sec = 10.0
+        self._professional_main_recent_realtime_keep_sec = 36.0
+        self._professional_harmonic_history_realtime_keep_sec = 48.0
+        self._professional_realtime_trim_interval = 0.60
+        self._professional_last_realtime_trim_t = 0.0
+        self._professional_last_data_wall_t = 0.0
+        self._professional_data_idle_fallback_sec = 0.28
+        self._professional_recording_min_update_interval = 0.016
+        self._professional_pending_heavy_min_update_interval = 0.028
+        self._professional_timeline_snap_backlog = 0.14
+        self._professional_realtime_stale_trigger_sec = 0.80
+        self._professional_realtime_max_lead_cap = 1.80
+        self._professional_realtime_hard_sync_gap = 2.20
+        self._professional_realtime_stale_gap = 0.0
+        self._professional_warmup_sec = 1.0
+        self._professional_vmax_floor = 0.75
+        self._professional_main_tracks_max = 5
+        self._professional_main_gap_s = 0.14
+        self._professional_main_match_semi = 3.2
+        self._professional_main_point_cap = 2200
+        self._professional_main_hold_sec = 0.35
+        self._professional_target_fps = 55.0
+        self._professional_base_sep_semi = 1.8
+        self._professional_predict_enabled = False
+        self._professional_lag_threshold = 0.25
+        self._professional_lag_lead = 0.08
+        try:
+            from collections import deque as _dq_main
+            self._professional_main_recent = _dq_main(maxlen=120000)
+        except Exception:
+            self._professional_main_recent = []
+        self._professional_main_recent_window = 30.0
+        self._professional_predict_scatter = None
+        self._professional_predict_last_t = 0.0
+        self._professional_base_predict_points = None
+        self._professional_stop_time = None
+        self._professional_smoothed_xlim = None
+        self._professional_smooth_last_t = None
+        self._professional_clim_last_t = 0.0
+        self._professional_vmax_cache = None
+        self._professional_silence_threshold = 0.18
+        self._professional_commit_delay_singing = 0.04
+        self._professional_commit_delay_silence = 0.16
+        self._professional_realtime_cursor_max_lead = 0.09
+        self._professional_base_point_min_d = 2.0
+        self._professional_base_point_max_d = 5.0
+        self._professional_track_link_max_semi = 1.35
+        self._professional_band_mode = "3段"
+        self._professional_band_edges_hz = (320.0, 900.0)
+        self._professional_band_labels = ("胸腔", "喉口腔", "头腔")
+        self._professional_band_palette = [
+            (0.72, 0.90, 1.00),
+            (0.98, 0.91, 0.72),
+            (0.89, 0.82, 0.98),
+        ]
+        self._professional_heat_lowfreq_interval = 0.18
+        self._professional_heat_fade_alpha = 0.15
+        self._professional_base_only_recording = True
+        self._professional_mainline_interval_recording = 0.085
+        self._professional_mainline_interval_fast = 0.12
+        self._professional_min_draw_interval = 0.012
+        self._professional_last_draw_t = 0.0
+        self._professional_hover_bound = False
+        self._professional_pending_recent_keep = 3200
+        self._professional_realtime_drop_lag_s = 0.35
+        self._professional_realtime_history_sec = 42.0
+        self._professional_base_series_cap = 8000
+        self._professional_harmonic_draw_stride_heavy = 2
+        self._professional_harmonic_draw_stride_extreme = 3
+        self._professional_base_point_cap_recording = 14000
+        self._professional_base_point_cap_fast = 18000
+        self._professional_defer_harmonics_until_stop = True
+        self._professional_base_line_color = "#FFB6D5"
+        self._professional_base_point_color = (0.68, 0.90, 1.00)
+        self._professional_base_snowflake_window_s = 1.0
+        self._professional_base_snowflake_scale = 1.35
+        self._professional_base_snowflake_glow_scale = 2.15
+        self._professional_base_snowflake_alpha = 0.60
+        self._professional_base_snowflake_glow_alpha = 0.34
+        self._professional_base_predict_enabled = True
+        self._professional_base_predict_horizon_s = 1.0
+        self._professional_base_predict_tail_sec = 0.35
+        self._professional_base_predict_gap_start_s = 0.06
+        self._professional_base_predict_step_min_s = 0.018
+        self._professional_base_predict_step_max_s = 0.05
+        self._professional_base_predict_lead_sec = 0.08
+        self._professional_base_predict_semi_slope_cap = 18.0
+        self._professional_base_predict_snowflake_scale = 1.45
+        self._professional_base_predict_alpha = 0.26
+        self._professional_base_predict_trail_sec = 0.55
+        self._professional_base_predict_trail_max_points = 420
+        self._professional_base_predict_trail_fade_power = 1.25
+        self._professional_base_predict_trail_min_scale = 0.58
+        self._professional_base_predict_trail = []
+        self._professional_base_predict_ingest_stride = 1
+        self._professional_base_predict_ingest_stride_heavy = 2
+        self._professional_base_predict_trail_min_dt = 0.010
+        self._professional_base_predict_trail_min_dsemi = 0.03
+        self._professional_base_realtime_render_sec = 3.8
+        self._professional_base_realtime_render_sec_heavy = 2.2
+        self._professional_base_realtime_future_margin_s = 0.14
+        self._professional_base_recent_scan_cap = 5200
+        self._professional_base_recent_scan_cap_heavy = 2200
+        self._professional_last_base_t = 0.0
+        self._professional_start_zero_lock_sec = 0.65
+        self._professional_start_zero_clamp_margin = 0.12
+        self._professional_recording_start_wall = 0.0
+        self._professional_force_zero_window_until = 0.0
+        self._professional_start_zero_lock_active = False
+        self._startup_time_jump_guard_sec = 3.0
+        self._startup_time_jump_margin = 0.35
+        self._professional_start_guard_max_sec = 1.6
+        self._professional_jump_guard_enabled = True
+        self._professional_jump_forward_tol = 0.90
+        self._professional_jump_backward_tol = 0.08
+        self._professional_last_gt = 0.0
+        self._professional_last_gt_wall = 0.0
         self._timebin_eps = 0.01
         self._added_time_bins = set()
 
@@ -16912,6 +17487,10 @@ class ECGStylePitchVisualizer(QWidget):
         # 开始新会话重置诊断
         if hasattr(self, '_reset_display_diagnostics'):
             self._reset_display_diagnostics()
+        try:
+            self._professional_stop_time = None
+        except Exception:
+            pass
         self.time_update_timer.start(self.time_update_interval)
         print(f"⏰ 开始时间追踪，基准时间: {self.start_time}")
     
@@ -16923,6 +17502,14 @@ class ECGStylePitchVisualizer(QWidget):
         if hasattr(self, '_reset_display_diagnostics'):
             self._reset_display_diagnostics()
         print(f"⏸️ 停止时间追踪，当前时长: {self.current_global_time:.2f}秒")
+        try:
+            if getattr(self, '_professional_stop_time', None) is None:
+                if getattr(self, 'time_data', None):
+                    self._professional_stop_time = float(self.time_data[-1])
+                else:
+                    self._professional_stop_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+        except Exception:
+            pass
         # 清除平滑与渲染窗口缓存，防止停止后被历史窗口/平滑拖拽回录音末端
         try:
             self._smoothed_xlim = None
@@ -17120,6 +17707,11 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if hasattr(self, '_added_time_bins'):
                 self._added_time_bins.clear()
+        except Exception:
+            pass
+        # 专业模式：同步清空专业画布与缓存，避免清除后仍残留旧轨迹
+        try:
+            self._clear_professional_visual_state()
         except Exception:
             pass
         # 同步清理已绘制覆盖区间
@@ -17411,6 +18003,96 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if getattr(self, 'debug_flags', {}).get('artist_dump', False):
                 self.debug_dump_axis_artists(context_tag="after_clear")
+        except Exception:
+            pass
+
+    def _clear_professional_visual_state(self):
+        """清空专业模式的缓存与画布内容，保持等待下一次录制的空白状态。"""
+        try:
+            if hasattr(self, 'harmonic_history') and self.harmonic_history is not None:
+                self.harmonic_history.clear()
+        except Exception:
+            self.harmonic_history = []
+        for attr in ('_professional_raw_history', '_professional_base_history', '_professional_pending', '_professional_main_recent'):
+            try:
+                buf = getattr(self, attr, None)
+                if buf is not None:
+                    buf.clear()
+            except Exception:
+                try:
+                    setattr(self, attr, [])
+                except Exception:
+                    pass
+
+        try:
+            self._professional_heat_buffer = None
+            self._professional_last_x0 = None
+            self._professional_last_update_t = 0.0
+            self._professional_last_draw_t = 0.0
+            self._professional_heat_last_t = 0.0
+            self._professional_smoothed_xlim = None
+            self._professional_smooth_last_t = None
+            self._professional_stop_time = None
+            self._professional_vmax_cache = None
+            self._professional_clim_last_t = 0.0
+            self._professional_mainline_last_update = 0.0
+            self._professional_main_hold_until = 0.0
+            self._professional_predict_last_t = 0.0
+            self._professional_last_base_t = 0.0
+            self._professional_force_redraw = True
+            self._professional_force_rebuild = True
+        except Exception:
+            pass
+
+        # 清理专业模式图元
+        try:
+            if getattr(self, '_professional_colorbar', None) is not None:
+                try:
+                    self._professional_colorbar.remove()
+                except Exception:
+                    pass
+            self._professional_colorbar = None
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, 'professional_ax', None) is not None:
+                self.professional_ax.cla()
+                try:
+                    self.professional_ax.set_facecolor("#0b0f14")
+                    self.professional_ax.set_xlabel('时间 (秒)', fontsize=11, color="#d7dbe2")
+                    self.professional_ax.set_ylabel('频率 (Hz)', fontsize=11, color="#d7dbe2")
+                    self.professional_ax.set_title('专业模式 · 多频段发声可视化', fontsize=14, fontweight='bold', color="#f0f3f7")
+                    self.professional_ax.tick_params(colors="#c9d1d9")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        for attr, val in (
+            ('_professional_im', None),
+            ('_professional_main_collections', []),
+            ('_professional_main_points', None),
+            ('_professional_predict_scatter', None),
+            ('_professional_base_line', None),
+            ('_professional_base_points', None),
+            ('_professional_base_head_points', None),
+            ('_professional_base_predict_points', None),
+            ('_professional_base_predict_trail', []),
+            ('_professional_time_cursor', None),
+            ('_professional_grid_artists', []),
+            ('_professional_vgrid_artists', []),
+            ('_professional_grid_range', None),
+            ('_professional_vgrid_range', None),
+        ):
+            try:
+                setattr(self, attr, val)
+            except Exception:
+                pass
+
+        try:
+            if getattr(self, 'professional_canvas', None) is not None:
+                self.professional_canvas.draw_idle()
         except Exception:
             pass
 
@@ -17868,6 +18550,36 @@ class ECGStylePitchVisualizer(QWidget):
         ])
         self.display_mode.currentTextChanged.connect(self.on_display_mode_changed)
         controls_row1_layout.addWidget(self.display_mode)
+
+        # 专业模式轨数（默认3，可选1-5）
+        self.pro_tracks_label = QLabel("专业轨数:")
+        controls_row1_layout.addWidget(self.pro_tracks_label)
+        self.pro_tracks_spin = QSpinBox()
+        self.pro_tracks_spin.setRange(1, 5)
+        self.pro_tracks_spin.setValue(3)
+        self.pro_tracks_spin.setToolTip("专业模式主能量轨数（1-5），默认3")
+        self.pro_tracks_spin.valueChanged.connect(self.on_professional_track_count_changed)
+        controls_row1_layout.addWidget(self.pro_tracks_spin)
+
+        # 专业模式频段：3段/5段（默认3段）
+        self.pro_band_mode_label = QLabel("频段:")
+        controls_row1_layout.addWidget(self.pro_band_mode_label)
+        self.pro_band_mode_combo = QComboBox()
+        self.pro_band_mode_combo.addItems(["3段", "5段"])
+        self.pro_band_mode_combo.setCurrentText("3段")
+        self.pro_band_mode_combo.setToolTip(
+            "3段：胸腔 / 喉口腔 / 头腔\n"
+            "5段：胸腔 / 喉腔 / 口腔 / 鼻腔 / 头腔"
+        )
+        self.pro_band_mode_combo.currentTextChanged.connect(self.on_professional_band_mode_changed)
+        controls_row1_layout.addWidget(self.pro_band_mode_combo)
+        try:
+            self.pro_tracks_label.setVisible(False)
+            self.pro_tracks_spin.setVisible(False)
+            self.pro_band_mode_label.setVisible(False)
+            self.pro_band_mode_combo.setVisible(False)
+        except Exception:
+            pass
         
         # 性能模式选择
         controls_row1_layout.addWidget(QLabel(" | 性能:"))
@@ -18505,6 +19217,10 @@ class ECGStylePitchVisualizer(QWidget):
                 self.professional_ax.set_ylabel('频率 (Hz)', fontsize=11, color="#d7dbe2")
                 self.professional_ax.set_title('专业模式 · 多频段发声可视化', fontsize=14, fontweight='bold', color="#f0f3f7")
                 self.professional_ax.tick_params(colors="#c9d1d9")
+                try:
+                    self.professional_ax.set_axisbelow(False)
+                except Exception:
+                    pass
             except Exception:
                 pass
             self._professional_im = None
@@ -18515,6 +19231,21 @@ class ECGStylePitchVisualizer(QWidget):
             self._professional_colorbar = None
             self._professional_grid_artists = []
             self._professional_grid_range = None
+            self._professional_vgrid_artists = []
+            self._professional_vgrid_range = None
+            self._professional_colorbar_last_update = 0.0
+            self._professional_mainline_last_update = 0.0
+            self._professional_main_collections = []
+            self._professional_main_points = None
+            self._professional_main_hold_until = 0.0
+            self._professional_predict_scatter = None
+            self._professional_base_line = None
+            self._professional_base_points = None
+            self._professional_base_head_points = None
+            self._professional_base_predict_points = None
+            self._professional_base_predict_trail = []
+            self._professional_force_follow = True
+            self._professional_hover_bound = False
         except Exception:
             self.professional_canvas = None
             self.professional_ax = None
@@ -18532,7 +19263,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             min_f, max_f = 80.0, 1047.0
         # 专业模式建议略放宽上限以容纳谐波
-        max_f = max(max_f, min_f * 4.0, 3000.0)
+        max_f = max(max_f, min_f * 8.0, 5200.0)
         return max(20.0, min_f), max_f
 
     def _note_label_from_freq(self, freq: float) -> str:
@@ -18548,16 +19279,60 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             return ""
 
-    def _professional_enqueue(self, t: float, f: float, c: float) -> None:
+    def _professional_enqueue(self, t: float, f: float, c: float, src: str = "true") -> None:
         try:
             if f <= 0:
                 return
             c = max(0.0, min(1.0, float(c)))
-            item = (float(t), float(f), float(c))
+            item_t = float(t)
+            item_src = str(src)
+            try:
+                recording = bool(getattr(self, 'is_recording_active', False))
+            except Exception:
+                recording = False
+            try:
+                pending_len = len(self._professional_pending)
+            except Exception:
+                pending_len = 0
+            try:
+                drop_backlog = int(getattr(self, '_professional_harmonic_drop_when_backlog', 1500))
+            except Exception:
+                drop_backlog = 1500
+            try:
+                defer_harm = bool(getattr(self, '_professional_defer_harmonics_until_stop', True))
+            except Exception:
+                defer_harm = True
+            if recording and defer_harm and item_src == "harm":
+                return
+            if recording and item_src == "harm" and pending_len > drop_backlog:
+                return
+            item = (item_t, float(f), float(c), item_src)
+            if item_src != "harm":
+                try:
+                    prev_base_t = float(getattr(self, '_professional_last_base_t', 0.0) or 0.0)
+                except Exception:
+                    prev_base_t = 0.0
+                try:
+                    self._professional_last_base_t = max(prev_base_t, item_t)
+                except Exception:
+                    self._professional_last_base_t = item_t
             if isinstance(self._professional_pending, list):
                 self._professional_pending.append(item)
+                try:
+                    hard_cap = int(getattr(self, '_professional_pending_hard_cap', 9000))
+                except Exception:
+                    hard_cap = 9000
+                if hard_cap > 0 and len(self._professional_pending) > hard_cap:
+                    self._professional_pending = self._professional_pending[-hard_cap:]
             else:
                 self._professional_pending.append(item)
+                try:
+                    hard_cap = int(getattr(self, '_professional_pending_hard_cap', 9000))
+                except Exception:
+                    hard_cap = 9000
+                if hard_cap > 0:
+                    while len(self._professional_pending) > hard_cap:
+                        self._professional_pending.popleft()
         except Exception:
             pass
 
@@ -18575,60 +19350,1115 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         try:
+            recording = bool(getattr(self, 'is_recording_active', False))
+        except Exception:
+            recording = False
+        try:
+            pending_len = len(self._professional_pending)
+        except Exception:
+            pending_len = 0
+        try:
+            drop_backlog = int(getattr(self, '_professional_harmonic_drop_when_backlog', 1500))
+        except Exception:
+            drop_backlog = 1500
+        try:
+            harmonic_enabled = bool(getattr(self, '_professional_harmonic_realtime_enabled', True))
+        except Exception:
+            harmonic_enabled = True
+        try:
+            emit_min_dt = float(getattr(self, '_professional_harmonic_emit_min_dt', 0.018))
+        except Exception:
+            emit_min_dt = 0.018
+        if recording:
+            try:
+                trim_iv = float(getattr(self, '_professional_realtime_trim_interval', 0.60))
+            except Exception:
+                trim_iv = 0.60
+            try:
+                last_trim = float(getattr(self, '_professional_last_realtime_trim_t', 0.0) or 0.0)
+            except Exception:
+                last_trim = 0.0
+            if trim_iv <= 0 or (ts - last_trim) >= trim_iv:
+                try:
+                    keep_hh = float(getattr(self, '_professional_harmonic_history_realtime_keep_sec', 48.0))
+                except Exception:
+                    keep_hh = 48.0
+                try:
+                    keep_mr = float(getattr(self, '_professional_main_recent_realtime_keep_sec', 36.0))
+                except Exception:
+                    keep_mr = 36.0
+                try:
+                    keep_pd = float(getattr(self, '_professional_pending_realtime_keep_sec', 10.0))
+                except Exception:
+                    keep_pd = 10.0
+                cutoff_hh = float(ts) - max(8.0, keep_hh)
+                cutoff_mr = float(ts) - max(6.0, keep_mr)
+                cutoff_pd = float(ts) - max(4.0, keep_pd)
+                try:
+                    if isinstance(self.harmonic_history, list):
+                        if len(self.harmonic_history) > 1200:
+                            self.harmonic_history = [it for it in self.harmonic_history if float(it[0]) >= cutoff_hh]
+                    else:
+                        while self.harmonic_history and float(self.harmonic_history[0][0]) < cutoff_hh:
+                            self.harmonic_history.popleft()
+                except Exception:
+                    pass
+                try:
+                    mr = getattr(self, '_professional_main_recent', None)
+                    if mr is not None:
+                        if isinstance(mr, list):
+                            if len(mr) > 800:
+                                self._professional_main_recent = [it for it in mr if float(it[0]) >= cutoff_mr]
+                        else:
+                            while mr and float(mr[0][0]) < cutoff_mr:
+                                mr.popleft()
+                except Exception:
+                    pass
+                try:
+                    pd = getattr(self, '_professional_pending', None)
+                    if pd is not None:
+                        if isinstance(pd, list):
+                            if len(pd) > 500:
+                                self._professional_pending = [it for it in pd if float(it[0]) >= cutoff_pd]
+                        else:
+                            while pd and float(pd[0][0]) < cutoff_pd:
+                                pd.popleft()
+                except Exception:
+                    pass
+                try:
+                    self._professional_last_realtime_trim_t = float(ts)
+                except Exception:
+                    pass
+        skip_harmonics = False
+        if recording:
+            if (not harmonic_enabled) or pending_len > int(drop_backlog * 1.9):
+                skip_harmonics = True
+            else:
+                try:
+                    last_emit = float(getattr(self, '_professional_harmonic_last_emit_t', 0.0) or 0.0)
+                except Exception:
+                    last_emit = 0.0
+                if emit_min_dt > 0 and (ts - last_emit) < emit_min_dt:
+                    skip_harmonics = True
+        def _append_main_recent(t_val: float, f_val: float, c_val: float) -> None:
+            try:
+                if not hasattr(self, '_professional_main_recent') or self._professional_main_recent is None:
+                    return
+                item = (float(t_val), float(f_val), float(c_val))
+                if isinstance(self._professional_main_recent, list):
+                    self._professional_main_recent.append(item)
+                else:
+                    self._professional_main_recent.append(item)
+            except Exception:
+                pass
+        try:
             candidates = pitch_data.get('harmonic_candidates') or pitch_data.get('harmonics')
         except Exception:
             candidates = None
         if candidates:
             try:
+                true_list = []
                 for cand in candidates:
                     try:
                         freq = float(cand.get('frequency', cand.get('freq', 0.0)) or 0.0)
                         conf = float(cand.get('confidence', cand.get('energy', 0.6)) or 0.0)
+                        src = str(cand.get('source', 'true'))
                     except Exception:
                         continue
                     if freq > 0:
+                        if src != 'harm':
+                            true_list.append((freq, conf))
+                            src = 'true'
                         if isinstance(self.harmonic_history, list):
-                            self.harmonic_history.append((ts, freq, conf))
+                            self.harmonic_history.append((ts, freq, conf, src))
                         else:
-                            self.harmonic_history.append((ts, freq, conf))
-                        self._professional_enqueue(ts, freq, conf)
+                            self.harmonic_history.append((ts, freq, conf, src))
+                        self._professional_enqueue(ts, freq, conf, src)
+                        if src == 'true':
+                            _append_main_recent(ts, freq, conf)
+                # 若存在 raw_frequency，则用于增强快速转音的主线跟随
+                try:
+                    raw_f = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+                except Exception:
+                    raw_f = 0.0
+                if raw_f > 0:
+                    try:
+                        sep_semi = float(getattr(self, '_true_peak_min_sep_semi', 0.8))
+                    except Exception:
+                        sep_semi = 0.8
+                    sep_ratio = 2 ** (sep_semi / 12.0)
+                    def _close_to_any(ff):
+                        for tf, _ in true_list:
+                            if max(ff, 1e-6) / max(tf, 1e-6) < sep_ratio and max(tf, 1e-6) / max(ff, 1e-6) < sep_ratio:
+                                return True
+                        return False
+                    if not _close_to_any(raw_f):
+                        true_list.append((raw_f, 0.85))
+                        if isinstance(self.harmonic_history, list):
+                            self.harmonic_history.append((ts, raw_f, 0.85, "true"))
+                        else:
+                            self.harmonic_history.append((ts, raw_f, 0.85, "true"))
+                        self._professional_enqueue(ts, raw_f, 0.85, "true")
+                        _append_main_recent(ts, raw_f, 0.85)
+                # 基于真实主线生成谐波（多主线时避开重叠）
+                if true_list and (not skip_harmonics):
+                    try:
+                        min_f, max_f = self._professional_get_freq_range()
+                        try:
+                            harm_min = float(getattr(self, '_professional_harmonic_min_conf', 0.05))
+                            harm_weight = float(getattr(self, '_professional_harmonic_weight', 0.58))
+                            harm_count = int(getattr(self, '_professional_harmonic_count', 12))
+                        except Exception:
+                            harm_min, harm_weight, harm_count = 0.05, 0.58, 12
+                        fast_change = bool(pitch_data.get('_fast_change'))
+                        if recording:
+                            try:
+                                harm_min = max(harm_min, float(getattr(self, '_professional_harmonic_recording_min_conf', 0.08)))
+                            except Exception:
+                                harm_min = max(harm_min, 0.08)
+                            try:
+                                cap = int(getattr(self, '_professional_harmonic_recording_count_cap', 4))
+                            except Exception:
+                                cap = 4
+                            if pending_len > drop_backlog or fast_change:
+                                try:
+                                    cap = min(cap, int(getattr(self, '_professional_harmonic_fast_count_cap', 2)))
+                                except Exception:
+                                    cap = min(cap, 2)
+                                harm_weight = harm_weight * 0.78
+                            harm_count = max(1, min(harm_count, cap))
+                        # 重叠判定（半音内视为同一条）
+                        try:
+                            sep_semi = float(getattr(self, '_true_peak_min_sep_semi', 0.8))
+                        except Exception:
+                            sep_semi = 0.8
+                        sep_ratio = 2 ** (sep_semi / 12.0)
+                        def _close_to_true(ff):
+                            for tf, _ in true_list:
+                                if max(ff, 1e-6) / max(tf, 1e-6) < sep_ratio and max(tf, 1e-6) / max(ff, 1e-6) < sep_ratio:
+                                    return True
+                            return False
+                        for base, base_conf in true_list:
+                            if base_conf < harm_min:
+                                continue
+                            strength = (base_conf - harm_min) / max(1e-6, (1.0 - harm_min))
+                            strength = max(0.0, min(1.0, strength))
+                            weight_scale = 0.35 + 0.65 * strength
+                            dyn_count = max(2, int(round(harm_count * (0.6 + 0.6 * strength))))
+                            if fast_change:
+                                dyn_count = max(2, min(4, int(round(dyn_count * 0.6))))
+                            # 上方谐波
+                            for k in range(2, dyn_count + 1):
+                                hf = base * k
+                                if hf > max_f * 1.02:
+                                    break
+                                if _close_to_true(hf):
+                                    continue
+                                hconf = base_conf * (0.72 ** (k - 1)) * harm_weight * weight_scale
+                                if fast_change:
+                                    hconf = hconf * 0.45
+                                if isinstance(self.harmonic_history, list):
+                                    self.harmonic_history.append((ts, hf, hconf, "harm"))
+                                else:
+                                    self.harmonic_history.append((ts, hf, hconf, "harm"))
+                                self._professional_enqueue(ts, hf, hconf, "harm")
+                            # 下方一条次谐波（仅在范围内且不靠近真实主线）
+                            sub = base * 0.5
+                            if sub >= min_f * 0.98 and (not _close_to_true(sub)):
+                                hconf = base_conf * 0.25 * weight_scale
+                                if fast_change:
+                                    hconf = hconf * 0.45
+                                if isinstance(self.harmonic_history, list):
+                                    self.harmonic_history.append((ts, sub, hconf, "harm"))
+                                else:
+                                    self.harmonic_history.append((ts, sub, hconf, "harm"))
+                                self._professional_enqueue(ts, sub, hconf, "harm")
+                        try:
+                            self._professional_harmonic_last_emit_t = float(ts)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
                 return
             except Exception:
                 pass
         # 兜底：没有多候选时，用单频作为一条候选
         try:
-            freq = float(pitch_data.get('frequency', 0.0) or 0.0)
+            freq = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+            if freq <= 0:
+                freq = float(pitch_data.get('frequency', 0.0) or 0.0)
             conf = float(pitch_data.get('confidence', 0.6) or 0.0)
             if freq > 0:
                 if isinstance(self.harmonic_history, list):
-                    self.harmonic_history.append((ts, freq, conf))
+                    self.harmonic_history.append((ts, freq, conf, "true"))
                 else:
-                    self.harmonic_history.append((ts, freq, conf))
-                self._professional_enqueue(ts, freq, conf)
+                    self.harmonic_history.append((ts, freq, conf, "true"))
+                self._professional_enqueue(ts, freq, conf, "true")
+                _append_main_recent(ts, freq, conf)
                 # 轻量生成谐波候选，增强多频段可视化
                 try:
+                    if skip_harmonics:
+                        return
                     min_f, max_f = self._professional_get_freq_range()
                     base = float(freq)
                     base_conf = max(0.05, min(1.0, conf))
-                    for k in range(2, 6):
+                    try:
+                        harm_min = float(getattr(self, '_professional_harmonic_min_conf', 0.035))
+                        harm_weight = float(getattr(self, '_professional_harmonic_weight', 0.58))
+                        harm_count = int(getattr(self, '_professional_harmonic_count', 12))
+                    except Exception:
+                        harm_min = 0.035
+                        harm_weight = 0.58
+                        harm_count = 12
+                    if recording:
+                        try:
+                            harm_min = max(harm_min, float(getattr(self, '_professional_harmonic_recording_min_conf', 0.08)))
+                        except Exception:
+                            harm_min = max(harm_min, 0.08)
+                        try:
+                            cap = int(getattr(self, '_professional_harmonic_recording_count_cap', 4))
+                        except Exception:
+                            cap = 4
+                        if pending_len > drop_backlog:
+                            try:
+                                cap = min(cap, int(getattr(self, '_professional_harmonic_fast_count_cap', 2)))
+                            except Exception:
+                                cap = min(cap, 2)
+                            harm_weight = harm_weight * 0.78
+                        harm_count = max(1, min(harm_count, cap))
+                    if base_conf < harm_min:
+                        return
+                    try:
+                        strength = (base_conf - harm_min) / max(1e-6, (1.0 - harm_min))
+                        strength = max(0.0, min(1.0, strength))
+                    except Exception:
+                        strength = 0.0
+                    weight_scale = 0.35 + 0.65 * strength
+                    for k in range(2, max(3, harm_count + 1)):
                         hf = base * k
                         if hf > max_f * 1.02:
                             break
-                        hconf = base_conf * (0.65 ** (k - 1))
+                        hconf = base_conf * (0.72 ** (k - 1)) * harm_weight * weight_scale
                         if isinstance(self.harmonic_history, list):
-                            self.harmonic_history.append((ts, hf, hconf))
+                            self.harmonic_history.append((ts, hf, hconf, "harm"))
                         else:
-                            self.harmonic_history.append((ts, hf, hconf))
-                        self._professional_enqueue(ts, hf, hconf)
+                            self.harmonic_history.append((ts, hf, hconf, "harm"))
+                        self._professional_enqueue(ts, hf, hconf, "harm")
+                    try:
+                        self._professional_harmonic_last_emit_t = float(ts)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         except Exception:
             pass
 
+    def _build_professional_main_tracks(self, x0: float, x1: float) -> List[Dict[str, Any]]:
+        """构建专业模式主能量多轨（多频段）段列表，含换气断开处理。"""
+        try:
+            margin = float(getattr(self, '_professional_main_margin', 0.22))
+        except Exception:
+            margin = 0.22
+        try:
+            max_tracks = int(getattr(self, '_professional_main_tracks_max', 3))
+        except Exception:
+            max_tracks = 3
+        try:
+            gap_thr = float(getattr(self, '_professional_main_gap_s', 0.18))
+        except Exception:
+            gap_thr = 0.18
+        try:
+            match_semi = float(getattr(self, '_professional_main_match_semi', 4.0))
+        except Exception:
+            match_semi = 4.0
+        try:
+            same_t_eps = float(getattr(self, '_professional_same_time_eps', 0.008))
+        except Exception:
+            same_t_eps = 0.008
+        try:
+            link_max_semi = float(getattr(self, '_professional_track_link_max_semi', 1.8))
+        except Exception:
+            link_max_semi = 1.8
+        try:
+            min_f, max_f = self._professional_get_freq_range()
+        except Exception:
+            min_f, max_f = 80.0, 5200.0
+
+        points: List[Tuple[float, float, float, int]] = []
+        def _band_index(freq_hz: float) -> int:
+            try:
+                ff = float(freq_hz)
+            except Exception:
+                ff = 0.0
+            try:
+                edges = tuple(float(v) for v in getattr(self, '_professional_band_edges_hz', (320.0, 900.0)))
+            except Exception:
+                edges = (320.0, 900.0)
+            if ff <= 0:
+                return 0
+            idx = 0
+            for edge in edges:
+                if ff < edge:
+                    return idx
+                idx += 1
+            return idx
+        recent = getattr(self, '_professional_main_recent', None)
+        try:
+            if recent is not None and len(recent) > 0:
+                try:
+                    win = float(getattr(self, '_professional_main_recent_window', 30.0))
+                except Exception:
+                    win = 30.0
+                prune_before = x0 - max(1.0, win)
+                if not isinstance(recent, list):
+                    try:
+                        while recent and float(recent[0][0]) < prune_before:
+                            recent.popleft()
+                    except Exception:
+                        pass
+                for item in list(recent):
+                    try:
+                        t, f, c = item[0], item[1], item[2]
+                        t = float(t)
+                        f = float(f)
+                        c = float(c) if c is not None else 0.6
+                    except Exception:
+                        continue
+                    if f <= 0:
+                        continue
+                    if t < x0 - margin or t > x1 + margin:
+                        continue
+                    if f < min_f * 0.9 or f > max_f * 1.05:
+                        continue
+                    points.append((t, f, c, _band_index(f)))
+        except Exception:
+            points = []
+
+        if not points:
+            try:
+                for item in list(getattr(self, 'harmonic_history', [])):
+                    if not isinstance(item, (list, tuple)):
+                        continue
+                    if len(item) >= 4:
+                        t, f, c, src = item[0], item[1], item[2], item[3]
+                        if str(src) == "harm":
+                            continue
+                    elif len(item) == 3:
+                        t, f, c = item
+                    else:
+                        continue
+                    try:
+                        t = float(t)
+                        f = float(f)
+                        c = float(c) if c is not None else 0.6
+                    except Exception:
+                        continue
+                    if f <= 0:
+                        continue
+                    if t < x0 - margin or t > x1 + margin:
+                        continue
+                    if f < min_f * 0.9 or f > max_f * 1.05:
+                        continue
+                    points.append((t, f, c, _band_index(f)))
+            except Exception:
+                points = []
+
+        if not points:
+            try:
+                raw_hist = list(getattr(self, '_professional_raw_history', []))
+            except Exception:
+                raw_hist = []
+            if raw_hist:
+                for t, f in raw_hist:
+                    try:
+                        t = float(t)
+                        f = float(f)
+                    except Exception:
+                        continue
+                    if f <= 0:
+                        continue
+                    if t < x0 - margin or t > x1 + margin:
+                        continue
+                    points.append((t, f, 0.8, _band_index(f)))
+            else:
+                try:
+                    tbuf = list(getattr(self, 'time_data', []))
+                    pbuf = list(getattr(self, 'pitch_data', []))
+                except Exception:
+                    tbuf, pbuf = [], []
+                if tbuf and pbuf and len(tbuf) == len(pbuf):
+                    for t, f in zip(tbuf, pbuf):
+                        try:
+                            t = float(t)
+                            f = float(f)
+                        except Exception:
+                            continue
+                        if f <= 0:
+                            continue
+                        if t < x0 - margin or t > x1 + margin:
+                            continue
+                        points.append((t, f, 0.7, _band_index(f)))
+
+        if not points:
+            return []
+
+        points.sort(key=lambda v: v[0])
+
+        tracks: List[Dict[str, Any]] = []
+        for t, f, c, band in points:
+            best_idx = None
+            best_semi = None
+            for i, tr in enumerate(tracks):
+                if int(tr.get('band', -1)) != int(band):
+                    continue
+                last_t = tr['last_t']
+                last_f = tr['last_f']
+                dt = t - last_t
+                if dt < -1e-6:
+                    continue
+                try:
+                    semi = abs(12.0 * math.log2(max(1e-9, f / max(last_f, 1e-9))))
+                except Exception:
+                    semi = 999.0
+                if semi <= match_semi:
+                    if best_idx is None or semi < best_semi:
+                        best_idx = i
+                        best_semi = semi
+            if best_idx is None:
+                if len(tracks) >= max_tracks:
+                    continue
+                tracks.append({
+                    'segments': [],
+                    'current': [(t, f)],
+                    'last_t': t,
+                    'last_f': f,
+                    'band': int(band),
+                    'score': max(0.0, c),
+                })
+                continue
+            tr = tracks[best_idx]
+            dt = t - tr['last_t']
+            force_break = False
+            if best_semi is not None:
+                # 同一时间片出现不同频段时，强制断段，防止跨频段串线
+                if dt <= same_t_eps and best_semi > 0.65:
+                    force_break = True
+                # 频段跨度过大时，强制断段，仅连接同频段轨迹
+                if best_semi > link_max_semi:
+                    force_break = True
+            if (dt > gap_thr or force_break) and tr['current']:
+                tr['segments'].append(tr['current'])
+                tr['current'] = []
+            tr['current'].append((t, f))
+            tr['last_t'] = t
+            tr['last_f'] = f
+            tr['score'] += max(0.0, c)
+
+        for tr in tracks:
+            if tr['current']:
+                tr['segments'].append(tr['current'])
+                tr['current'] = []
+
+        tracks = [tr for tr in tracks if any(len(seg) >= 2 for seg in tr.get('segments', []))]
+        tracks.sort(key=lambda tr: tr.get('score', 0.0), reverse=True)
+        if max_tracks > 0:
+            tracks = tracks[:max_tracks]
+        return tracks
+
+    def _build_professional_base_series(self, x0: float, x1: float) -> Tuple[List[float], List[float]]:
+        """构建专业模式基音主线：沿用普通模式时间/音高序列，断开换气空隙。"""
+        try:
+            gap_thr = float(getattr(self, '_professional_main_gap_s', 0.18))
+        except Exception:
+            gap_thr = 0.18
+        try:
+            margin = float(getattr(self, '_professional_main_margin', 0.22))
+        except Exception:
+            margin = 0.22
+        try:
+            same_t_eps = float(getattr(self, '_professional_base_same_time_eps', 0.006))
+        except Exception:
+            same_t_eps = 0.006
+        try:
+            recording = bool(getattr(self, 'is_recording_active', False))
+        except Exception:
+            recording = False
+        try:
+            fast_mode_live = bool(getattr(self, '_professional_fast_mode', False))
+        except Exception:
+            fast_mode_live = False
+        try:
+            pending_len_live = len(getattr(self, '_professional_pending', []))
+        except Exception:
+            pending_len_live = 0
+        heavy_live = bool(recording and (fast_mode_live or pending_len_live > 1200))
+
+        # 普通模式风格主基频：优先使用单一基频历史（仅取当前窗口尾部，避免全历史扫描）
+        base_hist = []
+        try:
+            base_src = getattr(self, '_professional_base_history', [])
+        except Exception:
+            base_src = []
+        if base_src:
+            try:
+                cap = int(getattr(self, '_professional_base_series_cap', 8000))
+            except Exception:
+                cap = 8000
+            if recording:
+                cap = min(cap, 4800)
+            if heavy_live:
+                cap = min(cap, 2400)
+            cap = max(800, cap)
+            lower_t = x0 - margin
+            tmp_rev: List[Tuple[float, float]] = []
+            try:
+                for it in reversed(base_src):
+                    try:
+                        t = float(it[0]); p = float(it[1])
+                    except Exception:
+                        continue
+                    if t > x1 + margin:
+                        continue
+                    if t < lower_t:
+                        break
+                    if p <= 0:
+                        continue
+                    tmp_rev.append((t, p))
+                    if len(tmp_rev) >= cap:
+                        break
+                if tmp_rev:
+                    base_hist = list(reversed(tmp_rev))
+            except Exception:
+                try:
+                    base_hist = list(base_src)
+                except Exception:
+                    base_hist = []
+        if base_hist:
+            xs: List[float] = []
+            ys: List[float] = []
+            last_t = None
+            for it in base_hist:
+                try:
+                    t = float(it[0])
+                    p = float(it[1])
+                except Exception:
+                    continue
+                if p <= 0:
+                    continue
+                if t < x0 - margin or t > x1 + margin:
+                    continue
+                if xs and last_t is not None and abs(t - last_t) <= same_t_eps:
+                    xs[-1] = t
+                    ys[-1] = p
+                    last_t = t
+                    continue
+                if last_t is not None and (t - last_t) > gap_thr:
+                    xs.append(float('nan'))
+                    ys.append(float('nan'))
+                xs.append(t)
+                ys.append(p)
+                last_t = t
+            if xs and ys:
+                return xs, ys
+
+        # 专业模式优先：使用真实Hz数据源，避免误用普通模式的y映射值(0~8)导致白点不可见
+        prof_points: List[Tuple[float, float]] = []
+        try:
+            recent = getattr(self, '_professional_main_recent', None)
+            if recent is not None and len(recent) > 0:
+                try:
+                    recent_cap = int(getattr(self, '_professional_base_recent_scan_cap', 5200))
+                except Exception:
+                    recent_cap = 5200
+                try:
+                    recent_cap_heavy = int(getattr(self, '_professional_base_recent_scan_cap_heavy', 2200))
+                except Exception:
+                    recent_cap_heavy = 2200
+                if heavy_live:
+                    recent_cap = min(recent_cap, recent_cap_heavy)
+                recent_cap = max(600, recent_cap)
+                lower_t = x0 - margin
+                tmp_rev: List[Tuple[float, float]] = []
+                for item in reversed(recent):
+                    try:
+                        t = float(item[0])
+                        f = float(item[1])
+                    except Exception:
+                        continue
+                    if f <= 0:
+                        continue
+                    if t > (x1 + margin):
+                        continue
+                    if t < lower_t:
+                        break
+                    tmp_rev.append((t, f))
+                    if len(tmp_rev) >= recent_cap:
+                        break
+                if tmp_rev:
+                    prof_points = list(reversed(tmp_rev))
+        except Exception:
+            prof_points = []
+
+        if not prof_points:
+            try:
+                hh = list(getattr(self, 'harmonic_history', []))
+            except Exception:
+                hh = []
+            if hh:
+                lower_t = x0 - margin
+                tmp_rev: List[Tuple[float, float]] = []
+                back_cap = 3000 if heavy_live else 7000
+                for it in reversed(hh):
+                    try:
+                        t = float(it[0])
+                        f = float(it[1])
+                        src = str(it[3]) if len(it) >= 4 else 'true'
+                    except Exception:
+                        continue
+                    if f <= 0:
+                        continue
+                    if src == 'harm':
+                        continue
+                    if t > (x1 + margin):
+                        continue
+                    if t < lower_t:
+                        break
+                    tmp_rev.append((t, f))
+                    if len(tmp_rev) >= back_cap:
+                        break
+                if tmp_rev:
+                    prof_points = list(reversed(tmp_rev))
+
+        if prof_points:
+            xs: List[float] = []
+            ys: List[float] = []
+            last_t = None
+            for t, p in prof_points:
+                if last_t is not None and (t - last_t) > gap_thr:
+                    xs.append(float('nan'))
+                    ys.append(float('nan'))
+                xs.append(float(t))
+                ys.append(float(p))
+                last_t = t
+            return xs, ys
+
+        use_flat = False
+        flat = []
+        # 与普通模式一致：优先使用 time_data/pitch_data，_flat_points 作为兜底
+        try:
+            tbuf = list(getattr(self, 'time_data', []))
+            pbuf = list(getattr(self, 'pitch_data', []))
+        except Exception:
+            tbuf, pbuf = [], []
+        if not tbuf or not pbuf or len(tbuf) != len(pbuf):
+            try:
+                flat = list(getattr(self, '_flat_points', []))
+                if flat:
+                    use_flat = True
+            except Exception:
+                use_flat = False
+            if not use_flat:
+                return [], []
+        xs: List[float] = []
+        ys: List[float] = []
+        last_t = None
+        if use_flat:
+            if recording and len(flat) > 16000:
+                flat = flat[-16000:]
+            for t, p in flat:
+                try:
+                    t = float(t)
+                    p = float(p)
+                except Exception:
+                    continue
+                if p <= 0:
+                    continue
+                if t < x0 - 0.25 or t > x1 + 0.25:
+                    continue
+                if last_t is not None and (t - last_t) > gap_thr:
+                    xs.append(float('nan'))
+                    ys.append(float('nan'))
+                xs.append(t)
+                ys.append(p)
+                last_t = t
+        else:
+            if recording and len(tbuf) > 16000:
+                tbuf = tbuf[-16000:]
+                pbuf = pbuf[-16000:]
+            for t, p in zip(tbuf, pbuf):
+                try:
+                    t = float(t)
+                    p = float(p)
+                except Exception:
+                    continue
+                if p <= 0:
+                    continue
+                if t < x0 - 0.25 or t > x1 + 0.25:
+                    continue
+                if last_t is not None and (t - last_t) > gap_thr:
+                    xs.append(float('nan'))
+                    ys.append(float('nan'))
+                xs.append(t)
+                ys.append(p)
+                last_t = t
+        return xs, ys
+
+    def _build_professional_base_predict_points(
+        self,
+        base_times: List[float],
+        base_pitches: List[float],
+        x0: float,
+        x1: float,
+        cursor_t: float,
+    ) -> List[Tuple[float, float]]:
+        """基于最近真实基频进行短时外推，用于专业模式前沿雪花预绘制。"""
+        try:
+            if not bool(getattr(self, '_professional_base_predict_enabled', True)):
+                return []
+        except Exception:
+            return []
+        try:
+            horizon = float(getattr(self, '_professional_base_predict_horizon_s', 1.0))
+        except Exception:
+            horizon = 1.0
+        horizon = max(0.08, min(1.2, horizon))
+        try:
+            gap_start = float(getattr(self, '_professional_base_predict_gap_start_s', 0.06))
+        except Exception:
+            gap_start = 0.06
+        gap_start = max(0.01, min(0.30, gap_start))
+        try:
+            tail_sec = float(getattr(self, '_professional_base_predict_tail_sec', 0.35))
+        except Exception:
+            tail_sec = 0.35
+        tail_sec = max(0.08, min(1.20, tail_sec))
+        try:
+            lead_sec = float(getattr(self, '_professional_base_predict_lead_sec', 0.08))
+        except Exception:
+            lead_sec = 0.08
+        lead_sec = max(0.0, min(0.25, lead_sec))
+        try:
+            step_min = float(getattr(self, '_professional_base_predict_step_min_s', 0.018))
+        except Exception:
+            step_min = 0.018
+        try:
+            step_max = float(getattr(self, '_professional_base_predict_step_max_s', 0.05))
+        except Exception:
+            step_max = 0.05
+        step_min = max(0.008, min(0.06, step_min))
+        step_max = max(step_min, min(0.12, step_max))
+        try:
+            semi_slope_cap = float(getattr(self, '_professional_base_predict_semi_slope_cap', 18.0))
+        except Exception:
+            semi_slope_cap = 18.0
+        semi_slope_cap = max(3.0, min(60.0, semi_slope_cap))
+
+        valid: List[Tuple[float, float]] = []
+        for t, p in zip(base_times, base_pitches):
+            try:
+                t_f = float(t)
+                p_f = float(p)
+            except Exception:
+                continue
+            if not math.isfinite(t_f) or not math.isfinite(p_f):
+                continue
+            if p_f <= 0.0:
+                continue
+            valid.append((t_f, p_f))
+        if len(valid) < 2:
+            return []
+
+        last_t, last_f = valid[-1]
+        gap = float(cursor_t) - float(last_t)
+        if gap < gap_start:
+            return []
+        target_t = min(float(last_t) + horizon, float(cursor_t) + lead_sec)
+        if target_t <= last_t + step_min:
+            return []
+
+        tail: List[Tuple[float, float]] = []
+        cut_t = float(last_t) - tail_sec
+        for t, p in reversed(valid):
+            if t < cut_t:
+                break
+            tail.append((t, p))
+        if len(tail) < 2:
+            return []
+        tail.reverse()
+
+        dt_list: List[float] = []
+        semi_slopes: List[float] = []
+        try:
+            prev_t, prev_f = tail[0]
+            prev_semi = 12.0 * math.log2(max(1.0, prev_f) / 440.0)
+            for t, p in tail[1:]:
+                dt = float(t) - float(prev_t)
+                if dt <= 1e-4 or dt > 0.25:
+                    prev_t, prev_f = t, p
+                    prev_semi = 12.0 * math.log2(max(1.0, prev_f) / 440.0)
+                    continue
+                semi = 12.0 * math.log2(max(1.0, p) / 440.0)
+                s = (semi - prev_semi) / dt
+                dt_list.append(dt)
+                semi_slopes.append(max(-semi_slope_cap, min(semi_slope_cap, s)))
+                prev_t, prev_f = t, p
+                prev_semi = semi
+        except Exception:
+            return []
+
+        if not dt_list:
+            return []
+        try:
+            import numpy as _np
+            dt_med = float(_np.median(_np.asarray(dt_list, dtype=_np.float32)))
+            slope = float(_np.median(_np.asarray(semi_slopes, dtype=_np.float32))) if semi_slopes else 0.0
+        except Exception:
+            dt_med = dt_list[-1]
+            slope = semi_slopes[-1] if semi_slopes else 0.0
+
+        step = max(step_min, min(step_max, dt_med if dt_med > 1e-5 else 0.03))
+        if step <= 1e-4:
+            return []
+
+        try:
+            min_f, max_f = self._professional_get_freq_range()
+        except Exception:
+            min_f, max_f = 20.0, 5200.0
+        last_semi = 12.0 * math.log2(max(1.0, last_f) / 440.0)
+
+        out: List[Tuple[float, float]] = []
+        t = float(last_t) + step
+        while t <= target_t + 1e-6:
+            dt = t - float(last_t)
+            semi = last_semi + slope * dt
+            f = 440.0 * (2.0 ** (semi / 12.0))
+            f = max(float(min_f), min(float(max_f), float(f)))
+            if (x0 - 0.15) <= t <= (x1 + 0.15):
+                out.append((float(t), float(f)))
+            t += step
+        return out
+
+    def _update_professional_base_predict_trail(self, pred_arr, diameter: float, heavy_mode: bool = False) -> None:
+        """维护预测雪花的逐帧衰减尾巴，增强流动感。"""
+        try:
+            import numpy as _np
+            now_t = time.time()
+            trail_sec = float(getattr(self, '_professional_base_predict_trail_sec', 0.42))
+            trail_sec = max(0.08, min(1.2, trail_sec))
+            max_points = int(getattr(self, '_professional_base_predict_trail_max_points', 420))
+            max_points = max(80, min(3000, max_points))
+            fade_pow = float(getattr(self, '_professional_base_predict_trail_fade_power', 1.6))
+            fade_pow = max(0.5, min(4.0, fade_pow))
+            min_scale = float(getattr(self, '_professional_base_predict_trail_min_scale', 0.58))
+            min_scale = max(0.25, min(0.95, min_scale))
+            pred_scale = float(getattr(self, '_professional_base_predict_snowflake_scale', 1.95))
+            pred_scale = max(1.1, min(3.0, pred_scale))
+            pred_alpha = float(getattr(self, '_professional_base_predict_alpha', 0.34))
+            pred_alpha = max(0.05, min(0.85, pred_alpha))
+            try:
+                ingest_stride = int(getattr(self, '_professional_base_predict_ingest_stride', 1))
+            except Exception:
+                ingest_stride = 1
+            try:
+                ingest_stride_heavy = int(getattr(self, '_professional_base_predict_ingest_stride_heavy', 2))
+            except Exception:
+                ingest_stride_heavy = 2
+            if heavy_mode:
+                ingest_stride = max(ingest_stride, ingest_stride_heavy)
+            ingest_stride = max(1, min(8, ingest_stride))
+            try:
+                min_dt = float(getattr(self, '_professional_base_predict_trail_min_dt', 0.010))
+            except Exception:
+                min_dt = 0.010
+            try:
+                min_dsemi = float(getattr(self, '_professional_base_predict_trail_min_dsemi', 0.03))
+            except Exception:
+                min_dsemi = 0.03
+            min_dt = max(0.0, min(0.08, min_dt))
+            min_dsemi = max(0.0, min(0.40, min_dsemi))
+
+            trail = getattr(self, '_professional_base_predict_trail', None)
+            if not isinstance(trail, list):
+                trail = []
+
+            alive = []
+            for item in trail:
+                try:
+                    px, py, ts = float(item[0]), float(item[1]), float(item[2])
+                except Exception:
+                    continue
+                age = now_t - ts
+                if 0.0 <= age <= trail_sec:
+                    alive.append((px, py, ts))
+
+            try:
+                if pred_arr is not None and getattr(pred_arr, 'size', 0) > 0:
+                    src = pred_arr[::ingest_stride] if ingest_stride > 1 else pred_arr
+                    last_t_alive = float(alive[-1][0]) if alive else -1e9
+                    last_y_alive = float(alive[-1][1]) if alive else 0.0
+                    for p in src:
+                        try:
+                            px = float(p[0]); py = float(p[1])
+                        except Exception:
+                            continue
+                        dt_ok = (px - last_t_alive) >= min_dt
+                        try:
+                            dsemi_ok = abs(float(py) - float(last_y_alive)) >= min_dsemi
+                        except Exception:
+                            dsemi_ok = True
+                        if dt_ok or dsemi_ok:
+                            alive.append((px, py, now_t))
+                            last_t_alive = px
+                            last_y_alive = py
+            except Exception:
+                pass
+
+            if len(alive) > max_points:
+                alive = alive[-max_points:]
+            self._professional_base_predict_trail = alive
+
+            if self._professional_base_predict_points is None:
+                return
+            if not alive:
+                self._professional_base_predict_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                self._professional_base_predict_points.set_alpha(0.0)
+                self._professional_base_predict_points.set_visible(False)
+                return
+
+            arr = _np.asarray([(it[0], it[1]) for it in alive], dtype=_np.float32)
+            ages = _np.asarray([max(0.0, now_t - float(it[2])) for it in alive], dtype=_np.float32)
+            life = _np.clip(1.0 - (ages / max(1e-6, trail_sec)), 0.0, 1.0)
+            alpha_vec = pred_alpha * _np.power(life, fade_pow)
+            scale_vec = min_scale + (1.0 - min_scale) * life
+            size_vec = ((float(diameter) * pred_scale * scale_vec) ** 2).astype(_np.float32, copy=False)
+
+            base_rgb = tuple(getattr(self, '_professional_base_point_color', (0.68, 0.90, 1.00)))
+            try:
+                r, g, b = float(base_rgb[0]), float(base_rgb[1]), float(base_rgb[2])
+            except Exception:
+                r, g, b = 0.68, 0.90, 1.00
+            colors = _np.empty((arr.shape[0], 4), dtype=_np.float32)
+            colors[:, 0] = r
+            colors[:, 1] = g
+            colors[:, 2] = b
+            colors[:, 3] = alpha_vec.astype(_np.float32, copy=False)
+
+            self._professional_base_predict_points.set_offsets(arr)
+            self._professional_base_predict_points.set_sizes(size_vec)
+            self._professional_base_predict_points.set_color(colors)
+            # 让每个点的RGBA透明度生效，避免被Collection全局alpha=0覆盖
+            self._professional_base_predict_points.set_alpha(1.0)
+            self._professional_base_predict_points.set_visible(True)
+        except Exception:
+            try:
+                import numpy as _np
+                if self._professional_base_predict_points is not None:
+                    self._professional_base_predict_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                    self._professional_base_predict_points.set_alpha(0.0)
+                    self._professional_base_predict_points.set_visible(False)
+            except Exception:
+                pass
+
     def update_professional_display(self):
         """刷新专业模式显示（多频段点云）"""
         if getattr(self, 'professional_ax', None) is None or getattr(self, 'professional_canvas', None) is None:
             return
+        # 录音态兜底：若时间轴定时器未驱动，尝试以墙钟同步 current_global_time
+        try:
+            recording = bool(getattr(self, 'is_recording_active', False))
+        except Exception:
+            recording = False
+        if recording:
+            try:
+                if getattr(self, '_external_paused', False) or getattr(self, 'is_recording_paused', False):
+                    raise RuntimeError("skip_time_sync_paused")
+                if bool(getattr(self, '_retake_countdown_active', False)) and bool(getattr(self, '_retake_countdown_block_add', False)):
+                    raise RuntimeError("skip_time_sync_countdown")
+                st = getattr(self, 'start_time', None)
+                if st is not None:
+                    acc_pause = float(getattr(self, '_accumulated_pause_dur', 0.0))
+                    shift = float(getattr(self, '_time_offset_shift', 0.0))
+                    inferred = max(0.0, time.time() - float(st) - acc_pause + shift)
+                    # 防止时间线领先于已到达数据太多，造成“新点追不上线”
+                    try:
+                        max_lead = float(getattr(self, '_professional_realtime_cursor_max_lead', 0.09))
+                    except Exception:
+                        max_lead = 0.09
+                    latest_data_t = 0.0
+                    try:
+                        bh = getattr(self, '_professional_base_history', None)
+                        if bh:
+                            latest_data_t = max(latest_data_t, float(bh[-1][0]))
+                    except Exception:
+                        pass
+                    try:
+                        rh = getattr(self, '_professional_raw_history', None)
+                        if rh:
+                            latest_data_t = max(latest_data_t, float(rh[-1][0]))
+                    except Exception:
+                        pass
+                    try:
+                        latest_data_t = max(latest_data_t, float(getattr(self, 'last_pitch_time', 0.0) or 0.0))
+                    except Exception:
+                        pass
+                    try:
+                        latest_data_t = max(latest_data_t, float(getattr(self, '_professional_last_base_t', 0.0) or 0.0))
+                    except Exception:
+                        pass
+                    try:
+                        cur = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    except Exception:
+                        cur = 0.0
+                    try:
+                        last_data_wall_t = float(getattr(self, '_professional_last_data_wall_t', 0.0) or 0.0)
+                    except Exception:
+                        last_data_wall_t = 0.0
+                    try:
+                        idle_gap = float(getattr(self, '_professional_data_idle_fallback_sec', 0.28))
+                    except Exception:
+                        idle_gap = 0.28
+                    data_recent = (last_data_wall_t > 0.0) and ((time.time() - last_data_wall_t) <= max(0.08, idle_gap))
+                    stale_gap = max(0.0, float(inferred) - float(latest_data_t))
+                    try:
+                        self._professional_realtime_stale_gap = float(stale_gap)
+                    except Exception:
+                        pass
+                    if latest_data_t > 0.0 and max_lead >= 0.0:
+                        try:
+                            lead_cap = float(getattr(self, '_professional_realtime_max_lead_cap', 1.80))
+                        except Exception:
+                            lead_cap = 1.80
+                        if recording and stale_gap > 0.35:
+                            dyn_lead = min(max(max_lead, stale_gap * 0.55), max(0.0, lead_cap))
+                        else:
+                            dyn_lead = max_lead
+                        inferred = min(inferred, latest_data_t + dyn_lead)
+                    # 数据时钟优先：有新数据时不让墙钟强推时间线，避免“录音31s但时间线40s”
+                    if data_recent and latest_data_t > 0.0:
+                        if stale_gap <= 0.35:
+                            inferred = min(inferred, latest_data_t + max(0.0, max_lead))
+                    cur = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    # 基频实时优先：只要有新基频数据就单调追到数据时间，避免“线先走/后找点”
+                    if latest_data_t > cur + 0.006:
+                        try:
+                            self.current_global_time = max(cur, latest_data_t)
+                            cur = float(self.current_global_time)
+                        except Exception:
+                            pass
+                    # 仅在无新数据一段时间后才启用墙钟兜底推进
+                    allow_wall_fallback = (not data_recent) or (latest_data_t <= 1e-6)
+                    if allow_wall_fallback and inferred > cur + 0.05:
+                        self.current_global_time = inferred
+                    else:
+                        try:
+                            hard_sync_gap = float(getattr(self, '_professional_realtime_hard_sync_gap', 2.20))
+                        except Exception:
+                            hard_sync_gap = 2.20
+                        # 数据明显滞后（常见于队列堆积）时，强制时间线追到录音实时位置
+                        if stale_gap > max(0.6, hard_sync_gap) and inferred > cur + 0.08:
+                            self.current_global_time = inferred
+            except Exception:
+                pass
         try:
             force_redraw = bool(getattr(self, '_professional_force_redraw', False))
         except Exception:
@@ -18637,15 +20467,95 @@ class ECGStylePitchVisualizer(QWidget):
             force_rebuild = bool(getattr(self, '_professional_force_rebuild', False))
         except Exception:
             force_rebuild = False
+        try:
+            prev_recording = bool(getattr(self, '_professional_prev_recording_state', recording))
+        except Exception:
+            prev_recording = recording
+        if prev_recording and (not recording):
+            force_rebuild = True
+            try:
+                self._professional_force_rebuild = True
+            except Exception:
+                pass
+        try:
+            self._professional_prev_recording_state = bool(recording)
+        except Exception:
+            pass
         # 节流刷新，降低卡顿（强制重绘/重建时跳过节流）
         try:
             now_t = time.time()
-            if (now_t - float(getattr(self, '_professional_last_update_t', 0.0))) < float(getattr(self, '_professional_min_update_interval', 0.05)):
+            min_iv = float(getattr(self, '_professional_min_update_interval', 0.03))
+            try:
+                target_fps = float(getattr(self, '_professional_target_fps', 55.0))
+                if target_fps > 1.0:
+                    min_iv = min(min_iv, 1.0 / target_fps)
+            except Exception:
+                pass
+            try:
+                if isinstance(self._professional_pending, list):
+                    _pl = len(self._professional_pending)
+                else:
+                    _pl = len(self._professional_pending)
+            except Exception:
+                _pl = 0
+            try:
+                fast_age = now_t - float(getattr(self, '_professional_fast_change_t', 0.0) or 0.0)
+                fast_active = recording and fast_age < 0.28
+            except Exception:
+                fast_active = False
+            try:
+                self._professional_fast_active = bool(fast_active)
+            except Exception:
+                pass
+            fast_mode = bool(recording and (fast_active or (_pl > 1400)))
+            try:
+                self._professional_fast_mode = bool(fast_mode)
+            except Exception:
+                pass
+            if recording:
+                try:
+                    rec_min_iv = float(getattr(self, '_professional_recording_min_update_interval', 0.016))
+                except Exception:
+                    rec_min_iv = 0.016
+                min_iv = min(min_iv, max(0.010, rec_min_iv))
+            if _pl < 800 and recording:
+                min_iv = min(min_iv, 0.022)
+            elif _pl > 2400:
+                try:
+                    heavy_iv = float(getattr(self, '_professional_pending_heavy_min_update_interval', 0.028))
+                except Exception:
+                    heavy_iv = 0.028
+                min_iv = max(min_iv, max(0.016, heavy_iv))
+            if fast_active:
+                min_iv = min(min_iv, 0.012)
+            if fast_mode:
+                min_iv = min(min_iv, 0.012)
+            if (now_t - float(getattr(self, '_professional_last_update_t', 0.0))) < min_iv:
                 if not (force_redraw or force_rebuild):
                     return
             self._professional_last_update_t = now_t
         except Exception:
             pass
+        # 热力图更新节流（快速变化时降低重负担，保证主线实时性）
+        try:
+            heat_interval = float(getattr(self, '_professional_heat_min_interval', 0.065))
+            if recording:
+                heat_interval = max(heat_interval, float(getattr(self, '_professional_heat_lowfreq_interval', 0.12)))
+            if recording and (fast_active or _pl > 1400):
+                heat_interval = max(heat_interval, 0.20)
+            try:
+                cur_gt0 = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                last_pitch0 = float(getattr(self, 'last_pitch_time', 0.0) or 0.0)
+                silent_thr0 = float(getattr(self, '_professional_silence_threshold', 0.16))
+                silent_mode = bool(recording and ((cur_gt0 - last_pitch0) > silent_thr0))
+            except Exception:
+                silent_mode = False
+            if silent_mode:
+                heat_interval = min(heat_interval, 0.06)
+            heat_update_due = (time.time() - float(getattr(self, '_professional_heat_last_t', 0.0))) >= heat_interval
+        except Exception:
+            heat_update_due = True
+            silent_mode = False
         try:
             # 时间窗口
             x0 = float(getattr(self, 'time_offset', 0.0))
@@ -18670,6 +20580,11 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             auto_follow = True
         try:
+            if recording and bool(getattr(self, '_professional_force_follow', True)):
+                auto_follow = True
+        except Exception:
+            pass
+        try:
             if isinstance(self._professional_pending, list):
                 pending_len = len(self._professional_pending)
             else:
@@ -18677,25 +20592,144 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pending_len = 0
         try:
+            cur_gt = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+            last_pitch = float(getattr(self, 'last_pitch_time', 0.0) or 0.0)
+            silent_thr = float(getattr(self, '_professional_silence_threshold', 0.16))
+            silent_mode = bool(recording and ((cur_gt - last_pitch) > silent_thr))
+        except Exception:
+            silent_mode = False
+        # 录音态防跳变：抑制跨路径写入导致的 current_global_time 突然跳前/跳后
+        try:
+            if recording and bool(getattr(self, '_professional_jump_guard_enabled', True)):
+                now_guard = time.time()
+                try:
+                    cur_guard = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                except Exception:
+                    cur_guard = 0.0
+                try:
+                    last_guard = float(getattr(self, '_professional_last_gt', cur_guard) or cur_guard)
+                except Exception:
+                    last_guard = cur_guard
+                try:
+                    last_guard_wall = float(getattr(self, '_professional_last_gt_wall', 0.0) or 0.0)
+                except Exception:
+                    last_guard_wall = 0.0
+                try:
+                    back_tol = float(getattr(self, '_professional_jump_backward_tol', 0.08))
+                except Exception:
+                    back_tol = 0.08
+                try:
+                    fwd_tol = float(getattr(self, '_professional_jump_forward_tol', 0.90))
+                except Exception:
+                    fwd_tol = 0.90
+                back_tol = max(0.01, back_tol)
+                fwd_tol = max(0.20, fwd_tol)
+                if last_guard_wall > 0.0:
+                    dt_guard = max(0.0, min(0.50, now_guard - last_guard_wall))
+                    min_allowed = max(0.0, last_guard - back_tol)
+                    max_allowed = last_guard + max(0.18, dt_guard * 2.4 + fwd_tol)
+                    if cur_guard < min_allowed:
+                        cur_guard = min_allowed
+                    elif cur_guard > max_allowed:
+                        cur_guard = max_allowed
+                try:
+                    st_guard = float(getattr(self, 'start_time', 0.0) or 0.0)
+                except Exception:
+                    st_guard = 0.0
+                if st_guard > 0.0:
+                    try:
+                        acc_guard = float(getattr(self, '_accumulated_pause_dur', 0.0) or 0.0)
+                    except Exception:
+                        acc_guard = 0.0
+                    try:
+                        shift_guard = float(getattr(self, '_time_offset_shift', 0.0) or 0.0)
+                    except Exception:
+                        shift_guard = 0.0
+                    elapsed_guard = max(0.0, now_guard - st_guard - acc_guard + shift_guard)
+                    if cur_guard > elapsed_guard + max(0.25, fwd_tol):
+                        cur_guard = elapsed_guard + max(0.12, min(0.45, fwd_tol * 0.5))
+                self.current_global_time = max(0.0, float(cur_guard))
+                self._professional_last_gt = float(self.current_global_time)
+                self._professional_last_gt_wall = now_guard
+            else:
+                self._professional_last_gt_wall = 0.0
+        except Exception:
+            pass
+        try:
             backlog_limit = int(getattr(self, '_professional_pending_limit', 6000))
             if backlog_limit <= 0:
                 backlog_limit = 6000
         except Exception:
             backlog_limit = 6000
-        if recording and auto_follow and pending_len > backlog_limit * 2:
+        # 录音起始零点硬锁：短时间内强制窗口从 0s 起跑，防止继承历史 offset/时钟
+        startup_lock_visual = False
+        try:
+            if recording:
+                now_wall = time.time()
+                start_wall = float(getattr(self, '_professional_recording_start_wall', 0.0) or 0.0)
+                if start_wall <= 0.0:
+                    start_wall = now_wall
+                    self._professional_recording_start_wall = start_wall
+                lock_sec = float(getattr(self, '_professional_start_zero_lock_sec', 0.65))
+                lock_until = float(getattr(self, '_professional_force_zero_window_until', 0.0) or 0.0)
+                if lock_until <= 0.0:
+                    lock_until = start_wall + max(0.0, lock_sec)
+                    self._professional_force_zero_window_until = lock_until
+                try:
+                    guard_max = float(getattr(self, '_professional_start_guard_max_sec', 1.6))
+                except Exception:
+                    guard_max = 1.6
+                guard_max = max(0.7, min(3.0, guard_max))
+                guard_until = max(lock_until, start_wall + guard_max)
+                retake_like = bool(
+                    getattr(self, '_retake_countdown_active', False)
+                    or getattr(self, '_retake_countdown_block_add', False)
+                    or getattr(self, '_retake_overlay_enabled', False)
+                    or getattr(self, '_retake_preserve_timeline', False)
+                )
+                if (not retake_like) and now_wall <= guard_until:
+                    self._professional_start_zero_lock_active = True
+                    startup_lock_visual = True
+                    elapsed = max(0.0, now_wall - start_wall)
+                    try:
+                        cur_gt_lock = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    except Exception:
+                        cur_gt_lock = 0.0
+                    clamp_margin = float(getattr(self, '_professional_start_zero_clamp_margin', 0.12))
+                    clamp_margin = max(0.05, clamp_margin)
+                    if cur_gt_lock > elapsed + clamp_margin:
+                        self.current_global_time = elapsed
+                    if float(getattr(self, 'time_offset', 0.0) or 0.0) != 0.0:
+                        self.time_offset = 0.0
+                    try:
+                        tw_lock = float(getattr(self, 'time_window', 16.0))
+                    except Exception:
+                        tw_lock = 16.0
+                    x0, x1 = 0.0, tw_lock
+                    self._professional_smoothed_xlim = (x0, x1)
+                    self._professional_smooth_last_t = now_wall
+                else:
+                    self._professional_start_zero_lock_active = False
+            else:
+                self._professional_start_zero_lock_active = False
+        except Exception:
+            pass
+        if startup_lock_visual:
+            auto_follow = False
+        if recording and auto_follow and pending_len > backlog_limit * 4:
             auto_follow = False
         if recording and auto_follow:
+            # 录音态解耦：避免共享 time_offset 被其它路径改写后把专业模式窗口拖到异常时间段
             try:
-                last_item = None
-                try:
-                    last_item = self.harmonic_history[-1]
-                except Exception:
-                    last_item = None
-                if last_item:
-                    last_t = float(last_item[0])
-                    if last_t > x1:
-                        x1 = last_t
-                        x0 = x1 - float(getattr(self, 'time_window', 16.0))
+                sm = getattr(self, '_professional_smoothed_xlim', None)
+                if isinstance(sm, (tuple, list)) and len(sm) == 2:
+                    x0 = float(sm[0]); x1 = float(sm[1])
+                else:
+                    cur_gt_follow = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    center_follow = float(getattr(self, 'center_display_time', 8.0))
+                    tw_follow = float(getattr(self, 'time_window', 16.0))
+                    x0 = 0.0 if cur_gt_follow <= center_follow else max(0.0, cur_gt_follow - center_follow)
+                    x1 = x0 + tw_follow
             except Exception:
                 pass
         # 保留历史：若固定窗口则不改动 x0/x1（与普通模式一致，仅滚动查看）
@@ -18716,6 +20750,90 @@ class ECGStylePitchVisualizer(QWidget):
                     x0 = 0.0
             except Exception:
                 pass
+
+        # 专业模式时间轴平滑：在录音+自动跟随时对 x0/x1 做轻量平滑，避免跳跃式移动
+        try:
+            if recording and auto_follow:
+                try:
+                    center_t = float(getattr(self, 'center_display_time', 8.0))
+                except Exception:
+                    center_t = 8.0
+                try:
+                    cur_gt = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                except Exception:
+                    cur_gt = 0.0
+                if cur_gt <= center_t:
+                    target_x0 = 0.0
+                else:
+                    target_x0 = max(0.0, cur_gt - center_t)
+                try:
+                    tw = float(getattr(self, 'time_window', 16.0))
+                except Exception:
+                    tw = float(x1 - x0) if (x1 - x0) > 1e-6 else 16.0
+                target_x1 = target_x0 + tw
+                import time as _t
+                now_t = _t.time()
+                last_t = getattr(self, '_professional_smooth_last_t', None)
+                dt = 0.0 if last_t is None else max(0.004, min(0.080, now_t - last_t))
+                ideal_dt = 0.02
+                try:
+                    ideal_dt = max(0.008, float(getattr(self, 'fast_update_interval_ms', 20)) / 1000.0)
+                except Exception:
+                    pass
+                if self._professional_smoothed_xlim is None:
+                    self._professional_smoothed_xlim = (target_x0, target_x1)
+                s_cur, e_cur = self._professional_smoothed_xlim
+                width = float(target_x1 - target_x0)
+                if width <= 1e-6:
+                    width = float(getattr(self, 'time_window', 16.0))
+                c_tar = (float(target_x0) + float(target_x1)) * 0.5
+                c_cur = (float(s_cur) + float(e_cur)) * 0.5
+                backlog = abs(c_tar - c_cur)
+                try:
+                    stale_gap_live = float(getattr(self, '_professional_realtime_stale_gap', 0.0) or 0.0)
+                except Exception:
+                    stale_gap_live = 0.0
+                try:
+                    snap_backlog = float(getattr(self, '_professional_timeline_snap_backlog', 0.14))
+                except Exception:
+                    snap_backlog = 0.14
+                # 大跳变直接对齐，避免拖影
+                if backlog > width * 0.75:
+                    c_new = c_tar
+                elif recording and stale_gap_live > 1.0:
+                    # 严重滞后时直接跟随目标窗口，尽快恢复实时
+                    c_new = c_tar
+                elif recording and backlog > max(0.06, snap_backlog):
+                    # 录音态优先实时：积压达到阈值时快速贴合目标中心
+                    c_new = c_cur + (c_tar - c_cur) * 0.92
+                else:
+                    try:
+                        frac = (dt / ideal_dt) if ideal_dt > 1e-6 else 1.0
+                        frac = max(0.0, min(4.0, frac))
+                        strength = 0.92
+                        eff = 1.0 - pow(max(0.0, 1.0 - float(strength)), frac)
+                    except Exception:
+                        eff = 0.92
+                    delta = (c_tar - c_cur) * eff
+                    max_step = 0.36 * (dt / ideal_dt if ideal_dt > 0 else 1.0)
+                    # 追赶积压时放宽步长
+                    if backlog > 0.25:
+                        max_step = max(max_step, 0.52)
+                    if delta > max_step:
+                        delta = max_step
+                    elif delta < -max_step:
+                        delta = -max_step
+                    c_new = c_cur + delta
+                s_new = c_new - width * 0.5
+                e_new = c_new + width * 0.5
+                x0, x1 = float(s_new), float(e_new)
+                self._professional_smoothed_xlim = (x0, x1)
+                self._professional_smooth_last_t = now_t
+            else:
+                self._professional_smoothed_xlim = (x0, x1)
+                self._professional_smooth_last_t = None
+        except Exception:
+            pass
         else:
             # 非录音态：若无新点且窗口未变，跳过重绘以减少卡顿
             try:
@@ -18740,6 +20858,20 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             bin_w = 0.05
         bin_w = max(0.02, min(0.10, bin_w))
+        # 参考普通模式的灵敏度：录音时提高时间分辨率
+        try:
+            if recording:
+                if pending_len < 1200:
+                    bin_w = max(0.02, min(bin_w * 0.85, 0.040))
+                else:
+                    bin_w = max(bin_w, 0.04)
+                try:
+                    if fast_active:
+                        bin_w = max(0.02, min(bin_w * 0.70, 0.028))
+                except Exception:
+                    pass
+        except Exception:
+            pass
         span = max(1.0, (x1 - x0))
         # 历史模式下自适应分箱（非固定窗口时启用）
         try:
@@ -18750,6 +20882,11 @@ class ECGStylePitchVisualizer(QWidget):
             bin_w = max(bin_w, span / float(max_bins))
         time_bins = max(64, min(max_bins, int(span / bin_w)))
         freq_bins = int(getattr(self, '_professional_freq_bins', 96) or 96)
+        try:
+            if recording and pending_len < 1200:
+                freq_bins = min(176, max(freq_bins, 128))
+        except Exception:
+            pass
         freq_bins = max(48, min(160, freq_bins))
 
         # 初始化热力图缓存
@@ -18772,7 +20909,7 @@ class ECGStylePitchVisualizer(QWidget):
         if keep_history and fixed_window and (not recording):
             try:
                 last_x0 = float(self._professional_last_x0) if self._professional_last_x0 is not None else None
-                if force_rebuild or (last_x0 is None) or abs(float(x0) - float(last_x0)) > (bin_w * 0.1):
+                if force_rebuild or (last_x0 is None) or abs(float(x0) - float(last_x0)) > max(1e-4, bin_w * 0.2):
                     rebuild_from_history = True
             except Exception:
                 rebuild_from_history = True
@@ -18781,8 +20918,24 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 import numpy as _np
                 self._professional_heat_buffer[:] = 0.0
-                for t, f, c in list(getattr(self, 'harmonic_history', [])):
+                try:
+                    defer_harmonics = bool(getattr(self, '_professional_defer_harmonics_until_stop', True))
+                except Exception:
+                    defer_harmonics = True
+                for item in list(getattr(self, 'harmonic_history', [])):
                     try:
+                        if isinstance(item, (list, tuple)):
+                            if len(item) >= 4:
+                                t, f, c, src = item[0], item[1], item[2], item[3]
+                            elif len(item) == 3:
+                                t, f, c = item
+                                src = "true"
+                            else:
+                                continue
+                        else:
+                            continue
+                        if recording and defer_harmonics and str(src) == "harm":
+                            continue
                         if t < x0 - bin_w or t > x1 + bin_w:
                             continue
                         xi = int((float(t) - x0) / bin_w)
@@ -18793,7 +20946,26 @@ class ECGStylePitchVisualizer(QWidget):
                             continue
                         yi = int((ylog - y0) / (y1 - y0) * (freq_bins - 1))
                         c = max(0.0, min(1.0, float(c)))
-                        c = c ** 0.6
+                        try:
+                            warm_sec = float(getattr(self, '_professional_warmup_sec', 1.0))
+                        except Exception:
+                            warm_sec = 1.0
+                        warm = 1.0
+                        try:
+                            if warm_sec > 0 and float(t) < warm_sec:
+                                warm = max(0.0, float(t) / warm_sec)
+                        except Exception:
+                            warm = 1.0
+                        if str(src) == "harm":
+                            cmin = float(getattr(self, '_professional_harmonic_min_conf', 0.05))
+                            if c < cmin:
+                                continue
+                            c = (c * warm) ** 1.2
+                        else:
+                            cmin = float(getattr(self, '_professional_true_min_conf', 0.03))
+                            if c < cmin:
+                                continue
+                            c = (c * warm) ** 0.6
                         self._professional_heat_buffer[xi, yi] += c
                     except Exception:
                         continue
@@ -18855,23 +21027,147 @@ class ECGStylePitchVisualizer(QWidget):
                     max_items = int(getattr(self, '_professional_pending_limit', 6000))
                     if max_items <= 0:
                         max_items = 6000
+                    try:
+                        commit_delay_singing = float(getattr(self, '_professional_commit_delay_singing', 0.10))
+                    except Exception:
+                        commit_delay_singing = 0.10
+                    # 录音态更贴近普通模式实时感：缩短提交延迟
+                    if recording:
+                        commit_delay_singing = min(commit_delay_singing, 0.015)
+                    try:
+                        commit_delay_silence = float(getattr(self, '_professional_commit_delay_silence', 0.24))
+                    except Exception:
+                        commit_delay_silence = 0.24
+                    try:
+                        cur_gt2 = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    except Exception:
+                        cur_gt2 = 0.0
+                    if silent_mode:
+                        commit_cutoff = cur_gt2 - max(0.0, commit_delay_silence)
+                    else:
+                        commit_cutoff = cur_gt2 - max(0.0, commit_delay_singing)
+                    try:
+                        budget = int(getattr(self, '_professional_pending_budget', 4000))
+                        if budget > 0:
+                            max_items = min(max_items, budget)
+                    except Exception:
+                        pass
+                    try:
+                        if recording and (fast_active or pending_len > 1400):
+                            max_items = max(1200, min(max_items, 2200))
+                    except Exception:
+                        pass
                     if pending_len > max_items:
                         max_items = min(max_items + pending_len // 3, 20000)
-                    leftovers = []
-                    for idx, item in enumerate(pending):
-                        if idx >= max_items:
-                            leftovers.append(item)
-                            continue
-                        t, f, c = item
+
+                    harm_stride = 1
+                    try:
+                        defer_harmonics = bool(getattr(self, '_professional_defer_harmonics_until_stop', True))
+                    except Exception:
+                        defer_harmonics = True
+                    try:
+                        if recording and pending_len > 2200:
+                            harm_stride = max(harm_stride, int(getattr(self, '_professional_harmonic_draw_stride_heavy', 2)))
+                        if recording and pending_len > 4200:
+                            harm_stride = max(harm_stride, int(getattr(self, '_professional_harmonic_draw_stride_extreme', 3)))
+                    except Exception:
+                        harm_stride = max(1, harm_stride)
+                    harm_seen = 0
+                    try:
+                        h_drop = int(getattr(self, '_professional_harmonic_drop_when_backlog', 1500))
+                    except Exception:
+                        h_drop = 1500
+                    try:
+                        warm_sec_cfg = float(getattr(self, '_professional_warmup_sec', 1.0))
+                    except Exception:
+                        warm_sec_cfg = 1.0
+                    try:
+                        harm_cmin = float(getattr(self, '_professional_harmonic_min_conf', 0.05))
+                    except Exception:
+                        harm_cmin = 0.05
+                    try:
+                        true_cmin = float(getattr(self, '_professional_true_min_conf', 0.03))
+                    except Exception:
+                        true_cmin = 0.03
+                    try:
+                        pending_append = self._professional_pending.append
+                    except Exception:
+                        pending_append = None
+                    heavy_realtime = bool(recording and (fast_active or pending_len > 1800))
+
+                    # 录音实时优先：积压时保留最新点，避免“越录越落后”
+                    if recording and pending_len > 0:
                         try:
+                            keep_recent = int(getattr(self, '_professional_pending_recent_keep', 3200))
+                        except Exception:
+                            keep_recent = 3200
+                        keep_recent = max(max_items, keep_recent)
+                        if pending_len > keep_recent:
+                            pending = pending[-keep_recent:]
+                            pending_len = len(pending)
+                        try:
+                            drop_lag_s = float(getattr(self, '_professional_realtime_drop_lag_s', 0.35))
+                        except Exception:
+                            drop_lag_s = 0.35
+                        if drop_lag_s > 0.0:
+                            lag_floor = cur_gt2 - drop_lag_s
+                            _new_pending = []
+                            for it in pending:
+                                try:
+                                    tt = float(it[0]) if isinstance(it, (list, tuple)) and len(it) >= 2 else None
+                                except Exception:
+                                    tt = None
+                                if tt is None or tt >= lag_floor:
+                                    _new_pending.append(it)
+                            if _new_pending:
+                                pending = _new_pending
+                                pending_len = len(pending)
+                        try:
+                            newest_t = float(pending[-1][0]) if pending else cur_gt2
+                            queue_lag = max(0.0, cur_gt2 - newest_t)
+                        except Exception:
+                            queue_lag = 0.0
+                        if queue_lag > 0.12 or pending_len > int(max_items * 0.85):
+                            # 积压时取消提交延迟，优先把最新点画出来
+                            commit_cutoff = cur_gt2 + 1.0
+
+                    for item in pending:
+                        if isinstance(item, (list, tuple)):
+                            if len(item) >= 4:
+                                t, f, c, src = item[0], item[1], item[2], item[3]
+                            elif len(item) == 3:
+                                t, f, c = item
+                                src = "true"
+                            else:
+                                continue
+                        else:
+                            continue
+                        src_tag = src if isinstance(src, str) else str(src)
+                        is_harm = (src_tag == "harm")
+                        if recording and defer_harmonics and is_harm:
+                            continue
+                        if recording and is_harm:
+                            harm_seen += 1
+                            if harm_stride > 1 and (harm_seen % harm_stride) != 0:
+                                continue
+                            if pending_len > h_drop:
+                                continue
+                        try:
+                            t = float(t)
+                            if recording and (t > commit_cutoff):
+                                if is_harm and pending_len > int(max_items * 0.8):
+                                    continue
+                                if pending_append is not None:
+                                    pending_append((t, f, c, src_tag))
+                                continue
                             if t < x0 - bin_w:
                                 continue
                             if t > x1 + bin_w:
                                 # 未来点暂存，等待窗口追上
-                                if isinstance(self._professional_pending, list):
-                                    self._professional_pending.append((t, f, c))
-                                else:
-                                    self._professional_pending.append((t, f, c))
+                                if is_harm and recording:
+                                    continue
+                                if pending_append is not None:
+                                    pending_append((t, f, c, src_tag))
                                 continue
                             # 计算 bin
                             xi = int((t - x0) / bin_w)
@@ -18882,19 +21178,23 @@ class ECGStylePitchVisualizer(QWidget):
                                 continue
                             yi = int((ylog - y0) / (y1 - y0) * (freq_bins - 1))
                             c = max(0.0, min(1.0, float(c)))
-                            c = c ** 0.6
+                            warm = 1.0
+                            try:
+                                if warm_sec_cfg > 0 and t < warm_sec_cfg:
+                                    warm = max(0.0, t / warm_sec_cfg)
+                            except Exception:
+                                warm = 1.0
+                            if is_harm:
+                                if c < harm_cmin:
+                                    continue
+                                c = (c * warm) ** (1.15 if heavy_realtime else 1.2)
+                            else:
+                                if c < true_cmin:
+                                    continue
+                                c = (c * warm) ** 0.6
                             self._professional_heat_buffer[xi, yi] += c
                         except Exception:
                             continue
-                    if leftovers:
-                        try:
-                            if isinstance(self._professional_pending, list):
-                                self._professional_pending.extend(leftovers)
-                            else:
-                                for it in leftovers:
-                                    self._professional_pending.append(it)
-                        except Exception:
-                            pass
         except Exception:
             pass
 
@@ -18906,13 +21206,13 @@ class ECGStylePitchVisualizer(QWidget):
                 from matplotlib.colors import LinearSegmentedColormap
                 colors = [
                     (0.02, 0.03, 0.05),
-                    (0.03, 0.08, 0.16),
-                    (0.05, 0.22, 0.35),
-                    (0.00, 0.55, 0.55),
-                    (0.55, 0.80, 0.20),
-                    (0.95, 0.60, 0.10),
-                    (0.98, 0.30, 0.20),
-                    (1.00, 1.00, 1.00),
+                    (0.03, 0.10, 0.20),
+                    (0.06, 0.25, 0.45),
+                    (0.00, 0.55, 0.70),
+                    (0.20, 0.78, 0.60),
+                    (0.75, 0.88, 0.40),
+                    (0.98, 0.78, 0.35),
+                    (0.99, 0.92, 0.80),
                 ]
                 self._professional_cmap = LinearSegmentedColormap.from_list("pro_heat", colors, N=256)
             except Exception:
@@ -18928,7 +21228,31 @@ class ECGStylePitchVisualizer(QWidget):
                 blur_mode = str(getattr(self, '_professional_blur_mode', 'fast')).lower()
                 blur_strength = float(getattr(self, '_professional_blur_strength', 1.0))
                 blur_strength = max(0.0, min(1.0, blur_strength))
-                if blur_mode == 'fast' and blur_strength > 0.0:
+                skip_blur = False
+                try:
+                    if recording and pending_len > 2000:
+                        skip_blur = True
+                except Exception:
+                    skip_blur = False
+                try:
+                    if recording:
+                        fast_age = time.time() - float(getattr(self, '_professional_fast_change_t', 0.0) or 0.0)
+                        if fast_age < 0.28:
+                            skip_blur = True
+                except Exception:
+                    pass
+                try:
+                    if recording and (fast_active or pending_len > 1400):
+                        skip_blur = True
+                        blur_strength = 0.0
+                except Exception:
+                    pass
+                if recording and (not skip_blur) and heat_update_due:
+                    if pending_len < 800:
+                        blur_strength = min(0.85, blur_strength * 0.90)
+                    else:
+                        blur_strength = min(0.70, blur_strength * 0.80)
+                if heat_update_due and (not skip_blur) and blur_mode == 'fast' and blur_strength > 0.0:
                     base = heat
                     hx1 = _np.roll(base, 1, axis=0)
                     hx2 = _np.roll(base, -1, axis=0)
@@ -18941,7 +21265,7 @@ class ECGStylePitchVisualizer(QWidget):
                     blurred[:, 0] = base[:, 0]
                     blurred[:, -1] = base[:, -1]
                     heat = base * (1.0 - blur_strength) + blurred * blur_strength
-                elif blur_mode == 'gaussian' and blur_strength > 0.0:
+                elif heat_update_due and (not skip_blur) and blur_mode == 'gaussian' and blur_strength > 0.0:
                     kernel = _np.array([1.0, 2.0, 1.0], dtype=_np.float32)
                     kernel = kernel / kernel.sum()
                     heat = _np.apply_along_axis(lambda m: _np.convolve(m, kernel, mode='same'), 0, heat)
@@ -18954,13 +21278,22 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             use_gpu = False
         gpu_done = False
-        if use_gpu:
+        if use_gpu and heat_update_due:
             try:
-                import cupy as _cp
+                import importlib
+                _cp = importlib.import_module("cu" + "py")
                 min_size = int(getattr(self, '_professional_gpu_min_size', 80000))
                 if heat is not None and heat.size >= min_size:
                     h_gpu = _cp.asarray(heat)
                     h_gpu = _cp.log1p(h_gpu * 6.0)
+                    try:
+                        if recording:
+                            pwr = 1.0 if pending_len < 1200 else 0.92
+                        else:
+                            pwr = 0.85
+                    except Exception:
+                        pwr = 0.85
+                    h_gpu = _cp.power(h_gpu, pwr)
                     floor_p = 25.0 if keep_history else 40.0
                     floor = float(_cp.percentile(h_gpu, floor_p)) if h_gpu.size else 0.0
                     h_gpu = _cp.maximum(h_gpu - floor, 0.0)
@@ -18968,10 +21301,18 @@ class ECGStylePitchVisualizer(QWidget):
                     gpu_done = True
             except Exception:
                 gpu_done = False
-        if not gpu_done:
+        if (not gpu_done) and heat_update_due:
             try:
                 import numpy as _np
                 heat = _np.log1p(heat * 6.0)
+                try:
+                    if recording:
+                        pwr = 1.0 if pending_len < 1200 else 0.92
+                    else:
+                        pwr = 0.85
+                except Exception:
+                    pwr = 0.85
+                heat = _np.power(heat, pwr)
                 floor_p = 25.0 if keep_history else 40.0
                 floor = float(_np.percentile(heat, floor_p)) if heat.size else 0.0
                 heat = _np.maximum(heat - floor, 0.0)
@@ -18989,8 +21330,13 @@ class ECGStylePitchVisualizer(QWidget):
                 aspect='auto',
                 extent=[x0, x1, y0, y1],
                 cmap=self._professional_cmap,
-                interpolation='bicubic'
+                interpolation='bilinear',
+                alpha=(0.45 if recording else 0.85)
             )
+            try:
+                self._professional_heat_last_t = time.time()
+            except Exception:
+                pass
             try:
                 if self._professional_colorbar is None:
                     self._professional_colorbar = self.professional_figure.colorbar(
@@ -19007,20 +21353,61 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
         else:
             try:
-                self._professional_im.set_data(heat.T)
+                if heat_update_due:
+                    self._professional_im.set_data(heat.T)
+                    try:
+                        self._professional_heat_last_t = time.time()
+                    except Exception:
+                        pass
+                else:
+                    # 非更新帧做短过渡淡化，避免“小点↔热力”来回闪烁
+                    try:
+                        fade_a = float(getattr(self, '_professional_heat_fade_alpha', 0.15))
+                    except Exception:
+                        fade_a = 0.15
+                    if recording:
+                        self._professional_im.set_alpha(max(0.20, 0.45 - fade_a))
                 self._professional_im.set_extent([x0, x1, y0, y1])
+                try:
+                    self._professional_im.set_interpolation('bilinear')
+                    if heat_update_due:
+                        self._professional_im.set_alpha(0.45 if recording else 0.85)
+                except Exception:
+                    pass
             except Exception:
                 pass
             try:
                 if self._professional_colorbar is not None:
-                    self._professional_colorbar.update_normal(self._professional_im)
+                    try:
+                        now_cb = time.time()
+                        if (now_cb - float(getattr(self, '_professional_colorbar_last_update', 0.0))) > 0.5:
+                            self._professional_colorbar.update_normal(self._professional_im)
+                            self._professional_colorbar_last_update = now_cb
+                    except Exception:
+                        self._professional_colorbar.update_normal(self._professional_im)
             except Exception:
                 pass
         # 动态对比度（避免满屏同色）
         try:
             import numpy as _np
-            vmax = float(_np.percentile(heat, 99.0)) if heat.size else 1.0
-            vmax = max(vmax, 1e-4)
+            now_cb = time.time()
+            allow_update = True
+            try:
+                if recording and (fast_active or pending_len > 1400):
+                    allow_update = (now_cb - float(getattr(self, '_professional_clim_last_t', 0.0))) > 0.25
+            except Exception:
+                pass
+            if allow_update and heat_update_due:
+                vmax = float(_np.percentile(heat, 99.0)) if heat.size else 1.0
+                try:
+                    vmax_floor = float(getattr(self, '_professional_vmax_floor', 0.35))
+                except Exception:
+                    vmax_floor = 0.35
+                vmax = max(vmax, vmax_floor, 1e-4)
+                self._professional_vmax_cache = vmax
+                self._professional_clim_last_t = now_cb
+            else:
+                vmax = float(getattr(self, '_professional_vmax_cache', 1.0) or 1.0)
             self._professional_im.set_clim(0.0, vmax)
         except Exception:
             pass
@@ -19086,48 +21473,715 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
-        # 叠加主音轨迹（与现有音调体系结合）
+        # 纵向时间辅助线（专业模式专属风格）
         try:
-            times = list(getattr(self, 'time_data', []))
-            pitches = list(getattr(self, 'pitch_data', []))
-            if times and pitches and len(times) == len(pitches):
-                line_x = []
-                line_y = []
-                for t, p in zip(times, pitches):
+            step = 1.0 if (x1 - x0) <= 18.0 else 2.0
+            grid_anchor = int(math.floor(x0 / step))
+            vgrid_key = (grid_anchor, step)
+            if self._professional_vgrid_range != vgrid_key:
+                for ln in list(getattr(self, '_professional_vgrid_artists', []) or []):
                     try:
-                        if x0 <= float(t) <= x1 and float(p) > 0:
-                            line_x.append(float(t))
-                            line_y.append(math.log2(float(p)))
-                    except Exception:
-                        continue
-                if line_x and line_y:
-                    try:
-                        import numpy as _np
-                        from matplotlib.collections import LineCollection
-                        if hasattr(self, '_professional_main_collection') and self._professional_main_collection is not None:
-                            try:
-                                if self._professional_main_collection in getattr(self.professional_ax, 'collections', []):
-                                    self._professional_main_collection.remove()
-                            except Exception:
-                                pass
-                        pts = _np.column_stack([line_x, line_y]).reshape(-1, 1, 2)
-                        segs = _np.concatenate([pts[:-1], pts[1:]], axis=1) if len(pts) > 1 else _np.empty((0, 2, 2))
-                        if segs.size > 0:
-                            colors = []
-                            for yv in line_y[:-1]:
-                                hue = ((yv - y0) / max(1e-6, (y1 - y0)))
-                                hue = max(0.0, min(1.0, hue))
-                                colors.append((1.0, 1.0 - 0.55*hue, 0.45 + 0.55*hue))
-                            lc = LineCollection(segs, colors=colors, linewidths=1.4, alpha=0.95, zorder=15)
-                            self.professional_ax.add_collection(lc)
-                            self._professional_main_collection = lc
+                        if ln is not None and ln in getattr(self.professional_ax, 'lines', []):
+                            ln.remove()
                     except Exception:
                         pass
+                self._professional_vgrid_artists = []
+                self._professional_vgrid_range = vgrid_key
+                # 主刻度线
+                start = grid_anchor * step
+                t = start
+                while t <= x1 + 1e-6:
+                    ln = self.professional_ax.axvline(x=t, color=(0.6, 0.8, 1.0), alpha=0.18, linewidth=0.9, linestyle='--', zorder=3)
+                    self._professional_vgrid_artists.append(ln)
+                    t += step
+                # 次刻度线（半步）
+                half = step * 0.5
+                t = start + half
+                while t <= x1 + 1e-6:
+                    ln = self.professional_ax.axvline(x=t, color=(0.6, 0.8, 1.0), alpha=0.10, linewidth=0.6, linestyle=':', zorder=3)
+                    self._professional_vgrid_artists.append(ln)
+                    t += step
+        except Exception:
+            pass
+
+        # 当前时间指示线：参考普通模式（<= center_display_time 跟随当前时间，之后锁定居中）
+        try:
+            center_t = float(getattr(self, 'center_display_time', 8.0))
+            try:
+                recording = bool(getattr(self, 'is_recording_active', False))
+            except Exception:
+                recording = False
+            try:
+                auto_follow = bool(getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True))
+            except Exception:
+                auto_follow = True
+            if not recording:
+                cur_gt = float(getattr(self, '_professional_stop_time', None) or getattr(self, 'current_global_time', 0.0) or 0.0)
+            else:
+                cur_gt = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+            if auto_follow and cur_gt > center_t:
+                cur_t = x0 + max(0.0, min(center_t, x1 - x0))
+            else:
+                cur_t = min(max(x0, cur_gt), x1)
+            if not hasattr(self, '_professional_time_cursor') or self._professional_time_cursor is None:
+                self._professional_time_cursor = self.professional_ax.axvline(
+                    x=cur_t, color=(0.9, 0.95, 1.0), alpha=0.55, linewidth=1.2, linestyle='-', zorder=5
+                )
+            else:
+                try:
+                    self._professional_time_cursor.set_xdata([cur_t, cur_t])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 录制期间强制隐藏泛音小散点，避免覆盖基频白点
+        try:
+            if recording and getattr(self, '_professional_main_points', None) is not None:
+                self._professional_main_points.set_offsets([])
+                self._professional_main_points.set_alpha(0.0)
+                self._professional_main_points.set_visible(False)
+        except Exception:
+            pass
+
+        # 基音主线：沿用普通模式细节点/断续逻辑
+        base_times = []
+        base_pitches = []
+        base_median = None
+        try:
+            base_times, base_pitches = self._build_professional_base_series(x0, x1)
+            if base_pitches:
+                try:
+                    import numpy as _np
+                    clean_bp = [p for p in base_pitches if p == p]
+                    if clean_bp:
+                        base_median = float(_np.median(_np.asarray(clean_bp, dtype=_np.float32)))
+                except Exception:
+                    base_median = None
+        except Exception:
+            base_times, base_pitches = [], []
+        try:
+            if self._professional_base_line is None:
+                line_color = str(getattr(self, '_professional_base_line_color', '#FFB6D5'))
+                line_w = float(getattr(self, 'current_linewidth', 0.6) or 0.6)
+                self._professional_base_line, = self.professional_ax.plot([], [], color=line_color, linewidth=line_w, alpha=0.98, zorder=19)
+            elif self._professional_base_line not in getattr(self.professional_ax, 'lines', []):
+                try:
+                    self.professional_ax.add_line(self._professional_base_line)
+                except Exception:
+                    pass
+            try:
+                self._professional_base_line.set_color(str(getattr(self, '_professional_base_line_color', '#FFB6D5')))
+                self._professional_base_line.set_linewidth(float(getattr(self, 'current_linewidth', 0.6) or 0.6))
+            except Exception:
+                pass
+            if base_times and base_pitches:
+                try:
+                    import numpy as _np
+                    _bx = _np.asarray(base_times, dtype=_np.float32)
+                    _by = _np.asarray(base_pitches, dtype=_np.float32)
+                    _ok = _np.isfinite(_bx) & _np.isfinite(_by)
+                    _lx = _np.where(_ok, _bx, _np.nan)
+                    _ly = _np.where(_ok, _np.log2(_np.maximum(1.0, _by)), _np.nan)
+                    self._professional_base_line.set_data(_lx, _ly)
+                except Exception:
+                    line_x = []
+                    line_y = []
+                    for t, p in zip(base_times, base_pitches):
+                        if t == t and p == p:
+                            line_x.append(float(t))
+                            line_y.append(math.log2(max(1.0, float(p))))
+                        else:
+                            line_x.append(float('nan'))
+                            line_y.append(float('nan'))
+                    self._professional_base_line.set_data(line_x, line_y)
+                self._professional_base_line.set_alpha(0.98)
+                self._professional_base_line.set_zorder(19)
+                self._professional_base_line.set_visible(True)
+            else:
+                self._professional_base_line.set_data([], [])
+                self._professional_base_line.set_alpha(0.0)
+                self._professional_base_line.set_visible(False)
+        except Exception:
+            pass
+        try:
+            if self._professional_base_points is None:
+                base_point_rgb = tuple(getattr(self, '_professional_base_point_color', (0.68, 0.90, 1.00)))
+                self._professional_base_points = self.professional_ax.scatter(
+                    [], [], s=16, color=base_point_rgb, alpha=0.96,
+                    linewidths=0, edgecolors='none', zorder=24
+                )
+            elif self._professional_base_points not in getattr(self.professional_ax, 'collections', []):
+                try:
+                    self.professional_ax.add_collection(self._professional_base_points)
+                except Exception:
+                    pass
+            if getattr(self, '_professional_base_head_points', None) is None:
+                base_point_rgb = tuple(getattr(self, '_professional_base_point_color', (0.68, 0.90, 1.00)))
+                self._professional_base_head_points = self.professional_ax.scatter(
+                    [], [], s=24, color=base_point_rgb, alpha=0.0,
+                    linewidths=0, edgecolors='none', zorder=23
+                )
+            elif self._professional_base_head_points not in getattr(self.professional_ax, 'collections', []):
+                try:
+                    self.professional_ax.add_collection(self._professional_base_head_points)
+                except Exception:
+                    pass
+            if getattr(self, '_professional_base_predict_points', None) is None:
+                base_point_rgb = tuple(getattr(self, '_professional_base_point_color', (0.68, 0.90, 1.00)))
+                self._professional_base_predict_points = self.professional_ax.scatter(
+                    [], [], s=18, marker='o', color=base_point_rgb, alpha=0.0,
+                    linewidths=0, edgecolors='none', zorder=25
+                )
+            elif self._professional_base_predict_points not in getattr(self.professional_ax, 'collections', []):
+                try:
+                    self.professional_ax.add_collection(self._professional_base_predict_points)
+                except Exception:
+                    pass
+            if base_times and base_pitches:
+                import numpy as _np
+                try:
+                    edge_pad = float(getattr(self, '_professional_base_point_edge_pad', 0.25))
+                except Exception:
+                    edge_pad = 0.25
+                bt = _np.asarray(base_times, dtype=_np.float32)
+                bp = _np.asarray(base_pitches, dtype=_np.float32)
+                mask = _np.isfinite(bt) & _np.isfinite(bp)
+                if edge_pad > 0.0:
+                    mask &= (bt >= float(x0 - edge_pad)) & (bt <= float(x1 + edge_pad))
+                if _np.any(mask):
+                    arr = _np.column_stack((bt[mask], _np.log2(_np.maximum(1.0, bp[mask])))).astype(_np.float32, copy=False)
+                    try:
+                        cap = int(getattr(self, '_professional_base_point_cap', 4000))
+                    except Exception:
+                        cap = 4000
+                    # 自适应：快速变化时加密点密度，平稳时适度抽样
+                    try:
+                        fast_mode = bool(getattr(self, '_professional_fast_mode', False))
+                    except Exception:
+                        fast_mode = False
+                    dt_avg = 0.0
+                    try:
+                        if arr.shape[0] >= 6:
+                            tail_t = arr[-120:, 0] if arr.shape[0] > 120 else arr[:, 0]
+                            diffs = _np.diff(tail_t)
+                            dt_avg = float(_np.mean(diffs)) if diffs.size else 0.0
+                    except Exception:
+                        dt_avg = 0.0
+                    try:
+                        stale_gap_live = float(getattr(self, '_professional_realtime_stale_gap', 0.0) or 0.0)
+                    except Exception:
+                        stale_gap_live = 0.0
+                    if recording:
+                        try:
+                            cap = int(getattr(self, '_professional_base_point_cap_recording', 6500))
+                        except Exception:
+                            cap = 6500
+                    if fast_mode or (0.0 < dt_avg < 0.035):
+                        try:
+                            cap = int(getattr(self, '_professional_base_point_cap_fast', 2600))
+                        except Exception:
+                            cap = 2600
+                    if recording and (pending_len > 1200 or stale_gap_live > 0.35):
+                        try:
+                            heavy_cap = int(getattr(self, '_professional_base_point_cap_heavy', 2200))
+                        except Exception:
+                            heavy_cap = 2200
+                        cap = min(cap, heavy_cap)
+                    try:
+                        hard_cap = int(getattr(self, '_professional_base_point_cap_hard_max', 9000))
+                    except Exception:
+                        hard_cap = 9000
+                    cap = max(600, min(cap, hard_cap))
+                    try:
+                        cur_gt3 = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    except Exception:
+                        cur_gt3 = 0.0
+                    # 录音态实时优先：仅渲染最近时间窗口，避免历史点堆积导致“越画越不实时”
+                    if recording and arr.shape[0] > 0 and cur_gt3 > 0.0:
+                        try:
+                            rt_win = float(getattr(self, '_professional_base_realtime_render_sec', 3.8))
+                        except Exception:
+                            rt_win = 3.8
+                        try:
+                            rt_win_heavy = float(getattr(self, '_professional_base_realtime_render_sec_heavy', 2.2))
+                        except Exception:
+                            rt_win_heavy = 2.2
+                        try:
+                            rt_future = float(getattr(self, '_professional_base_realtime_future_margin_s', 0.14))
+                        except Exception:
+                            rt_future = 0.14
+                        rt_win = max(1.0, min(8.0, rt_win))
+                        rt_win_heavy = max(0.8, min(rt_win, rt_win_heavy))
+                        if fast_mode or pending_len > 1200 or stale_gap_live > 0.35:
+                            rt_win = min(rt_win, rt_win_heavy)
+                        rt_mask = (arr[:, 0] >= float(cur_gt3 - rt_win)) & (arr[:, 0] <= float(cur_gt3 + max(0.02, rt_future)))
+                        if _np.any(rt_mask):
+                            arr = arr[rt_mask]
+                    if cap > 0 and arr.shape[0] > cap:
+                        # 优先保留最新尾部，旧点再下采样：保证前沿细节点始终“追得上”
+                        keep_tail = int(min(max(180, cap // 3), cap - 1)) if cap > 1 else 0
+                        if keep_tail > 0 and arr.shape[0] > keep_tail:
+                            head = arr[:-keep_tail]
+                            tail = arr[-keep_tail:]
+                            head_need = max(0, cap - keep_tail)
+                            if head_need > 0 and head.shape[0] > head_need:
+                                idx = _np.linspace(0, head.shape[0] - 1, num=head_need, dtype=_np.int32)
+                                head = head[idx]
+                            arr = _np.vstack((head, tail)) if head.size else tail
+                        else:
+                            step = int(_np.ceil(arr.shape[0] / cap))
+                            arr = arr[::step]
+                    # 基频点：对齐普通模式雪花尺寸（最近点轻微放大）
+                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                    min_d = float(getattr(self, '_professional_base_point_min_d', 2.0))
+                    max_d = float(getattr(self, '_professional_base_point_max_d', 5.0))
+                    diameter = max(min_d, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), max_d))
+                    try:
+                        self._professional_base_points.set_color(tuple(getattr(self, '_professional_base_point_color', (0.68, 0.90, 1.00))))
+                    except Exception:
+                        pass
+                    self._professional_base_points.set_offsets(arr)
+                    try:
+                        cur_gt3 = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                    except Exception:
+                        cur_gt3 = 0.0
+                    pred_arr = _np.empty((0, 2), dtype=_np.float32)
+                    if recording and arr.shape[0] > 0 and cur_gt3 > 0.0:
+                        try:
+                            pred_pts = self._build_professional_base_predict_points(base_times, base_pitches, x0, x1, cur_gt3)
+                            if pred_pts:
+                                pred_t = _np.asarray([float(it[0]) for it in pred_pts], dtype=_np.float32)
+                                pred_f = _np.asarray([float(it[1]) for it in pred_pts], dtype=_np.float32)
+                                pred_arr = _np.column_stack((pred_t, _np.log2(_np.maximum(1.0, pred_f)))).astype(_np.float32, copy=False)
+                        except Exception:
+                            pred_arr = _np.empty((0, 2), dtype=_np.float32)
+                    try:
+                        head_window = float(getattr(self, '_professional_base_snowflake_window_s', 1.0))
+                    except Exception:
+                        head_window = 1.0
+                    try:
+                        head_scale = float(getattr(self, '_professional_base_snowflake_scale', 1.35))
+                    except Exception:
+                        head_scale = 1.35
+                    try:
+                        snow_alpha = float(getattr(self, '_professional_base_snowflake_alpha', 0.60))
+                    except Exception:
+                        snow_alpha = 0.60
+                    try:
+                        glow_alpha = float(getattr(self, '_professional_base_snowflake_glow_alpha', 0.34))
+                    except Exception:
+                        glow_alpha = 0.34
+                    try:
+                        heavy_points_mode = bool(recording and (fast_mode or pending_len > 1200 or stale_gap_live > 0.35))
+                    except Exception:
+                        heavy_points_mode = False
+                    if arr.shape[0] > 0 and cur_gt3 > 0 and (not heavy_points_mode):
+                        dt = cur_gt3 - arr[:, 0]
+                        size_hi = (diameter * head_scale) ** 2
+                        size_lo = (diameter) ** 2
+                        sizes = _np.where(dt <= head_window, size_hi, size_lo)
+                        self._professional_base_points.set_sizes(sizes)
+                        self._professional_base_points.set_alpha(0.98)
+                        if self._professional_base_head_points is not None:
+                            try:
+                                head_mask = _np.logical_and(dt >= 0.0, dt <= head_window)
+                                if _np.any(head_mask):
+                                    head_arr = arr[head_mask]
+                                    glow_scale = float(getattr(self, '_professional_base_snowflake_glow_scale', 1.85))
+                                    glow_size = (diameter * glow_scale) ** 2
+                                    self._professional_base_head_points.set_color(tuple(getattr(self, '_professional_base_point_color', (0.68, 0.90, 1.00))))
+                                    self._professional_base_head_points.set_offsets(head_arr)
+                                    self._professional_base_head_points.set_sizes([glow_size] * head_arr.shape[0])
+                                    self._professional_base_head_points.set_alpha(glow_alpha)
+                                    self._professional_base_head_points.set_visible(True)
+                                else:
+                                    self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                                    self._professional_base_head_points.set_alpha(0.0)
+                                    self._professional_base_head_points.set_visible(False)
+                            except Exception:
+                                pass
+                    else:
+                        self._professional_base_points.set_sizes([diameter ** 2])
+                        self._professional_base_points.set_alpha(snow_alpha)
+                        if self._professional_base_head_points is not None:
+                            self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                            self._professional_base_head_points.set_alpha(0.0)
+                            self._professional_base_head_points.set_visible(False)
+                    if arr.shape[0] > 0 and cur_gt3 > 0:
+                        self._professional_base_points.set_alpha(snow_alpha)
+                    self._professional_base_points.set_zorder(24)
+                    self._professional_base_points.set_visible(True)
+                    if self._professional_base_predict_points is not None:
+                        try:
+                            self._update_professional_base_predict_trail(pred_arr, diameter, heavy_points_mode)
+                        except Exception:
+                            pass
+                else:
+                    self._professional_base_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                    self._professional_base_points.set_alpha(0.0)
+                    self._professional_base_points.set_visible(False)
+                    if self._professional_base_head_points is not None:
+                        self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                        self._professional_base_head_points.set_alpha(0.0)
+                        self._professional_base_head_points.set_visible(False)
+                    if self._professional_base_predict_points is not None:
+                        if recording:
+                            try:
+                                d0 = max(2.0, float(getattr(self, '_professional_base_point_min_d', 2.0)))
+                                self._update_professional_base_predict_trail(_np.empty((0, 2), dtype=_np.float32), d0)
+                            except Exception:
+                                self._professional_base_predict_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                                self._professional_base_predict_points.set_alpha(0.0)
+                                self._professional_base_predict_points.set_visible(False)
+                        else:
+                            self._professional_base_predict_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                            self._professional_base_predict_points.set_alpha(0.0)
+                            self._professional_base_predict_points.set_visible(False)
+                            self._professional_base_predict_trail = []
+            else:
+                import numpy as _np
+                self._professional_base_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                self._professional_base_points.set_alpha(0.0)
+                self._professional_base_points.set_visible(False)
+                if self._professional_base_head_points is not None:
+                    self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                    self._professional_base_head_points.set_alpha(0.0)
+                    self._professional_base_head_points.set_visible(False)
+                if self._professional_base_predict_points is not None:
+                    if recording:
+                        try:
+                            d0 = max(2.0, float(getattr(self, '_professional_base_point_min_d', 2.0)))
+                            self._update_professional_base_predict_trail(_np.empty((0, 2), dtype=_np.float32), d0)
+                        except Exception:
+                            self._professional_base_predict_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                            self._professional_base_predict_points.set_alpha(0.0)
+                            self._professional_base_predict_points.set_visible(False)
+                    else:
+                        self._professional_base_predict_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                        self._professional_base_predict_points.set_alpha(0.0)
+                        self._professional_base_predict_points.set_visible(False)
+                        self._professional_base_predict_trail = []
+        except Exception:
+            pass
+
+        tracks_for_predict = []
+        try:
+            base_only_recording = bool(getattr(self, '_professional_base_only_recording', True))
+        except Exception:
+            base_only_recording = True
+        # 叠加主音轨迹（与现有音调体系结合）
+        try:
+            now_ml = time.time()
+            try:
+                fast_active = bool(getattr(self, '_professional_fast_active', False))
+            except Exception:
+                fast_active = False
+            try:
+                fast_mode = bool(getattr(self, '_professional_fast_mode', False) or fast_active)
+            except Exception:
+                fast_mode = fast_active
+            if recording and base_only_recording:
+                try:
+                    for coll in list(getattr(self, '_professional_main_collections', []) or []):
+                        try:
+                            if coll in getattr(self.professional_ax, 'collections', []):
+                                coll.remove()
+                        except Exception:
+                            pass
+                    self._professional_main_collections = []
+                except Exception:
+                    pass
+                try:
+                    pts = getattr(self, '_professional_main_points', None)
+                    if pts is not None:
+                        pts.set_offsets([])
+                        pts.set_alpha(0.0)
+                        pts.set_visible(False)
+                except Exception:
+                    pass
+                self._professional_mainline_last_update = now_ml
+                raise RuntimeError("base_only_recording")
+            if fast_mode:
+                try:
+                    for coll in list(getattr(self, '_professional_main_collections', []) or []):
+                        try:
+                            if coll in getattr(self.professional_ax, 'collections', []):
+                                coll.remove()
+                        except Exception:
+                            pass
+                    self._professional_main_collections = []
+                except Exception:
+                    pass
+                try:
+                    pts = getattr(self, '_professional_main_points', None)
+                    if pts is not None:
+                        pts.set_offsets([])
+                        pts.set_alpha(0.0)
+                        pts.set_visible(False)
+                except Exception:
+                    pass
+                self._professional_mainline_last_update = now_ml
+                raise RuntimeError("skip mainline in fast mode")
+            try:
+                mainline_iv = float(getattr(self, '_professional_mainline_interval_recording', 0.085))
+            except Exception:
+                mainline_iv = 0.085
+            try:
+                if fast_active or pending_len > 1000:
+                    mainline_iv = max(mainline_iv, float(getattr(self, '_professional_mainline_interval_fast', 0.12)))
+            except Exception:
+                pass
+            if (not fast_active) and (now_ml - float(getattr(self, '_professional_mainline_last_update', 0.0))) < mainline_iv and recording:
+                raise RuntimeError("skip mainline update")
+            tracks = self._build_professional_main_tracks(x0, x1)
+            if tracks and base_median is not None:
+                try:
+                    sep = float(getattr(self, '_professional_base_sep_semi', 2.6))
+                except Exception:
+                    sep = 2.6
+                filtered = []
+                for tr in tracks:
+                    segs = tr.get('segments', []) if isinstance(tr, dict) else []
+                    vals = []
+                    for seg in segs:
+                        for _, pf in seg:
+                            try:
+                                vals.append(float(pf))
+                            except Exception:
+                                pass
+                    if not vals:
+                        continue
+                    try:
+                        import numpy as _np
+                        med = float(_np.median(_np.asarray(vals, dtype=_np.float32)))
+                    except Exception:
+                        med = vals[len(vals) // 2]
+                    try:
+                        semi = abs(12.0 * math.log2(max(1e-9, med / max(base_median, 1e-9))))
+                    except Exception:
+                        semi = 999.0
+                    if semi > sep:
+                        filtered.append(tr)
+                tracks = filtered
+            tracks_for_predict = list(tracks) if tracks else []
+            if not tracks:
+                try:
+                    hold_until = float(getattr(self, '_professional_main_hold_until', 0.0))
+                except Exception:
+                    hold_until = 0.0
+                if now_ml <= hold_until:
+                    raise RuntimeError("hold mainline")
+                try:
+                    for coll in list(getattr(self, '_professional_main_collections', []) or []):
+                        try:
+                            if coll in getattr(self.professional_ax, 'collections', []):
+                                coll.remove()
+                        except Exception:
+                            pass
+                    self._professional_main_collections = []
+                except Exception:
+                    pass
+                try:
+                    pts = getattr(self, '_professional_main_points', None)
+                    if pts is not None:
+                        pts.set_offsets([])
+                        pts.set_alpha(0.0)
+                        pts.set_visible(False)
+                except Exception:
+                    pass
+                self._professional_mainline_last_update = now_ml
+            else:
+                try:
+                    import numpy as _np
+                    from matplotlib.collections import LineCollection
+                    palette = list(getattr(self, '_professional_band_palette', [
+                        (0.72, 0.90, 1.00),
+                        (0.98, 0.91, 0.72),
+                        (0.89, 0.82, 0.98),
+                    ]))
+                    if not palette:
+                        palette = [
+                            (0.72, 0.90, 1.00),
+                            (0.98, 0.91, 0.72),
+                            (0.89, 0.82, 0.98),
+                        ]
+                    for coll in list(getattr(self, '_professional_main_collections', []) or []):
+                        try:
+                            if coll in getattr(self.professional_ax, 'collections', []):
+                                coll.remove()
+                        except Exception:
+                            pass
+                    self._professional_main_collections = []
+                    all_points = []
+                    all_colors = []
+                    for idx, tr in enumerate(tracks):
+                        band_idx = int(tr.get('band', idx)) if isinstance(tr, dict) else idx
+                        track_color = palette[band_idx % len(palette)]
+                        segs = []
+                        for seg in tr.get('segments', []):
+                            if len(seg) < 2:
+                                continue
+                            xs = [float(p[0]) for p in seg]
+                            ys = [math.log2(max(1.0, float(p[1]))) for p in seg]
+                            pts = _np.column_stack([xs, ys]).reshape(-1, 1, 2)
+                            segs.extend(_np.concatenate([pts[:-1], pts[1:]], axis=1))
+                            for x, y in zip(xs, ys):
+                                if x0 <= x <= x1:
+                                    all_points.append((x, y))
+                                    all_colors.append(track_color)
+                        if segs:
+                            lc = LineCollection(segs, colors=[track_color] * len(segs), linewidths=0.72, alpha=0.30, zorder=11)
+                            self.professional_ax.add_collection(lc)
+                            self._professional_main_collections.append(lc)
+                    try:
+                        point_cap = int(getattr(self, '_professional_main_point_cap', 2200))
+                    except Exception:
+                        point_cap = 2200
+                    if point_cap > 0 and len(all_points) > point_cap:
+                        step = int(_np.ceil(len(all_points) / point_cap))
+                        all_points = all_points[::step]
+                        all_colors = all_colors[::step]
+                    if all_points and (not recording):
+                        if getattr(self, '_professional_main_points', None) is None:
+                            self._professional_main_points = self.professional_ax.scatter([], [], s=7, alpha=0.22, linewidths=0, edgecolors='none', zorder=12)
+                        pts = _np.asarray(all_points, dtype=_np.float32)
+                        self._professional_main_points.set_offsets(pts)
+                        try:
+                            self._professional_main_points.set_color(all_colors)
+                        except Exception:
+                            pass
+                        self._professional_main_points.set_alpha(0.22)
+                        self._professional_main_points.set_visible(True)
+                    else:
+                        if getattr(self, '_professional_main_points', None) is not None:
+                            self._professional_main_points.set_offsets([])
+                            self._professional_main_points.set_alpha(0.0)
+                            self._professional_main_points.set_visible(False)
+                    self._professional_mainline_last_update = now_ml
+                    try:
+                        hold_sec = float(getattr(self, '_professional_main_hold_sec', 0.35))
+                    except Exception:
+                        hold_sec = 0.35
+                    self._professional_main_hold_until = now_ml + max(0.0, hold_sec)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 辅助预测频段：淡色散点，仅用于美感
+        try:
+            if recording:
+                if getattr(self, '_professional_predict_scatter', None) is not None:
+                    try:
+                        self._professional_predict_scatter.set_offsets([])
+                        self._professional_predict_scatter.set_alpha(0.0)
+                        self._professional_predict_scatter.set_visible(False)
+                    except Exception:
+                        pass
+                raise RuntimeError("skip predict while recording")
+            if not bool(getattr(self, '_professional_predict_enabled', False)):
+                if getattr(self, '_professional_predict_scatter', None) is not None:
+                    try:
+                        self._professional_predict_scatter.set_offsets([])
+                        self._professional_predict_scatter.set_alpha(0.0)
+                        self._professional_predict_scatter.set_visible(False)
+                    except Exception:
+                        pass
+                raise RuntimeError("predict_disabled")
+            now_pred = time.time()
+            if (not recording) and (now_pred - float(getattr(self, '_professional_predict_last_t', 0.0))) < 0.15:
+                raise RuntimeError("skip predict idle")
+            pred_points = []
+            pred_colors = []
+            if tracks_for_predict:
+                # 频段配色（淡色，不抢主线）
+                band_colors = [
+                    (0.78, 0.86, 0.95),  # 低频
+                    (0.72, 0.90, 0.88),  # 中低
+                    (0.80, 0.90, 0.74),  # 中高
+                    (0.92, 0.80, 0.86),  # 明亮
+                    (0.92, 0.90, 0.96),  # 空气感
+                ]
+                try:
+                    step_t = max(0.035, float(getattr(self, '_professional_time_bin', 0.05)) * 0.85)
+                except Exception:
+                    step_t = 0.04
+                horizon = min(0.5, float(getattr(self, 'time_window', 16.0)) * 0.03)
+                for tr in tracks_for_predict:
+                    segs = tr.get('segments', []) if isinstance(tr, dict) else []
+                    if not segs:
+                        continue
+                    last_seg = segs[-1]
+                    if len(last_seg) < 2:
+                        continue
+                    (t1, f1) = last_seg[-2]
+                    (t2, f2) = last_seg[-1]
+                    try:
+                        t1 = float(t1); t2 = float(t2)
+                        f1 = float(f1); f2 = float(f2)
+                    except Exception:
+                        continue
+                    dt = max(1e-6, t2 - t1)
+                    df = f2 - f1
+                    steps = max(1, int(horizon / step_t))
+                    for i in range(1, steps + 1):
+                        tt = t2 + step_t * i
+                        if tt > x1 + 0.2:
+                            break
+                        ff = max(1.0, f2 + df * (step_t * i / dt))
+                        yv = math.log2(ff)
+                        if yv < y0 or yv > y1:
+                            continue
+                        # 频段划分用于淡色点
+                        if ff < 200:
+                            color = band_colors[0]
+                        elif ff < 800:
+                            color = band_colors[1]
+                        elif ff < 3000:
+                            color = band_colors[2]
+                        elif ff < 6000:
+                            color = band_colors[3]
+                        else:
+                            color = band_colors[4]
+                        pred_points.append((tt, yv))
+                        pred_colors.append(color)
+            if self._professional_predict_scatter is None:
+                self._professional_predict_scatter = self.professional_ax.scatter([], [], s=12, alpha=0.22, linewidths=0, edgecolors='none', zorder=9)
+            if pred_points:
+                import numpy as _np
+                arr = _np.asarray(pred_points, dtype=_np.float32)
+                self._professional_predict_scatter.set_offsets(arr)
+                try:
+                    self._professional_predict_scatter.set_color(pred_colors)
+                except Exception:
+                    pass
+                self._professional_predict_scatter.set_alpha(0.22)
+                self._professional_predict_scatter.set_visible(True)
+            else:
+                try:
+                    self._professional_predict_scatter.set_offsets([])
+                    self._professional_predict_scatter.set_alpha(0.0)
+                    self._professional_predict_scatter.set_visible(False)
+                except Exception:
+                    pass
+            self._professional_predict_last_t = now_pred
         except Exception:
             pass
 
         try:
-            self.professional_canvas.draw_idle()
+            now_draw = time.time()
+            draw_min_iv = float(getattr(self, '_professional_min_draw_interval', 0.012))
+            try:
+                if recording and pending_len > 1800:
+                    draw_min_iv = max(draw_min_iv, 0.020)
+            except Exception:
+                pass
+            last_draw = float(getattr(self, '_professional_last_draw_t', 0.0) or 0.0)
+            if force_redraw or force_rebuild or (now_draw - last_draw) >= draw_min_iv:
+                self.professional_canvas.draw_idle()
+                self._professional_last_draw_t = now_draw
         except Exception:
             pass
         try:
@@ -19137,10 +22191,11 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         # 初始化细节点悬停提示（优雅浮窗 + 三角指示）
         try:
-            # 通过统一的 ensure 方法创建/恢复
-            self._ensure_hover_annot()
-            # 监听鼠标离开，隐藏提示
-            self.canvas.mpl_connect('figure_leave_event', self._on_mouse_leave)
+            if getattr(self, '_hover_annot', None) is None:
+                self._ensure_hover_annot()
+            if not bool(getattr(self, '_professional_hover_bound', False)):
+                self.professional_canvas.mpl_connect('figure_leave_event', self._on_mouse_leave)
+                self._professional_hover_bound = True
         except Exception:
             self._hover_annot = None
     
@@ -23558,6 +26613,62 @@ class ECGStylePitchVisualizer(QWidget):
                 pitch_data['_professional_time'] = float(global_time)
             except Exception:
                 pass
+            # 记录 raw 频率用于专业模式主线（更敏感）
+            try:
+                raw_f = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+            except Exception:
+                raw_f = 0.0
+            if raw_f > 0:
+                try:
+                    raw_t = float(global_time)
+                    st = float(getattr(self, 'start_time', 0.0) or 0.0)
+                    if raw_t > 1e8 and st > 1e8:
+                        raw_t = raw_t - st
+                except Exception:
+                    raw_t = float(global_time) if global_time else time.time()
+                try:
+                    if isinstance(self._professional_raw_history, list):
+                        self._professional_raw_history.append((raw_t, raw_f))
+                        try:
+                            if bool(getattr(self, 'is_recording_active', False)):
+                                keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
+                                cutoff_t = float(raw_t) - max(8.0, keep_sec)
+                                if len(self._professional_raw_history) > 1200:
+                                    self._professional_raw_history = [it for it in self._professional_raw_history if float(it[0]) >= cutoff_t]
+                        except Exception:
+                            pass
+                    else:
+                        self._professional_raw_history.append((raw_t, raw_f))
+                        try:
+                            if bool(getattr(self, 'is_recording_active', False)):
+                                keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
+                                cutoff_t = float(raw_t) - max(8.0, keep_sec)
+                                while self._professional_raw_history and float(self._professional_raw_history[0][0]) < cutoff_t:
+                                    self._professional_raw_history.popleft()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            try:
+                if bool(pitch_data.get('_fast_change')):
+                    setattr(self, '_professional_fast_change_t', time.time())
+            except Exception:
+                pass
+            # 同步可视化时间轴，避免录音时长落后于专业模式时间线
+            try:
+                gt_sync = float(global_time)
+                st = float(getattr(self, 'start_time', 0.0) or 0.0)
+                if gt_sync > 1e8 and st > 1e8:
+                    gt_sync = gt_sync - st
+                elif gt_sync > 1e8 and st <= 1e8:
+                    gt_sync = -1.0
+                if gt_sync >= 0:
+                    if getattr(self, 'is_recording_active', False) or getattr(self, 'is_recording', False):
+                        cur = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                        if gt_sync > cur:
+                            self.current_global_time = gt_sync
+            except Exception:
+                pass
             try:
                 self._capture_harmonic_candidates(pitch_data)
             except Exception:
@@ -24255,9 +27366,19 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             
-            # 计算全局时间（从开始到现在的总时间）- 修复NoneType错误
+            # 计算全局时间（从开始到现在的总时间）
+            # 修复：timestamp 可能是“相对秒”，不能直接赋给 start_time（否则会出现 epoch 级时长）
             if not hasattr(self, 'start_time') or self.start_time is None:
-                self.start_time = timestamp
+                try:
+                    ts0 = float(timestamp)
+                except Exception:
+                    ts0 = time.time()
+                if ts0 > 1e8:
+                    self.start_time = ts0
+                elif ts0 >= 0.0:
+                    self.start_time = time.time() - ts0
+                else:
+                    self.start_time = time.time()
                 print(f"🕐 设置开始时间: {self.start_time}")
             
             # 计算原始全局时间并扣除暂停累计，避免暂停恢复后时间轴跳跃
@@ -24355,6 +27476,84 @@ class ECGStylePitchVisualizer(QWidget):
                 global_time = raw_global_time + offset_shift
             else:
                 global_time = _explicit_gt
+            # 开录初期防跳变：若外部 global_time 继承了历史会话（如 40s），夹紧到本会话墙钟时间
+            try:
+                recording_live_now = bool(getattr(self, 'is_recording_active', False) or getattr(self, 'is_recording', False))
+            except Exception:
+                recording_live_now = False
+            try:
+                retake_like_now = bool(
+                    getattr(self, '_retake_overlay_preview_active', False)
+                    or getattr(self, 'retake_selection_active', False)
+                    or getattr(self, '_retake_guard_active', False)
+                    or getattr(self, '_retake_preserve_timeline', False)
+                )
+            except Exception:
+                retake_like_now = False
+            if host_retake_recording:
+                retake_like_now = True
+            try:
+                start_ref = float(getattr(self, 'start_time', 0.0) or 0.0)
+            except Exception:
+                start_ref = 0.0
+            startup_guard_active = False
+            pro_mode_active = False
+            try:
+                pro_mode_active = (self.display_mode.currentText() == "专业模式") if hasattr(self, 'display_mode') else False
+            except Exception:
+                pro_mode_active = False
+            if not pro_mode_active:
+                try:
+                    pro_mode_active = (getattr(self, 'main_plot_area', None) is getattr(self, 'professional_canvas', None))
+                except Exception:
+                    pro_mode_active = False
+            try:
+                startup_guard_active = bool(getattr(self, '_professional_start_zero_lock_active', False))
+            except Exception:
+                startup_guard_active = False
+            if (not startup_guard_active) and recording_live_now and pro_mode_active:
+                try:
+                    lock_until = float(getattr(self, '_professional_force_zero_window_until', 0.0) or 0.0)
+                except Exception:
+                    lock_until = 0.0
+                if lock_until > 0.0 and time.time() <= lock_until:
+                    startup_guard_active = True
+            if (not startup_guard_active) and recording_live_now and pro_mode_active and start_ref > 0.0:
+                try:
+                    guard_max = float(getattr(self, '_professional_start_guard_max_sec', 1.6))
+                except Exception:
+                    guard_max = 1.6
+                guard_max = max(0.7, min(3.0, guard_max))
+                elapsed_now = max(0.0, time.time() - start_ref - float(pause_comp))
+                if elapsed_now <= guard_max:
+                    startup_guard_active = True
+            if startup_guard_active and pro_mode_active and recording_live_now and (not retake_like_now) and start_ref > 0.0:
+                try:
+                    shift_now = float(getattr(self, '_time_offset_shift', 0.0) or 0.0)
+                except Exception:
+                    shift_now = 0.0
+                inferred_now = max(0.0, time.time() - start_ref - float(pause_comp) + shift_now)
+                try:
+                    guard_sec = float(getattr(self, '_startup_time_jump_guard_sec', 3.0))
+                except Exception:
+                    guard_sec = 3.0
+                try:
+                    jump_margin = float(getattr(self, '_startup_time_jump_margin', 0.35))
+                except Exception:
+                    jump_margin = 0.35
+                jump_margin = max(0.12, jump_margin)
+                if _explicit_gt is not None and float(global_time) > 1e8:
+                    global_time = max(0.0, float(global_time) - start_ref - float(pause_comp) + shift_now)
+                    try:
+                        pitch_data['global_time'] = float(global_time)
+                    except Exception:
+                        pass
+                if inferred_now <= max(0.5, guard_sec) and float(global_time) > inferred_now + jump_margin:
+                    global_time = inferred_now
+                    try:
+                        pitch_data['global_time'] = float(global_time)
+                    except Exception:
+                        pass
             try:
                 retake_progress_time = float(global_time)
             except Exception:
@@ -24598,8 +27797,27 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             
-            # 总是更新当前全局时间，保持时间轴推进
-            self.current_global_time = global_time
+            # 录音态下时间轴必须单调递增，避免被迟到包“拉回去找细节点”
+            try:
+                recording_live = bool(getattr(self, 'is_recording_active', False) or getattr(self, 'is_recording', False))
+            except Exception:
+                recording_live = False
+            try:
+                cur_gt_now = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+            except Exception:
+                cur_gt_now = 0.0
+            if recording_live:
+                if float(global_time) >= cur_gt_now - 1e-4:
+                    self.current_global_time = max(cur_gt_now, float(global_time))
+                else:
+                    self.current_global_time = cur_gt_now
+            else:
+                self.current_global_time = global_time
+            try:
+                if (not recording_live) or (float(global_time) >= cur_gt_now - 0.02):
+                    self._professional_last_data_wall_t = time.time()
+            except Exception:
+                pass
             
             # 回听暂停拖动时：不绘制细节点（保持时间推进但不新增点）
             try:
@@ -24962,6 +28180,37 @@ class ECGStylePitchVisualizer(QWidget):
                 
                 # 只有在有音高时才添加到音高数据中
                 self._pitch_store.append_point(global_time, y_pos, confidence, note_info)
+                try:
+                    f0_base = float(raw_f if (raw_f and raw_f > 0) else frequency)
+                except Exception:
+                    f0_base = 0.0
+                if f0_base > 0:
+                    try:
+                        if isinstance(self._professional_base_history, list):
+                            self._professional_base_history.append((float(global_time), f0_base))
+                            try:
+                                if bool(getattr(self, 'is_recording_active', False)):
+                                    keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
+                                    cutoff_t = float(global_time) - max(8.0, keep_sec)
+                                    if len(self._professional_base_history) > 1200:
+                                        self._professional_base_history = [it for it in self._professional_base_history if float(it[0]) >= cutoff_t]
+                                elif len(self._professional_base_history) > 200000:
+                                    self._professional_base_history = self._professional_base_history[-200000:]
+                            except Exception:
+                                if len(self._professional_base_history) > 200000:
+                                    self._professional_base_history = self._professional_base_history[-200000:]
+                        else:
+                            self._professional_base_history.append((float(global_time), f0_base))
+                            try:
+                                if bool(getattr(self, 'is_recording_active', False)):
+                                    keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
+                                    cutoff_t = float(global_time) - max(8.0, keep_sec)
+                                    while self._professional_base_history and float(self._professional_base_history[0][0]) < cutoff_t:
+                                        self._professional_base_history.popleft()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 # 回退后的时间矫正：若存在 _rollback_base_time，且新算出的 global_time < base 则提升到 base；若远大于 base + 10s(异常跳跃)则按帧增量续写
                 try:
                     if hasattr(self, '_rollback_base_time') and self._rollback_base_time is not None:
@@ -26645,6 +29894,10 @@ class ECGStylePitchVisualizer(QWidget):
         self.start_time = time.time()
         self.current_global_time = 0.0
         self.last_pitch_time = 0
+        try:
+            self._professional_stop_time = None
+        except Exception:
+            pass
         # 新会话开始：重置已绘制覆盖区间，避免沿用旧回听覆盖
         try:
             if hasattr(self, '_cov_reset'):
@@ -26660,6 +29913,14 @@ class ECGStylePitchVisualizer(QWidget):
         """停止时间追踪（录音停止时调用）"""
         self.is_recording_active = False
         self.time_update_timer.stop()
+        try:
+            if getattr(self, '_professional_stop_time', None) is None:
+                if getattr(self, 'time_data', None):
+                    self._professional_stop_time = float(self.time_data[-1])
+                else:
+                    self._professional_stop_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+        except Exception:
+            pass
         print("⏹️ 停止时间轴追踪")
 
     # ===== 回录倒计时外观辅助 =====
@@ -33288,6 +36549,18 @@ class ECGStylePitchVisualizer(QWidget):
         # 重置线条样式
         if hasattr(self, 'pitch_line') and self.pitch_line is not None:
             self.pitch_line.set_drawstyle('default')
+        try:
+            if mode != "专业模式":
+                if hasattr(self, 'pro_tracks_label'):
+                    self.pro_tracks_label.setVisible(False)
+                if hasattr(self, 'pro_tracks_spin'):
+                    self.pro_tracks_spin.setVisible(False)
+                if hasattr(self, 'pro_band_mode_label'):
+                    self.pro_band_mode_label.setVisible(False)
+                if hasattr(self, 'pro_band_mode_combo'):
+                    self.pro_band_mode_combo.setVisible(False)
+        except Exception:
+            pass
         # 若从专业模式切回，恢复主画布
         try:
             if mode != "专业模式" and getattr(self, 'main_plot_area', None) is getattr(self, 'professional_canvas', None):
@@ -33350,6 +36623,19 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     pass
                 try:
+                    if hasattr(self, 'pro_tracks_label'):
+                        self.pro_tracks_label.setVisible(True)
+                    if hasattr(self, 'pro_tracks_spin'):
+                        self.pro_tracks_spin.setVisible(True)
+                        self.on_professional_track_count_changed(self.pro_tracks_spin.value())
+                    if hasattr(self, 'pro_band_mode_label'):
+                        self.pro_band_mode_label.setVisible(True)
+                    if hasattr(self, 'pro_band_mode_combo'):
+                        self.pro_band_mode_combo.setVisible(True)
+                        self.on_professional_band_mode_changed(self.pro_band_mode_combo.currentText())
+                except Exception:
+                    pass
+                try:
                     self.update_professional_display()
                 except Exception:
                     pass
@@ -33357,6 +36643,78 @@ class ECGStylePitchVisualizer(QWidget):
             pass
 
         print(f"🔄 显示模式切换到: {mode}，将保持当前线条粗细: {getattr(self, 'current_linewidth', 0.6):.1f}px")
+
+    def on_professional_track_count_changed(self, value: int) -> None:
+        """同步专业模式主能量轨数到可视化器。"""
+        try:
+            v = getattr(self, 'visualizer', None)
+        except Exception:
+            v = None
+        targets = [self]
+        if v is not None and v is not self:
+            targets.append(v)
+        for tgt in targets:
+            try:
+                tgt._professional_main_tracks_max = int(value)
+                tgt._professional_force_redraw = True
+                tgt._professional_force_rebuild = True
+            except Exception:
+                pass
+
+    def _apply_professional_band_mode(self, mode_name: str) -> None:
+        """应用专业模式频段配置。"""
+        mode = str(mode_name or "3段").strip()
+        if mode not in ("3段", "5段"):
+            mode = "3段"
+        if mode == "5段":
+            edges = (220.0, 420.0, 900.0, 1800.0)
+            labels = ("胸腔", "喉腔", "口腔", "鼻腔", "头腔")
+            palette = [
+                (0.70, 0.90, 1.00),
+                (0.78, 0.93, 0.78),
+                (0.98, 0.92, 0.70),
+                (0.99, 0.85, 0.68),
+                (0.95, 0.75, 0.85),
+            ]
+        else:
+            edges = (320.0, 900.0)
+            labels = ("胸腔", "喉口腔", "头腔")
+            palette = [
+                (0.72, 0.90, 1.00),
+                (0.98, 0.91, 0.72),
+                (0.89, 0.82, 0.98),
+            ]
+        self._professional_band_mode = mode
+        self._professional_band_edges_hz = tuple(float(v) for v in edges)
+        self._professional_band_labels = tuple(labels)
+        self._professional_band_palette = [tuple(float(c) for c in col) for col in palette]
+        self._professional_force_redraw = True
+        self._professional_force_rebuild = True
+
+    def on_professional_band_mode_changed(self, mode_name: str) -> None:
+        """同步专业模式频段配置（3段/5段）到可视化器。"""
+        try:
+            v = getattr(self, 'visualizer', None)
+        except Exception:
+            v = None
+        targets = [self]
+        if v is not None and v is not self:
+            targets.append(v)
+        for tgt in targets:
+            try:
+                if hasattr(tgt, '_apply_professional_band_mode'):
+                    tgt._apply_professional_band_mode(mode_name)
+                else:
+                    tgt._professional_band_mode = str(mode_name or "3段")
+                    tgt._professional_force_redraw = True
+                    tgt._professional_force_rebuild = True
+            except Exception:
+                pass
+        try:
+            if hasattr(self, 'display_mode') and self.display_mode.currentText() == "专业模式":
+                self.update_professional_display()
+        except Exception:
+            pass
     
     def on_performance_mode_changed(self, mode_name):
         """性能模式改变处理"""
@@ -34461,6 +37819,17 @@ class ECGStylePitchVisualizer(QWidget):
     def reset_view(self):
         """重置视图到默认状态（中心C4、缩放1.0x、时间偏移0、解锁Y轴）。"""
         try:
+            # 专业模式下：按用户预期，重置也执行清空并等待下一次录制
+            try:
+                mode = self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式"
+            except Exception:
+                mode = "普通模式"
+            if mode == "专业模式":
+                try:
+                    self.clear_data()
+                except Exception:
+                    pass
+
             # 解锁纵向中心（若曾锁定）
             try:
                 self.freeze_y_center = False
@@ -34625,7 +37994,32 @@ class ECGStylePitchVisualizer(QWidget):
         self.is_recording_active = True
         # 重置暂停补偿
         self._accumulated_pause_dur = 0.0
+        self._time_offset_shift = 0.0
         self._viz_pause_started_at = None
+        # 新会话必须清空重录保留态，避免时间轴从历史 baseline 起跑
+        try:
+            self._retake_preserve_timeline = False
+            self._retake_preserved_recording_duration = None
+        except Exception:
+            pass
+        # 专业模式时间缓存重置，避免沿用上次会话造成初始偏移
+        try:
+            self._professional_last_base_t = 0.0
+            self._professional_prev_recording_state = False
+            self._professional_stop_time = None
+            self._professional_smoothed_xlim = None
+            self._professional_smooth_last_t = None
+            self._professional_last_x0 = None
+            self._professional_recording_start_wall = float(self.start_time)
+            lock_sec = float(getattr(self, '_professional_start_zero_lock_sec', 0.65))
+            self._professional_force_zero_window_until = float(self.start_time) + max(0.0, lock_sec)
+            self._professional_start_zero_lock_active = True
+            self._professional_last_gt = 0.0
+            self._professional_last_gt_wall = float(self.start_time)
+            self._professional_force_redraw = True
+            self._professional_force_rebuild = True
+        except Exception:
+            pass
         # 启动时间更新定时器
         if hasattr(self, 'time_update_timer'):
             self.time_update_timer.start(self.time_update_interval)
@@ -35764,14 +39158,21 @@ class ECGStylePitchVisualizer(QWidget):
             
             processor = main_window.audio_processor
             
-            # 获取当前配置信息
-            if hasattr(processor, '_selected_device_config') and processor._selected_device_config:
+            # 获取当前配置信息（优先当前活动监听配置，其次用户选中配置）
+            config = None
+            if hasattr(processor, '_active_monitoring_config') and processor._active_monitoring_config:
+                config = processor._active_monitoring_config
+            elif hasattr(processor, '_selected_device_config') and processor._selected_device_config:
                 config = processor._selected_device_config
-                theoretical_latency = config['blocksize'] / config['samplerate'] * 1000
+
+            if config:
+                samplerate = int(config.get('actual_samplerate') or config.get('samplerate') or 48000)
+                blocksize = int(config.get('actual_blocksize') or config.get('blocksize') or 256)
+                theoretical_latency = blocksize / samplerate * 1000
                 
                 print(f"📊 延迟测试结果:")
-                print(f"   当前设备: {config['name']}")
-                print(f"   配置: {config['samplerate']}Hz / {config['blocksize']}样本")
+                print(f"   当前设备: {config.get('name', 'Unknown')}")
+                print(f"   配置: {samplerate}Hz / {blocksize}样本")
                 print(f"   理论延迟: {theoretical_latency:.2f}ms")
                 
                 # 延迟等级评估
@@ -36066,6 +39467,10 @@ class IntegratedRecordingInterface(QMainWindow):
         self.audio_processor = IntegratedAudioProcessor()
         try:
             self.audio_processor.overlay_delegate = self
+        except Exception:
+            pass
+        try:
+            self.audio_processor._host_interface = self
         except Exception:
             pass
         self._sync_audio_processor_epoch()
@@ -44979,11 +48384,22 @@ class IntegratedRecordingInterface(QMainWindow):
                     ('_retake_manual_resume_required', False),
                     ('_retake_should_auto_resume', True),
                     ('_retake_countdown_pending_resume', False),
+                    ('_retake_preserve_timeline', False),
+                    ('_retake_preserved_recording_duration', None),
                 ):
                     try:
                         setattr(self, _attr, _val)
                     except Exception:
                         pass
+                try:
+                    if hasattr(self.visualizer, '_retake_preserve_timeline'):
+                        self.visualizer._retake_preserve_timeline = False
+                    if hasattr(self.visualizer, '_retake_preserved_recording_duration'):
+                        self.visualizer._retake_preserved_recording_duration = None
+                    if hasattr(self.visualizer, '_time_offset_shift'):
+                        self.visualizer._time_offset_shift = 0.0
+                except Exception:
+                    pass
                 
                 # 开始时间追踪（支持断续音调曲线）
                 self.visualizer.start_time_tracking()
@@ -46456,6 +49872,21 @@ class IntegratedRecordingInterface(QMainWindow):
                     t = float(getattr(viz, 'current_global_time', 0.0) or 0.0)
             except Exception:
                 t = None
+
+        # 1.5) 防御：若拿到的是绝对时间戳（epoch），转换为相对录音秒
+        try:
+            if t is not None and float(t) > 1e8:
+                st = None
+                try:
+                    st = float(getattr(viz, 'start_time', None)) if viz is not None else None
+                except Exception:
+                    st = None
+                if st is not None and st > 1e8:
+                    t = max(0.0, float(t) - st)
+                else:
+                    t = float(getattr(self, 'recording_duration', 0.0) or 0.0)
+        except Exception:
+            pass
 
         # 2) 回退：使用缓存录音时长
         if t is None:

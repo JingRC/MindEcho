@@ -37,6 +37,21 @@ if %errorlevel% neq 0 (
 )
 
 echo.
+echo 4. 检测并安装GPU加速依赖（可选）...
+nvidia-smi >nul 2>&1
+if %errorlevel% equ 0 (
+    echo 检测到NVIDIA显卡，尝试安装CuPy (CUDA 12.x兼容包)...
+    pip install cupy-cuda12x
+    if %errorlevel% neq 0 (
+        echo 警告: CuPy安装失败，程序将继续使用CPU模式
+    ) else (
+        echo GPU加速依赖安装成功
+    )
+) else (
+    echo 未检测到NVIDIA显卡，跳过CuPy安装
+)
+
+echo.
 echo ================================
 echo 安装完成！
 echo ================================
