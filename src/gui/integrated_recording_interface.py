@@ -8069,10 +8069,10 @@ class IntegratedAudioProcessor(QThread):
             if not hasattr(self, '_last_valid_pitch_time'):
                 self._last_valid_pitch_time = current_time
 
-            breath_rms_threshold = 0.0025  # 更宽松：提升弱声段的检测机会
+            breath_rms_threshold = float(getattr(self, '_breath_rms_threshold', 0.0025))  # 环境噪音档位可覆盖
             # 进一步放宽静音阈值，减少安静高音被直接判无音高
             # 蓝牙语音/HFP输入通常电平很低，进一步降低阈值
-            min_voice_rms = 0.00035 if _bt_voice else 0.0005
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', (0.00035 if _bt_voice else 0.0005)))
 
             # 若 RMS 极低，直接判定无音高（不更新平滑状态）
             if audio_rms < min_voice_rms:
@@ -8143,11 +8143,47 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     pass
 
+            # ========= 人声存在门控（迟滞 + 风扇嗡声抑制） ========= #
+            # 目标：在嘈杂环境中优先拦截非人声稳态噪音，避免出现细碎误点。
+            if raw_frequency > 0:
+                try:
+                    allow_voice = bool(self._vocal_presence_gate(
+                        np.asarray(processed_audio, dtype=np.float64),
+                        float(raw_frequency),
+                        float(audio_rms),
+                        float(min_voice_rms),
+                        preview_only=bool(preview_only),
+                    ))
+                except Exception:
+                    allow_voice = True
+
+                if not allow_voice:
+                    if not hasattr(self, '_no_pitch_emit_interval'):
+                        self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                        self._last_no_pitch_emit_t = 0.0
+                    if (current_time - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                        frame = PitchFrame(
+                            timestamp=current_time,
+                            f0_raw=0.0,
+                            f0_smooth=0.0,
+                            confidence=0.0,
+                            note_info=None,
+                            has_pitch=False,
+                            audio_rms=audio_rms,
+                            vibrato_info={'has_vibrato': False}
+                        )
+                        try:
+                            self._emit_pitch_data_throttled(frame.to_dict())
+                        except Exception:
+                            pass
+                        self._last_no_pitch_emit_t = current_time
+                    return
+
             # ========= 假高频 / 呼吸尖峰抑制 ========= #
             spurious_high = False
             if raw_frequency > 0:
                 # 条件1：超高频且能量低（典型呼吸尖峰）
-                low_energy_thr = 0.02 if _bt_voice else 0.015
+                low_energy_thr = float(getattr(self, ('_spurious_low_energy_thr_bt' if _bt_voice else '_spurious_low_energy_thr'), (0.02 if _bt_voice else 0.015)))
                 if raw_frequency > 1700 and audio_rms < low_energy_thr:
                     spurious_high = True
                 # 条件2：相对上一稳定频率跳变倍数过大且信号不强
@@ -8201,6 +8237,26 @@ class IntegratedAudioProcessor(QThread):
                         )
             except Exception:
                 true_candidates = []
+
+            # 普通模式主唱优先：在进入平滑前，基于多候选做一次轻量纠偏，减少伴唱低音抢占。
+            lead_bias_enabled = False
+            try:
+                host = getattr(self, '_host_interface', None)
+                viz = getattr(host, 'visualizer', None) if host is not None else None
+                if viz is not None and hasattr(viz, 'display_mode'):
+                    lead_bias_enabled = (viz.display_mode.currentText() == "普通模式")
+            except Exception:
+                lead_bias_enabled = False
+            if raw_frequency > 0 and true_candidates and lead_bias_enabled:
+                try:
+                    raw_frequency = float(self._select_lead_vocal_frequency(
+                        raw_frequency,
+                        true_candidates,
+                        audio_rms=float(audio_rms),
+                        preview_only=bool(preview_only),
+                    ) or raw_frequency)
+                except Exception:
+                    pass
 
             smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only) if raw_frequency > 0 else 0.0
 
@@ -9548,6 +9604,435 @@ class IntegratedAudioProcessor(QThread):
             return out
         except Exception:
             return []
+
+    def _select_lead_vocal_frequency(self, raw_frequency: float, true_candidates: List[Dict[str, float]], *, audio_rms: float, preview_only: bool = False) -> float:
+        """在普通模式实时链路中做主唱优先候选选择。
+
+        设计目标：
+        1) 保持与历史主线连续，避免噪声/伴唱低音突然夺取主线；
+        2) 在近讲高能量时，适度提高对更高频主旋律候选的敏感度；
+        3) 保持轻量，避免引入额外大计算开销。
+        """
+        try:
+            if raw_frequency <= 0 or not true_candidates:
+                return float(raw_frequency)
+
+            ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
+            last_stable = float(getattr(self, ls_name, 0.0) or 0.0)
+
+            rms_ref = float(getattr(self, '_lead_vocal_rms_ref', 0.018))
+            rms_ref = max(1e-6, rms_ref)
+            near_factor = float(np.clip(audio_rms / rms_ref, 0.0, 1.6))
+            # 近讲加成：0~1，靠近麦克风时提高对高音主旋律候选的偏好
+            near_boost = float(np.clip((near_factor - 0.55) / 0.75, 0.0, 1.0))
+
+            try:
+                max_up_semi = float(getattr(self, '_lead_vocal_max_up_semi', 13.0))
+            except Exception:
+                max_up_semi = 13.0
+            try:
+                max_down_semi = float(getattr(self, '_lead_vocal_max_down_semi', 10.0))
+            except Exception:
+                max_down_semi = 10.0
+
+            def _semi(a: float, b: float) -> float:
+                try:
+                    return abs(12.0 * np.log2(max(a, 1e-9) / max(b, 1e-9)))
+                except Exception:
+                    return 999.0
+
+            best_f = float(raw_frequency)
+            best_score = -1e9
+            base_conf = 0.55
+
+            for cand in true_candidates:
+                try:
+                    f = float(cand.get('frequency', 0.0) or 0.0)
+                    conf = float(cand.get('confidence', base_conf) or base_conf)
+                except Exception:
+                    continue
+                if f <= 0:
+                    continue
+
+                score = 1.45 * conf
+
+                # 与当前raw的一致性：偏离过大先减分
+                semi_raw = _semi(f, raw_frequency)
+                score += 0.40 * max(0.0, 1.0 - semi_raw / 9.0)
+
+                # 与历史稳定频率的连续性：允许八度近邻
+                if last_stable > 0:
+                    semi_hist = _semi(f, last_stable)
+                    semi_oct = _semi(f * 2.0, last_stable)
+                    cont = max(0.0, 1.0 - min(semi_hist, semi_oct) / 7.0)
+                    score += 0.95 * cont
+
+                # 主唱高音偏置：仅在近讲且候选高于raw时加分
+                if f > raw_frequency:
+                    rise = max(0.0, min(1.0, (f / max(raw_frequency, 1e-9) - 1.0) / 0.9))
+                    score += (0.80 * near_boost) * rise
+                else:
+                    # 低于raw过多且近讲时，抑制“伴唱低音抢主线”
+                    drop = max(0.0, min(1.0, 1.0 - f / max(raw_frequency, 1e-9)))
+                    score -= (0.55 * near_boost) * drop
+
+                # 跃迁守卫：防止单帧跳到离谱候选
+                if last_stable > 0:
+                    up_semi = 12.0 * np.log2(max(f, 1e-9) / max(last_stable, 1e-9))
+                    if up_semi > max_up_semi:
+                        score -= 1.2
+                    if up_semi < -max_down_semi:
+                        score -= 1.2
+
+                if score > best_score:
+                    best_score = score
+                    best_f = f
+
+            if best_f <= 0:
+                return float(raw_frequency)
+
+            # 与raw做轻融合，降低误选抖动
+            best_conf = 0.6
+            try:
+                for cand in true_candidates:
+                    f = float(cand.get('frequency', 0.0) or 0.0)
+                    if abs(f - best_f) <= 1e-6:
+                        best_conf = float(cand.get('confidence', 0.6) or 0.6)
+                        break
+            except Exception:
+                pass
+
+            mix = 0.18 + 0.30 * float(np.clip(best_conf, 0.0, 1.0)) + 0.22 * near_boost
+            mix = float(np.clip(mix, 0.12, 0.62))
+            fused = (1.0 - mix) * float(raw_frequency) + mix * float(best_f)
+            return float(max(50.0, min(2500.0, fused)))
+        except Exception:
+            return float(raw_frequency)
+
+    def _extract_voice_gate_features(self, audio_data: np.ndarray, raw_frequency: float) -> Dict[str, float]:
+        """提取轻量人声门控特征（低开销）。"""
+        try:
+            x = np.asarray(audio_data, dtype=np.float32)
+            if x.size < 8:
+                return {
+                    'band_ratio': 0.0,
+                    'centroid': 0.0,
+                    'flatness': 1.0,
+                    'harmonic_ratio': 0.0,
+                    'low_band_ratio': 0.0,
+                    'peakiness': 0.0,
+                }
+
+            # 使用更紧凑窗长降低实时开销，减少嘈杂环境下门控造成的卡顿感
+            n = int(min(768, x.size))
+            if n < 96:
+                n = int(x.size)
+            if n <= 0:
+                n = int(x.size)
+            xx = x[-n:]
+            if xx.size <= 1:
+                return {
+                    'band_ratio': 0.0,
+                    'centroid': 0.0,
+                    'flatness': 1.0,
+                    'harmonic_ratio': 0.0,
+                    'low_band_ratio': 0.0,
+                    'peakiness': 0.0,
+                }
+
+            try:
+                sr = float(getattr(self, 'sample_rate', 48000) or 48000)
+            except Exception:
+                sr = 48000.0
+            if sr <= 0:
+                sr = 48000.0
+
+            win = np.hanning(xx.size).astype(np.float32)
+            sp = np.abs(np.fft.rfft(xx * win))
+            freqs = np.fft.rfftfreq(xx.size, 1.0 / sr)
+            p = sp * sp
+            total = float(np.sum(p) + 1e-12)
+
+            # 人声音色有效频带（约 120Hz~3.4kHz）
+            band_mask = (freqs >= 120.0) & (freqs <= 3400.0)
+            band_ratio = float(np.sum(p[band_mask]) / total) if np.any(band_mask) else 0.0
+
+            # 低频噪声占比（风扇/机箱嗡声常见区间）
+            low_mask = (freqs >= 45.0) & (freqs <= 260.0)
+            low_band_ratio = float(np.sum(p[low_mask]) / total) if np.any(low_mask) else 0.0
+
+            centroid = float(np.sum(freqs * p) / total)
+
+            # 谱平坦度：噪声趋近1，人声通常更低
+            gm = float(np.exp(np.mean(np.log(sp + 1e-9))))
+            am = float(np.mean(sp + 1e-9))
+            flatness = float(max(0.0, min(1.0, gm / max(am, 1e-9))))
+
+            # 窄带峰值强度：机械稳态噪声通常更“尖”
+            peakiness = float(np.max(sp) / max(np.mean(sp), 1e-9))
+
+            # 简易谐波比：f0 附近与 2f0/3f0 峰值占比
+            harmonic_ratio = 0.0
+            f0 = float(raw_frequency or 0.0)
+            if f0 > 60.0:
+                bw = max(10.0, f0 * 0.06)
+
+                def _peak_near(fc: float) -> float:
+                    m = (freqs >= (fc - bw)) & (freqs <= (fc + bw))
+                    if not np.any(m):
+                        return 0.0
+                    return float(np.max(p[m]))
+
+                e1 = _peak_near(f0)
+                e2 = _peak_near(f0 * 2.0)
+                e3 = _peak_near(f0 * 3.0)
+                harmonic_ratio = float((e1 + 0.65 * e2 + 0.40 * e3) / total)
+
+            return {
+                'band_ratio': float(max(0.0, min(1.0, band_ratio))),
+                'centroid': float(max(0.0, centroid)),
+                'flatness': float(max(0.0, min(1.0, flatness))),
+                'harmonic_ratio': float(max(0.0, harmonic_ratio)),
+                'low_band_ratio': float(max(0.0, min(1.0, low_band_ratio))),
+                'peakiness': float(max(0.0, peakiness)),
+            }
+        except Exception:
+            return {
+                'band_ratio': 0.0,
+                'centroid': 0.0,
+                'flatness': 1.0,
+                'harmonic_ratio': 0.0,
+                'low_band_ratio': 0.0,
+                'peakiness': 0.0,
+            }
+
+    def _vocal_presence_gate(self, audio_data: np.ndarray, raw_frequency: float, audio_rms: float, min_voice_rms: float, *, preview_only: bool = False) -> bool:
+        """人声存在门控：多特征评分 + 迟滞 + 机械嗡声抑制。"""
+        prefix = '_mon_' if preview_only else ''
+        active_n = prefix + 'vocal_gate_active'
+        open_n = prefix + 'vocal_gate_open_streak'
+        close_n = prefix + 'vocal_gate_close_streak'
+        hum_n = prefix + 'hum_streak'
+        last_f0_n = prefix + 'vocal_gate_last_raw_f0'
+        feat_cache_n = prefix + 'vocal_gate_feat_cache'
+        frame_idx_n = prefix + 'vocal_gate_frame_idx'
+
+        if not hasattr(self, active_n):
+            setattr(self, active_n, False)
+        if not hasattr(self, open_n):
+            setattr(self, open_n, 0)
+        if not hasattr(self, close_n):
+            setattr(self, close_n, 0)
+        if not hasattr(self, hum_n):
+            setattr(self, hum_n, 0)
+        if not hasattr(self, last_f0_n):
+            setattr(self, last_f0_n, 0.0)
+        if not hasattr(self, feat_cache_n):
+            setattr(self, feat_cache_n, None)
+        if not hasattr(self, frame_idx_n):
+            setattr(self, frame_idx_n, 0)
+
+        profile = str(getattr(self, '_environment_noise_profile', 'normal') or 'normal').lower()
+        if profile not in ('quiet', 'normal', 'noisy'):
+            profile = 'normal'
+
+        cfg = {
+            'quiet': {
+                'open_need': 2,
+                'close_need': 2,
+                'open_thr': 0.50,
+                'close_thr': 0.34,
+                'min_rms_mul': 1.02,
+                'min_band_ratio': 0.33,
+                'min_centroid': 700.0,
+                'max_flatness': 0.66,
+            },
+            'normal': {
+                'open_need': 3,
+                'close_need': 2,
+                'open_thr': 0.57,
+                'close_thr': 0.40,
+                'min_rms_mul': 1.12,
+                'min_band_ratio': 0.38,
+                'min_centroid': 820.0,
+                'max_flatness': 0.63,
+            },
+            'noisy': {
+                'open_need': 4,
+                'close_need': 2,
+                'open_thr': 0.64,
+                'close_thr': 0.46,
+                'min_rms_mul': 1.28,
+                'min_band_ratio': 0.44,
+                'min_centroid': 920.0,
+                'max_flatness': 0.60,
+            },
+        }[profile]
+
+        adaptive_mul = float(getattr(self, '_gate_adaptive_rms_mul', 1.0) or 1.0)
+        adaptive_open_add = float(getattr(self, '_gate_adaptive_open_add', 0.0) or 0.0)
+        adaptive_close_add = float(getattr(self, '_gate_adaptive_close_add', 0.0) or 0.0)
+        adaptive_open_need_add = int(getattr(self, '_gate_adaptive_open_need_add', 0) or 0)
+        env_rms_base = float(getattr(self, '_env_noise_rms_baseline', 0.0) or 0.0)
+        env_low_ratio = float(getattr(self, '_env_noise_low_ratio', 0.0) or 0.0)
+        env_peakiness = float(getattr(self, '_env_noise_peakiness', 0.0) or 0.0)
+        env_noise_score = float(getattr(self, '_env_noise_score', 0.0) or 0.0)
+
+        active = bool(getattr(self, active_n, False))
+        # 明显工频嗡声快速预阻断（无需FFT），减少嘈杂场景门控开销
+        if (not active) and env_rms_base > 0 and env_noise_score >= 0.55:
+            if (55.0 <= raw_frequency <= 180.0) and (audio_rms <= env_rms_base * 1.16):
+                hum_streak_quick = int(getattr(self, hum_n, 0) or 0)
+                hum_streak_quick = min(48, hum_streak_quick + 1)
+                setattr(self, hum_n, hum_streak_quick)
+                setattr(self, open_n, 0)
+                return False
+
+        # 特征缓存：噪声环境下复用部分帧特征以降低FFT频率，小声段则每帧计算保响应
+        frame_idx = int(getattr(self, frame_idx_n, 0) or 0) + 1
+        setattr(self, frame_idx_n, frame_idx)
+        if profile == 'noisy':
+            stride = 3
+        elif profile == 'normal':
+            stride = 2
+        else:
+            stride = 1
+        if audio_rms <= (min_voice_rms * 1.35):
+            stride = 1
+        elif active:
+            stride = min(stride, 2)
+
+        cached_feats = getattr(self, feat_cache_n, None)
+        use_cache = isinstance(cached_feats, dict) and (stride > 1) and ((frame_idx % stride) != 0)
+        if use_cache:
+            feats = cached_feats
+        else:
+            feats = self._extract_voice_gate_features(audio_data, raw_frequency)
+            setattr(self, feat_cache_n, feats)
+
+        band_ratio = float(feats.get('band_ratio', 0.0))
+        centroid = float(feats.get('centroid', 0.0))
+        flatness = float(feats.get('flatness', 1.0))
+        harmonic_ratio = float(feats.get('harmonic_ratio', 0.0))
+        low_band_ratio = float(feats.get('low_band_ratio', 0.0))
+        peakiness = float(feats.get('peakiness', 0.0))
+
+        last_raw = float(getattr(self, last_f0_n, 0.0) or 0.0)
+        setattr(self, last_f0_n, float(raw_frequency or 0.0))
+        if raw_frequency > 0 and last_raw > 0:
+            try:
+                delta_semi = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
+            except Exception:
+                delta_semi = 999.0
+        else:
+            delta_semi = 999.0
+
+        # 机械嗡声判据：低频稳态 + 频带过窄 + 频率变化极小
+        hum_like = (
+            (70.0 <= raw_frequency <= 320.0)
+            and (delta_semi <= 0.22)
+            and (band_ratio < (cfg['min_band_ratio'] + 0.05))
+            and (centroid < 760.0)
+            and (harmonic_ratio < 0.20)
+            and (audio_rms < max(0.035, min_voice_rms * 70.0))
+        )
+        hum_streak = int(getattr(self, hum_n, 0) or 0)
+        if hum_like:
+            hum_streak = min(48, hum_streak + 1)
+        else:
+            hum_streak = max(0, hum_streak - 1)
+        setattr(self, hum_n, hum_streak)
+        hum_block = hum_streak >= (6 if profile != 'quiet' else 8)
+        if profile == 'noisy' and hum_streak >= 5:
+            hum_block = True
+
+        # 评估后硬抑制：底噪邻域内的低频窄带稳态，直接判为非人声
+        hard_noise_block = False
+        if env_rms_base > 0:
+            try:
+                rms_ceiling = env_rms_base * (1.35 if profile == 'noisy' else 1.25)
+                low_thr = max(0.50, env_low_ratio * 0.92)
+                peak_thr = max(10.0, env_peakiness * 0.86)
+                hard_noise_block = (
+                    (audio_rms <= rms_ceiling)
+                    and (55.0 <= raw_frequency <= 430.0)
+                    and (low_band_ratio >= low_thr)
+                    and (peakiness >= peak_thr)
+                    and (centroid < 1100.0)
+                    and (harmonic_ratio < 0.24)
+                )
+            except Exception:
+                hard_noise_block = False
+
+        voice_score = 0.0
+        if audio_rms >= (min_voice_rms * cfg['min_rms_mul'] * adaptive_mul):
+            voice_score += 0.22
+        if 85.0 <= raw_frequency <= 1250.0:
+            voice_score += 0.12
+        if band_ratio >= cfg['min_band_ratio']:
+            voice_score += 0.26
+        if centroid >= cfg['min_centroid']:
+            voice_score += 0.15
+        if harmonic_ratio >= 0.17:
+            voice_score += 0.18
+        if flatness <= cfg['max_flatness']:
+            voice_score += 0.10
+
+        # 小声人声补偿：存在谐波+语音频带占比时，降低被噪声门槛误杀概率
+        soft_voice_hint = (
+            (audio_rms >= min_voice_rms * 0.72)
+            and (120.0 <= raw_frequency <= 1350.0)
+            and (harmonic_ratio >= 0.19)
+            and (band_ratio >= max(0.20, cfg['min_band_ratio'] - 0.10))
+            and (flatness <= min(0.86, cfg['max_flatness'] + 0.16))
+            and (delta_semi >= 0.18)
+        )
+        if soft_voice_hint:
+            voice_score += 0.24
+
+        if hum_block:
+            voice_score -= 0.38
+        if flatness > 0.80:
+            voice_score -= 0.20
+        if low_band_ratio > 0.58 and peakiness > 10.5:
+            voice_score -= 0.24
+        if hard_noise_block and (not soft_voice_hint):
+            voice_score -= 0.42
+
+        # 上/下阈值迟滞
+        open_need = int(cfg['open_need'] + adaptive_open_need_add)
+        close_need = int(cfg['close_need'])
+        open_thr = float(cfg['open_thr'] + adaptive_open_add)
+        close_thr = float(cfg['close_thr'] + adaptive_close_add)
+        if soft_voice_hint:
+            open_need = max(1, open_need - 1)
+            open_thr -= 0.055
+            close_thr -= 0.040
+
+        candidate_open = (raw_frequency > 0) and (voice_score >= open_thr)
+        candidate_keep = (raw_frequency > 0) and (voice_score >= close_thr)
+
+        if active:
+            if candidate_keep and (not hum_block) and ((not hard_noise_block) or soft_voice_hint):
+                setattr(self, close_n, 0)
+            else:
+                c = int(getattr(self, close_n, 0) or 0) + 1
+                setattr(self, close_n, c)
+                if c >= close_need:
+                    active = False
+                    setattr(self, open_n, 0)
+        else:
+            if candidate_open and (not hum_block) and ((not hard_noise_block) or soft_voice_hint):
+                o = int(getattr(self, open_n, 0) or 0) + 1
+                setattr(self, open_n, o)
+                if o >= open_need:
+                    active = True
+                    setattr(self, close_n, 0)
+            else:
+                setattr(self, open_n, 0)
+
+        setattr(self, active_n, bool(active))
+        return bool(active)
 
     # ========= 监听耳返专用：呼吸期轻微电流/滋啦抑制（零感知延迟） ========= #
     def _apply_breath_noise_suppress(self, audio_data: np.ndarray, key: str = 'default') -> np.ndarray:
@@ -11605,6 +12090,14 @@ class ECGStylePitchVisualizer(QWidget):
         ]
         self._professional_heat_lowfreq_interval = 0.18
         self._professional_heat_fade_alpha = 0.15
+        self._professional_heat_alpha_recording = 0.28
+        self._professional_heat_alpha_idle = 0.85
+        self._professional_heat_lock_recording_style = True
+        self._professional_heat_recording_dot_mode = True
+        self._professional_recording_clim_interval = 0.45
+        self._professional_recording_clim_smooth = 0.18
+        self._professional_recording_clim_only_rise = True
+        self._professional_skip_colorbar_update_while_recording = True
         self._professional_base_only_recording = True
         self._professional_mainline_interval_recording = 0.085
         self._professional_mainline_interval_fast = 0.12
@@ -11613,6 +12106,25 @@ class ECGStylePitchVisualizer(QWidget):
         self._professional_hover_bound = False
         self._professional_pending_recent_keep = 3200
         self._professional_realtime_drop_lag_s = 0.35
+        self._professional_realtime_draw_tail_sec = 2.6
+        self._professional_pending_draw_cap_recording = 1400
+        self._professional_realtime_true_budget = 760
+        self._professional_realtime_harm_budget = 260
+        self._professional_rt_frame_budget_ms = 14.0
+        self._professional_rt_max_real_lag_s = 0.12
+        self._professional_rt_degrade_harm_lag_s = 0.14
+        self._professional_rt_degrade_heat_lag_s = 0.20
+        self._professional_rt_monitor_interval_s = 0.5
+        self._professional_rt_last_report_t = 0.0
+        self._professional_rt_last_frame_ms = 0.0
+        self._professional_rt_last_queue_lag_s = 0.0
+        self._professional_rt_last_pending = 0
+        self._professional_rt_degrade_harm = False
+        self._professional_rt_degrade_heat = False
+        self._professional_full_history_guard_sec = 12.0
+        self._professional_raw_history_hard_cap = 180000
+        self._professional_base_history_hard_cap = 180000
+        self._professional_harmonic_history_hard_cap = 320000
         self._professional_realtime_history_sec = 42.0
         self._professional_base_series_cap = 8000
         self._professional_harmonic_draw_stride_heavy = 2
@@ -11649,6 +12161,20 @@ class ECGStylePitchVisualizer(QWidget):
         self._professional_base_realtime_render_sec = 3.8
         self._professional_base_realtime_render_sec_heavy = 2.2
         self._professional_base_realtime_future_margin_s = 0.14
+        self._professional_base_realtime_keep_visible_ratio_scroll = 0.55
+        self._professional_base_points_lock_recording_style = True
+        self._professional_base_points_recording_alpha = 0.92
+        self._professional_base_points_hold_sec = 0.70
+        self._professional_base_points_keepalive_recording_sec = 6.0
+        self._professional_base_point_recording_scale = 0.82
+        self._professional_base_realtime_keep_visible_ratio = 0.92
+        self._professional_base_points_last_offsets = None
+        self._professional_base_points_last_update_t = 0.0
+        self._professional_base_jump_break_semi = 8.75
+        self._professional_base_jump_break_dt = 0.12
+        self._professional_base_max_step_semitones = 7.0
+        self._professional_base_smooth_beta = 0.42
+        self._professional_base_recording_smooth_beta = 0.36
         self._professional_base_recent_scan_cap = 5200
         self._professional_base_recent_scan_cap_heavy = 2200
         self._professional_last_base_t = 0.0
@@ -11665,6 +12191,10 @@ class ECGStylePitchVisualizer(QWidget):
         self._professional_jump_backward_tol = 0.08
         self._professional_last_gt = 0.0
         self._professional_last_gt_wall = 0.0
+        self._professional_axis_style_interval_recording = 0.35
+        self._professional_axis_last_style_t = 0.0
+        self._professional_vgrid_interval_recording = 0.80
+        self._professional_vgrid_last_t = 0.0
         self._timebin_eps = 0.01
         self._added_time_bins = set()
 
@@ -17469,8 +17999,105 @@ class ECGStylePitchVisualizer(QWidget):
         self.update_timer.timeout.connect(self.update_display)
         self.update_timer.start(self.update_interval)
         print(f"🖥️ 可视化刷新定时器启动: {self.update_interval}ms")
+
+    def _start_time_tracking_unified(self):
+        """统一时间追踪入口：兼容多路径调用，避免重复定义行为漂移。"""
+        self.start_time = time.time()
+        self.current_global_time = 0.0
+        self.is_recording_active = True
+        self.last_pitch_time = 0
+        try:
+            self._accumulated_pause_dur = 0.0
+            self._time_offset_shift = 0.0
+            self._viz_pause_started_at = None
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_cov_reset'):
+                self._cov_reset()
+            if hasattr(self, '_added_time_bins'):
+                self._added_time_bins.clear()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_reset_display_diagnostics'):
+                self._reset_display_diagnostics()
+        except Exception:
+            pass
+        try:
+            self._professional_last_base_t = 0.0
+            self._professional_prev_recording_state = False
+            self._professional_stop_time = None
+            self._professional_smoothed_xlim = None
+            self._professional_smooth_last_t = None
+            self._professional_last_x0 = None
+            self._professional_recording_start_wall = float(self.start_time)
+            lock_sec = float(getattr(self, '_professional_start_zero_lock_sec', 0.65))
+            self._professional_force_zero_window_until = float(self.start_time) + max(0.0, lock_sec)
+            self._professional_start_zero_lock_active = True
+            self._professional_last_gt = 0.0
+            self._professional_last_gt_wall = float(self.start_time)
+            self._professional_force_redraw = True
+            self._professional_force_rebuild = True
+            self._professional_base_points_last_offsets = None
+            self._professional_base_points_last_update_t = 0.0
+            self._professional_rt_last_frame_ms = 0.0
+            self._professional_rt_last_queue_lag_s = 0.0
+            self._professional_rt_last_pending = 0
+            self._professional_rt_degrade_harm = False
+            self._professional_rt_degrade_heat = False
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'time_update_timer'):
+                self.time_update_timer.start(self.time_update_interval)
+        except Exception:
+            pass
+        try:
+            self.time_offset = 0.0
+            self._smoothed_xlim = None
+            self._smooth_last_t = None
+            self._smoothed_vx = None
+            self._auto_scroll_started = False
+            self._last_manual_scroll_time = 0.0
+        except Exception:
+            pass
+
+    def _stop_time_tracking_unified(self):
+        """统一停止入口：冻结时间并切换到完整历史回看。"""
+        self.is_recording_active = False
+        try:
+            if hasattr(self, 'time_update_timer'):
+                self.time_update_timer.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_reset_display_diagnostics'):
+                self._reset_display_diagnostics()
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_professional_stop_time', None) is None:
+                if getattr(self, 'time_data', None):
+                    self._professional_stop_time = float(self.time_data[-1])
+                else:
+                    self._professional_stop_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+            self._professional_base_points_last_offsets = None
+            self._professional_base_points_last_update_t = 0.0
+            self._professional_main_recent = []
+            self._professional_prev_recording_state = False
+            self._professional_rt_degrade_harm = False
+            self._professional_rt_degrade_heat = False
+        except Exception:
+            pass
+        try:
+            self._smoothed_xlim = None
+            if hasattr(self, '_last_render_window'):
+                delattr(self, '_last_render_window')
+        except Exception:
+            pass
     
-    def start_time_tracking(self):
+    def _start_time_tracking_legacy_v1(self):
         """开始时间追踪（录音开始时调用）"""
         if self.start_time is None:
             self.start_time = time.time()
@@ -17489,12 +18116,14 @@ class ECGStylePitchVisualizer(QWidget):
             self._reset_display_diagnostics()
         try:
             self._professional_stop_time = None
+            self._professional_base_points_last_offsets = None
+            self._professional_base_points_last_update_t = 0.0
         except Exception:
             pass
         self.time_update_timer.start(self.time_update_interval)
         print(f"⏰ 开始时间追踪，基准时间: {self.start_time}")
     
-    def stop_time_tracking(self):
+    def _stop_time_tracking_legacy_v1(self):
         """停止时间追踪（录音停止时调用）"""
         self.is_recording_active = False
         self.time_update_timer.stop()
@@ -17508,6 +18137,11 @@ class ECGStylePitchVisualizer(QWidget):
                     self._professional_stop_time = float(self.time_data[-1])
                 else:
                     self._professional_stop_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+            self._professional_base_points_last_offsets = None
+            self._professional_base_points_last_update_t = 0.0
+            # 停止后切换到完整历史回看路径：清空实时短缓存优先级，避免只显示最近N秒
+            self._professional_main_recent = []
+            self._professional_prev_recording_state = False
         except Exception:
             pass
         # 清除平滑与渲染窗口缓存，防止停止后被历史窗口/平滑拖拽回录音末端
@@ -19391,16 +20025,28 @@ class ECGStylePitchVisualizer(QWidget):
                     keep_pd = float(getattr(self, '_professional_pending_realtime_keep_sec', 10.0))
                 except Exception:
                     keep_pd = 10.0
+                # 录制中保护可回看历史：谐波历史至少保留 max_history_time + guard_sec
+                try:
+                    guard_sec = float(getattr(self, '_professional_full_history_guard_sec', 12.0))
+                except Exception:
+                    guard_sec = 12.0
+                try:
+                    keep_hh = max(keep_hh, float(getattr(self, 'max_history_time', 300.0) or 300.0) + max(0.0, guard_sec))
+                except Exception:
+                    pass
                 cutoff_hh = float(ts) - max(8.0, keep_hh)
                 cutoff_mr = float(ts) - max(6.0, keep_mr)
                 cutoff_pd = float(ts) - max(4.0, keep_pd)
                 try:
                     if isinstance(self.harmonic_history, list):
-                        if len(self.harmonic_history) > 1200:
-                            self.harmonic_history = [it for it in self.harmonic_history if float(it[0]) >= cutoff_hh]
+                        hard_cap_hh = int(getattr(self, '_professional_harmonic_history_hard_cap', 320000) or 320000)
+                        if hard_cap_hh > 0 and len(self.harmonic_history) > hard_cap_hh:
+                            self.harmonic_history = self.harmonic_history[-hard_cap_hh:]
                     else:
-                        while self.harmonic_history and float(self.harmonic_history[0][0]) < cutoff_hh:
-                            self.harmonic_history.popleft()
+                        hard_cap_hh = int(getattr(self, '_professional_harmonic_history_hard_cap', 320000) or 320000)
+                        if hard_cap_hh > 0:
+                            while len(self.harmonic_history) > hard_cap_hh:
+                                self.harmonic_history.popleft()
                 except Exception:
                     pass
                 try:
@@ -19868,6 +20514,10 @@ class ECGStylePitchVisualizer(QWidget):
     def _build_professional_base_series(self, x0: float, x1: float) -> Tuple[List[float], List[float]]:
         """构建专业模式基音主线：沿用普通模式时间/音高序列，断开换气空隙。"""
         try:
+            recording = bool(getattr(self, 'is_recording_active', False))
+        except Exception:
+            recording = False
+        try:
             gap_thr = float(getattr(self, '_professional_main_gap_s', 0.18))
         except Exception:
             gap_thr = 0.18
@@ -19880,9 +20530,117 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             same_t_eps = 0.006
         try:
-            recording = bool(getattr(self, 'is_recording_active', False))
+            breath_gap = float(getattr(self, '_breath_gap_threshold', 0.14))
         except Exception:
-            recording = False
+            breath_gap = 0.14
+        breath_gap = max(0.0, breath_gap)
+        try:
+            bridge_scale = float(getattr(self, '_bridge_time_scale', 1.15))
+        except Exception:
+            bridge_scale = 1.15
+        try:
+            bridge_semi_thr = float(getattr(self, '_bridge_semi_thr', 3.2))
+        except Exception:
+            bridge_semi_thr = 3.2
+        try:
+            jump_semi_thr = float(getattr(self, '_professional_base_jump_break_semi', 8.75))
+        except Exception:
+            jump_semi_thr = 8.75
+        try:
+            jump_dt = float(getattr(self, '_professional_base_jump_break_dt', 0.12))
+        except Exception:
+            jump_dt = 0.12
+        jump_semi_thr = max(0.0, jump_semi_thr)
+        jump_dt = max(0.0, jump_dt)
+        try:
+            max_step_semi = float(getattr(self, '_professional_base_max_step_semitones', 7.0))
+        except Exception:
+            max_step_semi = 7.0
+        max_step_semi = max(0.5, max_step_semi)
+        try:
+            smooth_beta = float(getattr(self, '_professional_base_recording_smooth_beta', 0.36 if recording else 0.42))
+        except Exception:
+            smooth_beta = 0.36 if recording else 0.42
+        if not recording:
+            try:
+                smooth_beta = float(getattr(self, '_professional_base_smooth_beta', smooth_beta))
+            except Exception:
+                pass
+        smooth_beta = max(0.10, min(0.90, smooth_beta))
+
+        def _postprocess_base_series(xs: List[float], ys: List[float]) -> Tuple[List[float], List[float]]:
+            if (not xs) or (not ys):
+                return xs, ys
+            out_t: List[float] = []
+            out_f: List[float] = []
+            last_t = None
+            last_f_raw = None
+            last_f_smooth = None
+            for t_raw, f_raw in zip(xs, ys):
+                try:
+                    t = float(t_raw)
+                    f = float(f_raw)
+                except Exception:
+                    continue
+                if not math.isfinite(t) or not math.isfinite(f) or f <= 0.0:
+                    if out_t and out_t[-1] == out_t[-1]:
+                        out_t.append(float('nan'))
+                        out_f.append(float('nan'))
+                    last_t = None
+                    last_f_raw = None
+                    last_f_smooth = None
+                    continue
+                if last_t is None or last_f_raw is None:
+                    out_t.append(t)
+                    out_f.append(f)
+                    last_t = t
+                    last_f_raw = f
+                    last_f_smooth = f
+                    continue
+                dt = max(0.0, t - last_t)
+                try:
+                    semi_jump_raw = abs(12.0 * math.log2(max(1e-9, f / max(last_f_raw, 1e-9))))
+                except Exception:
+                    semi_jump_raw = 0.0
+                # 借鉴普通模式：换气/空白时长断开，短时超大跳变断开
+                force_break = False
+                if dt > breath_gap:
+                    if not (dt <= breath_gap * bridge_scale and semi_jump_raw <= bridge_semi_thr):
+                        force_break = True
+                elif jump_semi_thr > 0.0 and dt <= jump_dt and semi_jump_raw >= jump_semi_thr:
+                    force_break = True
+                if force_break and out_t and out_t[-1] == out_t[-1]:
+                    out_t.append(float('nan'))
+                    out_f.append(float('nan'))
+                    last_t = None
+                    last_f_raw = None
+                    last_f_smooth = None
+                    out_t.append(t)
+                    out_f.append(f)
+                    last_t = t
+                    last_f_raw = f
+                    last_f_smooth = f
+                    continue
+                # 借鉴普通模式：录制时限制单帧跨幅，避免邻近两点突然跨度过大
+                f_adj = f
+                if dt <= max(0.02, jump_dt) and max_step_semi > 0.0 and last_f_smooth is not None:
+                    try:
+                        semi_from_smooth = 12.0 * math.log2(max(1e-9, f / max(last_f_smooth, 1e-9)))
+                    except Exception:
+                        semi_from_smooth = 0.0
+                    if abs(semi_from_smooth) > max_step_semi:
+                        semi_from_smooth = math.copysign(max_step_semi, semi_from_smooth)
+                        f_adj = last_f_smooth * (2.0 ** (semi_from_smooth / 12.0))
+                if last_f_smooth is None:
+                    f_smooth = f_adj
+                else:
+                    f_smooth = last_f_smooth + smooth_beta * (f_adj - last_f_smooth)
+                out_t.append(t)
+                out_f.append(f_smooth)
+                last_t = t
+                last_f_raw = f
+                last_f_smooth = f_smooth
+            return out_t, out_f
         try:
             fast_mode_live = bool(getattr(self, '_professional_fast_mode', False))
         except Exception:
@@ -19959,7 +20717,7 @@ class ECGStylePitchVisualizer(QWidget):
                 ys.append(p)
                 last_t = t
             if xs and ys:
-                return xs, ys
+                return _postprocess_base_series(xs, ys)
 
         # 专业模式优先：使用真实Hz数据源，避免误用普通模式的y映射值(0~8)导致白点不可见
         prof_points: List[Tuple[float, float]] = []
@@ -20040,7 +20798,7 @@ class ECGStylePitchVisualizer(QWidget):
                 xs.append(float(t))
                 ys.append(float(p))
                 last_t = t
-            return xs, ys
+            return _postprocess_base_series(xs, ys)
 
         use_flat = False
         flat = []
@@ -20101,7 +20859,7 @@ class ECGStylePitchVisualizer(QWidget):
                 xs.append(t)
                 ys.append(p)
                 last_t = t
-        return xs, ys
+        return _postprocess_base_series(xs, ys)
 
     def _build_professional_base_predict_points(
         self,
@@ -20363,6 +21121,8 @@ class ECGStylePitchVisualizer(QWidget):
         """刷新专业模式显示（多频段点云）"""
         if getattr(self, 'professional_ax', None) is None or getattr(self, 'professional_canvas', None) is None:
             return
+        rt_t0 = time.perf_counter()
+        rt_queue_lag_s = 0.0
         # 录音态兜底：若时间轴定时器未驱动，尝试以墙钟同步 current_global_time
         try:
             recording = bool(getattr(self, 'is_recording_active', False))
@@ -20541,6 +21301,8 @@ class ECGStylePitchVisualizer(QWidget):
             heat_interval = float(getattr(self, '_professional_heat_min_interval', 0.065))
             if recording:
                 heat_interval = max(heat_interval, float(getattr(self, '_professional_heat_lowfreq_interval', 0.12)))
+                if bool(getattr(self, '_professional_rt_degrade_heat', False)):
+                    heat_interval = max(heat_interval, 0.22)
             if recording and (fast_active or _pl > 1400):
                 heat_interval = max(heat_interval, 0.20)
             try:
@@ -20592,12 +21354,70 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pending_len = 0
         try:
+            self._professional_rt_last_pending = int(pending_len)
+        except Exception:
+            pass
+        try:
             cur_gt = float(getattr(self, 'current_global_time', 0.0) or 0.0)
             last_pitch = float(getattr(self, 'last_pitch_time', 0.0) or 0.0)
             silent_thr = float(getattr(self, '_professional_silence_threshold', 0.16))
             silent_mode = bool(recording and ((cur_gt - last_pitch) > silent_thr))
         except Exception:
             silent_mode = False
+            cur_gt = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+        try:
+            center_t_rt = float(getattr(self, 'center_display_time', 8.0) or 8.0)
+        except Exception:
+            center_t_rt = 8.0
+        scroll_phase = bool(recording and auto_follow and (cur_gt > center_t_rt))
+        try:
+            self._professional_rt_scroll_phase = scroll_phase
+        except Exception:
+            pass
+        try:
+            latest_true_t = 0.0
+            bh = getattr(self, '_professional_base_history', None)
+            if bh:
+                latest_true_t = max(latest_true_t, float(bh[-1][0]))
+        except Exception:
+            latest_true_t = 0.0
+        try:
+            mr = getattr(self, '_professional_main_recent', None)
+            if mr:
+                latest_true_t = max(latest_true_t, float(mr[-1][0]))
+        except Exception:
+            pass
+        try:
+            latest_true_t = max(latest_true_t, float(getattr(self, '_professional_last_base_t', 0.0) or 0.0))
+        except Exception:
+            pass
+        if recording and latest_true_t > 0.0:
+            rt_queue_lag_s = max(0.0, float(cur_gt) - float(latest_true_t))
+        try:
+            self._professional_rt_last_queue_lag_s = float(rt_queue_lag_s)
+        except Exception:
+            pass
+        try:
+            lag_harm = float(getattr(self, '_professional_rt_degrade_harm_lag_s', 0.14))
+        except Exception:
+            lag_harm = 0.14
+        try:
+            lag_heat = float(getattr(self, '_professional_rt_degrade_heat_lag_s', 0.20))
+        except Exception:
+            lag_heat = 0.20
+        try:
+            self._professional_rt_degrade_harm = bool(recording and ((rt_queue_lag_s > lag_harm) or (pending_len > 1800)))
+            self._professional_rt_degrade_heat = bool(recording and ((rt_queue_lag_s > lag_heat) or (pending_len > 2400)))
+        except Exception:
+            pass
+        try:
+            if scroll_phase and recording:
+                if rt_queue_lag_s > 0.08 or pending_len > 1400:
+                    self._professional_rt_degrade_harm = True
+                if rt_queue_lag_s > 0.12 or pending_len > 1900:
+                    self._professional_rt_degrade_heat = True
+        except Exception:
+            pass
         # 录音态防跳变：抑制跨路径写入导致的 current_global_time 突然跳前/跳后
         try:
             if recording and bool(getattr(self, '_professional_jump_guard_enabled', True)):
@@ -20922,6 +21742,8 @@ class ECGStylePitchVisualizer(QWidget):
                     defer_harmonics = bool(getattr(self, '_professional_defer_harmonics_until_stop', True))
                 except Exception:
                     defer_harmonics = True
+                if bool(getattr(self, '_professional_rt_degrade_harm', False)):
+                    defer_harmonics = True
                 for item in list(getattr(self, 'harmonic_history', [])):
                     try:
                         if isinstance(item, (list, tuple)):
@@ -21014,6 +21836,7 @@ class ECGStylePitchVisualizer(QWidget):
         # 增量写入新点（历史重建时跳过）
         try:
             import numpy as _np
+            heat_data_dirty = False
             if not rebuild_from_history:
                 pending = []
                 if isinstance(self._professional_pending, list):
@@ -21065,6 +21888,8 @@ class ECGStylePitchVisualizer(QWidget):
                         defer_harmonics = bool(getattr(self, '_professional_defer_harmonics_until_stop', True))
                     except Exception:
                         defer_harmonics = True
+                    if bool(getattr(self, '_professional_rt_degrade_harm', False)):
+                        defer_harmonics = True
                     try:
                         if recording and pending_len > 2200:
                             harm_stride = max(harm_stride, int(getattr(self, '_professional_harmonic_draw_stride_heavy', 2)))
@@ -21098,6 +21923,16 @@ class ECGStylePitchVisualizer(QWidget):
                     # 录音实时优先：积压时保留最新点，避免“越录越落后”
                     if recording and pending_len > 0:
                         try:
+                            realtime_tail_sec = float(getattr(self, '_professional_realtime_draw_tail_sec', 2.6))
+                        except Exception:
+                            realtime_tail_sec = 2.6
+                        try:
+                            pending_draw_cap = int(getattr(self, '_professional_pending_draw_cap_recording', 1400))
+                        except Exception:
+                            pending_draw_cap = 1400
+                        realtime_tail_sec = max(0.8, min(8.0, realtime_tail_sec))
+                        pending_draw_cap = max(300, min(6000, pending_draw_cap))
+                        try:
                             keep_recent = int(getattr(self, '_professional_pending_recent_keep', 3200))
                         except Exception:
                             keep_recent = 3200
@@ -21121,6 +21956,67 @@ class ECGStylePitchVisualizer(QWidget):
                                     _new_pending.append(it)
                             if _new_pending:
                                 pending = _new_pending
+                                pending_len = len(pending)
+                        # 仅绘制录制态最新时间尾部，避免旧包拖慢实时渲染
+                        try:
+                            newest_t_live = float(pending[-1][0]) if pending else cur_gt2
+                        except Exception:
+                            newest_t_live = cur_gt2
+                        tail_floor = max(cur_gt2 - realtime_tail_sec, newest_t_live - realtime_tail_sec)
+                        if pending:
+                            _tail_pending = []
+                            for it in pending:
+                                try:
+                                    tt = float(it[0]) if isinstance(it, (list, tuple)) and len(it) >= 2 else None
+                                except Exception:
+                                    tt = None
+                                if tt is None or tt >= tail_floor:
+                                    _tail_pending.append(it)
+                            if _tail_pending:
+                                pending = _tail_pending
+                                pending_len = len(pending)
+                        if pending_len > pending_draw_cap:
+                            pending = pending[-pending_draw_cap:]
+                            pending_len = len(pending)
+                        # 借鉴普通模式“头部优先”思路：录制态按预算仅处理最新真实点/谐波点
+                        try:
+                            true_budget = int(getattr(self, '_professional_realtime_true_budget', 760))
+                        except Exception:
+                            true_budget = 760
+                        try:
+                            harm_budget = int(getattr(self, '_professional_realtime_harm_budget', 260))
+                        except Exception:
+                            harm_budget = 260
+                        true_budget = max(120, min(2600, true_budget))
+                        harm_budget = max(0, min(1800, harm_budget))
+                        if bool(getattr(self, '_professional_defer_harmonics_until_stop', True)):
+                            harm_budget = 0
+                        if fast_active or pending_len > int(max(300, pending_draw_cap * 0.65)):
+                            sel_rev = []
+                            keep_true = 0
+                            keep_harm = 0
+                            for it in reversed(pending):
+                                src_tag = None
+                                try:
+                                    if isinstance(it, (list, tuple)) and len(it) >= 4:
+                                        src_tag = str(it[3])
+                                except Exception:
+                                    src_tag = None
+                                is_harm_it = (src_tag == 'harm')
+                                if is_harm_it:
+                                    if keep_harm >= harm_budget:
+                                        continue
+                                    keep_harm += 1
+                                    sel_rev.append(it)
+                                else:
+                                    if keep_true >= true_budget:
+                                        continue
+                                    keep_true += 1
+                                    sel_rev.append(it)
+                                if keep_true >= true_budget and keep_harm >= harm_budget:
+                                    break
+                            if sel_rev:
+                                pending = list(reversed(sel_rev))
                                 pending_len = len(pending)
                         try:
                             newest_t = float(pending[-1][0]) if pending else cur_gt2
@@ -21193,9 +22089,11 @@ class ECGStylePitchVisualizer(QWidget):
                                     continue
                                 c = (c * warm) ** 0.6
                             self._professional_heat_buffer[xi, yi] += c
+                            heat_data_dirty = True
                         except Exception:
                             continue
         except Exception:
+            heat_data_dirty = False
             pass
 
         heat = self._professional_heat_buffer
@@ -21219,12 +22117,23 @@ class ECGStylePitchVisualizer(QWidget):
                 self._professional_cmap = None
 
         # 绘制热力图
+        try:
+            lock_recording_heat = bool(getattr(self, '_professional_heat_lock_recording_style', True))
+        except Exception:
+            lock_recording_heat = True
+        try:
+            recording_dot_mode = bool(getattr(self, '_professional_heat_recording_dot_mode', True))
+        except Exception:
+            recording_dot_mode = True
+        recording_heat_raw = bool(recording and lock_recording_heat and recording_dot_mode)
         if heat is None:
             heat = np.zeros((time_bins, freq_bins), dtype=np.float32)
         else:
             # 轻量模糊（优先快速路径，避免卡顿）
             try:
                 import numpy as _np
+                if recording_heat_raw:
+                    raise RuntimeError('recording_heat_raw_mode')
                 blur_mode = str(getattr(self, '_professional_blur_mode', 'fast')).lower()
                 blur_strength = float(getattr(self, '_professional_blur_strength', 1.0))
                 blur_strength = max(0.0, min(1.0, blur_strength))
@@ -21243,6 +22152,12 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
                 try:
                     if recording and (fast_active or pending_len > 1400):
+                        skip_blur = True
+                        blur_strength = 0.0
+                except Exception:
+                    pass
+                try:
+                    if recording and bool(getattr(self, '_professional_rt_degrade_heat', False)):
                         skip_blur = True
                         blur_strength = 0.0
                 except Exception:
@@ -21278,7 +22193,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             use_gpu = False
         gpu_done = False
-        if use_gpu and heat_update_due:
+        if (not recording_heat_raw) and use_gpu and heat_update_due:
             try:
                 import importlib
                 _cp = importlib.import_module("cu" + "py")
@@ -21301,7 +22216,7 @@ class ECGStylePitchVisualizer(QWidget):
                     gpu_done = True
             except Exception:
                 gpu_done = False
-        if (not gpu_done) and heat_update_due:
+        if (not recording_heat_raw) and (not gpu_done) and heat_update_due and (not bool(getattr(self, '_professional_rt_degrade_heat', False))):
             try:
                 import numpy as _np
                 heat = _np.log1p(heat * 6.0)
@@ -21324,14 +22239,23 @@ class ECGStylePitchVisualizer(QWidget):
                 self.professional_ax.set_facecolor("#0b0f14")
             except Exception:
                 pass
+            try:
+                rec_heat_alpha = float(getattr(self, '_professional_heat_alpha_recording', 0.28))
+            except Exception:
+                rec_heat_alpha = 0.28
+            try:
+                idle_heat_alpha = float(getattr(self, '_professional_heat_alpha_idle', 0.85))
+            except Exception:
+                idle_heat_alpha = 0.85
+            heat_alpha = rec_heat_alpha if recording else idle_heat_alpha
             self._professional_im = self.professional_ax.imshow(
                 heat.T,
                 origin='lower',
                 aspect='auto',
                 extent=[x0, x1, y0, y1],
                 cmap=self._professional_cmap,
-                interpolation='bilinear',
-                alpha=(0.45 if recording else 0.85)
+                interpolation=('nearest' if recording_heat_raw else 'bilinear'),
+                alpha=heat_alpha
             )
             try:
                 self._professional_heat_last_t = time.time()
@@ -21353,7 +22277,20 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
         else:
             try:
-                if heat_update_due:
+                try:
+                    rec_heat_alpha = float(getattr(self, '_professional_heat_alpha_recording', 0.28))
+                except Exception:
+                    rec_heat_alpha = 0.28
+                try:
+                    idle_heat_alpha = float(getattr(self, '_professional_heat_alpha_idle', 0.85))
+                except Exception:
+                    idle_heat_alpha = 0.85
+                try:
+                    lock_recording_heat = bool(getattr(self, '_professional_heat_lock_recording_style', True))
+                except Exception:
+                    lock_recording_heat = True
+                force_heat_push = bool(recording and heat_data_dirty)
+                if heat_update_due or force_heat_push:
                     self._professional_im.set_data(heat.T)
                     try:
                         self._professional_heat_last_t = time.time()
@@ -21365,13 +22302,15 @@ class ECGStylePitchVisualizer(QWidget):
                         fade_a = float(getattr(self, '_professional_heat_fade_alpha', 0.15))
                     except Exception:
                         fade_a = 0.15
-                    if recording:
+                    if recording and (not lock_recording_heat):
                         self._professional_im.set_alpha(max(0.20, 0.45 - fade_a))
                 self._professional_im.set_extent([x0, x1, y0, y1])
                 try:
-                    self._professional_im.set_interpolation('bilinear')
-                    if heat_update_due:
-                        self._professional_im.set_alpha(0.45 if recording else 0.85)
+                    self._professional_im.set_interpolation('nearest' if recording_heat_raw else 'bilinear')
+                    if recording and lock_recording_heat:
+                        self._professional_im.set_alpha(rec_heat_alpha)
+                    elif heat_update_due:
+                        self._professional_im.set_alpha(rec_heat_alpha if recording else idle_heat_alpha)
                 except Exception:
                     pass
             except Exception:
@@ -21379,12 +22318,18 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 if self._professional_colorbar is not None:
                     try:
+                        if recording and bool(getattr(self, '_professional_skip_colorbar_update_while_recording', True)):
+                            raise RuntimeError('skip_colorbar_during_recording')
                         now_cb = time.time()
                         if (now_cb - float(getattr(self, '_professional_colorbar_last_update', 0.0))) > 0.5:
                             self._professional_colorbar.update_normal(self._professional_im)
                             self._professional_colorbar_last_update = now_cb
                     except Exception:
-                        self._professional_colorbar.update_normal(self._professional_im)
+                        try:
+                            if not (recording and bool(getattr(self, '_professional_skip_colorbar_update_while_recording', True))):
+                                self._professional_colorbar.update_normal(self._professional_im)
+                        except Exception:
+                            pass
             except Exception:
                 pass
         # 动态对比度（避免满屏同色）
@@ -21393,17 +22338,47 @@ class ECGStylePitchVisualizer(QWidget):
             now_cb = time.time()
             allow_update = True
             try:
+                lock_recording_heat = bool(getattr(self, '_professional_heat_lock_recording_style', True))
+            except Exception:
+                lock_recording_heat = True
+            try:
                 if recording and (fast_active or pending_len > 1400):
                     allow_update = (now_cb - float(getattr(self, '_professional_clim_last_t', 0.0))) > 0.25
             except Exception:
                 pass
+            if recording and lock_recording_heat:
+                try:
+                    rec_clim_iv = float(getattr(self, '_professional_recording_clim_interval', 0.45))
+                except Exception:
+                    rec_clim_iv = 0.45
+                allow_update = heat_update_due and ((now_cb - float(getattr(self, '_professional_clim_last_t', 0.0))) >= max(0.15, rec_clim_iv))
             if allow_update and heat_update_due:
-                vmax = float(_np.percentile(heat, 99.0)) if heat.size else 1.0
+                target_vmax = float(_np.percentile(heat, 99.0)) if heat.size else 1.0
                 try:
                     vmax_floor = float(getattr(self, '_professional_vmax_floor', 0.35))
                 except Exception:
                     vmax_floor = 0.35
-                vmax = max(vmax, vmax_floor, 1e-4)
+                target_vmax = max(target_vmax, vmax_floor, 1e-4)
+                if recording_heat_raw:
+                    try:
+                        target_vmax = max(target_vmax, float(_np.max(heat)) if heat.size else target_vmax)
+                    except Exception:
+                        pass
+                if recording and lock_recording_heat:
+                    try:
+                        clim_smooth = float(getattr(self, '_professional_recording_clim_smooth', 0.18))
+                    except Exception:
+                        clim_smooth = 0.18
+                    clim_smooth = max(0.02, min(0.95, clim_smooth))
+                    prev_vmax = float(getattr(self, '_professional_vmax_cache', target_vmax) or target_vmax)
+                    vmax = (1.0 - clim_smooth) * prev_vmax + clim_smooth * target_vmax
+                    try:
+                        if bool(getattr(self, '_professional_recording_clim_only_rise', True)):
+                            vmax = max(prev_vmax, vmax)
+                    except Exception:
+                        pass
+                else:
+                    vmax = target_vmax
                 self._professional_vmax_cache = vmax
                 self._professional_clim_last_t = now_cb
             else:
@@ -21413,32 +22388,45 @@ class ECGStylePitchVisualizer(QWidget):
             pass
 
         # 轴与标签
+        axis_style_due = True
         try:
             self.professional_ax.set_xlim(x0, x1)
             self.professional_ax.set_ylim(y0, y1)
-            self.professional_ax.set_xlabel('时间 (秒)', fontsize=11, color="#d7dbe2")
-            self.professional_ax.set_ylabel('频率 (Hz)', fontsize=11, color="#d7dbe2")
-            self.professional_ax.set_title('专业模式 · 多频段发声可视化', fontsize=14, fontweight='bold', color="#f0f3f7")
-            self.professional_ax.tick_params(colors="#c9d1d9")
+            if recording:
+                now_axis = time.time()
+                try:
+                    axis_iv = float(getattr(self, '_professional_axis_style_interval_recording', 0.35))
+                except Exception:
+                    axis_iv = 0.35
+                last_axis = float(getattr(self, '_professional_axis_last_style_t', 0.0) or 0.0)
+                axis_style_due = (now_axis - last_axis) >= max(0.10, axis_iv)
+                if axis_style_due:
+                    self._professional_axis_last_style_t = now_axis
+            if axis_style_due:
+                self.professional_ax.set_xlabel('时间 (秒)', fontsize=11, color="#d7dbe2")
+                self.professional_ax.set_ylabel('频率 (Hz)', fontsize=11, color="#d7dbe2")
+                self.professional_ax.set_title('专业模式 · 多频段发声可视化', fontsize=14, fontweight='bold', color="#f0f3f7")
+                self.professional_ax.tick_params(colors="#c9d1d9")
         except Exception:
             pass
 
         # 音名刻度（按八度显示）
-        try:
-            ticks = []
-            labels = []
-            base_freq = 32.703  # C1
-            while base_freq < min_f:
-                base_freq *= 2.0
-            f = base_freq
-            while f <= max_f * 1.01:
-                ticks.append(math.log2(f))
-                labels.append(self._note_label_from_freq(f))
-                f *= 2.0
-            self.professional_ax.set_yticks(ticks)
-            self.professional_ax.set_yticklabels(labels, color="#c9d1d9")
-        except Exception:
-            pass
+        if axis_style_due:
+            try:
+                ticks = []
+                labels = []
+                base_freq = 32.703  # C1
+                while base_freq < min_f:
+                    base_freq *= 2.0
+                f = base_freq
+                while f <= max_f * 1.01:
+                    ticks.append(math.log2(f))
+                    labels.append(self._note_label_from_freq(f))
+                    f *= 2.0
+                self.professional_ax.set_yticks(ticks)
+                self.professional_ax.set_yticklabels(labels, color="#c9d1d9")
+            except Exception:
+                pass
 
         # 辅助网格线（按半音/音阶）
         try:
@@ -21478,7 +22466,17 @@ class ECGStylePitchVisualizer(QWidget):
             step = 1.0 if (x1 - x0) <= 18.0 else 2.0
             grid_anchor = int(math.floor(x0 / step))
             vgrid_key = (grid_anchor, step)
-            if self._professional_vgrid_range != vgrid_key:
+            allow_vgrid_rebuild = True
+            try:
+                if recording:
+                    now_vg = time.time()
+                    last_vg = float(getattr(self, '_professional_vgrid_last_t', 0.0) or 0.0)
+                    iv_vg = float(getattr(self, '_professional_vgrid_interval_recording', 0.80) or 0.80)
+                    if (now_vg - last_vg) < max(0.25, iv_vg):
+                        allow_vgrid_rebuild = False
+            except Exception:
+                allow_vgrid_rebuild = True
+            if allow_vgrid_rebuild and self._professional_vgrid_range != vgrid_key:
                 for ln in list(getattr(self, '_professional_vgrid_artists', []) or []):
                     try:
                         if ln is not None and ln in getattr(self.professional_ax, 'lines', []):
@@ -21501,6 +22499,10 @@ class ECGStylePitchVisualizer(QWidget):
                     ln = self.professional_ax.axvline(x=t, color=(0.6, 0.8, 1.0), alpha=0.10, linewidth=0.6, linestyle=':', zorder=3)
                     self._professional_vgrid_artists.append(ln)
                     t += step
+                try:
+                    self._professional_vgrid_last_t = time.time()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -21638,6 +22640,23 @@ class ECGStylePitchVisualizer(QWidget):
                     self.professional_ax.add_collection(self._professional_base_predict_points)
                 except Exception:
                     pass
+            try:
+                lock_base_recording = bool(getattr(self, '_professional_base_points_lock_recording_style', True))
+            except Exception:
+                lock_base_recording = True
+            try:
+                base_recording_alpha = float(getattr(self, '_professional_base_points_recording_alpha', 0.92))
+            except Exception:
+                base_recording_alpha = 0.92
+            try:
+                base_hold_sec = float(getattr(self, '_professional_base_points_hold_sec', 0.20))
+            except Exception:
+                base_hold_sec = 0.20
+            try:
+                base_keepalive_sec = float(getattr(self, '_professional_base_points_keepalive_recording_sec', 6.0))
+            except Exception:
+                base_keepalive_sec = 6.0
+            now_base_draw = time.time()
             if base_times and base_pitches:
                 import numpy as _np
                 try:
@@ -21684,9 +22703,9 @@ class ECGStylePitchVisualizer(QWidget):
                             cap = 2600
                     if recording and (pending_len > 1200 or stale_gap_live > 0.35):
                         try:
-                            heavy_cap = int(getattr(self, '_professional_base_point_cap_heavy', 2200))
+                            heavy_cap = int(getattr(self, '_professional_base_point_cap_heavy', 5000))
                         except Exception:
-                            heavy_cap = 2200
+                            heavy_cap = 5000
                         cap = min(cap, heavy_cap)
                     try:
                         hard_cap = int(getattr(self, '_professional_base_point_cap_hard_max', 9000))
@@ -21711,10 +22730,28 @@ class ECGStylePitchVisualizer(QWidget):
                             rt_future = float(getattr(self, '_professional_base_realtime_future_margin_s', 0.14))
                         except Exception:
                             rt_future = 0.14
+                        # 保证录制态真实基频小点至少覆盖当前可视窗的大部分，避免只剩预测大点可见
+                        try:
+                            keep_visible_ratio = float(getattr(self, '_professional_base_realtime_keep_visible_ratio', 0.92))
+                        except Exception:
+                            keep_visible_ratio = 0.92
+                        try:
+                            if bool(getattr(self, '_professional_rt_scroll_phase', False)):
+                                keep_visible_ratio = float(getattr(self, '_professional_base_realtime_keep_visible_ratio_scroll', 0.55))
+                        except Exception:
+                            pass
+                        keep_visible_ratio = max(0.45, min(1.20, keep_visible_ratio))
+                        try:
+                            view_span = max(0.0, float(x1) - float(x0))
+                        except Exception:
+                            view_span = 0.0
+                        rt_floor = max(1.2, min(24.0, view_span * keep_visible_ratio + 0.35))
                         rt_win = max(1.0, min(8.0, rt_win))
                         rt_win_heavy = max(0.8, min(rt_win, rt_win_heavy))
                         if fast_mode or pending_len > 1200 or stale_gap_live > 0.35:
-                            rt_win = min(rt_win, rt_win_heavy)
+                            rt_win = max(rt_win_heavy, rt_floor)
+                        else:
+                            rt_win = max(rt_win, rt_floor)
                         rt_mask = (arr[:, 0] >= float(cur_gt3 - rt_win)) & (arr[:, 0] <= float(cur_gt3 + max(0.02, rt_future)))
                         if _np.any(rt_mask):
                             arr = arr[rt_mask]
@@ -21743,6 +22780,12 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         pass
                     self._professional_base_points.set_offsets(arr)
+                    if recording:
+                        try:
+                            self._professional_base_points_last_offsets = arr.copy()
+                            self._professional_base_points_last_update_t = now_base_draw
+                        except Exception:
+                            pass
                     try:
                         cur_gt3 = float(getattr(self, 'current_global_time', 0.0) or 0.0)
                     except Exception:
@@ -21777,7 +22820,19 @@ class ECGStylePitchVisualizer(QWidget):
                         heavy_points_mode = bool(recording and (fast_mode or pending_len > 1200 or stale_gap_live > 0.35))
                     except Exception:
                         heavy_points_mode = False
-                    if arr.shape[0] > 0 and cur_gt3 > 0 and (not heavy_points_mode):
+                    if recording and lock_base_recording:
+                        try:
+                            rec_point_scale = float(getattr(self, '_professional_base_point_recording_scale', 0.82))
+                        except Exception:
+                            rec_point_scale = 0.82
+                        rec_point_scale = max(0.45, min(1.0, rec_point_scale))
+                        self._professional_base_points.set_sizes([(diameter * rec_point_scale) ** 2])
+                        self._professional_base_points.set_alpha(base_recording_alpha)
+                        if self._professional_base_head_points is not None:
+                            self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                            self._professional_base_head_points.set_alpha(0.0)
+                            self._professional_base_head_points.set_visible(False)
+                    elif arr.shape[0] > 0 and cur_gt3 > 0 and (not heavy_points_mode):
                         dt = cur_gt3 - arr[:, 0]
                         size_hi = (diameter * head_scale) ** 2
                         size_lo = (diameter) ** 2
@@ -21809,7 +22864,7 @@ class ECGStylePitchVisualizer(QWidget):
                             self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
                             self._professional_base_head_points.set_alpha(0.0)
                             self._professional_base_head_points.set_visible(False)
-                    if arr.shape[0] > 0 and cur_gt3 > 0:
+                    if (not recording or (not lock_base_recording)) and arr.shape[0] > 0 and cur_gt3 > 0:
                         self._professional_base_points.set_alpha(snow_alpha)
                     self._professional_base_points.set_zorder(24)
                     self._professional_base_points.set_visible(True)
@@ -21819,9 +22874,36 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                 else:
-                    self._professional_base_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
-                    self._professional_base_points.set_alpha(0.0)
-                    self._professional_base_points.set_visible(False)
+                    reused_cache = False
+                    if recording and lock_base_recording:
+                        try:
+                            last_offsets = getattr(self, '_professional_base_points_last_offsets', None)
+                            last_t = float(getattr(self, '_professional_base_points_last_update_t', 0.0) or 0.0)
+                            cache_age = max(0.0, now_base_draw - last_t)
+                            hold_window = max(0.05, base_hold_sec)
+                            keepalive_window = max(hold_window, base_keepalive_sec)
+                            if last_offsets is not None and cache_age <= keepalive_window:
+                                self._professional_base_points.set_offsets(last_offsets)
+                                if cache_age <= hold_window:
+                                    cache_alpha = base_recording_alpha
+                                else:
+                                    # 长缺帧时轻微衰减透明度，保持连续可见但不过分抢眼
+                                    fade_ratio = min(1.0, max(0.0, (cache_age - hold_window) / max(0.05, keepalive_window - hold_window)))
+                                    cache_alpha = max(0.56, base_recording_alpha * (1.0 - 0.35 * fade_ratio))
+                                self._professional_base_points.set_alpha(cache_alpha)
+                                try:
+                                    self._professional_base_points.set_sizes([float(getattr(self, '_professional_base_point_min_d', 2.0)) ** 2])
+                                except Exception:
+                                    pass
+                                self._professional_base_points.set_zorder(24)
+                                self._professional_base_points.set_visible(True)
+                                reused_cache = True
+                        except Exception:
+                            reused_cache = False
+                    if not reused_cache:
+                        self._professional_base_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                        self._professional_base_points.set_alpha(0.0)
+                        self._professional_base_points.set_visible(False)
                     if self._professional_base_head_points is not None:
                         self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
                         self._professional_base_head_points.set_alpha(0.0)
@@ -21842,9 +22924,35 @@ class ECGStylePitchVisualizer(QWidget):
                             self._professional_base_predict_trail = []
             else:
                 import numpy as _np
-                self._professional_base_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
-                self._professional_base_points.set_alpha(0.0)
-                self._professional_base_points.set_visible(False)
+                reused_cache = False
+                if recording and lock_base_recording:
+                    try:
+                        last_offsets = getattr(self, '_professional_base_points_last_offsets', None)
+                        last_t = float(getattr(self, '_professional_base_points_last_update_t', 0.0) or 0.0)
+                        cache_age = max(0.0, now_base_draw - last_t)
+                        hold_window = max(0.05, base_hold_sec)
+                        keepalive_window = max(hold_window, base_keepalive_sec)
+                        if last_offsets is not None and cache_age <= keepalive_window:
+                            self._professional_base_points.set_offsets(last_offsets)
+                            if cache_age <= hold_window:
+                                cache_alpha = base_recording_alpha
+                            else:
+                                fade_ratio = min(1.0, max(0.0, (cache_age - hold_window) / max(0.05, keepalive_window - hold_window)))
+                                cache_alpha = max(0.56, base_recording_alpha * (1.0 - 0.35 * fade_ratio))
+                            self._professional_base_points.set_alpha(cache_alpha)
+                            try:
+                                self._professional_base_points.set_sizes([float(getattr(self, '_professional_base_point_min_d', 2.0)) ** 2])
+                            except Exception:
+                                pass
+                            self._professional_base_points.set_zorder(24)
+                            self._professional_base_points.set_visible(True)
+                            reused_cache = True
+                    except Exception:
+                        reused_cache = False
+                if not reused_cache:
+                    self._professional_base_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
+                    self._professional_base_points.set_alpha(0.0)
+                    self._professional_base_points.set_visible(False)
                 if self._professional_base_head_points is not None:
                     self._professional_base_head_points.set_offsets(_np.empty((0, 2), dtype=_np.float32))
                     self._professional_base_head_points.set_alpha(0.0)
@@ -22182,6 +23290,29 @@ class ECGStylePitchVisualizer(QWidget):
             if force_redraw or force_rebuild or (now_draw - last_draw) >= draw_min_iv:
                 self.professional_canvas.draw_idle()
                 self._professional_last_draw_t = now_draw
+        except Exception:
+            pass
+        try:
+            rt_frame_ms = (time.perf_counter() - rt_t0) * 1000.0
+            self._professional_rt_last_frame_ms = float(rt_frame_ms)
+            budget_ms = float(getattr(self, '_professional_rt_frame_budget_ms', 14.0) or 14.0)
+            if recording and rt_frame_ms > budget_ms:
+                self._professional_rt_degrade_harm = True
+                if rt_frame_ms > (budget_ms * 1.4):
+                    self._professional_rt_degrade_heat = True
+            report_iv = float(getattr(self, '_professional_rt_monitor_interval_s', 0.5) or 0.5)
+            now_report = time.time()
+            last_report = float(getattr(self, '_professional_rt_last_report_t', 0.0) or 0.0)
+            if recording and (now_report - last_report) >= max(0.2, report_iv):
+                self._professional_rt_last_report_t = now_report
+                if bool(getattr(self, 'debug_flags', {}).get('display_diag', False)):
+                    print(
+                        f"[PRO-RT] frame={rt_frame_ms:.2f}ms budget={budget_ms:.2f}ms "
+                        f"lag={float(getattr(self, '_professional_rt_last_queue_lag_s', 0.0)):.3f}s "
+                        f"pending={int(getattr(self, '_professional_rt_last_pending', 0))} "
+                        f"degrade(harm={int(bool(getattr(self, '_professional_rt_degrade_harm', False)))},"
+                        f"heat={int(bool(getattr(self, '_professional_rt_degrade_heat', False)))})"
+                    )
         except Exception:
             pass
         try:
@@ -26632,9 +27763,14 @@ class ECGStylePitchVisualizer(QWidget):
                         try:
                             if bool(getattr(self, 'is_recording_active', False)):
                                 keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
-                                cutoff_t = float(raw_t) - max(8.0, keep_sec)
-                                if len(self._professional_raw_history) > 1200:
-                                    self._professional_raw_history = [it for it in self._professional_raw_history if float(it[0]) >= cutoff_t]
+                                try:
+                                    guard_sec = float(getattr(self, '_professional_full_history_guard_sec', 12.0))
+                                except Exception:
+                                    guard_sec = 12.0
+                                keep_sec = max(keep_sec, float(getattr(self, 'max_history_time', 300.0) or 300.0) + max(0.0, guard_sec))
+                                hard_cap = int(getattr(self, '_professional_raw_history_hard_cap', 180000) or 180000)
+                                if hard_cap > 0 and len(self._professional_raw_history) > hard_cap:
+                                    self._professional_raw_history = self._professional_raw_history[-hard_cap:]
                         except Exception:
                             pass
                     else:
@@ -26642,9 +27778,15 @@ class ECGStylePitchVisualizer(QWidget):
                         try:
                             if bool(getattr(self, 'is_recording_active', False)):
                                 keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
-                                cutoff_t = float(raw_t) - max(8.0, keep_sec)
-                                while self._professional_raw_history and float(self._professional_raw_history[0][0]) < cutoff_t:
-                                    self._professional_raw_history.popleft()
+                                try:
+                                    guard_sec = float(getattr(self, '_professional_full_history_guard_sec', 12.0))
+                                except Exception:
+                                    guard_sec = 12.0
+                                keep_sec = max(keep_sec, float(getattr(self, 'max_history_time', 300.0) or 300.0) + max(0.0, guard_sec))
+                                hard_cap = int(getattr(self, '_professional_raw_history_hard_cap', 180000) or 180000)
+                                if hard_cap > 0:
+                                    while len(self._professional_raw_history) > hard_cap:
+                                        self._professional_raw_history.popleft()
                         except Exception:
                             pass
                 except Exception:
@@ -28191,9 +29333,14 @@ class ECGStylePitchVisualizer(QWidget):
                             try:
                                 if bool(getattr(self, 'is_recording_active', False)):
                                     keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
-                                    cutoff_t = float(global_time) - max(8.0, keep_sec)
-                                    if len(self._professional_base_history) > 1200:
-                                        self._professional_base_history = [it for it in self._professional_base_history if float(it[0]) >= cutoff_t]
+                                    try:
+                                        guard_sec = float(getattr(self, '_professional_full_history_guard_sec', 12.0))
+                                    except Exception:
+                                        guard_sec = 12.0
+                                    keep_sec = max(keep_sec, float(getattr(self, 'max_history_time', 300.0) or 300.0) + max(0.0, guard_sec))
+                                    hard_cap = int(getattr(self, '_professional_base_history_hard_cap', 180000) or 180000)
+                                    if hard_cap > 0 and len(self._professional_base_history) > hard_cap:
+                                        self._professional_base_history = self._professional_base_history[-hard_cap:]
                                 elif len(self._professional_base_history) > 200000:
                                     self._professional_base_history = self._professional_base_history[-200000:]
                             except Exception:
@@ -28204,9 +29351,15 @@ class ECGStylePitchVisualizer(QWidget):
                             try:
                                 if bool(getattr(self, 'is_recording_active', False)):
                                     keep_sec = float(getattr(self, '_professional_realtime_history_sec', 42.0))
-                                    cutoff_t = float(global_time) - max(8.0, keep_sec)
-                                    while self._professional_base_history and float(self._professional_base_history[0][0]) < cutoff_t:
-                                        self._professional_base_history.popleft()
+                                    try:
+                                        guard_sec = float(getattr(self, '_professional_full_history_guard_sec', 12.0))
+                                    except Exception:
+                                        guard_sec = 12.0
+                                    keep_sec = max(keep_sec, float(getattr(self, 'max_history_time', 300.0) or 300.0) + max(0.0, guard_sec))
+                                    hard_cap = int(getattr(self, '_professional_base_history_hard_cap', 180000) or 180000)
+                                    if hard_cap > 0:
+                                        while len(self._professional_base_history) > hard_cap:
+                                            self._professional_base_history.popleft()
                             except Exception:
                                 pass
                     except Exception:
@@ -29888,7 +31041,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception as e:
             print(f"时间轴更新错误: {e}")
     
-    def start_time_tracking(self):
+    def _start_time_tracking_legacy_v2(self):
         """开始时间追踪（录音开始时调用）"""
         self.is_recording_active = True
         self.start_time = time.time()
@@ -29911,16 +31064,7 @@ class ECGStylePitchVisualizer(QWidget):
     
     def stop_time_tracking(self):
         """停止时间追踪（录音停止时调用）"""
-        self.is_recording_active = False
-        self.time_update_timer.stop()
-        try:
-            if getattr(self, '_professional_stop_time', None) is None:
-                if getattr(self, 'time_data', None):
-                    self._professional_stop_time = float(self.time_data[-1])
-                else:
-                    self._professional_stop_time = float(getattr(self, 'current_global_time', 0.0) or 0.0)
-        except Exception:
-            pass
+        self._stop_time_tracking_unified()
         print("⏹️ 停止时间轴追踪")
 
     # ===== 回录倒计时外观辅助 =====
@@ -37989,100 +39133,20 @@ class ECGStylePitchVisualizer(QWidget):
     
     def start_time_tracking(self):
         """开始时间追踪（支持断续音调曲线）"""
-        self.start_time = time.time()
-        self.current_global_time = 0.0
-        self.is_recording_active = True
-        # 重置暂停补偿
-        self._accumulated_pause_dur = 0.0
-        self._time_offset_shift = 0.0
-        self._viz_pause_started_at = None
-        # 新会话必须清空重录保留态，避免时间轴从历史 baseline 起跑
-        try:
-            self._retake_preserve_timeline = False
-            self._retake_preserved_recording_duration = None
-        except Exception:
-            pass
-        # 专业模式时间缓存重置，避免沿用上次会话造成初始偏移
-        try:
-            self._professional_last_base_t = 0.0
-            self._professional_prev_recording_state = False
-            self._professional_stop_time = None
-            self._professional_smoothed_xlim = None
-            self._professional_smooth_last_t = None
-            self._professional_last_x0 = None
-            self._professional_recording_start_wall = float(self.start_time)
-            lock_sec = float(getattr(self, '_professional_start_zero_lock_sec', 0.65))
-            self._professional_force_zero_window_until = float(self.start_time) + max(0.0, lock_sec)
-            self._professional_start_zero_lock_active = True
-            self._professional_last_gt = 0.0
-            self._professional_last_gt_wall = float(self.start_time)
-            self._professional_force_redraw = True
-            self._professional_force_rebuild = True
-        except Exception:
-            pass
-        # 启动时间更新定时器
-        if hasattr(self, 'time_update_timer'):
-            self.time_update_timer.start(self.time_update_interval)
-        # 重置自动滚动与平滑缓存，避免“沿用上次状态慢慢靠拢”
-        self.time_offset = 0.0
-        try:
-            self._smoothed_xlim = None
-            self._smooth_last_t = None
-            self._smoothed_vx = None
-            self._auto_scroll_started = False
-            self._last_manual_scroll_time = 0.0
-        except Exception:
-            pass
-        # 立即设置初始可视窗口并对齐辅助线到当前窗口中心
+        self._start_time_tracking_unified()
         try:
             if hasattr(self, 'ax') and self.ax is not None:
                 x_min = 0.0
                 x_max = float(getattr(self, 'time_window', 16.0))
                 self.ax.set_xlim(x_min, x_max)
-                # 立刻刷新辅助线（_smoothed_vx=None 将直接落到目标）
                 self.update_guides()
         except Exception:
             pass
-        # 确保录音态细节点集合就绪：批量点与头部点散点均挂载，避免首帧“没有点”
         try:
-            detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
-            if getattr(self, '_use_batched_points', False) and hasattr(self, 'ax') and self.ax is not None:
-                if (not hasattr(self, '_batched_points')) or (self._batched_points is None):
-                    self._batched_points = self.ax.scatter([], [], s=16, color=detail_rgb, alpha=0.18, linewidths=0, edgecolors='none', zorder=14)
-                elif self._batched_points not in getattr(self.ax, 'collections', []):
-                    try:
-                        self.ax.add_collection(self._batched_points)
-                    except Exception:
-                        pass
-                # 初始保持低可见度，但不是 0，避免“结束后才出现”的错觉
-                try:
-                    self._batched_points.set_alpha(0.26)
-                    self._batched_points.set_zorder(14)
-                except Exception:
-                    pass
-            # 头部即刻散点
-            if not hasattr(self, '_head_points'):
-                from collections import deque as _dq
-                self._head_points = _dq(maxlen=int(getattr(self, '_head_points_capacity', 240)))
-            else:
-                try:
-                    # 清空旧会话残留
-                    if isinstance(self._head_points, list):
-                        self._head_points = []
-                    else:
-                        while self._head_points:
-                            self._head_points.popleft()
-                except Exception:
-                    pass
-            if hasattr(self, 'ax') and getattr(self, '_head_points_scatter', None) is None:
-                try:
-                    self._head_points_scatter = self.ax.scatter([], [], s=14, color=(1.0, 1.0, 1.0), alpha=0.0, linewidths=0, edgecolors='none', zorder=14)
-                except Exception:
-                    self._head_points_scatter = None
+            if hasattr(self, 'update_status_display'):
+                self.update_status_display()
         except Exception:
             pass
-        if hasattr(self, 'update_status_display'):
-            self.update_status_display()
     def update_time_axis(self):
         """更新时间轴（支持断续音调曲线）"""
         if not self.is_recording_active or self.start_time is None:
@@ -47538,6 +48602,15 @@ class IntegratedRecordingInterface(QMainWindow):
         self.main_record_button.clicked.connect(self.toggle_main_recording)
         recording_layout.addWidget(self.main_record_button)
 
+        self.environment_noise_button = QPushButton("环境噪音档位")
+        self.environment_noise_button.setToolTip("设置环境噪音档位（安静/标准/嘈杂）")
+        self.environment_noise_button.clicked.connect(self._on_environment_noise_button_clicked)
+        recording_layout.addWidget(self.environment_noise_button)
+
+        self.environment_noise_label = QLabel("当前: 标准")
+        self.environment_noise_label.setStyleSheet("color: #BDBDBD; font-size: 11px;")
+        recording_layout.addWidget(self.environment_noise_label)
+
         self.pause_button = QPushButton("暂停")
         self.pause_button.setEnabled(False)
         self.pause_button.clicked.connect(self.pause_recording)
@@ -47631,6 +48704,12 @@ class IntegratedRecordingInterface(QMainWindow):
         backing_layout.addWidget(self.lyrics_button)
         backing_layout.addStretch(); layout.addLayout(backing_layout)
         self.update_backing_button_style()
+
+        # 初始化环境噪音档位（默认标准）
+        try:
+            self._apply_environment_noise_profile(getattr(self, '_environment_noise_profile', 'normal'))
+        except Exception:
+            pass
 
         return control_group
     
@@ -47743,9 +48822,715 @@ class IntegratedRecordingInterface(QMainWindow):
     def toggle_main_recording(self):
         """切换主录音状态"""
         if not self.is_recording:
+            # 开始录音前先进行环境噪音智能评估，支持手动覆盖
+            try:
+                if not self._run_environment_noise_assessment_dialog():
+                    return
+            except Exception:
+                return
             self.start_recording()
         else:
             self.stop_recording()
+
+    def _on_environment_noise_button_clicked(self):
+        """手动打开环境噪音档位配置。"""
+        try:
+            self._open_environment_noise_profile_dialog(mandatory=False)
+        except Exception:
+            pass
+
+    def _run_environment_noise_assessment_dialog(self) -> bool:
+        """录音前自动评估环境噪音，并给出推荐档位。"""
+        dlg = None
+        try:
+            assess_round = int(getattr(self, '_environment_noise_assess_count', 0) or 0) + 1
+            self._environment_noise_assess_count = assess_round
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"环境噪音智能评估（第{assess_round}次）")
+            dlg.setModal(True)
+            dlg.resize(560, 320)
+            dlg.setStyleSheet("""
+                QDialog {
+                    background-color: #121922;
+                    color: #E6EEF8;
+                }
+                QLabel#title {
+                    color: #F6FBFF;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                QLabel#subtitle {
+                    color: #AFC4D9;
+                    font-size: 12px;
+                }
+                QLabel#phase {
+                    color: #76A8D8;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                QLabel#detail {
+                    color: #D2E5F7;
+                    font-size: 12px;
+                }
+                QLabel#result {
+                    color: #9EE6A7;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                QProgressBar {
+                    border: 1px solid #35506A;
+                    border-radius: 7px;
+                    background-color: #0A1119;
+                    height: 14px;
+                    text-align: center;
+                    color: #D3E7FA;
+                }
+                QProgressBar::chunk {
+                    border-radius: 6px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #3E86C4,
+                        stop:0.6 #40B8D4,
+                        stop:1 #53D69A);
+                }
+                QPushButton {
+                    background-color: #233244;
+                    border: 1px solid #45617D;
+                    border-radius: 6px;
+                    padding: 7px 14px;
+                    color: #EAF4FF;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #2D4560;
+                    border-color: #5F87AE;
+                }
+                QPushButton#primary {
+                    background-color: #2C8559;
+                    border-color: #3BAE75;
+                }
+                QPushButton#primary:hover {
+                    background-color: #35A56D;
+                    border-color: #4DD78E;
+                }
+            """)
+
+            root = QVBoxLayout(dlg)
+            root.setContentsMargins(18, 16, 18, 14)
+            root.setSpacing(10)
+
+            title = QLabel("开始前环境噪音测试")
+            title.setObjectName("title")
+            root.addWidget(title)
+
+            subtitle = QLabel(f"第{assess_round}次实时评估：系统将重新采样当前环境，并推荐“安静 / 标准 / 嘈杂”档位。")
+            subtitle.setObjectName("subtitle")
+            subtitle.setWordWrap(True)
+            root.addWidget(subtitle)
+
+            phase_label = QLabel("阶段 1/3：准备采集环境底噪…")
+            phase_label.setObjectName("phase")
+            root.addWidget(phase_label)
+
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            progress.setValue(0)
+            root.addWidget(progress)
+
+            detail = QLabel("正在打开输入设备…")
+            detail.setObjectName("detail")
+            detail.setWordWrap(True)
+            root.addWidget(detail)
+
+            result_label = QLabel("")
+            result_label.setObjectName("result")
+            result_label.setWordWrap(True)
+            root.addWidget(result_label)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_cancel = QPushButton("取消")
+            btn_manual = QPushButton("手动选择")
+            btn_continue = QPushButton("采用推荐并开始")
+            btn_continue.setObjectName("primary")
+            btn_manual.setEnabled(False)
+            btn_continue.setEnabled(False)
+            btn_row.addWidget(btn_cancel)
+            btn_row.addWidget(btn_manual)
+            btn_row.addWidget(btn_continue)
+            root.addLayout(btn_row)
+
+            state = {
+                'cancelled': False,
+                'done': False,
+                'mode': 'cancel',
+                'result': None,
+                'error': None,
+            }
+
+            def _cancel():
+                state['cancelled'] = True
+                state['mode'] = 'cancel'
+                try:
+                    dlg.reject()
+                except Exception:
+                    pass
+
+            def _manual():
+                state['mode'] = 'manual'
+                try:
+                    dlg.accept()
+                except Exception:
+                    pass
+
+            def _continue():
+                state['mode'] = 'auto'
+                try:
+                    dlg.accept()
+                except Exception:
+                    pass
+
+            btn_cancel.clicked.connect(_cancel)
+            btn_manual.clicked.connect(_manual)
+            btn_continue.clicked.connect(_continue)
+
+            def _on_progress(percent: int, phase_text: str, detail_text: str):
+                try:
+                    progress.setValue(max(0, min(100, int(percent))))
+                    phase_label.setText(phase_text)
+                    detail.setText(detail_text)
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+
+            def _do_assessment():
+                if state.get('cancelled'):
+                    return
+                try:
+                    result = self._evaluate_environment_noise_profile(
+                        progress_cb=_on_progress,
+                        cancel_cb=lambda: bool(state.get('cancelled', False)),
+                    )
+                    state['result'] = result
+                    state['done'] = True
+                    profile_label = str(result.get('profile_label', '标准'))
+                    elapsed = float(result.get('elapsed_sec', 0.0) or 0.0)
+                    stable = bool(result.get('stable', False))
+                    rms = float(result.get('rms', 0.0) or 0.0)
+                    mode_label = str(result.get('sampling_mode_label', '标准'))
+                    low_ratio = float(result.get('low_band_ratio', 0.0) or 0.0)
+                    peakiness = float(result.get('peakiness', 0.0) or 0.0)
+                    result_label.setText(
+                        f"推荐档位：{profile_label} | 采样策略：{mode_label} | 耗时：{elapsed:.1f}s\\n"
+                        f"环境强度：RMS={rms:.5f}，低频占比={low_ratio:.2f}，窄带峰值={peakiness:.2f}，稳定性：{'稳定' if stable else '波动较大'}"
+                    )
+                    btn_manual.setEnabled(True)
+                    btn_continue.setEnabled(True)
+                    btn_cancel.setText("关闭")
+                    _on_progress(100, "阶段 3/3：评估完成", "请选择“采用推荐并开始”或“手动选择”。")
+                except Exception as e:
+                    state['error'] = str(e)
+                    state['done'] = True
+                    result_label.setText("自动评估失败，可切换手动选择档位继续。")
+                    btn_manual.setEnabled(True)
+                    btn_continue.setEnabled(False)
+                    btn_cancel.setText("关闭")
+                    _on_progress(100, "阶段 3/3：评估失败", str(e))
+
+            # 对话框显示后立即开始评估
+            QTimer.singleShot(80, _do_assessment)
+
+            accepted = dlg.exec() == int(QDialog.DialogCode.Accepted)
+            if not accepted:
+                try:
+                    self.system_status_label.setText("状态: 已取消开始录音")
+                except Exception:
+                    pass
+                return False
+
+            if state.get('mode') == 'manual':
+                return self._open_environment_noise_profile_dialog(mandatory=True)
+
+            if state.get('mode') == 'auto':
+                result = state.get('result') or {}
+                recommended = str(result.get('profile_key', 'normal') or 'normal')
+                self._apply_environment_noise_profile(recommended)
+                try:
+                    self._apply_environment_noise_assessment_to_gate(result)
+                except Exception:
+                    pass
+                try:
+                    self.system_status_label.setText(
+                        f"状态: 已完成环境评估，自动采用{result.get('profile_label', '标准')}档"
+                    )
+                except Exception:
+                    pass
+                return True
+
+            return False
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "环境噪音评估", f"自动评估窗口启动失败:\n{e}")
+            except Exception:
+                pass
+            # 自动窗口异常时回退为手动档位选择
+            return self._open_environment_noise_profile_dialog(mandatory=True)
+        finally:
+            try:
+                if dlg is not None:
+                    dlg.deleteLater()
+            except Exception:
+                pass
+
+    def _evaluate_environment_noise_profile(self, progress_cb=None, cancel_cb=None) -> Dict[str, Any]:
+        """采样并评估当前环境噪音，输出推荐档位。"""
+        try:
+            import sounddevice as sd
+        except Exception as e:
+            raise RuntimeError(f"sounddevice 不可用: {e}")
+
+        def _cancelled() -> bool:
+            try:
+                return bool(cancel_cb and cancel_cb())
+            except Exception:
+                return False
+
+        def _report(percent: int, phase: str, detail_text: str):
+            try:
+                if callable(progress_cb):
+                    progress_cb(percent, phase, detail_text)
+            except Exception:
+                pass
+
+        # 自适应时长策略：加入预热丢弃，避免误判为“安静”
+        warmup_discard = 0.45
+        min_duration = 3.8
+        max_duration = 9.5
+        check_interval = 0.18
+
+        # 先尝试复用当前录音配置，避免评估与录音设备不一致
+        sample_rate = 48000
+        blocksize = 512
+        channels = 1
+        stream_kwargs: Dict[str, Any] = {}
+        try:
+            sample_rate = int(self.sample_rate_combo.currentText())
+        except Exception:
+            sample_rate = int(getattr(self, 'sample_rate', 48000) or 48000)
+        try:
+            blocksize = int(getattr(getattr(self, 'audio_processor', None), 'chunk_size', 512) or 512)
+        except Exception:
+            blocksize = 512
+
+        try:
+            cfg = getattr(getattr(self, 'audio_processor', None), '_selected_device_config', None)
+            if isinstance(cfg, dict):
+                if cfg.get('device') is not None:
+                    stream_kwargs['device'] = cfg.get('device')
+                if cfg.get('samplerate'):
+                    sample_rate = int(cfg.get('samplerate'))
+                if cfg.get('blocksize'):
+                    blocksize = int(cfg.get('blocksize'))
+                if cfg.get('settings') is not None:
+                    settings_value = cfg.get('settings')
+                    resolved = None
+                    try:
+                        resolver = getattr(getattr(self, 'audio_processor', None), '_resolve_extra_settings_obj', None)
+                        if callable(resolver):
+                            resolved = resolver(settings_value)
+                    except Exception:
+                        resolved = None
+                    if resolved is not None:
+                        stream_kwargs['extra_settings'] = resolved
+        except Exception:
+            pass
+
+        # 若已有活动输入设备，优先跟随该设备
+        try:
+            active_dev = getattr(getattr(self, 'audio_processor', None), 'active_input_device_id', None)
+            if active_dev is not None:
+                stream_kwargs['device'] = int(active_dev)
+        except Exception:
+            pass
+
+        sample_rate = max(16000, min(192000, int(sample_rate)))
+        blocksize = max(128, min(4096, int(blocksize)))
+
+        _report(3, "阶段 1/3：设备准备", f"输入流参数：{sample_rate}Hz / block {blocksize}")
+        if _cancelled():
+            raise RuntimeError("已取消")
+
+        frames: List[np.ndarray] = []
+        rms_series: List[float] = []
+        centroid_series: List[float] = []
+        flatness_series: List[float] = []
+        zcr_series: List[float] = []
+        low_ratio_series: List[float] = []
+        peakiness_series: List[float] = []
+
+        start_t = time.time()
+        last_check_t = start_t
+
+        def _cb(indata, _frames, _time_info, _status):
+            try:
+                if _cancelled():
+                    raise sd.CallbackStop()
+                mono = np.asarray(indata[:, 0], dtype=np.float32)
+                if mono.size > 0:
+                    frames.append(mono.copy())
+            except sd.CallbackStop:
+                raise
+            except Exception:
+                return
+
+        try:
+            with sd.InputStream(
+                channels=channels,
+                samplerate=sample_rate,
+                blocksize=blocksize,
+                dtype=np.float32,
+                callback=_cb,
+                **stream_kwargs,
+            ):
+                while True:
+                    if _cancelled():
+                        raise RuntimeError("已取消")
+
+                    now = time.time()
+                    elapsed = now - start_t
+                    if elapsed >= max_duration:
+                        break
+
+                    if elapsed < warmup_discard:
+                        _report(6, "阶段 1/3：设备预热", "正在稳定输入增益与底噪采样…")
+                        QApplication.processEvents()
+                        time.sleep(0.02)
+                        continue
+
+                    if (now - last_check_t) < check_interval:
+                        QApplication.processEvents()
+                        time.sleep(0.03)
+                        continue
+                    last_check_t = now
+
+                    if not frames:
+                        _report(8, "阶段 1/3：采集底噪", "正在采集输入样本…")
+                        QApplication.processEvents()
+                        continue
+
+                    # 评估窗口取最近约0.8秒，提高响应速度
+                    try:
+                        recent = np.concatenate(frames[-max(1, int(0.8 * sample_rate / max(1, blocksize))):])
+                    except Exception:
+                        recent = np.concatenate(frames)
+
+                    if recent.size < max(512, blocksize):
+                        QApplication.processEvents()
+                        continue
+
+                    recent = recent.astype(np.float32, copy=False)
+                    rms = float(np.sqrt(np.mean(recent * recent) + 1e-12))
+
+                    # 归一化过零率
+                    sign = np.sign(recent)
+                    zcr = float(np.mean(np.abs(np.diff(sign))) * 0.5)
+
+                    # 频谱特征
+                    win = np.hanning(len(recent)).astype(np.float32)
+                    spec = np.abs(np.fft.rfft(recent * win)).astype(np.float64)
+                    psd = spec * spec + 1e-12
+                    freqs = np.fft.rfftfreq(len(recent), d=1.0 / float(sample_rate))
+                    centroid = float(np.sum(freqs * psd) / np.sum(psd)) if np.sum(psd) > 0 else 0.0
+                    flatness = float(np.exp(np.mean(np.log(psd))) / np.mean(psd))
+
+                    # 低频占比（风扇/机箱嗡声典型区）和窄带峰值比（机械稳态）
+                    total_energy = float(np.sum(psd))
+                    if total_energy > 0:
+                        low_mask = (freqs >= 45.0) & (freqs <= 260.0)
+                        low_ratio = float(np.sum(psd[low_mask]) / total_energy)
+                    else:
+                        low_ratio = 0.0
+                    peakiness = float(np.max(spec) / max(np.mean(spec), 1e-9))
+
+                    rms_series.append(rms)
+                    centroid_series.append(centroid)
+                    flatness_series.append(flatness)
+                    zcr_series.append(zcr)
+                    low_ratio_series.append(low_ratio)
+                    peakiness_series.append(peakiness)
+
+                    # 阶段文案与进度
+                    if elapsed < min_duration:
+                        phase = "阶段 1/3：采集底噪"
+                        progress = int(8 + (elapsed / max(min_duration, 1e-6)) * 42)
+                    else:
+                        phase = "阶段 2/3：分析稳定性"
+                        progress = int(50 + min(1.0, (elapsed - min_duration) / max(max_duration - min_duration, 1e-6)) * 35)
+
+                    detail_text = (
+                        f"已采样 {elapsed:.1f}s | RMS={rms:.5f} | 低频占比={low_ratio:.2f} | "
+                        f"峰值比={peakiness:.2f} | 质心={centroid:.0f}Hz"
+                    )
+                    _report(progress, phase, detail_text)
+
+                    # 稳定性判定：满足即可提前结束
+                    stable = False
+                    if len(rms_series) >= 8:
+                        rr = np.asarray(rms_series[-8:], dtype=np.float64)
+                        cc = np.asarray(centroid_series[-8:], dtype=np.float64)
+                        rms_cv = float(np.std(rr) / max(np.mean(rr), 1e-7))
+                        cen_cv = float(np.std(cc) / max(np.mean(cc), 1.0))
+                        stable = (rms_cv < 0.18 and cen_cv < 0.25)
+                    if elapsed >= min_duration and stable:
+                        break
+
+                    QApplication.processEvents()
+        except Exception as e:
+            if "已取消" in str(e):
+                raise
+            raise RuntimeError(f"评估采样失败: {e}")
+
+        if not rms_series:
+            raise RuntimeError("未采集到有效音频样本")
+
+        _report(88, "阶段 3/3：计算推荐档位", "正在综合噪音强度和稳定性…")
+
+        rms_arr = np.asarray(rms_series[-12:], dtype=np.float64)
+        cen_arr = np.asarray(centroid_series[-12:], dtype=np.float64)
+        flat_arr = np.asarray(flatness_series[-12:], dtype=np.float64)
+        zcr_arr = np.asarray(zcr_series[-12:], dtype=np.float64)
+        low_ratio_arr = np.asarray(low_ratio_series[-12:], dtype=np.float64) if low_ratio_series else np.asarray([0.0], dtype=np.float64)
+        peakiness_arr = np.asarray(peakiness_series[-12:], dtype=np.float64) if peakiness_series else np.asarray([1.0], dtype=np.float64)
+
+        rms_mean = float(np.mean(rms_arr))
+        flat_mean = float(np.mean(flat_arr))
+        zcr_mean = float(np.mean(zcr_arr))
+        low_ratio_mean = float(np.mean(low_ratio_arr))
+        peakiness_mean = float(np.mean(peakiness_arr))
+        rms_cv = float(np.std(rms_arr) / max(rms_mean, 1e-7))
+        cen_cv = float(np.std(cen_arr) / max(float(np.mean(cen_arr)), 1.0))
+        stable = (rms_cv < 0.18 and cen_cv < 0.25)
+
+        # 噪音强度估计分数（0-1）
+        rms_score = np.clip((rms_mean - 0.00030) / 0.0034, 0.0, 1.0)
+        flat_score = np.clip((flat_mean - 0.20) / 0.55, 0.0, 1.0)
+        zcr_score = np.clip((zcr_mean - 0.02) / 0.16, 0.0, 1.0)
+        low_score = np.clip((low_ratio_mean - 0.26) / 0.42, 0.0, 1.0)
+        tonal_score = np.clip((peakiness_mean - 7.0) / 12.0, 0.0, 1.0)
+        noise_score = float(
+            0.46 * rms_score +
+            0.20 * flat_score +
+            0.10 * zcr_score +
+            0.16 * low_score +
+            0.08 * tonal_score
+        )
+
+        if noise_score < 0.24 and rms_mean < 0.00090 and low_ratio_mean < 0.40 and peakiness_mean < 10.8:
+            profile_key = 'quiet'
+            profile_label = '安静'
+        elif noise_score < 0.60:
+            profile_key = 'normal'
+            profile_label = '标准'
+        else:
+            profile_key = 'noisy'
+            profile_label = '嘈杂'
+
+        # 波动较大或低频稳态明显时提高一级严格度
+        low_freq_hum_like = (low_ratio_mean > 0.52 and peakiness_mean > 10.0)
+        if (not stable) or low_freq_hum_like:
+            if profile_key == 'quiet':
+                profile_key, profile_label = 'normal', '标准'
+            elif profile_key == 'normal':
+                profile_key, profile_label = 'noisy', '嘈杂'
+
+        elapsed_sec = float(time.time() - start_t)
+        if elapsed_sec <= 3.4:
+            sampling_mode_label = '快速'
+        elif elapsed_sec <= 5.8:
+            sampling_mode_label = '标准'
+        else:
+            sampling_mode_label = '严格'
+
+        return {
+            'profile_key': profile_key,
+            'profile_label': profile_label,
+            'noise_score': noise_score,
+            'elapsed_sec': elapsed_sec,
+            'rms': rms_mean,
+            'flatness': flat_mean,
+            'zcr': zcr_mean,
+            'low_band_ratio': low_ratio_mean,
+            'peakiness': peakiness_mean,
+            'stable': stable,
+            'rms_cv': rms_cv,
+            'centroid_cv': cen_cv,
+            'sampling_mode_label': sampling_mode_label,
+        }
+
+    def _apply_environment_noise_assessment_to_gate(self, result: Dict[str, Any]) -> None:
+        """将评估结果转为录制期门控的自适应参数，减少环境细节点误识别。"""
+        try:
+            rms = float(result.get('rms', 0.0) or 0.0)
+            low_ratio = float(result.get('low_band_ratio', 0.0) or 0.0)
+            peakiness = float(result.get('peakiness', 0.0) or 0.0)
+            noise_score = float(result.get('noise_score', 0.0) or 0.0)
+            stable = bool(result.get('stable', False))
+
+            self._env_assess_result = dict(result)
+            self._env_noise_rms_baseline = max(1e-7, rms)
+            self._env_noise_low_ratio = max(0.0, min(1.0, low_ratio))
+            self._env_noise_peakiness = max(0.0, peakiness)
+            self._env_noise_score = max(0.0, min(1.0, noise_score))
+            self._env_noise_stable = stable
+
+            mul = 1.0
+            mul += 0.52 * self._env_noise_score
+            mul += 0.22 * max(0.0, self._env_noise_low_ratio - 0.42)
+            mul += 0.16 * max(0.0, (self._env_noise_peakiness - 9.0) / 10.0)
+            if not stable:
+                mul += 0.10
+            self._gate_adaptive_rms_mul = float(max(1.0, min(1.88, mul)))
+
+            # 高噪声环境抬高开门阈值，延长开门所需连续帧
+            self._gate_adaptive_open_add = float(np.clip(0.03 + 0.11 * self._env_noise_score, 0.0, 0.16))
+            self._gate_adaptive_close_add = float(np.clip(0.01 + 0.07 * self._env_noise_score, 0.0, 0.09))
+            self._gate_adaptive_open_need_add = int(1 if self._env_noise_score >= 0.45 else 0)
+            if (self._env_noise_score >= 0.70) or (self._env_noise_low_ratio > 0.55 and self._env_noise_peakiness > 10.5):
+                self._gate_adaptive_open_need_add = 2
+        except Exception:
+            # 失败时回退默认
+            self._gate_adaptive_rms_mul = 1.0
+            self._gate_adaptive_open_add = 0.0
+            self._gate_adaptive_close_add = 0.0
+            self._gate_adaptive_open_need_add = 0
+
+    def _open_environment_noise_profile_dialog(self, *, mandatory: bool = False) -> bool:
+        """选择环境噪音档位。
+
+        mandatory=True 时用于录音前强制选择；取消则不启动录音。
+        """
+        try:
+            options = [
+                ('quiet', '安静环境（高灵敏）'),
+                ('normal', '标准环境（均衡）'),
+                ('noisy', '嘈杂环境（严格抗噪）'),
+            ]
+
+            cur_key = str(getattr(self, '_environment_noise_profile', 'normal') or 'normal')
+            idx_map = {k: i for i, (k, _) in enumerate(options)}
+            cur_idx = idx_map.get(cur_key, 1)
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("环境噪音档位")
+            dlg.setModal(True)
+            dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+            v = QVBoxLayout(dlg)
+
+            tip = QLabel("请选择当前环境噪音档位：")
+            v.addWidget(tip)
+
+            combo = QComboBox()
+            for _, text in options:
+                combo.addItem(text)
+            combo.setCurrentIndex(int(cur_idx))
+            v.addWidget(combo)
+
+            desc = QLabel(
+                "安静：更灵敏，适合安静房间\n"
+                "标准：平衡灵敏度与抗噪\n"
+                "嘈杂：更严格，优先抑制环境噪音"
+            )
+            desc.setStyleSheet("color: #B0BEC5; font-size: 11px;")
+            desc.setWordWrap(True)
+            v.addWidget(desc)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_ok = QPushButton("OK")
+            btn_cancel = QPushButton("取消")
+            btn_row.addWidget(btn_ok)
+            btn_row.addWidget(btn_cancel)
+            v.addLayout(btn_row)
+
+            btn_ok.clicked.connect(dlg.accept)
+            btn_cancel.clicked.connect(dlg.reject)
+
+            if dlg.exec() != int(QDialog.DialogCode.Accepted):
+                if mandatory:
+                    try:
+                        self.system_status_label.setText("状态: 已取消开始录音")
+                    except Exception:
+                        pass
+                return False
+
+            selected_idx = int(combo.currentIndex())
+            selected_key = options[selected_idx][0]
+            self._apply_environment_noise_profile(selected_key)
+            return True
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "环境噪音档位", f"打开设置窗口失败:\n{e}")
+            except Exception:
+                pass
+            return False
+
+    def _apply_environment_noise_profile(self, profile_key: str):
+        """应用环境噪音档位到检测门限。"""
+        key = str(profile_key or 'normal').strip().lower()
+        if key not in ('quiet', 'normal', 'noisy'):
+            key = 'normal'
+
+        # 三档参数：仅调整门控阈值，保持检测主链不变
+        presets = {
+            'quiet': {
+                'label': '安静',
+                'min_voice_rms': 0.00035,
+                'breath_rms_threshold': 0.0028,
+                'spurious_low_energy_thr': 0.016,
+                'spurious_low_energy_thr_bt': 0.021,
+                'breath_rms_upper': 0.0052,
+            },
+            'normal': {
+                'label': '标准',
+                'min_voice_rms': 0.00050,
+                'breath_rms_threshold': 0.0025,
+                'spurious_low_energy_thr': 0.015,
+                'spurious_low_energy_thr_bt': 0.020,
+                'breath_rms_upper': 0.0040,
+            },
+            'noisy': {
+                'label': '嘈杂',
+                'min_voice_rms': 0.00090,
+                'breath_rms_threshold': 0.0036,
+                'spurious_low_energy_thr': 0.022,
+                'spurious_low_energy_thr_bt': 0.028,
+                'breath_rms_upper': 0.0034,
+            },
+        }
+        conf = presets[key]
+
+        self._environment_noise_profile = key
+        self._min_voice_rms_override = float(conf['min_voice_rms'])
+        self._breath_rms_threshold = float(conf['breath_rms_threshold'])
+        self._spurious_low_energy_thr = float(conf['spurious_low_energy_thr'])
+        self._spurious_low_energy_thr_bt = float(conf['spurious_low_energy_thr_bt'])
+        self._breath_rms_upper = float(conf['breath_rms_upper'])
+
+        # 手动切档默认回到基础门控倍率；自动评估流程会在后续重新写入自适应参数
+        self._gate_adaptive_rms_mul = 1.0
+        self._gate_adaptive_open_add = 0.0
+        self._gate_adaptive_close_add = 0.0
+        self._gate_adaptive_open_need_add = 0
+
+        try:
+            if hasattr(self, 'environment_noise_label') and self.environment_noise_label is not None:
+                self.environment_noise_label.setText(f"当前: {conf['label']}")
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'system_status_label') and self.system_status_label is not None:
+                self.system_status_label.setText(f"状态: 环境噪音档位已设为{conf['label']}")
+        except Exception:
+            pass
 
     # ===== 本地音高解析：按钮与对话流（占位实现，先把按钮与流程接上） =====
     def open_local_pitch_dialog(self):
@@ -49803,8 +51588,8 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
 
-            # 更新录音时长
-            if self.is_recording:
+            # 更新录音时长（一次性绘制回放模式也显示时间线）
+            if self.is_recording or bool(getattr(self, '_in_onepass_mode', False)):
                 try:
                     t = float(self._get_display_timeline_time())
                 except Exception:
@@ -52572,6 +54357,12 @@ class _OnePassPitchWorker(QThread):
         try:
             import numpy as np
             from collections import deque
+            # 一次性绘制对齐策略：默认更贴近实时观感，重度离线重塑改为按需开启。
+            onepass_cfg = {
+                'enable_median_spike_filter': bool(getattr(self.ifc, '_onepass_enable_median_spike_filter', True)),
+                'enable_octave_stabilize': bool(getattr(self.ifc, '_onepass_enable_octave_stabilize', False)),
+                'enable_unstable_refine': bool(getattr(self.ifc, '_onepass_enable_unstable_refine', False)),
+            }
             # 1) 解码与重采样
             self.message.emit("正在解码音频…")
             sr_target = int(getattr(self.ifc.audio_processor, 'sample_rate', 48000) or 48000)
@@ -52619,15 +54410,15 @@ class _OnePassPitchWorker(QThread):
             self.message.emit("正在分析音高…")
             frame_window = int(getattr(self.ifc.audio_processor, '_frame_window', 2048) or 2048)
             frame_hop = int(getattr(self.ifc.audio_processor, '_frame_hop', max(1, frame_window // 4)))
-            # 离线高精度：允许更长窗口、更小步长（默认 4096/÷8），可通过 _onepass_frame_window 与 _onepass_hop_div 调整
+            # 默认跟随实时窗口/步长，避免一次性结果与普通模式细节点风格偏离。
             try:
-                offline_fw = int(getattr(self.ifc, '_onepass_frame_window', 4096) or 4096)
+                offline_fw = int(getattr(self.ifc, '_onepass_frame_window', frame_window) or frame_window)
             except Exception:
-                offline_fw = 4096
+                offline_fw = frame_window
             try:
-                offline_hop_div = int(getattr(self.ifc, '_onepass_hop_div', 8) or 8)
+                offline_hop_div = int(getattr(self.ifc, '_onepass_hop_div', 4) or 4)
             except Exception:
-                offline_hop_div = 8
+                offline_hop_div = 4
             # 使用更保守的窗口与步长以换取稳定性
             if offline_fw > 0:
                 frame_window = max(int(frame_window), int(offline_fw))
@@ -52728,10 +54519,8 @@ class _OnePassPitchWorker(QThread):
                     last_prog = prog
                     self.progress.emit(prog)
                 i += frame_hop
-            # 3) 将连续音高点分段（静音/断裂处断开）
-            segments = []
             # 轻量去尖刺：3点中值滤波（仅作用于已采样点，不改变趋势），贴近实时观感
-            if len(y_vals) >= 3:
+            if onepass_cfg['enable_median_spike_filter'] and len(y_vals) >= 3:
                 try:
                     import numpy as _np
                     y_arr = _np.asarray(y_vals, dtype=_np.float32)
@@ -52741,22 +54530,10 @@ class _OnePassPitchWorker(QThread):
                     y_vals = y_med.tolist()
                 except Exception:
                     pass
-            if times:
-                seg_t, seg_p = [times[0]], [y_vals[0]]
-                for k in range(1, len(times)):
-                    dt = times[k] - times[k-1]
-                    # 超过阈值或大跳变则断段
-                    if dt > 0.15 or abs((y_vals[k]-y_vals[k-1])*12.0) > 12.0:
-                        if len(seg_t) >= 1:
-                            segments.append((seg_t, seg_p))
-                        seg_t, seg_p = [times[k]], [y_vals[k]]
-                    else:
-                        seg_t.append(times[k])
-                        seg_p.append(y_vals[k])
-                if len(seg_t) >= 1:
-                    segments.append((seg_t, seg_p))
+            # 3) 将连续音高点分段（静音/断裂处断开）
+            segments = _build_segments_from_times_pitch(times, y_vals)
             # 4) 段内八度稳定：以段内中值为锚，按12半音倍数对齐，修正整段偏高/偏低
-            if segments:
+            if onepass_cfg['enable_octave_stabilize'] and segments:
                 try:
                     import numpy as _np
                     stabilized = []
@@ -52808,7 +54585,7 @@ class _OnePassPitchWorker(QThread):
                     pass
 
             # 5) 对不稳定段做细化重算（更小hop），仅对跳变过多的长段执行
-            if segments:
+            if onepass_cfg['enable_unstable_refine'] and segments:
                 try:
                     import numpy as _np
                     refined_segments = []
@@ -53173,6 +54950,13 @@ def _ifc_start_offline_onepass(self, file_path: str):
             dur = float(payload.get('duration', 0.0) or 0.0)
             # 设置时间轴为完整音频时长
             _apply_full_duration_axis(self.visualizer, dur)
+            # 一次性绘制时间线：允许 UI 统一时间轴读取 visualizer.current_global_time
+            try:
+                self.visualizer.start_time = time.time()
+                self.visualizer.current_global_time = 0.0
+                self.visualizer.is_recording_active = False
+            except Exception:
+                pass
             # 一次性绘制分段曲线
             self.visualizer.draw_segmented_pitch_line(segs)
             # 创建回放控制（一次性绘制后的浏览与试听）
@@ -53325,7 +55109,18 @@ class _OnePassPlaybackController(QObject):
         outdata[:,0] = chunk
         self.pos = min(self.pos + frames, len(self.audio))
     def _on_ui(self):
-        self.tick.emit(float(self.pos)/float(self.sr))
+        cur_s = float(self.pos) / float(self.sr)
+        self.tick.emit(cur_s)
+        # 一次性绘制模式下，持续推送可视化时间轴，供主界面时间线显示使用
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            try:
+                viz.current_global_time = cur_s
+            except Exception:
+                pass
 
 
 class _OnePassPlaybackPanel(QDialog):
@@ -53494,6 +55289,14 @@ def _ifc_exit_onepass_mode(self):
     # 5) 退出一次性绘制模式标记
     try:
         self._in_onepass_mode = False
+    except Exception:
+        pass
+    # 6) 清理一次性绘制时间线状态，避免影响后续实时录音
+    try:
+        if hasattr(self, 'visualizer') and self.visualizer is not None:
+            self.visualizer.start_time = None
+            self.visualizer.current_global_time = 0.0
+            self.visualizer.is_recording_active = False
     except Exception:
         pass
 
