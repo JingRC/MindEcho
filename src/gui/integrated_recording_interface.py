@@ -7933,6 +7933,16 @@ class IntegratedAudioProcessor(QThread):
     def process_audio_for_pitch_async(self, audio_data):
         """异步音高分析 - 简化版本，只使用单一可靠的检测算法"""
         try:
+            forced_global_time = None
+            try:
+                if hasattr(self, '_lfm_forced_global_time'):
+                    forced_global_time = float(getattr(self, '_lfm_forced_global_time'))
+                    try:
+                        delattr(self, '_lfm_forced_global_time')
+                    except Exception:
+                        setattr(self, '_lfm_forced_global_time', None)
+            except Exception:
+                forced_global_time = None
             # 纯监听模式下也执行分析，确保绘制与诊断一致；但使用独立preview状态不污染录音
             preview_only = (not getattr(self, 'is_recording', False)) and (
                 bool(getattr(self, 'is_monitoring_only', False)) or bool(getattr(self, 'is_global_monitoring_active', False))
@@ -8092,8 +8102,14 @@ class IntegratedAudioProcessor(QThread):
                         audio_rms=audio_rms,
                         vibrato_info={'has_vibrato': False}
                     )
+                    payload = frame.to_dict()
+                    if forced_global_time is not None:
+                        try:
+                            payload['global_time'] = float(forced_global_time)
+                        except Exception:
+                            pass
                     try:
-                        self._emit_pitch_data_throttled(frame.to_dict())
+                        self._emit_pitch_data_throttled(payload)
                     except Exception:
                         pass
                     self._last_no_pitch_emit_t = current_time
@@ -8156,6 +8172,34 @@ class IntegratedAudioProcessor(QThread):
                     ))
                 except Exception:
                     allow_voice = True
+
+                # 本地文件实时模式下适度放宽人声门控：
+                # 避免稳定高音被短暂误判为非人声而造成主唱断续。
+                if (not allow_voice):
+                    try:
+                        host = getattr(self, '_host_interface', None)
+                    except Exception:
+                        host = None
+                    try:
+                        lfm_active = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
+                    except Exception:
+                        lfm_active = False
+                    if lfm_active:
+                        try:
+                            ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
+                            last_stable = float(getattr(self, ls_name, 0.0) or 0.0)
+                        except Exception:
+                            last_stable = 0.0
+                        try:
+                            semi = abs(12.0 * np.log2(max(float(raw_frequency), 1e-9) / max(last_stable, 1e-9))) if last_stable > 0 else 999.0
+                        except Exception:
+                            semi = 999.0
+                        try:
+                            soft_rms_ok = float(audio_rms) >= float(min_voice_rms) * 0.72
+                        except Exception:
+                            soft_rms_ok = False
+                        if soft_rms_ok and (semi <= 2.2 or float(raw_frequency) >= 320.0):
+                            allow_voice = True
 
                 if not allow_voice:
                     if not hasattr(self, '_no_pitch_emit_interval'):
@@ -8243,8 +8287,11 @@ class IntegratedAudioProcessor(QThread):
             try:
                 host = getattr(self, '_host_interface', None)
                 viz = getattr(host, 'visualizer', None) if host is not None else None
+                lfm_active = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
                 if viz is not None and hasattr(viz, 'display_mode'):
                     lead_bias_enabled = (viz.display_mode.currentText() == "普通模式")
+                if lfm_active:
+                    lead_bias_enabled = True
             except Exception:
                 lead_bias_enabled = False
             if raw_frequency > 0 and true_candidates and lead_bias_enabled:
@@ -8465,6 +8512,11 @@ class IntegratedAudioProcessor(QThread):
                     vibrato_info=vibrato_info
                 )
                 pitch_data = frame.to_dict()
+                if forced_global_time is not None:
+                    try:
+                        pitch_data['global_time'] = float(forced_global_time)
+                    except Exception:
+                        pass
                 try:
                     fc_until = float(getattr(self, '_fast_change_active_until', 0.0) or 0.0)
                     pitch_data['_fast_change'] = bool(current_time <= fc_until)
@@ -8531,6 +8583,11 @@ class IntegratedAudioProcessor(QThread):
                         vibrato_info={'has_vibrato': False}
                     )
                     timestamp_data = frame.to_dict()
+                    if forced_global_time is not None:
+                        try:
+                            timestamp_data['global_time'] = float(forced_global_time)
+                        except Exception:
+                            pass
                     # 无音高帧也需要在重录覆盖时走同一套时间轴，否则 UI 仍可能推进到“末尾幽灵区”。
                     try:
                         overlay_handled = False
@@ -9634,6 +9691,14 @@ class IntegratedAudioProcessor(QThread):
                 max_down_semi = float(getattr(self, '_lead_vocal_max_down_semi', 10.0))
             except Exception:
                 max_down_semi = 10.0
+            try:
+                high_register_hz = float(getattr(self, '_lead_vocal_high_register_hz', 300.0) or 300.0)
+            except Exception:
+                high_register_hz = 300.0
+            high_ref = max(float(raw_frequency), float(last_stable))
+            high_register = bool(high_ref >= max(220.0, high_register_hz))
+            if high_register:
+                max_down_semi = min(max_down_semi, 7.0)
 
             def _semi(a: float, b: float) -> float:
                 try:
@@ -9675,6 +9740,8 @@ class IntegratedAudioProcessor(QThread):
                     # 低于raw过多且近讲时，抑制“伴唱低音抢主线”
                     drop = max(0.0, min(1.0, 1.0 - f / max(raw_frequency, 1e-9)))
                     score -= (0.55 * near_boost) * drop
+                    if high_register:
+                        score -= 0.32 * drop
 
                 # 跃迁守卫：防止单帧跳到离谱候选
                 if last_stable > 0:
@@ -14256,6 +14323,14 @@ class ECGStylePitchVisualizer(QWidget):
         return max(0.0, min(8.0, y_pos))
 
     def _retake_overlay_preview_color(self) -> str:
+        # 本地实时同屏叠加可覆盖颜色，避免与主轨冲突。
+        try:
+            if bool(getattr(self, '_lfm_overlay_runtime_active', False)):
+                c = str(getattr(self, '_lfm_overlay_custom_color', '') or '').strip()
+                if c:
+                    return c
+        except Exception:
+            pass
         color = getattr(self, 'line_color', '#FFFFFF')
         try:
             pl = getattr(self, 'pitch_line', None)
@@ -14268,6 +14343,12 @@ class ECGStylePitchVisualizer(QWidget):
         return color
 
     def _retake_overlay_base_rgba(self, alpha: float = 0.92) -> Tuple[float, float, float, float]:
+        try:
+            if bool(getattr(self, '_lfm_overlay_runtime_active', False)):
+                alpha = float(getattr(self, '_lfm_overlay_custom_alpha', alpha))
+        except Exception:
+            pass
+        alpha = max(0.05, min(1.0, float(alpha)))
         base = self._retake_overlay_preview_color()
         try:
             from matplotlib import colors as _mcolors
@@ -14315,6 +14396,36 @@ class ECGStylePitchVisualizer(QWidget):
                                  alpha=0.98, edgecolors='none', linewidths=0, zorder=14)
             scatter.set_visible(False)
             self._retake_overlay_preview_scatter = scatter
+        label = getattr(self, '_retake_overlay_preview_label', None)
+        label_axes = getattr(label, 'axes', None) if label is not None else None
+        label_fig = getattr(label, 'figure', None) if label is not None else None
+        if label is not None and (label_axes is not ax or label_fig is None):
+            try:
+                if hasattr(label, 'remove'):
+                    label.remove()
+            except Exception:
+                pass
+            label = None
+            self._retake_overlay_preview_label = None
+        if label is None:
+            label = ax.text(
+                0.985,
+                0.975,
+                "",
+                transform=ax.transAxes,
+                ha='right',
+                va='top',
+                fontsize=9,
+                color=self._retake_overlay_preview_color(),
+                alpha=0.95,
+                zorder=15,
+                bbox=dict(facecolor=(0.0, 0.0, 0.0, 0.35), edgecolor='none', boxstyle='round,pad=0.22'),
+            )
+            try:
+                label.set_visible(False)
+            except Exception:
+                pass
+            self._retake_overlay_preview_label = label
 
     def _discard_overlay_preview_artists(self) -> None:
         line = getattr(self, '_retake_overlay_preview_line', None)
@@ -14329,6 +14440,13 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 scatter.set_offsets(np.zeros((0, 2)))
                 scatter.set_visible(False)
+            except Exception:
+                pass
+        label = getattr(self, '_retake_overlay_preview_label', None)
+        if label is not None:
+            try:
+                label.set_text('')
+                label.set_visible(False)
             except Exception:
                 pass
 
@@ -14703,6 +14821,7 @@ class ECGStylePitchVisualizer(QWidget):
         self._ensure_overlay_preview_artists()
         line = getattr(self, '_retake_overlay_preview_line', None)
         scatter = getattr(self, '_retake_overlay_preview_scatter', None)
+        label_artist = getattr(self, '_retake_overlay_preview_label', None)
         points = list(getattr(self, '_retake_overlay_preview_points', []))
         if not points:
             if line is not None:
@@ -14715,6 +14834,12 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     scatter.set_offsets(np.zeros((0, 2)))
                     scatter.set_visible(False)
+                except Exception:
+                    pass
+            if label_artist is not None:
+                try:
+                    label_artist.set_text('')
+                    label_artist.set_visible(False)
                 except Exception:
                     pass
             canvas = getattr(self, 'canvas', None)
@@ -15036,8 +15161,7 @@ class ECGStylePitchVisualizer(QWidget):
                     line.set_visible(False)
                 else:
                     line.set_data(times, pitches)
-                curve_rgb = tuple(c/255.0 for c in (0, 191, 255))
-                line.set_color(curve_rgb)
+                line.set_color(self._retake_overlay_preview_color())
                 try:
                     pl = getattr(self, 'pitch_line', None)
                     alpha = pl.get_alpha() if pl is not None else None
@@ -15045,6 +15169,11 @@ class ECGStylePitchVisualizer(QWidget):
                     alpha = None
                 if alpha is None or float(alpha) <= 0.08:
                     alpha = float(getattr(self, '_uniform_line_alpha', getattr(self, '_stable_line_alpha', 0.85)))
+                try:
+                    if bool(getattr(self, '_lfm_overlay_runtime_active', False)):
+                        alpha = float(getattr(self, '_lfm_overlay_custom_alpha', alpha))
+                except Exception:
+                    pass
                 line.set_alpha(float(alpha))
                 try:
                     line.set_linewidth(float(getattr(self, 'current_linewidth', 0.6)))
@@ -15124,13 +15253,55 @@ class ECGStylePitchVisualizer(QWidget):
                 diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
                 s_val_global = float(diameter ** 2)
                 scatter.set_sizes(np.full(len(s_times), s_val_global, dtype=float))
-                detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
+                try:
+                    rgba = self._retake_overlay_base_rgba(0.92)
+                    detail_rgb = (float(rgba[0]), float(rgba[1]), float(rgba[2]))
+                    detail_alpha = min(1.0, max(0.10, float(rgba[3]) + 0.12))
+                except Exception:
+                    detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
+                    detail_alpha = 0.98
                 scatter.set_color(detail_rgb)
-                scatter.set_alpha(0.98 if offsets.size > 0 else 0.0)
+                scatter.set_alpha(detail_alpha if offsets.size > 0 else 0.0)
                 scatter.set_linewidths(0.0)
                 scatter.set_edgecolors('none')
                 scatter.set_visible(True)
                 scatter.set_zorder(14)
+            except Exception:
+                pass
+        if label_artist is not None:
+            try:
+                show_label = bool(getattr(self, '_lfm_overlay_runtime_active', False)) and bool(times)
+                if show_label:
+                    label_txt = str(getattr(self, '_lfm_overlay_custom_label', '副轨') or '副轨')
+                    label_artist.set_text(f"副轨: {label_txt}")
+                    label_artist.set_color(self._retake_overlay_preview_color())
+                    try:
+                        pos_key = str(getattr(self, '_lfm_overlay_custom_label_pos', '右上') or '右上')
+                    except Exception:
+                        pos_key = '右上'
+                    pos_map = {
+                        '右上': (0.985, 0.975, 'right', 'top'),
+                        '左上': (0.015, 0.975, 'left', 'top'),
+                        '右下': (0.985, 0.045, 'right', 'bottom'),
+                        '左下': (0.015, 0.045, 'left', 'bottom'),
+                    }
+                    px, py, ha, va = pos_map.get(pos_key, pos_map['右上'])
+                    label_artist.set_position((px, py))
+                    label_artist.set_ha(ha)
+                    label_artist.set_va(va)
+                    try:
+                        fsz = int(getattr(self, '_lfm_overlay_custom_label_fontsize', 9) or 9)
+                    except Exception:
+                        fsz = 9
+                    label_artist.set_fontsize(max(8, min(16, fsz)))
+                    try:
+                        label_artist.set_alpha(min(1.0, max(0.35, float(getattr(self, '_lfm_overlay_custom_alpha', 0.72)) + 0.10)))
+                    except Exception:
+                        pass
+                    label_artist.set_visible(True)
+                else:
+                    label_artist.set_text('')
+                    label_artist.set_visible(False)
             except Exception:
                 pass
         canvas = getattr(self, 'canvas', None)
@@ -27638,6 +27809,25 @@ class ECGStylePitchVisualizer(QWidget):
                 host = getattr(self, '_host_interface', None)
             except Exception:
                 host = None
+            # 本地实时模式会复用 overlay preview 渲染伴唱，不能误判为“重录态”。
+            local_realtime_overlay = False
+            try:
+                local_realtime_overlay = bool(getattr(self, '_lfm_overlay_runtime_active', False))
+            except Exception:
+                local_realtime_overlay = False
+            if (not local_realtime_overlay) and host is not None:
+                try:
+                    local_realtime_overlay = bool(getattr(host, '_lfm_ctrl', None) is not None)
+                except Exception:
+                    local_realtime_overlay = False
+            try:
+                retake_preview_active = bool(getattr(self, '_retake_overlay_preview_active', False)) and (not local_realtime_overlay)
+            except Exception:
+                retake_preview_active = False
+            try:
+                retake_selection_active = bool(getattr(self, 'retake_selection_active', False))
+            except Exception:
+                retake_selection_active = False
             if host is not None:
                 try:
                     is_rec = getattr(host, '_retake_is_recording_phase', None)
@@ -27685,8 +27875,8 @@ class ECGStylePitchVisualizer(QWidget):
                 # 若正在重录/预览，关闭cap/守卫，避免新点被挡或截尾
                 try:
                     retake_live = bool(
-                        getattr(self, '_retake_overlay_preview_active', False)
-                        or getattr(self, 'retake_selection_active', False)
+                        retake_preview_active
+                        or retake_selection_active
                         or host_retake_recording
                     )
                 except Exception:
@@ -27830,8 +28020,8 @@ class ECGStylePitchVisualizer(QWidget):
             retake_progress_time: Optional[float] = None
             try:
                 retake_live = bool(
-                    getattr(self, '_retake_overlay_preview_active', False)
-                    or getattr(self, 'retake_selection_active', False)
+                    retake_preview_active
+                    or retake_selection_active
                     or host_retake_recording
                 )
             except Exception:
@@ -27884,7 +28074,7 @@ class ECGStylePitchVisualizer(QWidget):
                         strict_lock_active = bool(getattr(self, '_cap_strict_lock', False))
                         countdown_active = bool(getattr(self, '_retake_countdown_active', False))
                         try:
-                            retake_live = bool(getattr(self, '_retake_overlay_preview_active', False) or getattr(self, 'retake_selection_active', False))
+                            retake_live = bool(retake_preview_active or retake_selection_active)
                         except Exception:
                             retake_live = False
                         # 清除选区但仍在重录录制阶段：仍视为 retake_live，避免 cap/严格锁挡住新点
@@ -28166,8 +28356,8 @@ class ECGStylePitchVisualizer(QWidget):
                                 allow_forward = (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing') or getattr(self,'_post_retake_new_data_started',False))
                                 try:
                                     retake_live = bool(
-                                        getattr(self, '_retake_overlay_preview_active', False) or
-                                        getattr(self, 'retake_selection_active', False) or
+                                        retake_preview_active or
+                                        retake_selection_active or
                                         getattr(self, '_retake_guard_active', False)
                                     )
                                 except Exception:
@@ -28227,13 +28417,35 @@ class ECGStylePitchVisualizer(QWidget):
                 cur_epoch_attr = getattr(self, '_current_epoch', None)
                 if cur_epoch_attr is not None:
                     cur_epoch = int(cur_epoch_attr)
+                    try:
+                        host_local = getattr(self, '_host_interface', None)
+                    except Exception:
+                        host_local = None
+                    lfm_active = bool(host_local is not None and getattr(host_local, '_lfm_ctrl', None) is not None)
                     pkt_epoch_raw = pitch_data.get('_epoch', None)
                     if pkt_epoch_raw is None:
                         # 分析/伴奏模式下放宽：允许无 _epoch 包通过（测试 / 离线回放场景）
+                        if lfm_active:
+                            try:
+                                pitch_data['_epoch'] = int(cur_epoch)
+                            except Exception:
+                                pass
+                        else:
+                            if not (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
+                                return
+                    if pitch_data.get('_epoch', None) is None:
                         if not (bool(getattr(self,'is_analyzing',False)) or str(getattr(self,'backing_mode','')).lower() in ('accompaniment','analysis','analyzing')):
                             return
-                    pkt_epoch = int(pkt_epoch_raw)
+                    pkt_epoch = int(pitch_data.get('_epoch'))
                     if pkt_epoch != cur_epoch:
+                        if lfm_active:
+                            try:
+                                pitch_data['_epoch'] = int(cur_epoch)
+                            except Exception:
+                                pass
+                        else:
+                            return
+                    if int(pitch_data.get('_epoch', cur_epoch)) != cur_epoch:
                         return
             except Exception:
                 pass
@@ -28258,7 +28470,7 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         is_headless = False
                     overlay_guard = False
-                    if getattr(self, '_retake_overlay_preview_active', False) or getattr(self, 'retake_selection_active', False):
+                    if retake_preview_active or retake_selection_active:
                         overlay_guard = True
                     if not overlay_guard:
                         try:
@@ -28625,8 +28837,8 @@ class ECGStylePitchVisualizer(QWidget):
                 recording_live_now = False
             try:
                 retake_like_now = bool(
-                    getattr(self, '_retake_overlay_preview_active', False)
-                    or getattr(self, 'retake_selection_active', False)
+                    retake_preview_active
+                    or retake_selection_active
                     or getattr(self, '_retake_guard_active', False)
                     or getattr(self, '_retake_preserve_timeline', False)
                 )
@@ -28704,8 +28916,8 @@ class ECGStylePitchVisualizer(QWidget):
             # 重录期间强制时间单调递增，但仅与重录内上一次时间对齐，避免被全局 last_pitch_time 误推到选区外
             try:
                 retake_live_now = bool(
-                    getattr(self, '_retake_overlay_preview_active', False)
-                    or getattr(self, 'retake_selection_active', False)
+                    retake_preview_active
+                    or retake_selection_active
                     or getattr(self, '_retake_guard_active', False)
                 )
             except Exception:
@@ -28866,6 +29078,25 @@ class ECGStylePitchVisualizer(QWidget):
                 trim_point = -1.0
             if trim_point >= 0.0:
                 try:
+                    # 本地文件实时模式下，部分包可能带有“旧会话/旧游标”时间。
+                    # 当播放头已前进到 trim_point 右侧时，优先以播放头时间对齐，避免主轨被误丢弃。
+                    if float(global_time) < trim_point - 1e-4:
+                        try:
+                            host = getattr(self, '_host_interface', None)
+                        except Exception:
+                            host = None
+                        lfm_ctrl = getattr(host, '_lfm_ctrl', None) if host is not None else None
+                        if lfm_ctrl is not None and callable(getattr(lfm_ctrl, 'get_pos_seconds', None)):
+                            try:
+                                lfm_pos = float(lfm_ctrl.get_pos_seconds())
+                            except Exception:
+                                lfm_pos = -1.0
+                            if lfm_pos >= trim_point - 0.02 and (lfm_pos - float(global_time)) > 0.10:
+                                global_time = lfm_pos
+                                try:
+                                    pitch_data['global_time'] = float(global_time)
+                                except Exception:
+                                    pass
                     if float(global_time) < trim_point - 1e-4:
                         try:
                             self._dropped_retaken_frames = int(getattr(self, '_dropped_retaken_frames', 0)) + 1
@@ -29115,7 +29346,7 @@ class ECGStylePitchVisualizer(QWidget):
                         _mode = (self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式")
                     except Exception:
                         _mode = "普通模式"
-                    if _mode == "普通模式" and not skip_gate:
+                    if _mode == "普通模式" and not skip_gate and (not local_realtime_overlay):
                         # 初始化门控/缓冲状态
                         if not hasattr(self, '_voice_gate_state'):
                             self._voice_gate_state = 'silent'  # 'silent' | 'voiced'
@@ -29210,7 +29441,26 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
                 # 若该时间点已在已绘制覆盖区间内，直接跳过追加，避免重复绘制
                 try:
-                    if hasattr(self, '_drawn_coverage') and self._drawn_coverage:
+                    if local_realtime_overlay:
+                        try:
+                            lfm_eps = float(getattr(self, '_lfm_main_timebin_eps', getattr(self, '_timebin_eps', 0.004)))
+                        except Exception:
+                            lfm_eps = 0.004
+                        if lfm_eps <= 0.0:
+                            lfm_eps = 0.004
+                        if (not hasattr(self, '_lfm_main_drawn_bins')) or (getattr(self, '_lfm_main_drawn_bins', None) is None):
+                            self._lfm_main_drawn_bins = set()
+                        lfm_bin = int(round(float(global_time) / lfm_eps))
+                        if lfm_bin in self._lfm_main_drawn_bins:
+                            self.current_pitch_active = True
+                            self.current_pitch_y = self.last_active_pitch_y if self.last_active_pitch_y is not None else getattr(self, 'y_view_center', 4.5)
+                            self.last_pitch_time = time.time()
+                            try:
+                                self.update_guides()
+                            except Exception:
+                                pass
+                            return
+                    elif hasattr(self, '_drawn_coverage') and self._drawn_coverage:
                         for (cs, ce) in self._drawn_coverage:
                             if cs <= float(global_time) <= ce:
                                 # 仍同步基本状态与辅助线，但不重复添加点
@@ -29413,6 +29663,16 @@ class ECGStylePitchVisualizer(QWidget):
                     if hasattr(self, '_added_time_bins'):
                         self._added_time_bins.add(int(round(float(global_time)/float(getattr(self,'_timebin_eps',0.01)))))
                     self._cov_add_point(float(global_time))
+                    if local_realtime_overlay:
+                        try:
+                            lfm_eps = float(getattr(self, '_lfm_main_timebin_eps', getattr(self, '_timebin_eps', 0.004)))
+                        except Exception:
+                            lfm_eps = 0.004
+                        if lfm_eps <= 0.0:
+                            lfm_eps = 0.004
+                        if (not hasattr(self, '_lfm_main_drawn_bins')) or (getattr(self, '_lfm_main_drawn_bins', None) is None):
+                            self._lfm_main_drawn_bins = set()
+                        self._lfm_main_drawn_bins.add(int(round(float(global_time) / lfm_eps)))
                 except Exception:
                     pass
                 # 维护尾部滑动窗口缓存（用于长时录制保持恒定复杂度）
@@ -49578,6 +49838,17 @@ class IntegratedRecordingInterface(QMainWindow):
             v = QVBoxLayout(dlg)
             v.addWidget(QLabel("选择分析方式"))
 
+            settings_label = QLabel(self._lead_backing_settings_summary())
+            settings_label.setWordWrap(True)
+            settings_label.setStyleSheet("color:#a6d8ff;")
+            v.addWidget(settings_label)
+
+            settings_row = QHBoxLayout()
+            btn_lead_backing_settings = QPushButton("主唱/伴唱设置")
+            settings_row.addWidget(btn_lead_backing_settings)
+            settings_row.addStretch(1)
+            v.addLayout(settings_row)
+
             row = QHBoxLayout()
             btn_realtime = QPushButton("实时分析")
             btn_onepass = QPushButton("一次性绘制")
@@ -49638,12 +49909,149 @@ class IntegratedRecordingInterface(QMainWindow):
             btn_realtime.clicked.connect(_choose_file_and_realtime)
             btn_onepass.clicked.connect(_one_pass_render)
 
+            def _open_stage2_settings():
+                if self._open_lead_backing_settings_dialog(parent=dlg):
+                    settings_label.setText(self._lead_backing_settings_summary())
+
+            btn_lead_backing_settings.clicked.connect(_open_stage2_settings)
+
             dlg.exec()
         except Exception as e:
             try:
                 QMessageBox.warning(self, "纯人声", f"打开子对话失败:\n{e}")
             except Exception:
                 print(f"[LocalPitch] _open_pure_vocal_mode_dialog error: {e}")
+
+    def _lead_backing_settings_summary(self) -> str:
+        enabled = bool(getattr(self, 'enable_lead_backing_stage2', False))
+        include_backing = bool(getattr(self, 'lead_backing_include_backing', False))
+        backing_count = int(getattr(self, 'lead_backing_count', 0) or 0)
+        singer_mode = str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto')
+        realtime_enabled = bool(getattr(self, 'enable_realtime_lead_backing', False))
+        mode_cn = '模板锁定' if singer_mode == 'template' else '自动识别'
+        if not enabled:
+            return "主唱/伴唱分离：关闭（当前沿用仅人声/伴奏分离）"
+        rt_cn = '开' if realtime_enabled else '关'
+        if include_backing:
+            return f"主唱/伴唱分离：开启 | 伴唱人数: {backing_count} | 主唱识别: {mode_cn} | 实时轨道切换: {rt_cn}"
+        return f"主唱/伴唱分离：开启 | 仅主唱 | 主唱识别: {mode_cn} | 实时轨道切换: {rt_cn}"
+
+    def _open_lead_backing_settings_dialog(self, parent=None) -> bool:
+        """设置主唱/伴唱 stage2 参数，供后续分离工作线程读取。"""
+        try:
+            settings = QSettings("MindEcho", "IntegratedRecorder")
+        except Exception:
+            settings = None
+
+        try:
+            if not hasattr(self, 'enable_lead_backing_stage2'):
+                self.enable_lead_backing_stage2 = bool(settings.value('lead_backing/enable_stage2', False)) if settings else False
+            if not hasattr(self, 'lead_backing_include_backing'):
+                self.lead_backing_include_backing = bool(settings.value('lead_backing/include_backing', False)) if settings else False
+            if not hasattr(self, 'lead_backing_count'):
+                self.lead_backing_count = int(settings.value('lead_backing/count', 0) or 0) if settings else 0
+            if not hasattr(self, 'lead_backing_singer_mode'):
+                self.lead_backing_singer_mode = str(settings.value('lead_backing/singer_mode', 'auto') or 'auto') if settings else 'auto'
+            if not hasattr(self, 'lead_backing_template_path'):
+                self.lead_backing_template_path = str(settings.value('lead_backing/template_path', '') or '') if settings else ''
+            if not hasattr(self, 'enable_realtime_lead_backing'):
+                self.enable_realtime_lead_backing = bool(settings.value('lead_backing/enable_realtime_stage2', False)) if settings else False
+        except Exception:
+            pass
+
+        dlg = QDialog(parent or self)
+        dlg.setWindowTitle("主唱/伴唱设置")
+        dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        v = QVBoxLayout(dlg)
+
+        enable_cb = QCheckBox("启用主唱/伴唱分离（Stage2）")
+        enable_cb.setChecked(bool(getattr(self, 'enable_lead_backing_stage2', False)))
+        v.addWidget(enable_cb)
+
+        include_backing_cb = QCheckBox("包含伴唱轨")
+        include_backing_cb.setChecked(bool(getattr(self, 'lead_backing_include_backing', False)))
+        v.addWidget(include_backing_cb)
+
+        realtime_cb = QCheckBox("启用实时轨道切换（C02 第一版）")
+        realtime_cb.setChecked(bool(getattr(self, 'enable_realtime_lead_backing', False)))
+        v.addWidget(realtime_cb)
+
+        count_row = QHBoxLayout()
+        count_row.addWidget(QLabel("伴唱人数:"))
+        count_spin = QSpinBox()
+        count_spin.setRange(0, 4)
+        count_spin.setValue(int(getattr(self, 'lead_backing_count', 0) or 0))
+        count_row.addWidget(count_spin)
+        count_row.addStretch(1)
+        v.addLayout(count_row)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("主唱识别方式:"))
+        mode_combo = QComboBox()
+        mode_combo.addItems(["自动识别", "模板锁定"])
+        mode_combo.setCurrentIndex(1 if str(getattr(self, 'lead_backing_singer_mode', 'auto')) == 'template' else 0)
+        mode_row.addWidget(mode_combo)
+        v.addLayout(mode_row)
+
+        tpl_row = QHBoxLayout()
+        tpl_row.addWidget(QLabel("模板音频:"))
+        tpl_edit = QLineEdit(str(getattr(self, 'lead_backing_template_path', '') or ''))
+        tpl_btn = QPushButton("浏览")
+        tpl_row.addWidget(tpl_edit)
+        tpl_row.addWidget(tpl_btn)
+        v.addLayout(tpl_row)
+
+        tips = QLabel("说明：\n1) 开启后会在现有人声/伴奏分离后执行主唱/伴唱 stage2。\n2) 当前为骨架版本，默认优先保证稳定与回退。")
+        tips.setWordWrap(True)
+        tips.setStyleSheet("color:#aaaaaa;")
+        v.addWidget(tips)
+
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("保存")
+        btn_cancel = QPushButton("取消")
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+        v.addLayout(btn_row)
+
+        def _pick_template():
+            try:
+                path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "选择主唱模板音频",
+                    str(self.save_base_dir),
+                    "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma);;所有文件 (*)",
+                )
+            except Exception:
+                path = ""
+            if path:
+                tpl_edit.setText(path)
+
+        tpl_btn.clicked.connect(_pick_template)
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        try:
+            self.enable_lead_backing_stage2 = bool(enable_cb.isChecked())
+            self.lead_backing_include_backing = bool(include_backing_cb.isChecked())
+            self.lead_backing_count = int(count_spin.value()) if self.lead_backing_include_backing else 0
+            self.lead_backing_singer_mode = 'template' if mode_combo.currentIndex() == 1 else 'auto'
+            self.lead_backing_template_path = (tpl_edit.text() or '').strip()
+            self.enable_realtime_lead_backing = bool(realtime_cb.isChecked())
+
+            if settings:
+                settings.setValue('lead_backing/enable_stage2', self.enable_lead_backing_stage2)
+                settings.setValue('lead_backing/include_backing', self.lead_backing_include_backing)
+                settings.setValue('lead_backing/count', self.lead_backing_count)
+                settings.setValue('lead_backing/singer_mode', self.lead_backing_singer_mode)
+                settings.setValue('lead_backing/template_path', self.lead_backing_template_path)
+                settings.setValue('lead_backing/enable_realtime_stage2', self.enable_realtime_lead_backing)
+        except Exception:
+            return False
+        return True
 
     def _open_pure_vocal_convert_dialog(self):
         """纯人声转化：选择输入文件与输出目录，支持默认目录与自命名，并执行人声/伴奏分离。"""
@@ -50004,7 +50412,30 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             prog = _OnePassProgressDialog(self, title="纯人声转化 - 处理进度")
             prog.set_message("准备中…")
-            worker = _VocalSeparationWorker(src_file, out_dir, vocals_name, acc_name, algo_choice, export_format, stems, demucs_model=demucs_model, drums_name=drums_name, bass_name=bass_name, piano_name=piano_name, other_name=other_name, demucs_preset=demucs_preset)
+            lead_backing_options = {
+                'enable_stage2': bool(getattr(self, 'enable_lead_backing_stage2', False)),
+                'include_backing': bool(getattr(self, 'lead_backing_include_backing', False)),
+                'expected_backing_count': int(getattr(self, 'lead_backing_count', 0) or 0),
+                'singer_mode': str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto'),
+                'template_path': getattr(self, 'lead_backing_template_path', None),
+                'enable_realtime_stage2': bool(getattr(self, 'enable_realtime_lead_backing', False)),
+            }
+            worker = _VocalSeparationWorker(
+                src_file,
+                out_dir,
+                vocals_name,
+                acc_name,
+                algo_choice,
+                export_format,
+                stems,
+                demucs_model=demucs_model,
+                drums_name=drums_name,
+                bass_name=bass_name,
+                piano_name=piano_name,
+                other_name=other_name,
+                demucs_preset=demucs_preset,
+                lead_backing_options=lead_backing_options,
+            )
 
             def _on_prog(p):
                 prog.set_progress(p)
@@ -50017,10 +50448,92 @@ class IntegratedRecordingInterface(QMainWindow):
                     v_path = payload.get('vocals_path', '')
                     a_path = payload.get('acc_path', '')
                     engine = payload.get('engine', '未知')
+                    stage2 = payload.get('lead_backing', {}) if isinstance(payload, dict) else {}
+                    stage2_msg = ''
                     try:
-                        QMessageBox.information(self, "纯人声转化", f"已完成\n引擎: {engine}\n人声: {v_path}\n伴奏: {a_path}")
+                        if isinstance(stage2, dict) and stage2.get('enabled'):
+                            backing_n = len(stage2.get('backing_tracks') or [])
+                            stage2_msg = f"\n主唱/伴唱分离: 已启用（伴唱轨: {backing_n}）"
+                    except Exception:
+                        stage2_msg = ''
+                    try:
+                        QMessageBox.information(self, "纯人声转化", f"已完成\n引擎: {engine}\n人声: {v_path}\n伴奏: {a_path}{stage2_msg}")
                     except Exception:
                         print(f"[VocalConvert] done: engine={engine}, vocals={v_path}, acc={a_path}")
+                    try:
+                        preview_tracks = self._build_post_convert_preview_tracks(payload)
+                        if preview_tracks:
+                            ans = QMessageBox.question(self, "试听分离结果", "是否立即试听主唱/伴唱分离结果？")
+                            yes = False
+                            try:
+                                yes = (ans == QMessageBox.StandardButton.Yes)
+                            except Exception:
+                                pass
+                            if not yes:
+                                try:
+                                    yes = (ans == QMessageBox.Yes)
+                                except Exception:
+                                    yes = False
+                            if yes:
+                                self._open_post_convert_preview_dialog(payload)
+                    except Exception as _pe:
+                        try:
+                            print(f"[VocalConvert] preview dialog error: {_pe}")
+                        except Exception:
+                            pass
+                    try:
+                        onepass_sources = self._build_onepass_track_sources(payload)
+                        if onepass_sources:
+                            ans2 = QMessageBox.question(self, "一次性绘制", "是否进入一次性绘制（可切换 主唱-only / 伴唱-only / 主唱+伴唱）？")
+                            yes2 = False
+                            try:
+                                yes2 = (ans2 == QMessageBox.StandardButton.Yes)
+                            except Exception:
+                                pass
+                            if not yes2:
+                                try:
+                                    yes2 = (ans2 == QMessageBox.Yes)
+                                except Exception:
+                                    yes2 = False
+                            if yes2:
+                                self._onepass_track_sources = dict(onepass_sources)
+                                default_mode = '主唱-only' if '主唱-only' in onepass_sources else next(iter(onepass_sources.keys()))
+                                self._onepass_active_track_mode = default_mode
+                                fp = str(onepass_sources.get(default_mode, '') or '').strip()
+                                if fp:
+                                    self._start_offline_onepass(fp)
+                    except Exception as _op_e:
+                        try:
+                            print(f"[VocalConvert] one-pass launch error: {_op_e}")
+                        except Exception:
+                            pass
+                    try:
+                        if bool(getattr(self, 'enable_realtime_lead_backing', False)):
+                            rt_sources = self._build_realtime_track_sources(payload)
+                            if rt_sources:
+                                ans3 = QMessageBox.question(self, "实时分析", "是否进入实时分析（支持轨道切换）？")
+                                yes3 = False
+                                try:
+                                    yes3 = (ans3 == QMessageBox.StandardButton.Yes)
+                                except Exception:
+                                    pass
+                                if not yes3:
+                                    try:
+                                        yes3 = (ans3 == QMessageBox.Yes)
+                                    except Exception:
+                                        yes3 = False
+                                if yes3:
+                                    self._lfm_track_sources = dict(rt_sources)
+                                    default_rt = '主唱-only' if '主唱-only' in rt_sources else next(iter(rt_sources.keys()))
+                                    self._lfm_active_track_mode = default_rt
+                                    fp_rt = str(rt_sources.get(default_rt, '') or '').strip()
+                                    if fp_rt:
+                                        self._enter_local_file_realtime_mode(fp_rt, track_sources=rt_sources, active_mode=default_rt)
+                    except Exception as _rt_e:
+                        try:
+                            print(f"[VocalConvert] realtime launch error: {_rt_e}")
+                        except Exception:
+                            pass
                 finally:
                     try:
                         prog.accept()
@@ -50059,6 +50572,109 @@ class IntegratedRecordingInterface(QMainWindow):
                     worker.cancel(); worker.wait(200)
             except Exception:
                 pass
+
+    def _build_post_convert_preview_tracks(self, payload: dict) -> list:
+        tracks = []
+        seen = set()
+
+        def _add_file(name: str, path: str):
+            p = str(path or '').strip()
+            if not p:
+                return
+            key = ('file', p.lower())
+            if key in seen:
+                return
+            seen.add(key)
+            tracks.append({'name': name, 'path': p})
+
+        def _add_mix(name: str, paths: list):
+            ps = [str(x).strip() for x in (paths or []) if str(x).strip()]
+            if len(ps) < 2:
+                return
+            key = ('mix', tuple(sorted([x.lower() for x in ps])))
+            if key in seen:
+                return
+            seen.add(key)
+            tracks.append({'name': name, 'mix_paths': ps})
+
+        try:
+            v_path = str(payload.get('vocals_path', '') or '')
+            a_path = str(payload.get('acc_path', '') or '')
+        except Exception:
+            v_path, a_path = '', ''
+
+        _add_file('人声', v_path)
+        _add_file('伴奏', a_path)
+        _add_mix('混听A/B：人声+伴奏', [v_path, a_path])
+
+        stage2 = payload.get('lead_backing', {}) if isinstance(payload, dict) else {}
+        if isinstance(stage2, dict) and stage2.get('enabled'):
+            lead = str(stage2.get('lead_track', '') or '')
+            backs = [str(x).strip() for x in (stage2.get('backing_tracks') or []) if str(x).strip()]
+            _add_file('主唱', lead)
+            for idx, bp in enumerate(backs):
+                _add_file(f'伴唱{idx + 1}', bp)
+            if backs:
+                _add_mix('混听A/B：主唱+伴唱1', [lead, backs[0]])
+
+        return tracks
+
+    def _build_onepass_track_sources(self, payload: dict) -> dict:
+        sources = {}
+
+        def _ok_file(path: str) -> str:
+            p = str(path or '').strip()
+            if not p:
+                return ''
+            try:
+                from pathlib import Path
+                return p if Path(p).exists() else ''
+            except Exception:
+                return p
+
+        try:
+            v_path = _ok_file(payload.get('vocals_path', ''))
+        except Exception:
+            v_path = ''
+        if v_path:
+            sources['主唱+伴唱'] = v_path
+
+        try:
+            stage2 = payload.get('lead_backing', {}) if isinstance(payload, dict) else {}
+        except Exception:
+            stage2 = {}
+        if isinstance(stage2, dict) and stage2.get('enabled'):
+            lead = _ok_file(stage2.get('lead_track', ''))
+            if lead:
+                sources['主唱-only'] = lead
+            try:
+                backs = [
+                    _ok_file(x)
+                    for x in (stage2.get('backing_tracks') or [])
+                ]
+                backs = [x for x in backs if x]
+            except Exception:
+                backs = []
+            if backs:
+                # 第一伴唱提供简洁入口，更多伴唱按序号可选
+                sources['伴唱-only'] = backs[0]
+                for idx, bp in enumerate(backs):
+                    sources[f'伴唱{idx + 1}-only'] = bp
+
+        if not sources and v_path:
+            sources['主唱+伴唱'] = v_path
+        return sources
+
+    def _build_realtime_track_sources(self, payload: dict) -> dict:
+        # C02 第一版：复用 one-pass 的轨道来源构建逻辑
+        return self._build_onepass_track_sources(payload)
+
+    def _open_post_convert_preview_dialog(self, payload: dict):
+        tracks = self._build_post_convert_preview_tracks(payload)
+        if not tracks:
+            return
+        dlg = _TrackPreviewDialog(self, tracks)
+        dlg.exec()
     
     def start_recording(self):
         """开始录音"""
@@ -50842,8 +51458,13 @@ class IntegratedRecordingInterface(QMainWindow):
     def on_pitch_detected(self, pitch_data):
         """音高检测回调（支持断续音调曲线模式）"""
         try:
+            local_realtime_active = False
+            try:
+                local_realtime_active = bool(getattr(self, '_lfm_ctrl', None) is not None)
+            except Exception:
+                local_realtime_active = False
             # 暂停时完全停止后续检测处理（不累积统计，不绘制，不更新时间）
-            if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
+            if getattr(self, 'is_paused', False) or (getattr(self, '_backing_paused', False) and (not local_realtime_active)):
                 return
 
             # 若当前帧已被“选区重录覆盖缓冲”接管（负责写入正确的选区时间轴并实时绘制），
@@ -50852,6 +51473,40 @@ class IntegratedRecordingInterface(QMainWindow):
                 overlay_consumed = bool(pitch_data.get('_overlay_consumed', False))
             except Exception:
                 overlay_consumed = False
+            # 仅当重录 overlay 真实处于激活态时，才允许 overlay_consumed 短路主轨绘制。
+            # 某些回退/模式切换边界下可能残留 _overlay_consumed 标记，若直接 return 会导致主唱细点持续消失。
+            if overlay_consumed:
+                retake_overlay_live = False
+                try:
+                    checker = getattr(self, '_retake_overlay_active', None)
+                    if callable(checker):
+                        retake_overlay_live = bool(checker())
+                except Exception:
+                    retake_overlay_live = False
+                if not retake_overlay_live:
+                    try:
+                        viz = getattr(self, 'visualizer', None)
+                    except Exception:
+                        viz = None
+                    try:
+                        retake_overlay_live = bool(getattr(self, '_retake_active_range', None))
+                    except Exception:
+                        retake_overlay_live = False
+                    if (not retake_overlay_live) and viz is not None:
+                        try:
+                            retake_overlay_live = bool(
+                                getattr(viz, '_retake_overlay_preview_active', False)
+                                or getattr(viz, 'retake_selection_active', False)
+                            )
+                        except Exception:
+                            retake_overlay_live = False
+                if not retake_overlay_live:
+                    overlay_consumed = False
+                    try:
+                        if isinstance(pitch_data, dict):
+                            pitch_data['_overlay_consumed'] = False
+                    except Exception:
+                        pass
             # 更新统计
             self.total_pitches_detected += 1
             
@@ -50926,6 +51581,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 getattr(self.audio_processor, 'is_recording', False) or  # 录音模式
                 (self.audio_processor.is_global_monitoring_active and not getattr(self.audio_processor, 'is_monitoring_only', False))  # 监听+录音模式
             )
+            if local_realtime_active:
+                should_show_pitch_line = True
             
             if should_show_pitch_line:
                 # 绘制节流：限制最短重绘间隔，降低Matplotlib重绘负载
@@ -51819,7 +52476,7 @@ def main():
 
 
 # —— 本地文件实时分析：占位式入口（避免 NameError）——
-def _enter_local_file_realtime_mode(self, file_path: str):
+def _enter_local_file_realtime_mode(self, file_path: str, track_sources: dict | None = None, active_mode: str | None = None):
     """占位入口：避免 NameError，并给出友好提示。
     若后续已实现类方法 _enter_local_file_realtime_mode，可由调用方改为调用实例方法。
     """
@@ -51827,7 +52484,7 @@ def _enter_local_file_realtime_mode(self, file_path: str):
         # 若类上已有真正实现，则委托
         impl = getattr(self, '_enter_local_file_realtime_mode', None)
         if callable(impl) and impl is not _enter_local_file_realtime_mode:
-            return impl(file_path)
+            return impl(file_path, track_sources=track_sources, active_mode=active_mode)
     except Exception:
         pass
     try:
@@ -53902,12 +54559,49 @@ class _BackingControlWindow(QDialog):
 class _LocalFileRealtimeController(QObject):
     tick = pyqtSignal(float)  # 播放头位置(秒)更新
 
-    def __init__(self, parent_ifc, file_path: str):
+    def __init__(self, parent_ifc, file_path: str, overlay_file_path: str | None = None, overlay_label: str | None = None):
         super().__init__(parent_ifc)
         self.ifc = parent_ifc
         self.file_path = file_path
+        self.overlay_file_path = str(overlay_file_path or '').strip()
+        self.overlay_label = str(overlay_label or '').strip() or '伴唱叠加'
+        self.overlay_enabled = bool(getattr(self.ifc, '_lfm_overlay_enabled', True))
+        self.overlay_play_only = bool(getattr(self.ifc, '_lfm_overlay_play_only', True))
+        try:
+            self.overlay_stride = max(1, int(getattr(self.ifc, '_lfm_overlay_stride', 2) or 2))
+        except Exception:
+            self.overlay_stride = 2
+        self.overlay_effective_stride = self.overlay_stride
+        self._overlay_stride_counter = 0
+        self.overlay_gate_enabled = bool(getattr(self.ifc, '_lfm_overlay_gate_enabled', True))
+        try:
+            self.overlay_gate_ratio = max(1.0, float(getattr(self.ifc, '_lfm_overlay_gate_ratio', 1.18) or 1.18))
+        except Exception:
+            self.overlay_gate_ratio = 1.18
+        try:
+            self.overlay_gate_main_hz = max(40.0, float(getattr(self.ifc, '_lfm_overlay_gate_main_hz', 85.0) or 85.0))
+        except Exception:
+            self.overlay_gate_main_hz = 85.0
+        try:
+            self.overlay_gate_main_rms = max(0.0005, float(getattr(self.ifc, '_lfm_overlay_gate_main_rms', 0.009) or 0.009))
+        except Exception:
+            self.overlay_gate_main_rms = 0.009
+        try:
+            self.overlay_gate_hold_ms = max(0.0, float(getattr(self.ifc, '_lfm_overlay_gate_hold_ms', 140.0) or 140.0))
+        except Exception:
+            self.overlay_gate_hold_ms = 140.0
+        self.overlay_adaptive_throttle = bool(getattr(self.ifc, '_lfm_overlay_adaptive_throttle', True))
+        try:
+            self.overlay_batch_flush_ms = max(20, int(getattr(self.ifc, '_lfm_overlay_batch_flush_ms', 45) or 45))
+        except Exception:
+            self.overlay_batch_flush_ms = 45
+        try:
+            self.overlay_batch_max = max(8, int(getattr(self.ifc, '_lfm_overlay_batch_max', 64) or 64))
+        except Exception:
+            self.overlay_batch_max = 64
         self.sr_target = int(getattr(self.ifc.audio_processor, 'sample_rate', 48000) or 48000)
         self.audio = None
+        self.overlay_audio = None
         self.total_s = 0.0
         self.pos_samples = 0
         self.playing = False
@@ -53918,6 +54612,267 @@ class _LocalFileRealtimeController(QObject):
         self._frame_window = int(getattr(self.ifc.audio_processor, '_frame_window', 2048) or 2048)
         self._frame_hop = int(getattr(self.ifc.audio_processor, '_frame_hop', max(1, self._frame_window // 4)))
         self.coverage = []  # 已分析覆盖区间
+        self._overlay_no_pitch_counter = 0
+        self._overlay_packets_emitted = 0
+        self._overlay_packets_with_pitch = 0
+        self._overlay_packets_no_pitch = 0
+        self._overlay_packets_suppressed = 0
+        self._overlay_packets_batched_flush = 0
+        self._overlay_batch_queue = []
+        self._overlay_flush_timer = None
+        self._overlay_flush_last_cost_ms = 0.0
+        self._overlay_gate_state = '未判定'
+        self._overlay_last_main_freq = 0.0
+        self._overlay_last_main_rms = 0.0
+        self._overlay_last_backing_rms = 0.0
+        self._overlay_main_rms_ema = 0.0
+        self._overlay_backing_rms_ema = 0.0
+        self._overlay_gate_hold_until = 0.0
+        self.overlay_dual_extract_enabled = bool(getattr(self.ifc, '_lfm_overlay_dual_extract_enabled', True))
+        try:
+            self.overlay_dual_low_min_hz = max(60.0, float(getattr(self.ifc, '_lfm_overlay_dual_low_min_hz', 85.0) or 85.0))
+        except Exception:
+            self.overlay_dual_low_min_hz = 85.0
+        try:
+            self.overlay_dual_low_max_hz = max(self.overlay_dual_low_min_hz + 20.0, float(getattr(self.ifc, '_lfm_overlay_dual_low_max_hz', 330.0) or 330.0))
+        except Exception:
+            self.overlay_dual_low_max_hz = 330.0
+        try:
+            self.overlay_dual_high_min_hz = max(180.0, float(getattr(self.ifc, '_lfm_overlay_dual_high_min_hz', 300.0) or 300.0))
+        except Exception:
+            self.overlay_dual_high_min_hz = 300.0
+        try:
+            self.overlay_dual_high_max_hz = max(self.overlay_dual_high_min_hz + 120.0, float(getattr(self.ifc, '_lfm_overlay_dual_high_max_hz', 1250.0) or 1250.0))
+        except Exception:
+            self.overlay_dual_high_max_hz = 1250.0
+        self._overlay_dual_last_lead_hz = 0.0
+        self._overlay_dual_last_backing_hz = 0.0
+
+    @staticmethod
+    def _frame_rms(frame) -> float:
+        try:
+            import numpy as np
+            arr = np.asarray(frame, dtype=np.float32)
+            if arr.size <= 0:
+                return 0.0
+            val = float(np.sqrt(np.mean(np.square(arr, dtype=np.float64), dtype=np.float64)))
+            return max(0.0, val)
+        except Exception:
+            return 0.0
+
+    def _compute_dynamic_stride(self) -> int:
+        base = max(1, int(getattr(self, 'overlay_stride', 1) or 1))
+        if not bool(getattr(self, 'overlay_adaptive_throttle', True)):
+            self.overlay_effective_stride = base
+            return base
+        qlen = len(getattr(self, '_overlay_batch_queue', []) or [])
+        cost = float(getattr(self, '_overlay_flush_last_cost_ms', 0.0) or 0.0)
+        boost = 0
+        if qlen >= 140 or cost >= 22.0:
+            boost = 3
+        elif qlen >= 80 or cost >= 14.0:
+            boost = 2
+        elif qlen >= 40 or cost >= 8.5:
+            boost = 1
+        eff = min(8, base + boost)
+        self.overlay_effective_stride = eff
+        return eff
+
+    def _detect_dual_pitch_pair(self, main_frame) -> tuple[float, float]:
+        try:
+            import numpy as np
+            arr = np.asarray(main_frame, dtype=np.float32).reshape(-1)
+            if arr.size < 128:
+                return 0.0, 0.0
+            win = np.hanning(arr.size).astype(np.float32)
+            spec = np.fft.rfft(arr * win)
+            mag = np.abs(spec).astype(np.float32)
+            if mag.size < 8:
+                return 0.0, 0.0
+            freqs = np.fft.rfftfreq(arr.size, d=1.0 / float(self.sr_target)).astype(np.float32)
+
+            def _pick_peak(min_hz: float, max_hz: float) -> tuple[float, float]:
+                mask = (freqs >= float(min_hz)) & (freqs <= float(max_hz))
+                if not np.any(mask):
+                    return 0.0, 0.0
+                vals = mag[mask]
+                if vals.size <= 0:
+                    return 0.0, 0.0
+                idx_local = int(np.argmax(vals))
+                amp = float(vals[idx_local])
+                noise = float(np.percentile(vals, 70)) if vals.size >= 8 else float(np.mean(vals))
+                if amp < max(1e-7, noise * 1.35):
+                    return 0.0, 0.0
+                hz = float(freqs[mask][idx_local])
+                return hz, amp
+
+            low_hz, low_amp = _pick_peak(self.overlay_dual_low_min_hz, self.overlay_dual_low_max_hz)
+            high_hz, high_amp = _pick_peak(self.overlay_dual_high_min_hz, self.overlay_dual_high_max_hz)
+            if low_hz <= 0.0 or high_hz <= 0.0:
+                self._overlay_dual_last_lead_hz = 0.0
+                self._overlay_dual_last_backing_hz = 0.0
+                return 0.0, 0.0
+            if high_hz <= low_hz * 1.15:
+                self._overlay_dual_last_lead_hz = 0.0
+                self._overlay_dual_last_backing_hz = 0.0
+                return 0.0, 0.0
+            if low_amp <= 0.0 or (high_amp / max(1e-9, low_amp)) > 12.0:
+                # 低轨过弱时，不作为稳定副轨。
+                self._overlay_dual_last_lead_hz = 0.0
+                self._overlay_dual_last_backing_hz = 0.0
+                return 0.0, 0.0
+            self._overlay_dual_last_lead_hz = float(high_hz)
+            self._overlay_dual_last_backing_hz = float(low_hz)
+            return float(high_hz), float(low_hz)
+        except Exception:
+            self._overlay_dual_last_lead_hz = 0.0
+            self._overlay_dual_last_backing_hz = 0.0
+            return 0.0, 0.0
+
+    def _should_suppress_overlay(self, main_frame, backing_frame, t0_sec: float, secondary_freq: float = 0.0) -> bool:
+        if not bool(getattr(self, 'overlay_gate_enabled', True)):
+            self._overlay_gate_state = '门控关闭'
+            return False
+        try:
+            main_freq = float(self.ifc.audio_processor.detect_pitch_simple_yin(main_frame) or 0.0)
+        except Exception:
+            main_freq = 0.0
+        main_rms = self._frame_rms(main_frame)
+        backing_rms = self._frame_rms(backing_frame)
+        self._overlay_last_main_freq = main_freq
+        self._overlay_last_main_rms = main_rms
+        self._overlay_last_backing_rms = backing_rms
+
+        # 自适应底噪：EMA 让不同歌曲/响度下的门限更稳。
+        self._overlay_main_rms_ema = (self._overlay_main_rms_ema * 0.92) + (main_rms * 0.08)
+        self._overlay_backing_rms_ema = (self._overlay_backing_rms_ema * 0.92) + (backing_rms * 0.08)
+        main_floor = max(float(getattr(self, 'overlay_gate_main_rms', 0.009) or 0.009), self._overlay_main_rms_ema * 0.66)
+        ratio = max(1.0, float(getattr(self, 'overlay_gate_ratio', 1.18) or 1.18))
+        main_hz_thr = max(40.0, float(getattr(self, 'overlay_gate_main_hz', 85.0) or 85.0))
+
+        main_active = (main_freq >= main_hz_thr) and (main_rms >= main_floor)
+        main_dominant = main_rms >= max(main_floor, backing_rms * ratio)
+
+        # 同帧双轨旁路：若检测到稳定低频副轨（常见说唱/副声部），则允许并行显示。
+        try:
+            sec = float(secondary_freq or 0.0)
+        except Exception:
+            sec = 0.0
+        if sec >= self.overlay_dual_low_min_hz and main_freq >= self.overlay_dual_high_min_hz and main_freq >= sec * 1.20:
+            self._overlay_gate_state = '双轨旁路'
+            return False
+
+        suppress = bool(main_active and main_dominant)
+
+        try:
+            now_t = float(t0_sec)
+        except Exception:
+            now_t = 0.0
+        if suppress:
+            hold_sec = max(0.0, float(getattr(self, 'overlay_gate_hold_ms', 140.0) or 140.0) / 1000.0)
+            self._overlay_gate_hold_until = max(self._overlay_gate_hold_until, now_t + hold_sec)
+        if (not suppress) and now_t < float(getattr(self, '_overlay_gate_hold_until', 0.0) or 0.0):
+            suppress = True
+            self._overlay_gate_state = '主轨保持抑制'
+        elif suppress:
+            self._overlay_gate_state = '主轨占优抑制'
+        elif main_active:
+            self._overlay_gate_state = '主轨活跃但未占优'
+        else:
+            self._overlay_gate_state = '通过'
+        return suppress
+
+    def _emit_overlay_pitch_packet(self, packet: dict) -> None:
+        if not bool(getattr(self, 'overlay_enabled', True)):
+            return
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None:
+            return
+        try:
+            self._overlay_packets_emitted += 1
+            if bool(packet.get('has_pitch', False)):
+                self._overlay_packets_with_pitch += 1
+            else:
+                self._overlay_packets_no_pitch += 1
+        except Exception:
+            pass
+        try:
+            self._overlay_batch_queue.append(packet)
+            if len(self._overlay_batch_queue) >= max(8, int(getattr(self, 'overlay_batch_max', 64) or 64)):
+                self._flush_overlay_packet_batch()
+        except Exception:
+            pass
+
+    def _flush_overlay_packet_batch(self) -> None:
+        try:
+            batch = list(getattr(self, '_overlay_batch_queue', []) or [])
+            if not batch:
+                return
+            self._overlay_batch_queue = []
+            viz = getattr(self.ifc, 'visualizer', None)
+            if viz is None:
+                return
+            render = getattr(viz, 'render_retake_overlay_points', None)
+            if callable(render):
+                t0 = time.perf_counter()
+                render(batch, force_preview=True)
+                self._overlay_flush_last_cost_ms = max(0.0, (time.perf_counter() - t0) * 1000.0)
+                self._overlay_packets_batched_flush += 1
+        except Exception:
+            pass
+
+    def _analyze_overlay_frame(self, frame, t0_sec: float, main_frame=None) -> None:
+        dual_lead = 0.0
+        dual_back = 0.0
+        if main_frame is not None and bool(getattr(self, 'overlay_dual_extract_enabled', True)):
+            dual_lead, dual_back = self._detect_dual_pitch_pair(main_frame)
+
+        try:
+            if dual_back > 0.0:
+                freq = float(dual_back)
+            else:
+                freq = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
+        except Exception:
+            freq = 0.0
+        if freq > 0.0:
+            if main_frame is not None and self._should_suppress_overlay(main_frame, frame, t0_sec, secondary_freq=dual_back):
+                self._overlay_packets_suppressed += 1
+                self._overlay_no_pitch_counter += 1
+                if (self._overlay_no_pitch_counter % 6) == 0:
+                    self._emit_overlay_pitch_packet({
+                        'timestamp': time.time(),
+                        'global_time': float(t0_sec),
+                        'has_pitch': False,
+                        'confidence': 0.0,
+                        'track_label': self.overlay_label,
+                        'gate': 'suppressed',
+                    })
+                return
+            self._overlay_no_pitch_counter = 0
+            pkt = {
+                'timestamp': time.time(),
+                'global_time': float(t0_sec),
+                'frequency': float(freq),
+                'confidence': 0.78 if dual_back > 0.0 else 0.72,
+                'has_pitch': True,
+                'track_label': self.overlay_label,
+                'source': 'dual-main' if dual_back > 0.0 else 'overlay-stem',
+            }
+            self._emit_overlay_pitch_packet(pkt)
+            return
+        self._overlay_no_pitch_counter += 1
+        # 周期性发送无音高包，用于在叠加层形成断开效果，避免长线误连。
+        if (self._overlay_no_pitch_counter % 5) == 0:
+            self._emit_overlay_pitch_packet({
+                'timestamp': time.time(),
+                'global_time': float(t0_sec),
+                'has_pitch': False,
+                'confidence': 0.0,
+                'track_label': self.overlay_label,
+            })
 
     def _decode_file(self) -> None:
         import numpy as np
@@ -53953,6 +54908,41 @@ class _LocalFileRealtimeController(QObject):
             data = self._resample_linear(data, int(sr), self.sr_target)
         self.audio = np.ascontiguousarray(data.astype(np.float32))
         self.total_s = float(len(self.audio)) / float(self.sr_target)
+
+        if self.overlay_file_path:
+            try:
+                o_path = str(self.overlay_file_path)
+                o_data = None
+                o_sr = None
+                try:
+                    import soundfile as sf
+                    o_data, o_sr = sf.read(o_path, always_2d=True)
+                except Exception:
+                    try:
+                        import wave
+                        with wave.open(o_path, 'rb') as wf:
+                            o_sr = wf.getframerate()
+                            n = wf.getnframes()
+                            ch = wf.getnchannels()
+                            raw = wf.readframes(n)
+                        arr = np.frombuffer(raw, dtype=np.int16)
+                        if ch > 1:
+                            arr = arr.reshape(-1, ch).mean(axis=1)
+                        o_data = arr.astype(np.float32) / 32768.0
+                        o_data = o_data.reshape(-1, 1)
+                    except Exception:
+                        o_data, o_sr = None, None
+                if o_data is not None and o_sr is not None:
+                    if o_data.ndim == 2 and o_data.shape[1] > 1:
+                        o_data = o_data.mean(axis=1, dtype=np.float64)
+                    else:
+                        o_data = o_data.squeeze()
+                    o_data = o_data.astype(np.float32)
+                    if int(o_sr) != int(self.sr_target):
+                        o_data = self._resample_linear(o_data, int(o_sr), self.sr_target)
+                    self.overlay_audio = np.ascontiguousarray(o_data.astype(np.float32))
+            except Exception:
+                self.overlay_audio = None
 
     @staticmethod
     def _resample_linear(x, sr_in: int, sr_out: int):
@@ -54000,6 +54990,10 @@ class _LocalFileRealtimeController(QObject):
         self._ana_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._ana_timer.timeout.connect(self._on_analysis_tick)
         self._ana_timer.start(10)
+        self._overlay_flush_timer = QTimer(self)
+        self._overlay_flush_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._overlay_flush_timer.timeout.connect(self._flush_overlay_packet_batch)
+        self._overlay_flush_timer.start(max(20, int(getattr(self, 'overlay_batch_flush_ms', 45) or 45)))
 
     def stop(self):
         try:
@@ -54010,6 +55004,15 @@ class _LocalFileRealtimeController(QObject):
         try:
             if self._ana_timer:
                 self._ana_timer.stop()
+        except Exception:
+            pass
+        try:
+            if self._overlay_flush_timer:
+                self._overlay_flush_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._flush_overlay_packet_batch()
         except Exception:
             pass
         try:
@@ -54051,6 +55054,10 @@ class _LocalFileRealtimeController(QObject):
             pass
 
     def seek_seconds(self, sec: float):
+        try:
+            prev_sec = self.get_pos_seconds()
+        except Exception:
+            prev_sec = 0.0
         sec = max(0.0, min(float(sec), self.total_s))
         self.pos_samples = int(round(sec * self.sr_target))
         # 立即同步可视化到新位置，并重置时间基确保后续点时间戳正确
@@ -54077,6 +55084,50 @@ class _LocalFileRealtimeController(QObject):
                 self._ana_cursor = int(self.pos_samples)
             except Exception:
                 pass
+        # 关键修复：倒退 seek 后必须释放“已分析覆盖”锚点，否则 30s 之后会被误判为已处理，
+        # 导致主轨不再重新分析（表现为只剩伴唱叠加）。
+        try:
+            backward = float(sec) < (float(prev_sec) - 1e-6)
+        except Exception:
+            backward = False
+        if backward:
+            try:
+                rewind_anchor = max(0, int(self.pos_samples) - int(getattr(self, '_frame_window', 2048) or 2048))
+            except Exception:
+                rewind_anchor = int(self.pos_samples)
+            try:
+                kept = []
+                for a, b in list(getattr(self, 'coverage', []) or []):
+                    try:
+                        ai = int(a)
+                        bi = int(b)
+                    except Exception:
+                        continue
+                    if bi <= rewind_anchor:
+                        kept.append((ai, bi))
+                    elif ai < rewind_anchor:
+                        kept.append((ai, rewind_anchor))
+                self.coverage = kept
+            except Exception:
+                pass
+            try:
+                viz = getattr(self.ifc, 'visualizer', None)
+            except Exception:
+                viz = None
+            if viz is not None:
+                try:
+                    bins = getattr(viz, '_lfm_main_drawn_bins', None)
+                    if isinstance(bins, set) and bins:
+                        try:
+                            lfm_eps = float(getattr(viz, '_lfm_main_timebin_eps', getattr(viz, '_timebin_eps', 0.004)))
+                        except Exception:
+                            lfm_eps = 0.004
+                        if lfm_eps <= 0.0:
+                            lfm_eps = 0.004
+                        rewind_bin = int(round((float(rewind_anchor) / float(self.sr_target)) / lfm_eps))
+                        viz._lfm_main_drawn_bins = {b for b in bins if int(b) <= rewind_bin}
+                except Exception:
+                    pass
         self.tick.emit(sec)
         # 立刻跑一次分析tick，尽快在新位置开始绘制
         try:
@@ -54131,11 +55182,69 @@ class _LocalFileRealtimeController(QObject):
             if not self._is_range_processed(a0, a1):
                 frame = self.audio[a0:a1]
                 try:
+                    try:
+                        self.ifc.audio_processor._lfm_forced_global_time = float(a0) / float(self.sr_target)
+                    except Exception:
+                        pass
                     self.ifc.audio_processor.process_audio_for_pitch_async(frame)
                 except Exception:
                     pass
+                # 主轨直达兜底默认关闭：仅在显式开关打开时启用，避免与主链路去重冲突造成断续。
+                try:
+                    if bool(getattr(self.ifc, '_lfm_enable_main_direct_fallback', False)):
+                        self._emit_mainline_direct_packet(frame, float(a0) / float(self.sr_target))
+                except Exception:
+                    pass
+                if self.overlay_audio is not None and bool(getattr(self, 'overlay_enabled', True)):
+                    try:
+                        if bool(getattr(self, 'overlay_play_only', True)) and (not bool(getattr(self, 'playing', False))):
+                            raise RuntimeError('overlay-paused')
+                        self._overlay_stride_counter += 1
+                        stride = self._compute_dynamic_stride()
+                        if self._overlay_stride_counter < stride:
+                            raise RuntimeError('overlay-skip')
+                        self._overlay_stride_counter = 0
+                        import numpy as np
+                        b0 = min(int(a0), len(self.overlay_audio))
+                        b1 = min(int(a1), len(self.overlay_audio))
+                        if b1 > b0:
+                            o_frame = self.overlay_audio[b0:b1]
+                            if o_frame.shape[0] < self._frame_window:
+                                pad = np.zeros((self._frame_window - o_frame.shape[0],), dtype=np.float32)
+                                o_frame = np.concatenate([o_frame, pad])
+                            self._analyze_overlay_frame(o_frame, float(a0) / float(self.sr_target), main_frame=frame)
+                    except Exception:
+                        pass
                 self._mark_processed(a0, a1)
             self._ana_cursor += self._frame_hop
+
+    def _emit_mainline_direct_packet(self, frame, t0_sec: float) -> None:
+        """在本地实时路径下直接补发主唱包，确保未绘制区段能落点。"""
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None:
+            return
+        try:
+            freq = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
+        except Exception:
+            freq = 0.0
+        if freq <= 0.0:
+            return
+        payload = {
+            'timestamp': time.time(),
+            'global_time': float(t0_sec),
+            'frequency': float(freq),
+            'confidence': 0.58,
+            'has_pitch': True,
+            '_lfm_direct': True,
+            '_epoch': int(getattr(self.ifc, '_record_epoch', 0)),
+        }
+        try:
+            viz.add_pitch_data(payload)
+        except Exception:
+            pass
 
 
 class _LocalFilePanel(QDialog):
@@ -54147,6 +55256,133 @@ class _LocalFilePanel(QDialog):
         self.setModal(False)
         self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
         v = QVBoxLayout(self)
+        self.track_combo = None
+        try:
+            sources = dict(getattr(self.ifc, '_lfm_track_sources', {}) or {})
+        except Exception:
+            sources = {}
+        if len(sources) >= 2:
+            mode_row = QHBoxLayout()
+            mode_row.addWidget(QLabel("轨道模式:"))
+            self.track_combo = QComboBox()
+            for k in sources.keys():
+                self.track_combo.addItem(str(k), str(k))
+            try:
+                cur_mode = str(getattr(self.ifc, '_lfm_active_track_mode', '') or '')
+            except Exception:
+                cur_mode = ''
+            if cur_mode:
+                idx = self.track_combo.findData(cur_mode)
+                if idx >= 0:
+                    self.track_combo.setCurrentIndex(idx)
+            self.track_combo.currentIndexChanged.connect(self._on_track_mode_changed)
+            mode_row.addWidget(self.track_combo)
+            v.addLayout(mode_row)
+
+        overlay_row = QHBoxLayout()
+        overlay_row.addWidget(QLabel("副轨叠加:"))
+        self.overlay_cb = QCheckBox("开启")
+        self.overlay_cb.setChecked(bool(getattr(self.ifc, '_lfm_overlay_enabled', True)))
+        self.overlay_cb.stateChanged.connect(self._on_overlay_toggle_changed)
+        overlay_row.addWidget(self.overlay_cb)
+        overlay_row.addWidget(QLabel("颜色:"))
+        self.overlay_color_combo = QComboBox()
+        self._overlay_color_map = {
+            '橙色': '#FF9E4A',
+            '青色': '#4AD9FF',
+            '玫红': '#FF6FAE',
+            '亮绿': '#7CFF8A',
+            '琥珀': '#FFC24A',
+        }
+        for name in self._overlay_color_map.keys():
+            self.overlay_color_combo.addItem(name, self._overlay_color_map[name])
+        cur_color = str(getattr(self.ifc, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A').upper()
+        idx_color = -1
+        for i in range(self.overlay_color_combo.count()):
+            if str(self.overlay_color_combo.itemData(i) or '').upper() == cur_color:
+                idx_color = i
+                break
+        if idx_color >= 0:
+            self.overlay_color_combo.setCurrentIndex(idx_color)
+        self.overlay_color_combo.currentIndexChanged.connect(self._on_overlay_style_changed)
+        overlay_row.addWidget(self.overlay_color_combo)
+        overlay_row.addWidget(QLabel("透明:"))
+        self.overlay_alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.overlay_alpha_slider.setRange(20, 100)
+        self.overlay_alpha_slider.setValue(int(round(float(getattr(self.ifc, '_lfm_overlay_alpha', 0.72)) * 100.0)))
+        self.overlay_alpha_slider.valueChanged.connect(self._on_overlay_style_changed)
+        overlay_row.addWidget(self.overlay_alpha_slider)
+        v.addLayout(overlay_row)
+
+        legend_row = QHBoxLayout()
+        legend_row.addWidget(QLabel("图例位置:"))
+        self.overlay_legend_pos_combo = QComboBox()
+        self.overlay_legend_pos_combo.addItem('右上', '右上')
+        self.overlay_legend_pos_combo.addItem('左上', '左上')
+        self.overlay_legend_pos_combo.addItem('右下', '右下')
+        self.overlay_legend_pos_combo.addItem('左下', '左下')
+        cur_legend_pos = str(getattr(self.ifc, '_lfm_overlay_label_pos', '右上') or '右上')
+        idx_pos = self.overlay_legend_pos_combo.findData(cur_legend_pos)
+        if idx_pos >= 0:
+            self.overlay_legend_pos_combo.setCurrentIndex(idx_pos)
+        self.overlay_legend_pos_combo.currentIndexChanged.connect(self._on_overlay_label_style_changed)
+        legend_row.addWidget(self.overlay_legend_pos_combo)
+        legend_row.addWidget(QLabel("字号:"))
+        self.overlay_legend_font_slider = QSlider(Qt.Orientation.Horizontal)
+        self.overlay_legend_font_slider.setRange(8, 16)
+        self.overlay_legend_font_slider.setValue(int(getattr(self.ifc, '_lfm_overlay_label_fontsize', 9) or 9))
+        self.overlay_legend_font_slider.valueChanged.connect(self._on_overlay_label_style_changed)
+        legend_row.addWidget(self.overlay_legend_font_slider)
+        self.overlay_reset_btn = QPushButton("恢复默认")
+        self.overlay_reset_btn.clicked.connect(self._on_overlay_reset_defaults)
+        legend_row.addWidget(self.overlay_reset_btn)
+        v.addLayout(legend_row)
+
+        perf_row = QHBoxLayout()
+        perf_row.addWidget(QLabel("叠加性能:"))
+        self.overlay_perf_combo = QComboBox()
+        self.overlay_perf_combo.addItem('高质量', (1, True))
+        self.overlay_perf_combo.addItem('平衡', (2, True))
+        self.overlay_perf_combo.addItem('省电', (4, True))
+        cur_stride = max(1, int(getattr(self.ifc, '_lfm_overlay_stride', 2) or 2))
+        cur_play_only = bool(getattr(self.ifc, '_lfm_overlay_play_only', True))
+        cur_perf = 1
+        if cur_stride >= 4 and cur_play_only:
+            cur_perf = 2
+        elif cur_stride >= 2 and cur_play_only:
+            cur_perf = 1
+        self.overlay_perf_combo.setCurrentIndex(cur_perf)
+        self.overlay_perf_combo.currentIndexChanged.connect(self._on_overlay_perf_changed)
+        perf_row.addWidget(self.overlay_perf_combo)
+        v.addLayout(perf_row)
+
+        overlay_track = str(getattr(self.ctrl, 'overlay_label', '') or '').strip()
+        self.overlay_track_label = QLabel(f"副轨来源: {self._pretty_track_label(overlay_track)}")
+        self.overlay_track_label.setStyleSheet("color:#aaaaaa;")
+        v.addWidget(self.overlay_track_label)
+
+        diag_box = QGroupBox("叠加诊断")
+        diag_layout = QVBoxLayout(diag_box)
+        self.diag_source_label = QLabel("副轨源: -")
+        self.diag_source_label.setStyleSheet("color:#b8b8b8;")
+        diag_layout.addWidget(self.diag_source_label)
+        self.diag_gate_label = QLabel("触发条件: -")
+        self.diag_gate_label.setStyleSheet("color:#b8b8b8;")
+        diag_layout.addWidget(self.diag_gate_label)
+        self.diag_points_label = QLabel("副轨点数: -")
+        self.diag_points_label.setStyleSheet("color:#b8b8b8;")
+        diag_layout.addWidget(self.diag_points_label)
+        self.diag_legend_label = QLabel("图例条件: -")
+        self.diag_legend_label.setStyleSheet("color:#b8b8b8;")
+        diag_layout.addWidget(self.diag_legend_label)
+        self.diag_packets_label = QLabel("叠加包: -")
+        self.diag_packets_label.setStyleSheet("color:#8fb8ff;")
+        diag_layout.addWidget(self.diag_packets_label)
+        self.diag_alert_label = QLabel("")
+        self.diag_alert_label.setWordWrap(True)
+        self.diag_alert_label.setStyleSheet("color:#ff8a8a; font-weight:600;")
+        diag_layout.addWidget(self.diag_alert_label)
+        v.addWidget(diag_box)
         self.lbl_time = QLabel("00:00 / 00:00")
         v.addWidget(self.lbl_time)
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -54165,7 +55401,13 @@ class _LocalFilePanel(QDialog):
         self.slider.valueChanged.connect(self._on_slider_changed)
         self._dragging = False
         self.ctrl.tick.connect(self._on_tick)
+        self._apply_overlay_controls_to_runtime()
         self._update_labels(0.0, self.ctrl.total_s)
+        self._diag_timer = QTimer(self)
+        self._diag_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._diag_timer.timeout.connect(self._update_overlay_diagnostics)
+        self._diag_timer.start(250)
+        self._update_overlay_diagnostics()
 
     @staticmethod
     def _fmt(sec: float) -> str:
@@ -54183,12 +55425,128 @@ class _LocalFilePanel(QDialog):
         except Exception:
             pass
 
+    @staticmethod
+    def _pretty_track_label(raw: str) -> str:
+        txt = str(raw or '').strip()
+        if not txt:
+            return '无'
+        mapping = {
+            '主唱+伴唱': '混合',
+            '主唱-only': '主唱',
+            '伴唱-only': '伴唱',
+        }
+        if txt in mapping:
+            return mapping[txt]
+        if txt.endswith('-only'):
+            txt = txt[:-5]
+        txt = txt.replace('主唱N', '主唱').replace('伴唱N', '伴唱')
+        return txt
+
     def _on_tick(self, cur_s: float):
         self._update_labels(cur_s, self.ctrl.total_s)
+        self._update_overlay_diagnostics()
         # 同步可视化（仅在播放时跟随；暂停时不强制更改，允许自由浏览）
         try:
             if self.ctrl.playing and hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
                 self.ifc.visualizer.follow_playback_time(cur_s)
+        except Exception:
+            pass
+
+    def _update_overlay_diagnostics(self):
+        try:
+            has_overlay_src = bool(getattr(self.ctrl, 'overlay_audio', None) is not None)
+            src_label = self._pretty_track_label(str(getattr(self.ctrl, 'overlay_label', '') or ''))
+            self.diag_source_label.setText(
+                f"副轨源: {'有' if has_overlay_src else '无'} | 标签: {src_label if src_label else '无'}"
+            )
+        except Exception:
+            pass
+
+        try:
+            playing = bool(getattr(self.ctrl, 'playing', False))
+            play_only = bool(getattr(self.ctrl, 'overlay_play_only', True))
+            enabled = bool(getattr(self.ctrl, 'overlay_enabled', True))
+            gate_ok = enabled and (playing or (not play_only))
+            reason = '通过' if gate_ok else ('暂停阻断' if (play_only and (not playing)) else '叠加关闭')
+            self.diag_gate_label.setText(
+                f"触发条件: {reason} | 播放:{'是' if playing else '否'} | 仅播放:{'是' if play_only else '否'}"
+            )
+        except Exception:
+            pass
+
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+            pts = list(getattr(viz, '_retake_overlay_preview_points', []) or []) if viz is not None else []
+            pts_n = len(pts)
+            self.diag_points_label.setText(f"副轨点数: {pts_n}")
+        except Exception:
+            pass
+
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+            runtime_active = bool(getattr(viz, '_lfm_overlay_runtime_active', False)) if viz is not None else False
+            preview_active = bool(getattr(viz, '_retake_overlay_preview_active', False)) if viz is not None else False
+            pts_n = len(list(getattr(viz, '_retake_overlay_preview_points', []) or [])) if viz is not None else 0
+            cond_ok = runtime_active and preview_active and (pts_n > 0)
+            label_artist = getattr(viz, '_retake_overlay_preview_label', None) if viz is not None else None
+            label_visible = bool(label_artist is not None and bool(getattr(label_artist, 'get_visible', lambda: False)()))
+            self.diag_legend_label.setText(
+                f"图例条件: {'满足' if cond_ok else '不满足'} | 运行:{'是' if runtime_active else '否'} | 可见:{'是' if label_visible else '否'}"
+            )
+        except Exception:
+            pass
+
+        try:
+            total = int(getattr(self.ctrl, '_overlay_packets_emitted', 0) or 0)
+            pitched = int(getattr(self.ctrl, '_overlay_packets_with_pitch', 0) or 0)
+            nop = int(getattr(self.ctrl, '_overlay_packets_no_pitch', 0) or 0)
+            sup = int(getattr(self.ctrl, '_overlay_packets_suppressed', 0) or 0)
+            qlen = len(list(getattr(self.ctrl, '_overlay_batch_queue', []) or []))
+            stride = int(getattr(self.ctrl, 'overlay_effective_stride', getattr(self.ctrl, 'overlay_stride', 1)) or 1)
+            self.diag_packets_label.setText(f"叠加包: 总{total} / 有音高{pitched} / 无音高{nop} / 抑制{sup} | 队列{qlen} | stride{stride}")
+        except Exception:
+            pass
+
+        try:
+            gate_state = str(getattr(self.ctrl, '_overlay_gate_state', '') or '-')
+            mf = float(getattr(self.ctrl, '_overlay_last_main_freq', 0.0) or 0.0)
+            mr = float(getattr(self.ctrl, '_overlay_last_main_rms', 0.0) or 0.0)
+            br = float(getattr(self.ctrl, '_overlay_last_backing_rms', 0.0) or 0.0)
+            dl = float(getattr(self.ctrl, '_overlay_dual_last_lead_hz', 0.0) or 0.0)
+            db = float(getattr(self.ctrl, '_overlay_dual_last_backing_hz', 0.0) or 0.0)
+            playing = bool(getattr(self.ctrl, 'playing', False))
+            play_only = bool(getattr(self.ctrl, 'overlay_play_only', True))
+            enabled = bool(getattr(self.ctrl, 'overlay_enabled', True))
+            gate_ok = enabled and (playing or (not play_only))
+            reason = '通过' if gate_ok else ('暂停阻断' if (play_only and (not playing)) else '叠加关闭')
+            self.diag_gate_label.setText(
+                f"触发条件: {reason} | 播放:{'是' if playing else '否'} | 仅播放:{'是' if play_only else '否'}"
+                f" | 门控:{gate_state} | 主频:{mf:.1f}Hz | 主RMS:{mr:.4f} | 副RMS:{br:.4f}"
+                f" | 双轨候选: 高{dl:.1f}Hz/低{db:.1f}Hz"
+            )
+        except Exception:
+            pass
+
+        try:
+            has_overlay_src = bool(getattr(self.ctrl, 'overlay_audio', None) is not None)
+            enabled = bool(getattr(self.ctrl, 'overlay_enabled', True))
+            playing = bool(getattr(self.ctrl, 'playing', False))
+            play_only = bool(getattr(self.ctrl, 'overlay_play_only', True))
+            reason = str(getattr(self.ifc, '_lfm_overlay_missing_reason', '') or '').strip()
+            if (not has_overlay_src):
+                if not reason:
+                    reason = '未检测到副轨音频源：请先启用主唱/伴唱分离并生成伴唱轨，或切换到含伴唱的轨道来源。'
+                self.diag_alert_label.setText(f"阻断提示: {reason}")
+                self.diag_alert_label.setVisible(True)
+            elif enabled and play_only and (not playing):
+                self.diag_alert_label.setText('阻断提示: 当前为暂停状态，且启用了“仅播放时叠加”，请点击播放后观察副轨。')
+                self.diag_alert_label.setVisible(True)
+            elif (not enabled):
+                self.diag_alert_label.setText('阻断提示: 副轨叠加开关已关闭。')
+                self.diag_alert_label.setVisible(True)
+            else:
+                self.diag_alert_label.setText('')
+                self.diag_alert_label.setVisible(False)
         except Exception:
             pass
 
@@ -54216,7 +55574,110 @@ class _LocalFilePanel(QDialog):
         except Exception:
             pass
 
+    def _on_track_mode_changed(self, _idx: int):
+        try:
+            if self.track_combo is None:
+                return
+            mode = str(self.track_combo.currentData() or '').strip()
+            if not mode:
+                return
+            if hasattr(self.ifc, '_switch_local_realtime_track_mode'):
+                self.ifc._switch_local_realtime_track_mode(mode)
+        except Exception as e:
+            try:
+                print(f"[LocalRealtime] 切换轨道模式失败: {e}")
+            except Exception:
+                pass
+
+    def _apply_overlay_controls_to_runtime(self):
+        try:
+            enabled = bool(self.overlay_cb.isChecked()) if hasattr(self, 'overlay_cb') else True
+        except Exception:
+            enabled = True
+        try:
+            color = str(self.overlay_color_combo.currentData() or '#FF9E4A') if hasattr(self, 'overlay_color_combo') else '#FF9E4A'
+        except Exception:
+            color = '#FF9E4A'
+        try:
+            alpha = float(self.overlay_alpha_slider.value() / 100.0) if hasattr(self, 'overlay_alpha_slider') else 0.72
+        except Exception:
+            alpha = 0.72
+        try:
+            label_pos = str(self.overlay_legend_pos_combo.currentData() or '右上') if hasattr(self, 'overlay_legend_pos_combo') else '右上'
+        except Exception:
+            label_pos = '右上'
+        try:
+            label_fontsize = int(self.overlay_legend_font_slider.value()) if hasattr(self, 'overlay_legend_font_slider') else 9
+        except Exception:
+            label_fontsize = 9
+        stride = 2
+        play_only = True
+        try:
+            perf = self.overlay_perf_combo.currentData() if hasattr(self, 'overlay_perf_combo') else None
+            if isinstance(perf, tuple) and len(perf) == 2:
+                stride = max(1, int(perf[0]))
+                play_only = bool(perf[1])
+        except Exception:
+            pass
+        if hasattr(self.ifc, '_update_local_realtime_overlay_config'):
+            self.ifc._update_local_realtime_overlay_config(
+                enabled=enabled,
+                color=color,
+                alpha=alpha,
+                stride=stride,
+                play_only=play_only,
+                label=self._pretty_track_label(str(getattr(self.ctrl, 'overlay_label', '') or '')),
+                label_pos=label_pos,
+                label_fontsize=label_fontsize,
+            )
+
+    def _on_overlay_toggle_changed(self, _state: int):
+        self._apply_overlay_controls_to_runtime()
+
+    def _on_overlay_style_changed(self, _value: int):
+        self._apply_overlay_controls_to_runtime()
+
+    def _on_overlay_perf_changed(self, _idx: int):
+        self._apply_overlay_controls_to_runtime()
+
+    def _on_overlay_label_style_changed(self, _value: int):
+        self._apply_overlay_controls_to_runtime()
+
+    def _on_overlay_reset_defaults(self):
+        try:
+            self.overlay_cb.setChecked(True)
+        except Exception:
+            pass
+        try:
+            idx = self.overlay_color_combo.findData('#FF9E4A')
+            self.overlay_color_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        except Exception:
+            pass
+        try:
+            self.overlay_alpha_slider.setValue(72)
+        except Exception:
+            pass
+        try:
+            self.overlay_perf_combo.setCurrentIndex(1)
+        except Exception:
+            pass
+        try:
+            idx = self.overlay_legend_pos_combo.findData('右上')
+            self.overlay_legend_pos_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        except Exception:
+            pass
+        try:
+            self.overlay_legend_font_slider.setValue(9)
+        except Exception:
+            pass
+        self._apply_overlay_controls_to_runtime()
+
     def closeEvent(self, e):
+        try:
+            if hasattr(self, '_diag_timer') and self._diag_timer is not None:
+                self._diag_timer.stop()
+        except Exception:
+            pass
         try:
             self.ifc._exit_local_file_mode()
         except Exception:
@@ -54231,7 +55692,7 @@ def _patch_method(name):
     return deco
 
 @_patch_method('_enter_local_file_realtime_mode')
-def _ifc_enter_local_file_realtime_mode(self, file_path: str):
+def _ifc_enter_local_file_realtime_mode(self, file_path: str, track_sources: dict | None = None, active_mode: str | None = None):
     try:
         if getattr(self, 'is_recording', False):
             self.stop_recording()
@@ -54240,22 +55701,167 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str):
     self._lfm_prev = {
         'vis_max_history_time': getattr(self.visualizer, 'max_history_time', 300.0),
         'vis_time_window': getattr(self.visualizer, 'time_window', 16.0),
+        'vis_overlay_preview_enabled': bool(getattr(self.visualizer, '_retake_overlay_preview_enabled', True)),
+        'vis_overlay_preview_active': bool(getattr(self.visualizer, '_retake_overlay_preview_active', False)),
+        'vis_overlay_preview_range': tuple(getattr(self.visualizer, '_retake_overlay_preview_range', (0.0, 0.0)) or (0.0, 0.0)),
+        'vis_lfm_overlay_runtime_active': bool(getattr(self.visualizer, '_lfm_overlay_runtime_active', False)),
+        'vis_lfm_overlay_custom_color': str(getattr(self.visualizer, '_lfm_overlay_custom_color', '') or ''),
+        'vis_lfm_overlay_custom_alpha': float(getattr(self.visualizer, '_lfm_overlay_custom_alpha', 0.92) or 0.92),
+        'vis_lfm_overlay_custom_label': str(getattr(self.visualizer, '_lfm_overlay_custom_label', '') or ''),
+        'vis_lfm_overlay_custom_label_pos': str(getattr(self.visualizer, '_lfm_overlay_custom_label_pos', '右上') or '右上'),
+        'vis_lfm_overlay_custom_label_fontsize': int(getattr(self.visualizer, '_lfm_overlay_custom_label_fontsize', 9) or 9),
         'ap_is_recording': getattr(self.audio_processor, 'is_recording', False),
         'ap_monitoring': getattr(self.audio_processor, 'is_global_monitoring_active', False),
         'ap_monitoring_only': getattr(self.audio_processor, 'is_monitoring_only', False),
     }
+    # 本地实时双轨叠加默认参数（用户未显式设置时生效）
+    try:
+        _lfm_settings = QSettings("MindEcho", "IntegratedRecorder")
+    except Exception:
+        _lfm_settings = None
+    if not hasattr(self, '_lfm_overlay_enabled'):
+        self._lfm_overlay_enabled = bool(_lfm_settings.value('lead_backing/realtime_overlay_enabled', True)) if _lfm_settings else True
+    if not hasattr(self, '_lfm_overlay_color'):
+        self._lfm_overlay_color = str(_lfm_settings.value('lead_backing/realtime_overlay_color', '#FF9E4A') or '#FF9E4A') if _lfm_settings else '#FF9E4A'
+    if not hasattr(self, '_lfm_overlay_alpha'):
+        try:
+            self._lfm_overlay_alpha = float(_lfm_settings.value('lead_backing/realtime_overlay_alpha', 0.72)) if _lfm_settings else 0.72
+        except Exception:
+            self._lfm_overlay_alpha = 0.72
+    if not hasattr(self, '_lfm_overlay_stride'):
+        try:
+            self._lfm_overlay_stride = int(_lfm_settings.value('lead_backing/realtime_overlay_stride', 2)) if _lfm_settings else 2
+        except Exception:
+            self._lfm_overlay_stride = 2
+    if not hasattr(self, '_lfm_overlay_play_only'):
+        self._lfm_overlay_play_only = bool(_lfm_settings.value('lead_backing/realtime_overlay_play_only', True)) if _lfm_settings else True
+    if not hasattr(self, '_lfm_overlay_track_label'):
+        self._lfm_overlay_track_label = ''
+    if not hasattr(self, '_lfm_overlay_label_pos'):
+        self._lfm_overlay_label_pos = str(_lfm_settings.value('lead_backing/realtime_overlay_label_pos', '右上') or '右上') if _lfm_settings else '右上'
+    if not hasattr(self, '_lfm_overlay_label_fontsize'):
+        try:
+            self._lfm_overlay_label_fontsize = int(_lfm_settings.value('lead_backing/realtime_overlay_label_fontsize', 9)) if _lfm_settings else 9
+        except Exception:
+            self._lfm_overlay_label_fontsize = 9
+    if not hasattr(self, '_lfm_overlay_gate_enabled'):
+        self._lfm_overlay_gate_enabled = bool(_lfm_settings.value('lead_backing/realtime_overlay_gate_enabled', True)) if _lfm_settings else True
+    if not hasattr(self, '_lfm_overlay_gate_ratio'):
+        try:
+            self._lfm_overlay_gate_ratio = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_ratio', 1.18)) if _lfm_settings else 1.18
+        except Exception:
+            self._lfm_overlay_gate_ratio = 1.18
+    if not hasattr(self, '_lfm_overlay_gate_main_hz'):
+        try:
+            self._lfm_overlay_gate_main_hz = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_main_hz', 85.0)) if _lfm_settings else 85.0
+        except Exception:
+            self._lfm_overlay_gate_main_hz = 85.0
+    if not hasattr(self, '_lfm_overlay_gate_main_rms'):
+        try:
+            self._lfm_overlay_gate_main_rms = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_main_rms', 0.009)) if _lfm_settings else 0.009
+        except Exception:
+            self._lfm_overlay_gate_main_rms = 0.009
+    if not hasattr(self, '_lfm_overlay_gate_hold_ms'):
+        try:
+            self._lfm_overlay_gate_hold_ms = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_hold_ms', 140.0)) if _lfm_settings else 140.0
+        except Exception:
+            self._lfm_overlay_gate_hold_ms = 140.0
+    if not hasattr(self, '_lfm_overlay_adaptive_throttle'):
+        self._lfm_overlay_adaptive_throttle = bool(_lfm_settings.value('lead_backing/realtime_overlay_adaptive_throttle', True)) if _lfm_settings else True
+    if not hasattr(self, '_lfm_overlay_batch_flush_ms'):
+        try:
+            self._lfm_overlay_batch_flush_ms = int(_lfm_settings.value('lead_backing/realtime_overlay_batch_flush_ms', 45)) if _lfm_settings else 45
+        except Exception:
+            self._lfm_overlay_batch_flush_ms = 45
+    if not hasattr(self, '_lfm_overlay_batch_max'):
+        try:
+            self._lfm_overlay_batch_max = int(_lfm_settings.value('lead_backing/realtime_overlay_batch_max', 64)) if _lfm_settings else 64
+        except Exception:
+            self._lfm_overlay_batch_max = 64
     try:
         self.audio_processor.is_recording = True
         self.audio_processor.is_global_monitoring_active = False
         self.audio_processor.is_monitoring_only = False
     except Exception:
         pass
-    ctrl = _LocalFileRealtimeController(self, file_path)
+    try:
+        self._record_epoch = int(getattr(self, '_record_epoch', 0)) + 1
+    except Exception:
+        self._record_epoch = 1
+    try:
+        if hasattr(self, '_sync_audio_processor_epoch'):
+            self._sync_audio_processor_epoch()
+    except Exception:
+        pass
+    try:
+        setattr(self.visualizer, '_current_epoch', int(getattr(self, '_record_epoch', 0)))
+    except Exception:
+        pass
+    try:
+        sources = dict(track_sources or {})
+    except Exception:
+        sources = {}
+    if not sources:
+        try:
+            prepared = self._prepare_local_realtime_track_sources(str(file_path))
+            if isinstance(prepared, dict) and prepared:
+                sources = dict(prepared)
+        except Exception:
+            pass
+    if not sources:
+        sources = {'主唱+伴唱': str(file_path)}
+    try:
+        overlay_ready = any(('伴唱' in str(k)) for k in sources.keys()) and (len(sources) >= 2)
+        self._lfm_overlay_missing_reason = '' if overlay_ready else str(getattr(self, '_lfm_overlay_missing_reason', '') or '未检测到可用伴唱轨。')
+    except Exception:
+        pass
+    try:
+        mode = str(active_mode or '').strip()
+    except Exception:
+        mode = ''
+    if not mode or mode not in sources:
+        preferred = ''
+        try:
+            keys = [str(k) for k in sources.keys()]
+            # 优先主唱-only；其次主唱轨；最后回落到第一项。
+            preferred = next((k for k in keys if ('主唱' in k and 'only' in k.lower())), '')
+            if not preferred:
+                preferred = next((k for k in keys if ('主唱' in k and '伴唱' not in k)), '')
+            if not preferred:
+                preferred = next((k for k in keys if ('主唱' in k)), '')
+        except Exception:
+            preferred = ''
+        mode = preferred if preferred else next(iter(sources.keys()))
+    try:
+        self._lfm_track_sources = dict(sources)
+        self._lfm_active_track_mode = str(mode)
+    except Exception:
+        pass
+    overlay_path, overlay_label = self._resolve_local_realtime_overlay_track(mode, sources)
+    ctrl = _LocalFileRealtimeController(self, file_path, overlay_file_path=overlay_path, overlay_label=overlay_label)
     ctrl.start()
     self._lfm_ctrl = ctrl
     try:
+        self._update_local_realtime_overlay_config(
+            enabled=bool(getattr(self, '_lfm_overlay_enabled', True)),
+            color=str(getattr(self, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A'),
+            alpha=float(getattr(self, '_lfm_overlay_alpha', 0.72) or 0.72),
+            stride=int(getattr(self, '_lfm_overlay_stride', 2) or 2),
+            play_only=bool(getattr(self, '_lfm_overlay_play_only', True)),
+            label=str(overlay_label or ''),
+            label_pos=str(getattr(self, '_lfm_overlay_label_pos', '右上') or '右上'),
+            label_fontsize=int(getattr(self, '_lfm_overlay_label_fontsize', 9) or 9),
+        )
+    except Exception:
+        pass
+    try:
         # 默认显示固定窗口（16s），超出通过水平滚动查看
         self.visualizer.max_history_time = max(1.0, float(ctrl.total_s))
+        try:
+            self.visualizer._lfm_main_drawn_bins = set()
+            self.visualizer._lfm_main_timebin_eps = 0.004
+        except Exception:
+            pass
         try:
             self.visualizer._enforce_backing_axis_lock(source="local_file_mode_init")
         except Exception:
@@ -54288,6 +55894,314 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str):
     ctrl.pause()
     panel.show()
 
+@_patch_method('_prepare_local_realtime_track_sources')
+def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
+    """在直接进入本地实时分析时，尽可能准备主唱/伴唱轨道来源。"""
+    base_path = str(file_path or '').strip()
+    if not base_path:
+        return {}
+    sources = {'主唱+伴唱': base_path}
+
+    enable_stage2 = bool(getattr(self, 'enable_lead_backing_stage2', False))
+    enable_rt_stage2 = bool(getattr(self, 'enable_realtime_lead_backing', False))
+    include_backing = bool(getattr(self, 'lead_backing_include_backing', False)) or int(getattr(self, 'lead_backing_count', 0) or 0) > 0
+    if not (enable_stage2 and enable_rt_stage2 and include_backing):
+        self._lfm_overlay_missing_reason = '未启用实时主唱/伴唱分离（请在“主唱/伴唱设置”中开启 Stage2 与实时轨道切换）。'
+        return sources
+
+    try:
+        cache = dict(getattr(self, '_lfm_stage2_sources_cache', {}) or {})
+    except Exception:
+        cache = {}
+    try:
+        from pathlib import Path
+        p = Path(base_path)
+        cache_key = f"{str(p.resolve())}|{int(p.stat().st_mtime)}|stage2_sep_v2"
+    except Exception:
+        cache_key = f"{base_path}|stage2_sep_v2"
+    cached_sources = cache.get(cache_key)
+    if isinstance(cached_sources, dict) and cached_sources:
+        self._lfm_overlay_missing_reason = ''
+        return dict(cached_sources)
+
+    prog = None
+    try:
+        prog = _OnePassProgressDialog(self, title='实时分析 - 预分离')
+        prog.set_progress(5)
+        prog.set_message('正在准备主唱/伴唱分离…')
+        try:
+            prog.show()
+            QApplication.processEvents()
+        except Exception:
+            pass
+    except Exception:
+        prog = None
+
+    def _msg_cb(msg: str):
+        try:
+            if prog is not None:
+                prog.set_message(str(msg or '处理中…'))
+                QApplication.processEvents()
+        except Exception:
+            pass
+
+    try:
+        options = {
+            'enable_stage2': True,
+            'include_backing': True,
+            'expected_backing_count': int(getattr(self, 'lead_backing_count', 1) or 1),
+            'singer_mode': str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto'),
+            'template_path': getattr(self, 'lead_backing_template_path', None),
+            'enable_realtime_stage2': True,
+        }
+        from src.audio_processing.lead_backing import run_lead_backing_stage2
+        stage2 = run_lead_backing_stage2(base_path, options=options, message_cb=_msg_cb)
+        payload = {'vocals_path': base_path, 'lead_backing': stage2}
+        built = self._build_realtime_track_sources(payload)
+        if isinstance(built, dict) and built:
+            sources = dict(built)
+        has_backing = any(('伴唱' in str(k)) for k in sources.keys()) and len(sources) >= 2
+        if has_backing:
+            cache[cache_key] = dict(sources)
+            self._lfm_stage2_sources_cache = cache
+            self._lfm_overlay_missing_reason = ''
+        else:
+            self._lfm_overlay_missing_reason = 'Stage2 已运行，但未产出可用伴唱轨（可能源文件不是纯人声或分离质量不足）。'
+    except Exception as e:
+        self._lfm_overlay_missing_reason = f'实时预分离失败：{e}'
+    finally:
+        try:
+            if prog is not None:
+                prog.set_progress(100)
+                prog.accept()
+        except Exception:
+            pass
+
+    return sources
+
+@_patch_method('_update_local_realtime_overlay_config')
+def _ifc_update_local_realtime_overlay_config(self, *, enabled: bool | None = None, color: str | None = None, alpha: float | None = None, stride: int | None = None, play_only: bool | None = None, label: str | None = None, label_pos: str | None = None, label_fontsize: int | None = None, gate_enabled: bool | None = None, gate_ratio: float | None = None, gate_main_hz: float | None = None, gate_main_rms: float | None = None, gate_hold_ms: float | None = None, adaptive_throttle: bool | None = None, batch_flush_ms: int | None = None, batch_max: int | None = None):
+    if enabled is not None:
+        self._lfm_overlay_enabled = bool(enabled)
+    if color is not None:
+        c = str(color).strip()
+        if c:
+            self._lfm_overlay_color = c
+    if alpha is not None:
+        try:
+            self._lfm_overlay_alpha = max(0.10, min(1.0, float(alpha)))
+        except Exception:
+            pass
+    if stride is not None:
+        try:
+            self._lfm_overlay_stride = max(1, int(stride))
+        except Exception:
+            pass
+    if play_only is not None:
+        self._lfm_overlay_play_only = bool(play_only)
+    if label is not None:
+        self._lfm_overlay_track_label = str(label or '').strip()
+    if label_pos is not None:
+        v = str(label_pos or '').strip()
+        if v in ('右上', '左上', '右下', '左下'):
+            self._lfm_overlay_label_pos = v
+    if label_fontsize is not None:
+        try:
+            self._lfm_overlay_label_fontsize = max(8, min(16, int(label_fontsize)))
+        except Exception:
+            pass
+    if gate_enabled is not None:
+        self._lfm_overlay_gate_enabled = bool(gate_enabled)
+    if gate_ratio is not None:
+        try:
+            self._lfm_overlay_gate_ratio = max(1.0, min(3.0, float(gate_ratio)))
+        except Exception:
+            pass
+    if gate_main_hz is not None:
+        try:
+            self._lfm_overlay_gate_main_hz = max(40.0, min(320.0, float(gate_main_hz)))
+        except Exception:
+            pass
+    if gate_main_rms is not None:
+        try:
+            self._lfm_overlay_gate_main_rms = max(0.0005, min(0.10, float(gate_main_rms)))
+        except Exception:
+            pass
+    if gate_hold_ms is not None:
+        try:
+            self._lfm_overlay_gate_hold_ms = max(0.0, min(600.0, float(gate_hold_ms)))
+        except Exception:
+            pass
+    if adaptive_throttle is not None:
+        self._lfm_overlay_adaptive_throttle = bool(adaptive_throttle)
+    if batch_flush_ms is not None:
+        try:
+            self._lfm_overlay_batch_flush_ms = max(20, min(160, int(batch_flush_ms)))
+        except Exception:
+            pass
+    if batch_max is not None:
+        try:
+            self._lfm_overlay_batch_max = max(8, min(256, int(batch_max)))
+        except Exception:
+            pass
+
+    try:
+        _s = QSettings("MindEcho", "IntegratedRecorder")
+    except Exception:
+        _s = None
+    if _s is not None:
+        try:
+            _s.setValue('lead_backing/realtime_overlay_enabled', bool(getattr(self, '_lfm_overlay_enabled', True)))
+            _s.setValue('lead_backing/realtime_overlay_color', str(getattr(self, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A'))
+            _s.setValue('lead_backing/realtime_overlay_alpha', float(getattr(self, '_lfm_overlay_alpha', 0.72) or 0.72))
+            _s.setValue('lead_backing/realtime_overlay_stride', int(getattr(self, '_lfm_overlay_stride', 2) or 2))
+            _s.setValue('lead_backing/realtime_overlay_play_only', bool(getattr(self, '_lfm_overlay_play_only', True)))
+            _s.setValue('lead_backing/realtime_overlay_label_pos', str(getattr(self, '_lfm_overlay_label_pos', '右上') or '右上'))
+            _s.setValue('lead_backing/realtime_overlay_label_fontsize', int(getattr(self, '_lfm_overlay_label_fontsize', 9) or 9))
+            _s.setValue('lead_backing/realtime_overlay_gate_enabled', bool(getattr(self, '_lfm_overlay_gate_enabled', True)))
+            _s.setValue('lead_backing/realtime_overlay_gate_ratio', float(getattr(self, '_lfm_overlay_gate_ratio', 1.18) or 1.18))
+            _s.setValue('lead_backing/realtime_overlay_gate_main_hz', float(getattr(self, '_lfm_overlay_gate_main_hz', 85.0) or 85.0))
+            _s.setValue('lead_backing/realtime_overlay_gate_main_rms', float(getattr(self, '_lfm_overlay_gate_main_rms', 0.009) or 0.009))
+            _s.setValue('lead_backing/realtime_overlay_gate_hold_ms', float(getattr(self, '_lfm_overlay_gate_hold_ms', 140.0) or 140.0))
+            _s.setValue('lead_backing/realtime_overlay_adaptive_throttle', bool(getattr(self, '_lfm_overlay_adaptive_throttle', True)))
+            _s.setValue('lead_backing/realtime_overlay_batch_flush_ms', int(getattr(self, '_lfm_overlay_batch_flush_ms', 45) or 45))
+            _s.setValue('lead_backing/realtime_overlay_batch_max', int(getattr(self, '_lfm_overlay_batch_max', 64) or 64))
+        except Exception:
+            pass
+
+    ctrl = getattr(self, '_lfm_ctrl', None)
+    if ctrl is not None:
+        try:
+            ctrl.overlay_enabled = bool(getattr(self, '_lfm_overlay_enabled', True)) and (getattr(ctrl, 'overlay_audio', None) is not None)
+            ctrl.overlay_stride = max(1, int(getattr(self, '_lfm_overlay_stride', 2) or 2))
+            ctrl.overlay_play_only = bool(getattr(self, '_lfm_overlay_play_only', True))
+            ctrl.overlay_gate_enabled = bool(getattr(self, '_lfm_overlay_gate_enabled', True))
+            ctrl.overlay_gate_ratio = max(1.0, float(getattr(self, '_lfm_overlay_gate_ratio', 1.18) or 1.18))
+            ctrl.overlay_gate_main_hz = max(40.0, float(getattr(self, '_lfm_overlay_gate_main_hz', 85.0) or 85.0))
+            ctrl.overlay_gate_main_rms = max(0.0005, float(getattr(self, '_lfm_overlay_gate_main_rms', 0.009) or 0.009))
+            ctrl.overlay_gate_hold_ms = max(0.0, float(getattr(self, '_lfm_overlay_gate_hold_ms', 140.0) or 140.0))
+            ctrl.overlay_adaptive_throttle = bool(getattr(self, '_lfm_overlay_adaptive_throttle', True))
+            ctrl.overlay_batch_flush_ms = max(20, int(getattr(self, '_lfm_overlay_batch_flush_ms', 45) or 45))
+            ctrl.overlay_batch_max = max(8, int(getattr(self, '_lfm_overlay_batch_max', 64) or 64))
+            if getattr(ctrl, '_overlay_flush_timer', None) is not None:
+                try:
+                    ctrl._overlay_flush_timer.start(ctrl.overlay_batch_flush_ms)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    viz = getattr(self, 'visualizer', None)
+    if viz is not None:
+        try:
+            runtime_active = bool(getattr(self, '_lfm_overlay_enabled', True)) and bool(ctrl is not None and getattr(ctrl, 'overlay_audio', None) is not None)
+            viz._lfm_overlay_runtime_active = runtime_active
+            viz._lfm_overlay_custom_color = str(getattr(self, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A')
+            viz._lfm_overlay_custom_alpha = float(getattr(self, '_lfm_overlay_alpha', 0.72) or 0.72)
+            viz._lfm_overlay_custom_label = str(getattr(self, '_lfm_overlay_track_label', '') or '')
+            viz._lfm_overlay_custom_label_pos = str(getattr(self, '_lfm_overlay_label_pos', '右上') or '右上')
+            viz._lfm_overlay_custom_label_fontsize = int(getattr(self, '_lfm_overlay_label_fontsize', 9) or 9)
+            if runtime_active:
+                try:
+                    total_s = float(getattr(ctrl, 'total_s', 0.0) or 0.0)
+                    if total_s > 0.0 and not bool(getattr(viz, '_retake_overlay_preview_active', False)):
+                        viz.activate_retake_overlay_preview(0.0, total_s, keep_points=False)
+                except Exception:
+                    pass
+            else:
+                try:
+                    viz.clear_retake_overlay_preview()
+                except Exception:
+                    pass
+            try:
+                viz._update_overlay_preview_artists()
+            except Exception:
+                pass
+            if hasattr(viz, 'canvas') and viz.canvas is not None:
+                try:
+                    viz.canvas.draw_idle()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+
+@_patch_method('_resolve_local_realtime_overlay_track')
+def _ifc_resolve_local_realtime_overlay_track(self, active_mode: str, sources: dict):
+    try:
+        src = dict(sources or {})
+    except Exception:
+        src = {}
+    if len(src) < 2:
+        return '', ''
+    mode = str(active_mode or '').strip()
+    cur_path = str(src.get(mode, '') or '').strip().lower()
+
+    def _pick(keys):
+        for k in keys:
+            p = str(src.get(k, '') or '').strip()
+            if not p:
+                continue
+            if cur_path and p.lower() == cur_path:
+                continue
+            return p, str(k)
+        return '', ''
+
+    all_keys = [str(k) for k in src.keys()]
+    lead_keys = [k for k in all_keys if ('主唱' in k)]
+    backing_keys = [k for k in all_keys if ('伴唱' in k)]
+
+    if '主唱' in mode:
+        picked = _pick(backing_keys)
+        if picked[0]:
+            return picked
+    elif '伴唱' in mode:
+        picked = _pick([k for k in lead_keys if 'only' in k.lower()] + lead_keys)
+        if picked[0]:
+            return picked
+
+    picked = _pick(backing_keys + lead_keys + all_keys)
+    return picked
+
+
+@_patch_method('_switch_local_realtime_track_mode')
+def _ifc_switch_local_realtime_track_mode(self, mode_key: str):
+    try:
+        sources = dict(getattr(self, '_lfm_track_sources', {}) or {})
+    except Exception:
+        sources = {}
+    mode = str(mode_key or '').strip()
+    if not mode or mode not in sources:
+        return
+    try:
+        cur_mode = str(getattr(self, '_lfm_active_track_mode', '') or '')
+    except Exception:
+        cur_mode = ''
+    if mode == cur_mode:
+        return
+    path = str(sources.get(mode, '') or '').strip()
+    if not path:
+        return
+    try:
+        from pathlib import Path
+        if not Path(path).exists():
+            QMessageBox.warning(self, "实时分析", f"切换失败，文件不存在:\n{path}")
+            return
+    except Exception:
+        pass
+    try:
+        self._lfm_switching_mode = True
+        self._lfm_active_track_mode = mode
+        if hasattr(self, '_exit_local_file_mode'):
+            self._exit_local_file_mode()
+    finally:
+        try:
+            self._lfm_switching_mode = False
+        except Exception:
+            pass
+    self._enter_local_file_realtime_mode(path, track_sources=sources, active_mode=mode)
+
 @_patch_method('_exit_local_file_mode')
 def _ifc_exit_local_file_mode(self):
     try:
@@ -54314,6 +56228,24 @@ def _ifc_exit_local_file_mode(self):
     try:
         self.visualizer.clear_data()
         prev = getattr(self, '_lfm_prev', {})
+        try:
+            if hasattr(self.visualizer, 'clear_retake_overlay_preview'):
+                self.visualizer.clear_retake_overlay_preview()
+        except Exception:
+            pass
+        try:
+            self.visualizer._retake_overlay_preview_enabled = bool(prev.get('vis_overlay_preview_enabled', True))
+            self.visualizer._retake_overlay_preview_active = bool(prev.get('vis_overlay_preview_active', False))
+            self.visualizer._retake_overlay_preview_range = tuple(prev.get('vis_overlay_preview_range', (0.0, 0.0)) or (0.0, 0.0))
+            self.visualizer._lfm_overlay_runtime_active = bool(prev.get('vis_lfm_overlay_runtime_active', False))
+            self.visualizer._lfm_overlay_custom_color = str(prev.get('vis_lfm_overlay_custom_color', '') or '')
+            self.visualizer._lfm_overlay_custom_alpha = float(prev.get('vis_lfm_overlay_custom_alpha', 0.92) or 0.92)
+            self.visualizer._lfm_overlay_custom_label = str(prev.get('vis_lfm_overlay_custom_label', '') or '')
+            self.visualizer._lfm_overlay_custom_label_pos = str(prev.get('vis_lfm_overlay_custom_label_pos', '右上') or '右上')
+            self.visualizer._lfm_overlay_custom_label_fontsize = int(prev.get('vis_lfm_overlay_custom_label_fontsize', 9) or 9)
+            self.visualizer._lfm_main_drawn_bins = set()
+        except Exception:
+            pass
         self.visualizer.max_history_time = float(prev.get('vis_max_history_time', 300.0))
         try:
             self.visualizer._enforce_backing_axis_lock(source="exit_local_file_mode_restore")
@@ -54337,6 +56269,9 @@ def _ifc_exit_local_file_mode(self):
     try:
         self._lfm_ctrl = None
         self._lfm_prev = None
+        if not bool(getattr(self, '_lfm_switching_mode', False)):
+            self._lfm_track_sources = None
+            self._lfm_active_track_mode = ''
     except Exception:
         pass
 
@@ -54850,6 +56785,161 @@ class _OnePassProgressDialog(QDialog):
         return super().closeEvent(e)
 
 
+class _TrackPreviewDialog(QDialog):
+    """转化后分离结果试听面板（主唱/伴唱/混听）。"""
+
+    def __init__(self, ifc, tracks: list):
+        super().__init__(ifc)
+        self.ifc = ifc
+        self.tracks = list(tracks or [])
+        self._cache = {}
+
+        self.setWindowTitle("分离结果试听")
+        self.setModal(True)
+        self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("请选择轨道进行试听："))
+
+        self.combo = QComboBox()
+        for item in self.tracks:
+            self.combo.addItem(str(item.get('name', '未命名轨道')))
+        v.addWidget(self.combo)
+
+        self.info = QLabel("时长：--")
+        self.info.setStyleSheet("color:#aaaaaa;")
+        v.addWidget(self.info)
+
+        row = QHBoxLayout()
+        self.btn_play = QPushButton("播放")
+        self.btn_stop = QPushButton("停止")
+        self.btn_close = QPushButton("关闭")
+        row.addWidget(self.btn_play)
+        row.addWidget(self.btn_stop)
+        row.addStretch(1)
+        row.addWidget(self.btn_close)
+        v.addLayout(row)
+
+        self.combo.currentIndexChanged.connect(self._on_track_changed)
+        self.btn_play.clicked.connect(self._on_play)
+        self.btn_stop.clicked.connect(self._on_stop)
+        self.btn_close.clicked.connect(self.accept)
+
+        self._on_track_changed(0)
+
+    @staticmethod
+    def _resample_linear(x, sr_in: int, sr_out: int):
+        import numpy as np
+        if sr_in == sr_out or len(x) == 0:
+            return x.copy()
+        t_in = np.linspace(0.0, 1.0, num=len(x), endpoint=False, dtype=np.float64)
+        n_out = int(round(len(x) * (sr_out / float(sr_in))))
+        if n_out <= 1:
+            return x[:1].copy()
+        t_out = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+        y = np.interp(t_out, t_in, x.astype(np.float64))
+        return y.astype(np.float32)
+
+    @staticmethod
+    def _load_audio(path: str):
+        import numpy as np
+        p = str(path or '').strip()
+        if not p:
+            raise RuntimeError("空路径")
+        try:
+            import soundfile as sf
+            data, sr = sf.read(p, always_2d=True)
+            if data.ndim == 2 and data.shape[1] > 1:
+                data = data.mean(axis=1)
+            else:
+                data = data.squeeze()
+            data = np.asarray(data, dtype=np.float32)
+            return data, int(sr)
+        except Exception:
+            import wave
+            with wave.open(p, 'rb') as wf:
+                sr = wf.getframerate()
+                n = wf.getnframes()
+                ch = wf.getnchannels()
+                raw = wf.readframes(n)
+            arr = np.frombuffer(raw, dtype=np.int16)
+            if ch > 1:
+                arr = arr.reshape(-1, ch).mean(axis=1)
+            data = arr.astype(np.float32) / 32768.0
+            return data, int(sr)
+
+    def _get_track_audio(self, idx: int):
+        import numpy as np
+        if idx < 0 or idx >= len(self.tracks):
+            raise RuntimeError("轨道索引无效")
+        item = self.tracks[idx]
+
+        cache_key = ('track', idx)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        if item.get('path'):
+            data, sr = self._load_audio(str(item.get('path')))
+            self._cache[cache_key] = (data, sr)
+            return data, sr
+
+        mix_paths = [str(x).strip() for x in (item.get('mix_paths') or []) if str(x).strip()]
+        if len(mix_paths) < 2:
+            raise RuntimeError("混听轨路径不足")
+
+        base_data, base_sr = None, None
+        for p in mix_paths:
+            d, s = self._load_audio(p)
+            if base_data is None:
+                base_data, base_sr = d, s
+            else:
+                if s != base_sr:
+                    d = self._resample_linear(d, s, base_sr)
+                if len(d) < len(base_data):
+                    d = np.pad(d, (0, len(base_data) - len(d)), mode='constant')
+                elif len(d) > len(base_data):
+                    base_data = np.pad(base_data, (0, len(d) - len(base_data)), mode='constant')
+                base_data = base_data + d
+        mix = (base_data / max(1, len(mix_paths))).astype(np.float32)
+        peak = float(np.max(np.abs(mix))) if len(mix) else 0.0
+        if peak > 1.0:
+            mix = mix / peak
+        self._cache[cache_key] = (mix, int(base_sr))
+        return mix, int(base_sr)
+
+    def _on_track_changed(self, idx: int):
+        try:
+            data, sr = self._get_track_audio(int(idx))
+            dur = float(len(data)) / float(sr) if sr > 0 else 0.0
+            self.info.setText(f"时长：{dur:.2f}s | 采样率：{sr}Hz")
+        except Exception as e:
+            self.info.setText(f"无法读取轨道：{e}")
+
+    def _on_play(self):
+        try:
+            idx = int(self.combo.currentIndex())
+            data, sr = self._get_track_audio(idx)
+            import sounddevice as sd
+            sd.stop()
+            sd.play(data, sr, blocking=False)
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "试听", f"播放失败：{e}")
+            except Exception:
+                pass
+
+    def _on_stop(self):
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
+    def closeEvent(self, e):
+        self._on_stop()
+        return super().closeEvent(e)
+
+
 def _build_segments_from_times_pitch(times, y_vals):
     """将时间/八度y序列进行稳健分段，返回[(t_list, y_list), ...]"""
     segments = []
@@ -55016,6 +57106,50 @@ def _ifc_start_offline_onepass(self, file_path: str):
             pass
 
 
+@_patch_method('_switch_onepass_track_mode')
+def _ifc_switch_onepass_track_mode(self, mode_key: str):
+    """在一次性绘制回放面板中切换轨道模式，并重新执行离线解析。"""
+    try:
+        sources = dict(getattr(self, '_onepass_track_sources', {}) or {})
+    except Exception:
+        sources = {}
+    mode = str(mode_key or '').strip()
+    if not mode or mode not in sources:
+        return
+    try:
+        cur_mode = str(getattr(self, '_onepass_active_track_mode', '') or '')
+    except Exception:
+        cur_mode = ''
+    if mode == cur_mode:
+        return
+    path = str(sources.get(mode, '') or '').strip()
+    if not path:
+        return
+    try:
+        from pathlib import Path
+        if not Path(path).exists():
+            QMessageBox.warning(self, "一次性绘制", f"切换失败，文件不存在:\n{path}")
+            return
+    except Exception:
+        pass
+    try:
+        self._onepass_active_track_mode = mode
+        self._onepass_switching_mode = True
+        if hasattr(self, '_exit_onepass_mode'):
+            self._exit_onepass_mode()
+    finally:
+        try:
+            self._onepass_switching_mode = False
+        except Exception:
+            pass
+    try:
+        self._onepass_track_sources = sources
+        self._onepass_active_track_mode = mode
+    except Exception:
+        pass
+    self._start_offline_onepass(path)
+
+
 class _OnePassPlaybackController(QObject):
     tick = pyqtSignal(float)  # 播放头位置(秒)
     def __init__(self, ifc, file_path: str):
@@ -55132,6 +57266,28 @@ class _OnePassPlaybackPanel(QDialog):
         self.setModal(False)
         self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
         v = QVBoxLayout(self)
+        self.track_combo = None
+        try:
+            sources = dict(getattr(self.ifc, '_onepass_track_sources', {}) or {})
+        except Exception:
+            sources = {}
+        if len(sources) >= 2:
+            mode_row = QHBoxLayout()
+            mode_row.addWidget(QLabel("轨道模式:"))
+            self.track_combo = QComboBox()
+            for k in sources.keys():
+                self.track_combo.addItem(str(k), str(k))
+            try:
+                cur_mode = str(getattr(self.ifc, '_onepass_active_track_mode', '') or '')
+            except Exception:
+                cur_mode = ''
+            if cur_mode:
+                idx = self.track_combo.findData(cur_mode)
+                if idx >= 0:
+                    self.track_combo.setCurrentIndex(idx)
+            self.track_combo.currentIndexChanged.connect(self._on_track_mode_changed)
+            mode_row.addWidget(self.track_combo)
+            v.addLayout(mode_row)
         self.lbl = QLabel("00:00 / 00:00")
         v.addWidget(self.lbl)
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -55194,6 +57350,22 @@ class _OnePassPlaybackPanel(QDialog):
             pass
     def _update_lbl(self, cur):
         self.lbl.setText(f"{self._fmt(cur)} / {self._fmt(self._total_s)}")
+
+    def _on_track_mode_changed(self, _idx: int):
+        try:
+            if self.track_combo is None:
+                return
+            mode = str(self.track_combo.currentData() or '').strip()
+            if not mode:
+                return
+            if hasattr(self.ifc, '_switch_onepass_track_mode'):
+                self.ifc._switch_onepass_track_mode(mode)
+        except Exception as e:
+            try:
+                print(f"[OnePass] 切换轨道模式失败: {e}")
+            except Exception:
+                pass
+
     def closeEvent(self, e):
         try:
             self.ctrl.pause()
@@ -55286,6 +57458,17 @@ def _ifc_exit_onepass_mode(self):
         self._op_prev = None
     except Exception:
         pass
+    # 4.1) 清理一次性绘制轨道来源（若是轨道切换过程则保留）
+    try:
+        keep_sources = bool(getattr(self, '_onepass_switching_mode', False))
+    except Exception:
+        keep_sources = False
+    if not keep_sources:
+        try:
+            self._onepass_track_sources = None
+            self._onepass_active_track_mode = ''
+        except Exception:
+            pass
     # 5) 退出一次性绘制模式标记
     try:
         self._in_onepass_mode = False
@@ -55308,7 +57491,7 @@ class _VocalSeparationWorker(QThread):
     finished_ok = pyqtSignal(object)  # dict: vocals_path, acc_path
     failed = pyqtSignal(str)
 
-    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs', export_format: str = 'flac', stems: int = 2, *, demucs_model: str | None = None, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None, demucs_preset: str | None = None):
+    def __init__(self, src_file: str, out_dir: str, vocals_name: str, acc_name: str, algo_choice: str = 'demucs', export_format: str = 'flac', stems: int = 2, *, demucs_model: str | None = None, drums_name: str | None = None, bass_name: str | None = None, piano_name: str | None = None, other_name: str | None = None, demucs_preset: str | None = None, lead_backing_options: dict | None = None):
         super().__init__()
         self.src_file = src_file
         self.out_dir = out_dir
@@ -55329,6 +57512,7 @@ class _VocalSeparationWorker(QThread):
         self._cancel = False
         self._used_engine = None  # 实际使用的引擎：'demucs' 或 'spleeter'
         self.demucs_preset = (demucs_preset or 'standard').strip().lower()
+        self._lead_backing_options = dict(lead_backing_options or {})
 
     def cancel(self):
         self._cancel = True
@@ -55436,8 +57620,9 @@ class _VocalSeparationWorker(QThread):
                         ok = self._demucs_cli_separate_and_save(tmp_in_wav, v_path, a_path, preferred_model=self.demucs_model)
                         if ok:
                             self._used_engine = 'demucs'
+                            payload = self._build_success_payload(v_path, a_path, 'Demucs')
                             self.progress.emit(100)
-                            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': 'Demucs'})
+                            self.finished_ok.emit(payload)
                             # 清理临时输入
                             try:
                                 Path(tmp_in_wav).unlink(missing_ok=True)
@@ -55575,7 +57760,8 @@ class _VocalSeparationWorker(QThread):
                                     _json.dump(meta, f, ensure_ascii=False, indent=2)
                         except Exception:
                             pass
-                        self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': 'Spleeter'})
+                        payload = self._build_success_payload(v_path, a_path, 'Spleeter')
+                        self.finished_ok.emit(payload)
                         try:
                             Path(tmp_in_wav).unlink(missing_ok=True)
                         except Exception:
@@ -55624,7 +57810,8 @@ class _VocalSeparationWorker(QThread):
             else:
                 self._save_lossless(a_path, acc, sr)
             self.progress.emit(100)
-            self.finished_ok.emit({'vocals_path': v_path, 'acc_path': a_path, 'engine': (self._used_engine or 'DSP Fallback')})
+            payload = self._build_success_payload(v_path, a_path, (self._used_engine or 'DSP Fallback'))
+            self.finished_ok.emit(payload)
         except Exception as e:
             self.failed.emit(str(e))
         finally:
@@ -55645,6 +57832,36 @@ class _VocalSeparationWorker(QThread):
             return s.strip(" .") or "output"
         except Exception:
             return name or "output"
+
+    def _build_success_payload(self, vocals_path: str, acc_path: str, engine: str) -> dict:
+        payload = {
+            'vocals_path': vocals_path,
+            'acc_path': acc_path,
+            'engine': engine,
+        }
+        stage2 = self._maybe_run_lead_backing_stage2(vocals_path)
+        if isinstance(stage2, dict):
+            payload['lead_backing'] = stage2
+        return payload
+
+    def _maybe_run_lead_backing_stage2(self, vocals_path: str) -> dict:
+        options = dict(getattr(self, '_lead_backing_options', {}) or {})
+        if not options.get('enable_stage2'):
+            return {'enabled': False, 'message': 'disabled'}
+        try:
+            self.message.emit("Stage2: 主唱/伴唱分离处理中…")
+        except Exception:
+            pass
+        try:
+            from src.audio_processing.lead_backing import run_lead_backing_stage2
+
+            return run_lead_backing_stage2(vocals_path, options=options, message_cb=self.message.emit)
+        except Exception as e:
+            try:
+                self.message.emit(f"Stage2: 处理失败，已回退。原因: {e}")
+            except Exception:
+                pass
+            return {'enabled': False, 'message': f'fallback: {e}'}
 
     # —— 外部桥接 Spleeter ——
     def _auto_bridge_spleeter(self, tmp_in_wav: str, v_path: str, a_path: str, reason: str = "", stems: int = 2, drums_path: str | None = None, bass_path: str | None = None, piano_path: str | None = None, other_path: str | None = None) -> bool:

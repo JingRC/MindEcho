@@ -1,0 +1,22 @@
+# Optional dependencies for lead/backing stage2 pipeline
+# Install on demand:
+#   pip install -r requirements-optional.txt
+
+# Core ML runtime
+torch>=2.2.0
+torchaudio>=2.2.0
+
+# Source separation and music models
+demucs>=4.0.1
+
+# Embedding / diarization route (choose according to your environment)
+pyannote.audio>=3.3.0
+speechbrain>=1.0.0
+
+# Audio features and utilities
+librosa>=0.10.2
+ffmpeg-python>=0.2.0
+soundfile>=0.12.1
+
+# Optional acceleration
+onnxruntime-gpu>=1.19.0
