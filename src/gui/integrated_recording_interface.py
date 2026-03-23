@@ -2906,6 +2906,12 @@ class IntegratedAudioProcessor(QThread):
             # 换气/边界/绘制参考
             "_bj_streak", "_bj_last_f0", "_bj_last_t", "_breath_suppress_until", "_prevoice_wait_frames",
             "_last_drawn_t", "_last_drawn_f0",
+            # 主唱高音抗扰状态
+            "_lead_high_anchor_hz", "_lead_high_stable_count", "_lead_rap_jitter_streak",
+            "_lead_high_rap_hold", "_lead_high_output_hz",
+            "_lead_high_hist", "_lead_high_final_hz",
+            "_lead_high_stab_strength", "_lead_high_last_anchor_hz",
+            "_lead_high_interf_ema", "_lead_high_interf_hold",
             # 门控/缓存状态
             "_voice_gate_state", "_gate_consec_voiced", "_gate_consec_silent",
             "_vg_onset_buf", "_vg_tail_buf",
@@ -2920,6 +2926,11 @@ class IntegratedAudioProcessor(QThread):
             "_mon_last_stable_frequency", "_mon_freq_smooth", "_mon_last_frame_rms",
             "_mon_bj_streak", "_mon_bj_last_f0", "_mon_bj_last_t", "_mon_breath_suppress_until", "_mon_prevoice_wait_frames",
             "_mon_last_drawn_t", "_mon_last_drawn_f0",
+            "_mon_lead_high_anchor_hz", "_mon_lead_high_stable_count", "_mon_lead_rap_jitter_streak",
+            "_mon_lead_high_rap_hold", "_mon_lead_high_output_hz",
+            "_mon_lead_high_hist", "_mon_lead_high_final_hz",
+            "_mon_lead_high_stab_strength", "_mon_lead_high_last_anchor_hz",
+            "_mon_lead_high_interf_ema", "_mon_lead_high_interf_hold",
         ]:
             if hasattr(self, attr):
                 try:
@@ -7956,6 +7967,51 @@ class IntegratedAudioProcessor(QThread):
             self._pitch_analysis_counter += 1
             # 先记录当前时间
             current_time = time.time()
+            try:
+                host = getattr(self, '_host_interface', None)
+            except Exception:
+                host = None
+            try:
+                lfm_active = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
+            except Exception:
+                lfm_active = False
+            lfm_diag_enabled = False
+            lfm_layered_enabled = False
+            if lfm_active:
+                try:
+                    lfm_diag_enabled = bool(getattr(host, '_lfm_parse_diag_enabled', True)) if host is not None else True
+                except Exception:
+                    lfm_diag_enabled = True
+                try:
+                    lfm_layered_enabled = bool(getattr(host, '_lfm_layered_stability_enabled', True)) if host is not None else True
+                except Exception:
+                    lfm_layered_enabled = True
+            if lfm_active and lfm_diag_enabled:
+                try:
+                    if (not hasattr(self, '_lfm_parse_diag')) or (getattr(self, '_lfm_parse_diag', None) is None):
+                        self._lfm_parse_diag = {
+                            'total_frames': 0,
+                            'low_rms_block': 0,
+                            'vocal_gate_block': 0,
+                            'vocal_gate_soft_pass': 0,
+                            'spurious_high_block': 0,
+                            'lead_bias_switch': 0,
+                            'sep_eval_frames': 0,
+                            'sep_dual_frames': 0,
+                            'sep_inertia_hold': 0,
+                            'sep_backing_leak_guard': 0,
+                            'sep_high_stable_rap_guard': 0,
+                            'sep_anchor_floor_guard': 0,
+                            'sep_rap_jitter_lock': 0,
+                            'main_only_force_emit': 0,
+                            'high_register_hold': 0,
+                            'mid_register_smooth': 0,
+                            'voiced_emit': 0,
+                            'no_pitch_emit': 0,
+                        }
+                    self._lfm_parse_diag['total_frames'] = int(self._lfm_parse_diag.get('total_frames', 0)) + 1
+                except Exception:
+                    pass
             # 回退后抑制窗口：在指定时间内直接跳过分析结果，等待新音频进入
             try:
                 backoff_until = float(getattr(self, '_analysis_backoff_until', 0.0) or 0.0)
@@ -8086,6 +8142,11 @@ class IntegratedAudioProcessor(QThread):
 
             # 若 RMS 极低，直接判定无音高（不更新平滑状态）
             if audio_rms < min_voice_rms:
+                try:
+                    if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                        self._lfm_parse_diag['low_rms_block'] = int(self._lfm_parse_diag.get('low_rms_block', 0)) + 1
+                except Exception:
+                    pass
                 # 节流无音高信号，避免淹没UI队列（时间轴由独立计时器驱动，无需每帧发）
                 if not hasattr(self, '_no_pitch_emit_interval'):
                     # 按模式初始化默认节流
@@ -8110,6 +8171,11 @@ class IntegratedAudioProcessor(QThread):
                             pass
                     try:
                         self._emit_pitch_data_throttled(payload)
+                    except Exception:
+                        pass
+                    try:
+                        if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['no_pitch_emit'] = int(self._lfm_parse_diag.get('no_pitch_emit', 0)) + 1
                     except Exception:
                         pass
                     self._last_no_pitch_emit_t = current_time
@@ -8200,8 +8266,18 @@ class IntegratedAudioProcessor(QThread):
                             soft_rms_ok = False
                         if soft_rms_ok and (semi <= 2.2 or float(raw_frequency) >= 320.0):
                             allow_voice = True
+                            try:
+                                if hasattr(self, '_lfm_parse_diag'):
+                                    self._lfm_parse_diag['vocal_gate_soft_pass'] = int(self._lfm_parse_diag.get('vocal_gate_soft_pass', 0)) + 1
+                            except Exception:
+                                pass
 
                 if not allow_voice:
+                    try:
+                        if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['vocal_gate_block'] = int(self._lfm_parse_diag.get('vocal_gate_block', 0)) + 1
+                    except Exception:
+                        pass
                     if not hasattr(self, '_no_pitch_emit_interval'):
                         self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
                         self._last_no_pitch_emit_t = 0.0
@@ -8218,6 +8294,11 @@ class IntegratedAudioProcessor(QThread):
                         )
                         try:
                             self._emit_pitch_data_throttled(frame.to_dict())
+                        except Exception:
+                            pass
+                        try:
+                            if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['no_pitch_emit'] = int(self._lfm_parse_diag.get('no_pitch_emit', 0)) + 1
                         except Exception:
                             pass
                         self._last_no_pitch_emit_t = current_time
@@ -8240,6 +8321,11 @@ class IntegratedAudioProcessor(QThread):
                     spurious_high = True
 
             if spurious_high:
+                try:
+                    if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                        self._lfm_parse_diag['spurious_high_block'] = int(self._lfm_parse_diag.get('spurious_high_block', 0)) + 1
+                except Exception:
+                    pass
                 # 不更新平滑状态，直接视为无音高（制造时间间隔用于段断开）
                 if not hasattr(self, '_no_pitch_emit_interval'):
                     self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
@@ -8257,6 +8343,11 @@ class IntegratedAudioProcessor(QThread):
                     )
                     try:
                         self._emit_pitch_data_throttled(frame.to_dict())
+                    except Exception:
+                        pass
+                    try:
+                        if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['no_pitch_emit'] = int(self._lfm_parse_diag.get('no_pitch_emit', 0)) + 1
                     except Exception:
                         pass
                     self._last_no_pitch_emit_t = current_time
@@ -8295,6 +8386,7 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 lead_bias_enabled = False
             if raw_frequency > 0 and true_candidates and lead_bias_enabled:
+                raw_before_bias = float(raw_frequency)
                 try:
                     raw_frequency = float(self._select_lead_vocal_frequency(
                         raw_frequency,
@@ -8302,8 +8394,62 @@ class IntegratedAudioProcessor(QThread):
                         audio_rms=float(audio_rms),
                         preview_only=bool(preview_only),
                     ) or raw_frequency)
+                    try:
+                        if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag') and abs(float(raw_frequency) - raw_before_bias) >= 0.8:
+                            self._lfm_parse_diag['lead_bias_switch'] = int(self._lfm_parse_diag.get('lead_bias_switch', 0)) + 1
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+
+            # 本地实时高音分层稳态：
+            # - 中高音(220Hz+)轻平滑，压制微抖；
+            # - 高音(300Hz+)限制瞬时向下坠落，减少被伴唱低频牵引。
+            if lfm_active and lfm_layered_enabled and raw_frequency > 0:
+                try:
+                    ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
+                    last_stable = float(getattr(self, ls_name, 0.0) or 0.0)
+                except Exception:
+                    last_stable = 0.0
+                try:
+                    mid_hz = float(getattr(self, '_lfm_mid_register_hz', 220.0) or 220.0)
+                except Exception:
+                    mid_hz = 220.0
+                try:
+                    high_hz = float(getattr(self, '_lfm_high_register_hz', 300.0) or 300.0)
+                except Exception:
+                    high_hz = 300.0
+                try:
+                    semi = abs(12.0 * np.log2(max(float(raw_frequency), 1e-9) / max(float(last_stable), 1e-9))) if last_stable > 0 else 999.0
+                except Exception:
+                    semi = 999.0
+
+                if last_stable > 0 and (max(float(raw_frequency), float(last_stable)) >= mid_hz) and semi <= 3.0 and float(audio_rms) >= float(min_voice_rms) * 0.80:
+                    try:
+                        blend = float(getattr(self, '_lfm_mid_register_blend', 0.22) or 0.22)
+                    except Exception:
+                        blend = 0.18
+                    blend = max(0.0, min(0.40, blend))
+                    raw_frequency = (1.0 - blend) * float(raw_frequency) + blend * float(last_stable)
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['mid_register_smooth'] = int(self._lfm_parse_diag.get('mid_register_smooth', 0)) + 1
+                    except Exception:
+                        pass
+
+                if last_stable >= high_hz and float(raw_frequency) < float(last_stable) and float(audio_rms) >= float(min_voice_rms) * 0.82:
+                    try:
+                        down_limit = float(getattr(self, '_lfm_high_register_down_limit_semi', 2.2) or 2.2)
+                    except Exception:
+                        down_limit = 2.8
+                    min_allowed = float(last_stable) * (2.0 ** (-max(0.8, down_limit) / 12.0))
+                    if float(raw_frequency) < min_allowed:
+                        raw_frequency = min_allowed
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['high_register_hold'] = int(self._lfm_parse_diag.get('high_register_hold', 0)) + 1
+                        except Exception:
+                            pass
 
             smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only) if raw_frequency > 0 else 0.0
 
@@ -8489,6 +8635,19 @@ class IntegratedAudioProcessor(QThread):
                     setattr(self, bj_last_t_n, now_t)
                 # end scope wrapper
             
+            # 本地实时主唱-only兜底：raw 有效但平滑后被抑制时，允许低置信回退发点，避免“主唱细点消失”。
+            try:
+                lfm_main_only = False
+                if lfm_active and host is not None:
+                    cur_mode = str(getattr(host, '_lfm_active_track_mode', '') or '')
+                    lfm_main_only = ('主唱' in cur_mode) and ('only' in cur_mode.lower())
+                if lfm_main_only and (smooth_frequency <= 10.0) and (float(raw_frequency) > 0.0) and (float(audio_rms) >= float(min_voice_rms) * 0.85):
+                    smooth_frequency = float(raw_frequency)
+                    if lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                        self._lfm_parse_diag['main_only_force_emit'] = int(self._lfm_parse_diag.get('main_only_force_emit', 0)) + 1
+            except Exception:
+                pass
+
             # 🔥 关键修复：大幅降低有效音高的最低要求
             if smooth_frequency > 10:  # 🔥 极低有效音高阈值 (20Hz → 10Hz)
                 note_info = self.frequency_to_note_info(smooth_frequency)
@@ -8558,6 +8717,11 @@ class IntegratedAudioProcessor(QThread):
                         pass
                     # 节流发射：避免Qt事件队列拥塞
                     self._emit_pitch_data_throttled(pitch_data)
+                    try:
+                        if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['voiced_emit'] = int(self._lfm_parse_diag.get('voiced_emit', 0)) + 1
+                    except Exception:
+                        pass
                     
                     # 成功检测调试输出
                     # 仅在调试需要时打印，避免热路径开销
@@ -8598,6 +8762,11 @@ class IntegratedAudioProcessor(QThread):
                         pass
                     try:
                         self._emit_pitch_data_throttled(timestamp_data)
+                    except Exception:
+                        pass
+                    try:
+                        if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['no_pitch_emit'] = int(self._lfm_parse_diag.get('no_pitch_emit', 0)) + 1
                     except Exception:
                         pass
                     self._last_no_pitch_emit_t = current_time
@@ -9706,9 +9875,47 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     return 999.0
 
+            # 高音稳态锚点：用于“主唱平稳高音 + 伴唱说唱波动大”场景下的抗扰。
+            anchor_name = '_mon_lead_high_anchor_hz' if preview_only else '_lead_high_anchor_hz'
+            stable_name = '_mon_lead_high_stable_count' if preview_only else '_lead_high_stable_count'
+            try:
+                anchor_hz = float(getattr(self, anchor_name, 0.0) or 0.0)
+            except Exception:
+                anchor_hz = 0.0
+            try:
+                stable_count = int(getattr(self, stable_name, 0) or 0)
+            except Exception:
+                stable_count = 0
+            if last_stable > 0 and last_stable >= max(260.0, high_register_hz * 0.90):
+                if _semi(float(raw_frequency), float(last_stable)) <= 2.0:
+                    stable_count = min(9, stable_count + 1)
+                else:
+                    stable_count = max(0, stable_count - 1)
+                if stable_count >= 3:
+                    if anchor_hz <= 0:
+                        anchor_hz = float(last_stable)
+                    else:
+                        anchor_hz = 0.82 * float(anchor_hz) + 0.18 * float(last_stable)
+            else:
+                stable_count = max(0, stable_count - 1)
+                if stable_count == 0:
+                    anchor_hz = 0.0
+            try:
+                setattr(self, anchor_name, float(anchor_hz))
+                setattr(self, stable_name, int(stable_count))
+            except Exception:
+                pass
+
+            try:
+                if hasattr(self, '_lfm_parse_diag'):
+                    self._lfm_parse_diag['sep_eval_frames'] = int(self._lfm_parse_diag.get('sep_eval_frames', 0)) + 1
+            except Exception:
+                pass
+
             best_f = float(raw_frequency)
             best_score = -1e9
             base_conf = 0.55
+            scored_candidates = []
 
             for cand in true_candidates:
                 try:
@@ -9754,24 +9961,502 @@ class IntegratedAudioProcessor(QThread):
                 if score > best_score:
                     best_score = score
                     best_f = f
+                scored_candidates.append((f, score, conf))
 
             if best_f <= 0:
                 return float(raw_frequency)
 
-            # 与raw做轻融合，降低误选抖动
-            best_conf = 0.6
+            if len(scored_candidates) >= 2:
+                try:
+                    if hasattr(self, '_lfm_parse_diag'):
+                        self._lfm_parse_diag['sep_dual_frames'] = int(self._lfm_parse_diag.get('sep_dual_frames', 0)) + 1
+                except Exception:
+                    pass
+
+            scored_candidates.sort(key=lambda x: x[1], reverse=True)
+            chosen_f = float(best_f)
+            chosen_conf = float(scored_candidates[0][2]) if scored_candidates else 0.6
+
+            top_score = float(scored_candidates[0][1]) if scored_candidates else 0.0
+            second_score = float(scored_candidates[1][1]) if len(scored_candidates) > 1 else -999.0
+            score_margin = float(top_score - second_score) if len(scored_candidates) > 1 else 9.99
+            top_f = float(scored_candidates[0][0]) if scored_candidates else float(chosen_f)
+            second_f = float(scored_candidates[1][0]) if len(scored_candidates) > 1 else float(top_f)
+            sep_ratio = float(max(top_f, second_f) / max(min(top_f, second_f), 1e-9)) if len(scored_candidates) > 1 else 1.0
+            pressure = max(0.0, min(1.0, (0.30 - score_margin) / 0.30)) if len(scored_candidates) > 1 else 0.0
+            pressure_name = '_mon_lead_competition_pressure_ema' if preview_only else '_lead_competition_pressure_ema'
             try:
-                for cand in true_candidates:
-                    f = float(cand.get('frequency', 0.0) or 0.0)
-                    if abs(f - best_f) <= 1e-6:
-                        best_conf = float(cand.get('confidence', 0.6) or 0.6)
-                        break
+                prev_pressure = float(getattr(self, pressure_name, 0.0) or 0.0)
+            except Exception:
+                prev_pressure = 0.0
+            pressure_ema = (prev_pressure * 0.90) + (pressure * 0.10)
+            try:
+                setattr(self, pressure_name, float(pressure_ema))
+                if hasattr(self, '_lfm_parse_diag'):
+                    self._lfm_parse_diag['lead_comp_margin'] = float(score_margin)
+                    self._lfm_parse_diag['lead_comp_sep_ratio'] = float(sep_ratio)
+                    self._lfm_parse_diag['lead_comp_pressure_ema'] = float(pressure_ema)
             except Exception:
                 pass
 
+            # 仅在本地实时模式做更强抗干扰微调，避免影响普通模式行为。
+            try:
+                host = getattr(self, '_host_interface', None)
+                lfm_rt = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
+            except Exception:
+                lfm_rt = False
+
+            # 分段自适应强度：高音稳态器在进入/退出阶段渐入渐出，减少边界突兀。
+            high_stab_active = bool(high_register and anchor_hz > 0 and stable_count >= 3)
+            stab_strength_name = '_mon_lead_high_stab_strength' if preview_only else '_lead_high_stab_strength'
+            stab_anchor_name = '_mon_lead_high_last_anchor_hz' if preview_only else '_lead_high_last_anchor_hz'
+            try:
+                stab_strength = float(getattr(self, stab_strength_name, 0.0) or 0.0)
+            except Exception:
+                stab_strength = 0.0
+            try:
+                enter_s = float(getattr(self, '_lead_sep_high_stab_enter_s', 0.50) or 0.50)
+            except Exception:
+                enter_s = 0.50
+            try:
+                exit_s = float(getattr(self, '_lead_sep_high_stab_exit_s', 0.50) or 0.50)
+            except Exception:
+                exit_s = 0.50
+            try:
+                sr = float(getattr(self, 'sample_rate', 48000) or 48000)
+            except Exception:
+                sr = 48000.0
+            try:
+                hop = int(getattr(self, '_frame_hop', 512) or 512)
+            except Exception:
+                hop = 512
+            frame_sec = max(1.0 / 120.0, float(hop) / max(1.0, sr))
+            if high_stab_active:
+                stab_strength = min(1.0, stab_strength + (frame_sec / max(0.10, enter_s)))
+                try:
+                    setattr(self, stab_anchor_name, float(anchor_hz))
+                except Exception:
+                    pass
+            else:
+                stab_strength = max(0.0, stab_strength - (frame_sec / max(0.10, exit_s)))
+            try:
+                setattr(self, stab_strength_name, float(stab_strength))
+                if hasattr(self, '_lfm_parse_diag'):
+                    self._lfm_parse_diag['sep_high_stab_strength'] = float(stab_strength)
+            except Exception:
+                pass
+
+            # 高音干扰强度：综合候选竞争/频率分离/锚点偏离，识别伴唱对主唱的突发拉扯。
+            interf_ema_name = '_mon_lead_high_interf_ema' if preview_only else '_lead_high_interf_ema'
+            interf_hold_name = '_mon_lead_high_interf_hold' if preview_only else '_lead_high_interf_hold'
+            try:
+                interf_ema = float(getattr(self, interf_ema_name, 0.0) or 0.0)
+            except Exception:
+                interf_ema = 0.0
+            try:
+                interf_hold = int(getattr(self, interf_hold_name, 0) or 0)
+            except Exception:
+                interf_hold = 0
+            if len(scored_candidates) >= 2 and anchor_hz > 0:
+                spread_term = float(np.clip((float(sep_ratio) - 1.15) / 0.35, 0.0, 1.0))
+                margin_term = float(np.clip((0.45 - float(score_margin)) / 0.45, 0.0, 1.0))
+                anchor_dev_term = float(np.clip((_semi(float(chosen_f), float(anchor_hz)) - 1.0) / 3.0, 0.0, 1.0))
+                interf_raw = (0.45 * margin_term) + (0.35 * spread_term) + (0.20 * anchor_dev_term)
+                if lfm_rt:
+                    # 本地实时下稍微放大竞争与锚点偏离权重，提升抗说唱串扰灵敏度。
+                    interf_raw = min(1.0, float(interf_raw) + (0.06 * margin_term) + (0.05 * anchor_dev_term))
+            else:
+                interf_raw = 0.0
+            interf_ema = (interf_ema * 0.88) + (float(interf_raw) * 0.12)
+            hold_thr = 0.68 if lfm_rt else 0.72
+            if float(interf_raw) >= hold_thr:
+                interf_hold = min(10, interf_hold + 3)
+            else:
+                interf_hold = max(0, interf_hold - 1)
+            interf_boost = max(float(interf_ema), float(interf_hold) / 10.0)
+            try:
+                setattr(self, interf_ema_name, float(interf_ema))
+                setattr(self, interf_hold_name, int(interf_hold))
+                if hasattr(self, '_lfm_parse_diag'):
+                    self._lfm_parse_diag['sep_high_interf_ema'] = float(interf_ema)
+            except Exception:
+                pass
+
+            # 蓝线优先独立阈值：高音锚点稳态且候选竞争激烈时，优先贴近主唱锚点候选。
+            if anchor_hz > 0 and stable_count >= 3 and len(scored_candidates) >= 2:
+                try:
+                    blue_margin = float(getattr(self, '_lead_sep_blue_priority_margin', 0.34) or 0.34)
+                except Exception:
+                    blue_margin = 0.34
+                try:
+                    blue_guard = float(getattr(self, '_lead_sep_blue_priority_guard_semi', 1.9) or 1.9)
+                except Exception:
+                    blue_guard = 1.9
+                top_anchor_dev = _semi(float(top_f), float(anchor_hz))
+                if score_margin < blue_margin and top_anchor_dev > blue_guard:
+                    anchor_near_f, _, anchor_near_conf = min(scored_candidates, key=lambda it: _semi(float(it[0]), float(anchor_hz)))
+                    chosen_f = float(anchor_near_f)
+                    chosen_conf = float(anchor_near_conf)
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['sep_blue_priority_pick'] = int(self._lfm_parse_diag.get('sep_blue_priority_pick', 0)) + 1
+                    except Exception:
+                        pass
+
+            # 分数竞争 + 惯性保持：当领先优势不明显且偏离历史主线较大时，优先保持连续轨道。
+            if last_stable > 0 and len(scored_candidates) >= 2:
+                top_f, top_score, top_conf = scored_candidates[0]
+                second_score = float(scored_candidates[1][1])
+                margin = float(top_score - second_score)
+                try:
+                    hyst_margin = float(getattr(self, '_lead_sep_hysteresis_margin', 0.18) or 0.18)
+                except Exception:
+                    hyst_margin = 0.18
+                try:
+                    hyst_hold_semi = float(getattr(self, '_lead_sep_hysteresis_hold_semi', 2.2) or 2.2)
+                except Exception:
+                    hyst_hold_semi = 2.2
+                top_cont = min(_semi(float(top_f), float(last_stable)), _semi(float(top_f) * 2.0, float(last_stable)))
+                near_f, near_score, near_conf = min(
+                    scored_candidates,
+                    key=lambda it: min(_semi(float(it[0]), float(last_stable)), _semi(float(it[0]) * 2.0, float(last_stable)))
+                )
+                near_cont = min(_semi(float(near_f), float(last_stable)), _semi(float(near_f) * 2.0, float(last_stable)))
+                if (margin < hyst_margin) and (top_cont > hyst_hold_semi) and (near_cont + 0.35 < top_cont):
+                    chosen_f = float(near_f)
+                    chosen_conf = float(near_conf)
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['sep_inertia_hold'] = int(self._lfm_parse_diag.get('sep_inertia_hold', 0)) + 1
+                    except Exception:
+                        pass
+
+            # 防泄漏守卫：高音主线场景下，若候选突然下沉到低频轨道，则向高频候选回拉。
+            if len(scored_candidates) >= 2:
+                low_f = float(min(scored_candidates, key=lambda it: float(it[0]))[0])
+                high_f = float(max(scored_candidates, key=lambda it: float(it[0]))[0])
+                try:
+                    leak_guard_ratio = float(getattr(self, '_lead_sep_leak_guard_ratio', 0.78) or 0.78)
+                except Exception:
+                    leak_guard_ratio = 0.78
+                if high_register and near_boost >= 0.35 and high_f > 0 and chosen_f < (high_f * leak_guard_ratio):
+                    chosen_f = 0.70 * float(chosen_f) + 0.30 * float(high_f)
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['sep_backing_leak_guard'] = int(self._lfm_parse_diag.get('sep_backing_leak_guard', 0)) + 1
+                    except Exception:
+                        pass
+
+                # 抗说唱扰动：主唱高音稳态时，若候选竞争优势弱且偏离锚点过大，则保持高音主线。
+                if anchor_hz > 0 and stable_count >= 3 and high_register:
+                    try:
+                        weak_margin = float(getattr(self, '_lead_sep_rap_weak_margin', 0.40) or 0.40)
+                    except Exception:
+                        weak_margin = 0.28
+                    try:
+                        guard_semi = float(getattr(self, '_lead_sep_rap_guard_semi', 2.4) or 2.4)
+                    except Exception:
+                        guard_semi = 3.0
+                    try:
+                        anchor_mix = float(getattr(self, '_lead_sep_rap_anchor_mix', 0.86) or 0.86)
+                    except Exception:
+                        anchor_mix = 0.76
+                    anchor_mix = max(0.50, min(0.95, anchor_mix))
+                    top_score = float(scored_candidates[0][1]) if scored_candidates else 0.0
+                    second_score = float(scored_candidates[1][1]) if len(scored_candidates) > 1 else -999.0
+                    margin = float(top_score - second_score)
+                    anchor_dev = _semi(float(chosen_f), float(anchor_hz))
+                    if margin < weak_margin and anchor_dev >= guard_semi:
+                        chosen_f = float(anchor_mix) * float(anchor_hz) + (1.0 - float(anchor_mix)) * float(chosen_f)
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_high_stable_rap_guard'] = int(self._lfm_parse_diag.get('sep_high_stable_rap_guard', 0)) + 1
+                        except Exception:
+                            pass
+
+                # 高音锚点带宽锁定：主唱已形成稳定高音锚点时，将候选限制在可唱连续带宽内，
+                # 减少伴唱说唱造成的上下抖动（尤其是弱优势双候选拉扯场景）。
+                if anchor_hz > 0 and stable_count >= 4 and high_register:
+                    try:
+                        band_down = float(getattr(self, '_lead_sep_anchor_band_down_semi', 1.8) or 1.8)
+                    except Exception:
+                        band_down = 1.8
+                    try:
+                        band_up = float(getattr(self, '_lead_sep_anchor_band_up_semi', 2.6) or 2.6)
+                    except Exception:
+                        band_up = 2.6
+                    try:
+                        band_pull_mix = float(getattr(self, '_lead_sep_anchor_band_pull_mix', 0.84) or 0.84)
+                    except Exception:
+                        band_pull_mix = 0.84
+                    band_down = max(0.8, min(4.0, band_down))
+                    band_up = max(1.0, min(5.0, band_up))
+                    band_pull_mix = max(0.60, min(0.96, band_pull_mix))
+
+                    min_band_hz = float(anchor_hz) * (2.0 ** (-float(band_down) / 12.0))
+                    max_band_hz = float(anchor_hz) * (2.0 ** (float(band_up) / 12.0))
+                    clamped_f = min(max(float(chosen_f), min_band_hz), max_band_hz)
+                    if abs(float(clamped_f) - float(chosen_f)) > 1e-6:
+                        chosen_f = float(band_pull_mix) * float(clamped_f) + (1.0 - float(band_pull_mix)) * float(chosen_f)
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_anchor_band_guard'] = int(self._lfm_parse_diag.get('sep_anchor_band_guard', 0)) + 1
+                        except Exception:
+                            pass
+
+                # 高音锚点下限保护：主唱稳定高音时限制单帧向下漂移，抑制说唱波动带偏。
+                if anchor_hz > 0 and stable_count >= 4 and high_register:
+                    try:
+                        floor_down_semi = float(getattr(self, '_lead_sep_anchor_floor_down_semi', 1.1) or 1.1)
+                    except Exception:
+                        floor_down_semi = 1.4
+                    floor_down_semi = max(0.8, min(3.0, floor_down_semi))
+                    floor_hz = float(anchor_hz) * (2.0 ** (-float(floor_down_semi) / 12.0))
+                    if float(chosen_f) < floor_hz:
+                        chosen_f = 0.82 * float(floor_hz) + 0.18 * float(chosen_f)
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_anchor_floor_guard'] = int(self._lfm_parse_diag.get('sep_anchor_floor_guard', 0)) + 1
+                        except Exception:
+                            pass
+
+                # 高音抖动锁定：当连续检测到“锚点偏离大 + 双候选拉扯”且分数优势不明显时，短时更强回拉。
+                if anchor_hz > 0 and stable_count >= 4 and high_register and len(scored_candidates) >= 2:
+                    jitter_name = '_mon_lead_rap_jitter_streak' if preview_only else '_lead_rap_jitter_streak'
+                    try:
+                        jitter_streak = int(getattr(self, jitter_name, 0) or 0)
+                    except Exception:
+                        jitter_streak = 0
+                    top_score = float(scored_candidates[0][1])
+                    second_score = float(scored_candidates[1][1])
+                    margin = float(top_score - second_score)
+                    anchor_dev = _semi(float(chosen_f), float(anchor_hz))
+                    f_min = float(min(scored_candidates, key=lambda it: float(it[0]))[0])
+                    f_max = float(max(scored_candidates, key=lambda it: float(it[0]))[0])
+                    cand_spread = (f_max / max(f_min, 1e-9)) if f_min > 0 else 1.0
+
+                    if anchor_dev >= 2.6 and cand_spread >= 1.28 and margin <= 0.55:
+                        jitter_streak = min(6, jitter_streak + 1)
+                    else:
+                        jitter_streak = max(0, jitter_streak - 1)
+                    try:
+                        setattr(self, jitter_name, int(jitter_streak))
+                    except Exception:
+                        pass
+
+                    if jitter_streak >= 2:
+                        try:
+                            lock_mix = float(getattr(self, '_lead_sep_rap_jitter_lock_mix', 0.90) or 0.90)
+                        except Exception:
+                            lock_mix = 0.90
+                        lock_mix = max(0.70, min(0.97, lock_mix))
+                        chosen_f = float(lock_mix) * float(anchor_hz) + (1.0 - float(lock_mix)) * float(chosen_f)
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_rap_jitter_lock'] = int(self._lfm_parse_diag.get('sep_rap_jitter_lock', 0)) + 1
+                        except Exception:
+                            pass
+
+            # 与raw做轻融合，降低误选抖动
+            best_conf = float(chosen_conf)
+
             mix = 0.18 + 0.30 * float(np.clip(best_conf, 0.0, 1.0)) + 0.22 * near_boost
             mix = float(np.clip(mix, 0.12, 0.62))
-            fused = (1.0 - mix) * float(raw_frequency) + mix * float(best_f)
+            # 高音稳态时降低 raw 的牵引，避免伴唱说唱扰动通过 raw 注入主线。
+            if stab_strength > 0.001:
+                try:
+                    hi_mix_floor = float(getattr(self, '_lead_sep_high_anchor_mix_floor', 0.76) or 0.76)
+                except Exception:
+                    hi_mix_floor = 0.76
+                target_mix = max(0.62, min(0.90, hi_mix_floor))
+                # 竞争压力越大，越减少 raw 注入，避免伴唱通过 raw 拉扯高音主线。
+                target_mix = max(target_mix, min(0.92, 0.72 + 0.18 * float(pressure_ema)))
+                target_mix = max(target_mix, min(0.95, 0.74 + 0.14 * float(interf_boost)))
+                mix = (1.0 - float(stab_strength)) * float(mix) + float(stab_strength) * float(max(mix, target_mix))
+            fused = (1.0 - mix) * float(raw_frequency) + mix * float(chosen_f)
+
+            # 输出级高音锁：在“主唱高音稳态 + 候选竞争混乱”时，
+            # 对最终输出施加锚点带宽与单帧斜率约束，抑制伴唱说唱带来的细节点抖动。
+            if high_register and anchor_hz > 0 and stable_count >= 4:
+                hold_name = '_mon_lead_high_rap_hold' if preview_only else '_lead_high_rap_hold'
+                out_name = '_mon_lead_high_output_hz' if preview_only else '_lead_high_output_hz'
+                jitter_name = '_mon_lead_rap_jitter_streak' if preview_only else '_lead_rap_jitter_streak'
+                try:
+                    hold = int(getattr(self, hold_name, 0) or 0)
+                except Exception:
+                    hold = 0
+                try:
+                    jitter_streak = int(getattr(self, jitter_name, 0) or 0)
+                except Exception:
+                    jitter_streak = 0
+
+                top_score = float(scored_candidates[0][1]) if scored_candidates else 0.0
+                second_score = float(scored_candidates[1][1]) if len(scored_candidates) > 1 else -999.0
+                margin = float(top_score - second_score)
+                f_min = float(min(scored_candidates, key=lambda it: float(it[0]))[0]) if scored_candidates else 0.0
+                f_max = float(max(scored_candidates, key=lambda it: float(it[0]))[0]) if scored_candidates else 0.0
+                cand_spread = (f_max / max(f_min, 1e-9)) if f_min > 0 else 1.0
+                out_dev = _semi(float(fused), float(anchor_hz))
+
+                trigger = bool((cand_spread >= 1.22 and margin <= 0.62 and out_dev >= 1.8) or (jitter_streak >= 2))
+                if trigger:
+                    hold = min(10, hold + 2)
+                else:
+                    hold = max(0, hold - 1)
+
+                if hold > 0:
+                    try:
+                        lock_down = float(getattr(self, '_lead_sep_output_lock_down_semi', 1.15) or 1.15)
+                    except Exception:
+                        lock_down = 1.15
+                    try:
+                        lock_up = float(getattr(self, '_lead_sep_output_lock_up_semi', 1.75) or 1.75)
+                    except Exception:
+                        lock_up = 1.75
+                    lock_down = max(0.6, min(3.0, lock_down))
+                    lock_up = max(0.8, min(4.0, lock_up))
+                    lo_hz = float(anchor_hz) * (2.0 ** (-float(lock_down) / 12.0))
+                    hi_hz = float(anchor_hz) * (2.0 ** (float(lock_up) / 12.0))
+                    fused = min(max(float(fused), lo_hz), hi_hz)
+
+                    try:
+                        prev_out = float(getattr(self, out_name, 0.0) or 0.0)
+                    except Exception:
+                        prev_out = 0.0
+                    if prev_out > 0:
+                        try:
+                            max_step = float(getattr(self, '_lead_sep_output_lock_max_step_semi', 0.42) or 0.42)
+                        except Exception:
+                            max_step = 0.42
+                        max_step = max(0.20, min(1.20, max_step))
+                        try:
+                            delta = 12.0 * np.log2(max(float(fused), 1e-9) / max(float(prev_out), 1e-9))
+                        except Exception:
+                            delta = 0.0
+                        if delta > max_step:
+                            fused = float(prev_out) * (2.0 ** (float(max_step) / 12.0))
+                        elif delta < -max_step:
+                            fused = float(prev_out) * (2.0 ** (-float(max_step) / 12.0))
+                        try:
+                            pull_prev = float(getattr(self, '_lead_sep_output_lock_prev_mix', 0.72) or 0.72)
+                        except Exception:
+                            pull_prev = 0.72
+                        pull_prev = max(0.40, min(0.92, pull_prev))
+                        fused = float(pull_prev) * float(prev_out) + (1.0 - float(pull_prev)) * float(fused)
+
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['sep_anchor_output_lock'] = int(self._lfm_parse_diag.get('sep_anchor_output_lock', 0)) + 1
+                    except Exception:
+                        pass
+
+                try:
+                    setattr(self, hold_name, int(hold))
+                    setattr(self, out_name, float(fused))
+                except Exception:
+                    pass
+
+            # 高音稳态器（通用）：短窗中位数回拉 + 动态半音限幅。
+            # 目标：主唱稳定高音时抑制细点大幅抖动，不依赖单曲模板。
+            if stab_strength > 0.001:
+                hist_name = '_mon_lead_high_hist' if preview_only else '_lead_high_hist'
+                final_name = '_mon_lead_high_final_hz' if preview_only else '_lead_high_final_hz'
+                try:
+                    hist = list(getattr(self, hist_name, []) or [])
+                except Exception:
+                    hist = []
+                try:
+                    hist_win = int(getattr(self, '_lead_sep_high_hist_win', 5) or 5)
+                except Exception:
+                    hist_win = 5
+                hist_win = max(3, min(11, hist_win))
+                if float(pressure_ema) >= 0.50:
+                    hist_win = min(11, hist_win + 2)
+                elif float(pressure_ema) >= 0.32:
+                    hist_win = min(11, hist_win + 1)
+                hist.append(float(fused))
+                if len(hist) > hist_win:
+                    hist = hist[-hist_win:]
+
+                med_hz = float(np.median(np.asarray(hist, dtype=np.float64))) if hist else float(fused)
+                med_dev = _semi(float(fused), float(med_hz))
+                if med_dev >= 0.45:
+                    pull = max(0.25, min(0.78, 0.36 + 0.36 * float(pressure_ema)))
+                    pull_scale = max(0.0, min(1.15, (0.72 * float(stab_strength)) + (0.48 * float(interf_boost))))
+                    pull = float(pull) * float(pull_scale)
+                    fused = (1.0 - pull) * float(fused) + pull * float(med_hz)
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['sep_high_median_lock'] = int(self._lfm_parse_diag.get('sep_high_median_lock', 0)) + 1
+                    except Exception:
+                        pass
+
+                try:
+                    prev_final = float(getattr(self, final_name, 0.0) or 0.0)
+                except Exception:
+                    prev_final = 0.0
+                if prev_final > 0.0:
+                    try:
+                        max_step_hi = float(getattr(self, '_lead_sep_high_final_max_step_semi', 0.28) or 0.28)
+                    except Exception:
+                        max_step_hi = 0.28
+                    # 压力高时进一步收紧单帧步长
+                    max_step_hi = max(0.16, min(0.80, float(max_step_hi) - (0.08 * min(1.0, float(pressure_ema)))))
+                    max_step_hi = max(0.14, max_step_hi - (0.06 * float(stab_strength)))
+                    up_step = float(max_step_hi)
+                    down_ratio = (0.72 - 0.20 * float(interf_boost))
+                    if lfm_rt:
+                        down_ratio -= 0.08
+                    down_step = max(0.08, min(up_step, up_step * down_ratio))
+                    try:
+                        d_hi = 12.0 * np.log2(max(float(fused), 1e-9) / max(float(prev_final), 1e-9))
+                    except Exception:
+                        d_hi = 0.0
+                    if d_hi > up_step:
+                        fused = float(prev_final) * (2.0 ** (float(up_step) / 12.0))
+                    elif d_hi < -down_step:
+                        fused = float(prev_final) * (2.0 ** (-float(down_step) / 12.0))
+                    prev_lock_thr = 0.55 if lfm_rt else 0.62
+                    if float(interf_boost) >= prev_lock_thr and d_hi < 0.0:
+                        prev_lock_hi = 0.88 if lfm_rt else 0.82
+                        prev_lock = max(0.35, min(prev_lock_hi, 0.42 + 0.30 * float(interf_boost)))
+                        fused = float(prev_lock) * float(prev_final) + (1.0 - float(prev_lock)) * float(fused)
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_high_interf_prev_lock'] = int(self._lfm_parse_diag.get('sep_high_interf_prev_lock', 0)) + 1
+                        except Exception:
+                            pass
+
+                    # 本地实时输出级锚点下限保护：再拦一层向下拉偏，减少细点下坠。
+                    if lfm_rt and anchor_hz > 0 and stable_count >= 4 and d_hi < 0.0:
+                        try:
+                            out_floor_down = float(getattr(self, '_lfm_lead_output_floor_down_semi', 0.95) or 0.95)
+                        except Exception:
+                            out_floor_down = 0.95
+                        out_floor_down = max(0.60, min(2.20, out_floor_down))
+                        floor_hz = float(anchor_hz) * (2.0 ** (-float(out_floor_down) / 12.0))
+                        if float(fused) < float(floor_hz):
+                            floor_mix = max(0.72, min(0.96, 0.82 + (0.10 * float(interf_boost))))
+                            fused = float(floor_mix) * float(floor_hz) + (1.0 - float(floor_mix)) * float(fused)
+                            try:
+                                if hasattr(self, '_lfm_parse_diag'):
+                                    self._lfm_parse_diag['sep_lfm_output_floor_guard'] = int(self._lfm_parse_diag.get('sep_lfm_output_floor_guard', 0)) + 1
+                            except Exception:
+                                pass
+                    try:
+                        if hasattr(self, '_lfm_parse_diag'):
+                            self._lfm_parse_diag['sep_high_step_clamp'] = int(self._lfm_parse_diag.get('sep_high_step_clamp', 0)) + 1
+                    except Exception:
+                        pass
+
+                if hist:
+                    hist[-1] = float(fused)
+                try:
+                    setattr(self, hist_name, list(hist))
+                    setattr(self, final_name, float(fused))
+                except Exception:
+                    pass
+
             return float(max(50.0, min(2500.0, fused)))
         except Exception:
             return float(raw_frequency)
@@ -12033,6 +12718,8 @@ class ECGStylePitchVisualizer(QWidget):
         self.freeze_y_center = False
         self._initial_y_center = self.y_view_center
         self._last_warn_y_shift = 0.0
+        self._last_warn_y_shift_ts = 0.0
+        self._warn_y_shift_interval_s = 1.5
         self.label_x_frac = 0.0
         self.label_left_pixel_offset = -6
         self._last_manual_scroll_time = 0.0
@@ -12301,6 +12988,7 @@ class ECGStylePitchVisualizer(QWidget):
             'queue_log': False,
             'artist_dump': False,
             'hover_magnifier_log': False,
+            'ydrift_log': False,
             # 选区重录/倒计时可视化诊断（默认关闭，避免刷屏）
             'retake_visual_log': False
         }
@@ -13026,6 +13714,74 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     if hasattr(self, 'canvas') and self.canvas is not None:
                         self.canvas.draw_idle()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_display'):
+                        self.update_display()
+                except Exception:
+                    pass
+                return
+
+            # 本地实时文件解析模式（LFM）使用轻量 seek 路径：
+            # 仅做时间对齐与去重桶释放，避免落入重录/cap/trim 逻辑导致主唱包被误拦截。
+            lfm_seek_mode = False
+            try:
+                lfm_seek_mode = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
+            except Exception:
+                lfm_seek_mode = False
+            if lfm_seek_mode:
+                try:
+                    tgt = float(max(0.0, float(target_time)))
+                except Exception:
+                    tgt = 0.0
+                try:
+                    cur = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+                except Exception:
+                    cur = 0.0
+                try:
+                    self._last_seek_backward = bool(tgt < cur - 1e-6)
+                except Exception:
+                    pass
+                try:
+                    self.current_global_time = tgt
+                except Exception:
+                    pass
+                try:
+                    self._cap_visible_time_enabled = False
+                    self._cap_strict_lock = False
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, '_cov_reset'):
+                        self._cov_reset()
+                except Exception:
+                    pass
+                try:
+                    self._release_time_bins_after(float(tgt))
+                except Exception:
+                    pass
+                try:
+                    self._release_lfm_main_bins_after(float(tgt))
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'follow_playback_time'):
+                        self.follow_playback_time(tgt)
+                except Exception:
+                    pass
+                try:
+                    self._last_update_state = None
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_scrollbars'):
+                        self.update_scrollbars()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'update_guides'):
+                        self.update_guides()
                 except Exception:
                     pass
                 try:
@@ -13977,6 +14733,11 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                         self._added_time_bins = kept
+                    # 同步释放本地实时主轨去重桶，避免回退后主唱点被误拦截。
+                    try:
+                        self._release_lfm_main_bins_after(float(target_time))
+                    except Exception:
+                        pass
             except Exception:
                 pass
         except Exception:
@@ -16405,8 +17166,34 @@ class ECGStylePitchVisualizer(QWidget):
             threshold_bin = int(math.floor(cutoff_time / max(eps, 1e-6))) + 1
             if threshold_bin <= 0:
                 self._added_time_bins = set()
+            else:
+                self._added_time_bins = {b for b in bins if b < threshold_bin}
+            # 本地实时主轨去重点也需要同步释放，否则回退后主唱点可能被误判为已绘制。
+            try:
+                self._release_lfm_main_bins_after(float(cutoff), margin=float(release_margin))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _release_lfm_main_bins_after(self, cutoff: float, margin: Optional[float] = None):
+        """释放本地实时主轨去重桶（_lfm_main_drawn_bins）中 cutoff 之后的部分。"""
+        try:
+            bins = getattr(self, '_lfm_main_drawn_bins', None)
+            if not isinstance(bins, set) or not bins:
                 return
-            self._added_time_bins = {b for b in bins if b < threshold_bin}
+            lfm_eps = float(getattr(self, '_lfm_main_timebin_eps', getattr(self, '_timebin_eps', 0.004)))
+            if lfm_eps <= 0.0:
+                lfm_eps = 0.004
+            release_margin = margin if margin is not None else float(
+                getattr(self, '_lfm_main_bin_release_margin', max(0.0, lfm_eps * 3.0))
+            )
+            cutoff_time = float(max(0.0, cutoff) - max(0.0, release_margin))
+            threshold_bin = int(math.floor(cutoff_time / max(lfm_eps, 1e-6))) + 1
+            if threshold_bin <= 0:
+                self._lfm_main_drawn_bins = set()
+                return
+            self._lfm_main_drawn_bins = {int(b) for b in bins if int(b) < threshold_bin}
         except Exception:
             pass
 
@@ -17018,6 +17805,8 @@ class ECGStylePitchVisualizer(QWidget):
 
         # ================== 回听（Listenback）UI 状态 ==================
         self.listenback_enabled = False
+        # 兼容历史拼写错误，避免旧路径访问 listenback_enableed 时抛异常
+        self.listenback_enableed = False
         self.selection_active = False
         # 选区模式：None / 'listenback' / 'retake'
         self.selection_mode: Optional[str] = None
@@ -17055,6 +17844,7 @@ class ECGStylePitchVisualizer(QWidget):
         """启用/禁用回听选区模式：仅绘制与交互，暂不含音频回放。"""
         try:
             self.listenback_enabled = bool(enabled)
+            self.listenback_enableed = self.listenback_enabled
             if self.listenback_enabled:
                 if not self.retake_selection_active:
                     self.selection_mode = 'listenback'
@@ -17246,6 +18036,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.selection_mode = 'retake'
         self.selection_active = True
         self.listenback_enabled = False
+        self.listenback_enableed = False
         self._sel_dragging_side = None
         self._sel_dragging_last_x = None
         self._sel_hover_side = None
@@ -17356,6 +18147,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.selection_mode = 'retake'
         self.selection_active = True
         self.listenback_enabled = False
+        self.listenback_enableed = False
         self.sel_start = start
         self.sel_end = end
         try:
@@ -23816,7 +24608,11 @@ class ECGStylePitchVisualizer(QWidget):
         if getattr(self, 'freeze_y_center', False):
             drift = abs(self.y_view_center - getattr(self, '_initial_y_center', self.y_view_center))
             if drift > 0.05 and abs(drift - getattr(self, '_last_warn_y_shift', 0.0)) > 0.02:
-                print(f"⚠️ [YDRIFT-DETECT] setup_ecg_grid drift={drift:.3f} center={self.y_view_center:.3f}")
+                dbg = bool(getattr(self, 'debug_flags', {}).get('ydrift_log', False))
+                now_t = time.time()
+                if dbg and (now_t - float(getattr(self, '_last_warn_y_shift_ts', 0.0) or 0.0) >= float(getattr(self, '_warn_y_shift_interval_s', 1.5) or 1.5)):
+                    print(f"⚠️ [YDRIFT-DETECT] setup_ecg_grid drift={drift:.3f} center={self.y_view_center:.3f}")
+                    self._last_warn_y_shift_ts = now_t
                 self._last_warn_y_shift = drift
 
         # 重建网格后，确保辅助线存在并位置正确
@@ -29452,6 +30248,10 @@ class ECGStylePitchVisualizer(QWidget):
                             self._lfm_main_drawn_bins = set()
                         lfm_bin = int(round(float(global_time) / lfm_eps))
                         if lfm_bin in self._lfm_main_drawn_bins:
+                            try:
+                                self._lfm_diag_dedup_drop = int(getattr(self, '_lfm_diag_dedup_drop', 0)) + 1
+                            except Exception:
+                                pass
                             self.current_pitch_active = True
                             self.current_pitch_y = self.last_active_pitch_y if self.last_active_pitch_y is not None else getattr(self, 'y_view_center', 4.5)
                             self.last_pitch_time = time.time()
@@ -29798,8 +30598,11 @@ class ECGStylePitchVisualizer(QWidget):
                         shift = abs(self.y_view_center - old_center)
                         if shift > 0.01:
                             self.update_axis_ranges()
-                            if shift > 0.25:
+                            dbg = bool(getattr(self, 'debug_flags', {}).get('ydrift_log', False))
+                            now_t = time.time()
+                            if shift > 0.25 and dbg and (now_t - float(getattr(self, '_last_warn_y_shift_ts', 0.0) or 0.0) >= float(getattr(self, '_warn_y_shift_interval_s', 1.5) or 1.5)):
                                 print(f"⚠️ [YDRIFT] auto-follow center shift={shift:.2f} new_center={self.y_view_center:.2f}")
+                                self._last_warn_y_shift_ts = now_t
 
                 # === 头部即时散点：收集最近窗口内的点，降低端到端感知延迟 ===
                 try:
@@ -30627,6 +31430,51 @@ class ECGStylePitchVisualizer(QWidget):
                         cur_t = max(0.0, float(time.time()) - float(st))
             except Exception:
                 pass
+
+            # 本地实时专用时间线：按当前时间精确定位，独立于选区/回听播放头逻辑。
+            # 需求：当前时间在哪，纵向线就在哪；退出本地实时后自动隐藏。
+            try:
+                host = getattr(self, '_host_interface', None)
+            except Exception:
+                host = None
+            try:
+                local_realtime_mode = bool(
+                    (host is not None and getattr(host, '_lfm_ctrl', None) is not None)
+                    or bool(getattr(self, '_lfm_overlay_runtime_active', False))
+                )
+            except Exception:
+                local_realtime_mode = False
+            try:
+                if local_realtime_mode:
+                    if (not hasattr(self, '_lfm_time_cursor')) or (getattr(self, '_lfm_time_cursor', None) is None):
+                        haze_blue = (0.49, 0.60, 0.67, 0.92)
+                        self._lfm_time_cursor = self.ax.axvline(
+                            x=float(cur_t),
+                            color=haze_blue,
+                            linewidth=1.5,
+                            linestyle='-',
+                            alpha=0.92,
+                            zorder=147,
+                            visible=True,
+                        )
+                    x_cursor = min(max(float(cur_t), float(time_start)), float(time_end))
+                    try:
+                        self._lfm_time_cursor.set_transform(self.ax.get_yaxis_transform())
+                    except Exception:
+                        pass
+                    self._lfm_time_cursor.set_xdata([x_cursor, x_cursor])
+                    self._lfm_time_cursor.set_ydata([0.0, 1.0])
+                    self._lfm_time_cursor.set_visible(True)
+                    self._lfm_time_cursor.set_zorder(147)
+                else:
+                    if hasattr(self, '_lfm_time_cursor') and self._lfm_time_cursor is not None:
+                        try:
+                            self._lfm_time_cursor.set_visible(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             want_center = (cur_t > getattr(self, 'center_display_time', 8.0) and
                            getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True) and
                            (not overlay_active))
@@ -44723,7 +45571,8 @@ class IntegratedRecordingInterface(QMainWindow):
             if viz is not None and hasattr(viz, 'deactivate_retake_selection'):
                 viz.deactivate_retake_selection()
         except Exception as exc:
-            print(f"⚠️ 退出选区重录失败: {exc}")
+            if 'listenback_enableed' not in str(exc):
+                print(f"⚠️ 退出选区重录失败: {exc}")
         # 无论是否关闭窗口，都要彻底停止重录相关的倒计时/清理/冻结，避免后续录制区间被误裁剪。
         try:
             self._cancel_retake_countdown(keep_pending=False)
@@ -49798,17 +50647,76 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             dlg = QDialog(self)
             dlg.setWindowTitle("本地音高解析")
-            dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+            dlg.setStyleSheet(
+                "QDialog { background-color: #0f151d; color: #eef4ff; }"
+                "QFrame#modeCard { background:#16212c; border:1px solid #2a3d52; border-radius:12px; }"
+                "QLabel#title { color:#e9f2ff; font-size:16px; font-weight:800; }"
+                "QLabel#subTitle { color:#9db6cf; font-size:12px; }"
+                "QLabel#cardTitle { color:#d8e9ff; font-size:13px; font-weight:700; }"
+                "QLabel#cardDesc { color:#94acc5; font-size:12px; }"
+                "QPushButton#modeBtn {"
+                "  color:#f5f9ff; background:#1f2d3c; border:1px solid #3b5470;"
+                "  border-radius:10px; padding:10px 14px; font-weight:700;"
+                "}"
+                "QPushButton#modeBtn:hover { background:#29405a; border-color:#6288b3; }"
+                "QPushButton#modeBtn:pressed { background:#1b2a39; }"
+            )
+            try:
+                dlg.setMinimumWidth(560)
+                dlg.resize(620, 250)
+            except Exception:
+                pass
             v = QVBoxLayout(dlg)
+            try:
+                v.setContentsMargins(16, 14, 16, 14)
+                v.setSpacing(10)
+            except Exception:
+                pass
 
-            tip = QLabel("请选择要进行的操作")
-            v.addWidget(tip)
+            title = QLabel("本地音高解析")
+            title.setObjectName("title")
+            sub = QLabel("请选择入口：直接分析纯人声，或先将歌曲转化为纯人声再分析")
+            sub.setObjectName("subTitle")
+            sub.setWordWrap(True)
+            v.addWidget(title)
+            v.addWidget(sub)
 
             row = QHBoxLayout()
+            try:
+                row.setSpacing(10)
+            except Exception:
+                pass
             btn_pure = QPushButton("纯人声")
+            btn_pure.setObjectName("modeBtn")
             btn_convert = QPushButton("纯人声转化")
-            row.addWidget(btn_pure)
-            row.addWidget(btn_convert)
+            btn_convert.setObjectName("modeBtn")
+
+            card_pure = QFrame()
+            card_pure.setObjectName("modeCard")
+            cp = QVBoxLayout(card_pure)
+            cp.addWidget(btn_pure)
+            lbl_pure_title = QLabel("直接进入分析")
+            lbl_pure_title.setObjectName("cardTitle")
+            lbl_pure_desc = QLabel("适合已有纯人声文件，支持实时分析与一次性绘制")
+            lbl_pure_desc.setObjectName("cardDesc")
+            lbl_pure_desc.setWordWrap(True)
+            cp.addWidget(lbl_pure_title)
+            cp.addWidget(lbl_pure_desc)
+
+            card_convert = QFrame()
+            card_convert.setObjectName("modeCard")
+            cc = QVBoxLayout(card_convert)
+            cc.addWidget(btn_convert)
+            lbl_conv_title = QLabel("先做纯人声转化")
+            lbl_conv_title.setObjectName("cardTitle")
+            lbl_conv_desc = QLabel("自动分离人声与伴奏，完成后可直接进入试听和后续分析")
+            lbl_conv_desc.setObjectName("cardDesc")
+            lbl_conv_desc.setWordWrap(True)
+            cc.addWidget(lbl_conv_title)
+            cc.addWidget(lbl_conv_desc)
+
+            row.addWidget(card_pure)
+            row.addWidget(card_convert)
             v.addLayout(row)
 
             def _open_pure():
@@ -49834,13 +50742,22 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             dlg = QDialog(self)
             dlg.setWindowTitle("纯人声")
-            dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+            dlg.setStyleSheet(
+                "QDialog { background-color: #11161d; color: #eef4ff; }"
+                "QLabel { color: #e6edf7; }"
+                "QPushButton {"
+                "  color:#f4f8ff; background-color:#1d2733; border:1px solid #2e3f52;"
+                "  border-radius:8px; padding:7px 12px;"
+                "}"
+                "QPushButton:hover { background-color:#27384a; border-color:#4f7598; }"
+                "QPushButton:pressed { background-color:#1a2531; }"
+            )
             v = QVBoxLayout(dlg)
             v.addWidget(QLabel("选择分析方式"))
 
             settings_label = QLabel(self._lead_backing_settings_summary())
             settings_label.setWordWrap(True)
-            settings_label.setStyleSheet("color:#a6d8ff;")
+            settings_label.setStyleSheet("color:#9fd2ff; background:#16212c; border:1px solid #2c4258; border-radius:6px; padding:8px;")
             v.addWidget(settings_label)
 
             settings_row = QHBoxLayout()
@@ -49852,11 +50769,58 @@ class IntegratedRecordingInterface(QMainWindow):
             row = QHBoxLayout()
             btn_realtime = QPushButton("实时分析")
             btn_onepass = QPushButton("一次性绘制")
+            try:
+                btn_realtime.setStyleSheet("QPushButton{background:#2f6dff; border:1px solid #4e84ff; color:white; border-radius:8px; padding:8px 14px;} QPushButton:hover{background:#3e79ff;}")
+                btn_onepass.setStyleSheet("QPushButton{background:#1d2733; border:1px solid #2e3f52; color:#f4f8ff; border-radius:8px; padding:8px 14px;} QPushButton:hover{background:#27384a;}")
+            except Exception:
+                pass
             row.addWidget(btn_realtime)
             row.addWidget(btn_onepass)
             v.addLayout(row)
 
             def _choose_file_and_realtime():
+                try:
+                    stage2_on = bool(getattr(self, 'enable_lead_backing_stage2', False))
+                    rt_on = bool(getattr(self, 'enable_realtime_lead_backing', False))
+                    include_backing = bool(getattr(self, 'lead_backing_include_backing', False))
+                    cfg_ready = bool(stage2_on and rt_on and include_backing)
+                except Exception:
+                    cfg_ready = False
+
+                if not cfg_ready:
+                    try:
+                        ret = QMessageBox.question(
+                            dlg,
+                            "实时分析",
+                            "检测到尚未完成“主唱/伴唱设置”。\n建议先完成设置再进行实时分析，是否现在打开设置？",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.Yes,
+                        )
+                    except Exception:
+                        ret = QMessageBox.StandardButton.No
+                    if ret == QMessageBox.StandardButton.Yes:
+                        try:
+                            self._open_lead_backing_settings_dialog(parent=dlg)
+                            settings_label.setText(self._lead_backing_settings_summary())
+                        except Exception:
+                            pass
+                        try:
+                            stage2_on = bool(getattr(self, 'enable_lead_backing_stage2', False))
+                            rt_on = bool(getattr(self, 'enable_realtime_lead_backing', False))
+                            include_backing = bool(getattr(self, 'lead_backing_include_backing', False))
+                            cfg_ready = bool(stage2_on and rt_on and include_backing)
+                        except Exception:
+                            cfg_ready = False
+                    if not cfg_ready:
+                        try:
+                            QMessageBox.information(
+                                dlg,
+                                "实时分析",
+                                "当前将以默认/降级模式进入实时分析。\n若希望更稳定的主唱/伴唱实时轨道效果，请先在“主唱/伴唱设置”中开启 Stage2、包含伴唱轨和实时轨道切换。",
+                            )
+                        except Exception:
+                            pass
+
                 try:
                     if PYQT_VERSION == 6:
                         file_path, _ = QFileDialog.getOpenFileName(
@@ -49961,7 +50925,22 @@ class IntegratedRecordingInterface(QMainWindow):
 
         dlg = QDialog(parent or self)
         dlg.setWindowTitle("主唱/伴唱设置")
-        dlg.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        dlg.setStyleSheet(
+            "QDialog { background-color: #10161d; color: #f1f6ff; }"
+            "QLabel { color:#e8eef7; }"
+            "QCheckBox { color:#edf3ff; spacing:6px; }"
+            "QCheckBox::indicator { width:15px; height:15px; border-radius:3px; border:1px solid #4a5f79; background:#18212c; }"
+            "QCheckBox::indicator:checked { background:#2f6dff; border:1px solid #6a9cff; }"
+            "QLineEdit, QComboBox, QSpinBox {"
+            "  background:#0d131a; color:#f5f9ff; border:1px solid #33475e; border-radius:6px; padding:5px 7px;"
+            "  selection-background-color:#2f6dff; selection-color:#ffffff;"
+            "}"
+            "QPushButton {"
+            "  color:#f6faff; background:#1d2733; border:1px solid #314458; border-radius:8px; padding:7px 12px;"
+            "}"
+            "QPushButton:hover { background:#27384a; border-color:#4e7395; }"
+            "QPushButton:pressed { background:#1a2430; }"
+        )
         v = QVBoxLayout(dlg)
 
         enable_cb = QCheckBox("启用主唱/伴唱分离（Stage2）")
@@ -50009,6 +50988,11 @@ class IntegratedRecordingInterface(QMainWindow):
         btn_row = QHBoxLayout()
         btn_ok = QPushButton("保存")
         btn_cancel = QPushButton("取消")
+        try:
+            btn_ok.setStyleSheet("QPushButton{background:#2f6dff; border:1px solid #4f84ff; color:#fff; border-radius:8px; padding:8px 14px;} QPushButton:hover{background:#3f7aff;}")
+            btn_cancel.setStyleSheet("QPushButton{background:#232f3d; border:1px solid #3a4f64; color:#f2f6fd; border-radius:8px; padding:8px 14px;} QPushButton:hover{background:#2c3c4e;}")
+        except Exception:
+            pass
         btn_row.addStretch(1)
         btn_row.addWidget(btn_ok)
         btn_row.addWidget(btn_cancel)
@@ -50419,6 +51403,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 'singer_mode': str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto'),
                 'template_path': getattr(self, 'lead_backing_template_path', None),
                 'enable_realtime_stage2': bool(getattr(self, 'enable_realtime_lead_backing', False)),
+                'quality_mode': str(getattr(self, 'lead_backing_quality_mode', 'quality') or 'quality'),
+                'fallback_strategy': str(getattr(self, 'lead_backing_fallback_strategy', 'auto') or 'auto'),
             }
             worker = _VocalSeparationWorker(
                 src_file,
@@ -53136,6 +54122,7 @@ class _RetakeControlWindow(QDialog):
                 viz.selection_mode = 'retake'
                 viz.selection_active = True
                 viz.listenback_enabled = False
+                viz.listenback_enableed = False
                 viz.set_retake_range(
                     start,
                     end,
@@ -54568,16 +55555,16 @@ class _LocalFileRealtimeController(QObject):
         self.overlay_enabled = bool(getattr(self.ifc, '_lfm_overlay_enabled', True))
         self.overlay_play_only = bool(getattr(self.ifc, '_lfm_overlay_play_only', True))
         try:
-            self.overlay_stride = max(1, int(getattr(self.ifc, '_lfm_overlay_stride', 2) or 2))
+            self.overlay_stride = max(1, int(getattr(self.ifc, '_lfm_overlay_stride', 1) or 1))
         except Exception:
-            self.overlay_stride = 2
+            self.overlay_stride = 1
         self.overlay_effective_stride = self.overlay_stride
         self._overlay_stride_counter = 0
         self.overlay_gate_enabled = bool(getattr(self.ifc, '_lfm_overlay_gate_enabled', True))
         try:
-            self.overlay_gate_ratio = max(1.0, float(getattr(self.ifc, '_lfm_overlay_gate_ratio', 1.18) or 1.18))
+            self.overlay_gate_ratio = max(1.0, float(getattr(self.ifc, '_lfm_overlay_gate_ratio', 1.14) or 1.14))
         except Exception:
-            self.overlay_gate_ratio = 1.18
+            self.overlay_gate_ratio = 1.14
         try:
             self.overlay_gate_main_hz = max(40.0, float(getattr(self.ifc, '_lfm_overlay_gate_main_hz', 85.0) or 85.0))
         except Exception:
@@ -54587,9 +55574,9 @@ class _LocalFileRealtimeController(QObject):
         except Exception:
             self.overlay_gate_main_rms = 0.009
         try:
-            self.overlay_gate_hold_ms = max(0.0, float(getattr(self.ifc, '_lfm_overlay_gate_hold_ms', 140.0) or 140.0))
+            self.overlay_gate_hold_ms = max(0.0, float(getattr(self.ifc, '_lfm_overlay_gate_hold_ms', 55.0) or 55.0))
         except Exception:
-            self.overlay_gate_hold_ms = 140.0
+            self.overlay_gate_hold_ms = 55.0
         self.overlay_adaptive_throttle = bool(getattr(self.ifc, '_lfm_overlay_adaptive_throttle', True))
         try:
             self.overlay_batch_flush_ms = max(20, int(getattr(self.ifc, '_lfm_overlay_batch_flush_ms', 45) or 45))
@@ -54628,6 +55615,11 @@ class _LocalFileRealtimeController(QObject):
         self._overlay_main_rms_ema = 0.0
         self._overlay_backing_rms_ema = 0.0
         self._overlay_gate_hold_until = 0.0
+        self._overlay_rap_variability_ema = 0.0
+        self._overlay_prev_freq_hz = 0.0
+        self._overlay_gate_hit = 0
+        self._overlay_gate_total = 0
+        self._overlay_gate_hit_ema = 0.0
         self.overlay_dual_extract_enabled = bool(getattr(self.ifc, '_lfm_overlay_dual_extract_enabled', True))
         try:
             self.overlay_dual_low_min_hz = max(60.0, float(getattr(self.ifc, '_lfm_overlay_dual_low_min_hz', 85.0) or 85.0))
@@ -54660,6 +55652,35 @@ class _LocalFileRealtimeController(QObject):
         except Exception:
             return 0.0
 
+    def _estimate_overlay_peak_freq(self, frame, min_hz: float = 70.0, max_hz: float = 1200.0) -> float:
+        """当 YIN 对副轨返回 0Hz 时，用轻量频谱峰值兜底，避免细节点断层。"""
+        try:
+            import numpy as np
+            arr = np.asarray(frame, dtype=np.float32).reshape(-1)
+            if arr.size < 192:
+                return 0.0
+            arr = arr - float(np.mean(arr))
+            win = np.hanning(arr.size).astype(np.float32)
+            spec = np.fft.rfft(arr * win)
+            mag = np.abs(spec).astype(np.float32)
+            if mag.size < 8:
+                return 0.0
+            freqs = np.fft.rfftfreq(arr.size, d=1.0 / float(self.sr_target)).astype(np.float32)
+            mask = (freqs >= float(min_hz)) & (freqs <= float(max_hz))
+            if not np.any(mask):
+                return 0.0
+            vals = mag[mask]
+            if vals.size <= 0:
+                return 0.0
+            idx = int(np.argmax(vals))
+            peak = float(vals[idx])
+            floor = float(np.percentile(vals, 70)) if vals.size >= 12 else float(np.mean(vals))
+            if peak < max(1e-7, floor * 1.28):
+                return 0.0
+            return float(freqs[mask][idx])
+        except Exception:
+            return 0.0
+
     def _compute_dynamic_stride(self) -> int:
         base = max(1, int(getattr(self, 'overlay_stride', 1) or 1))
         if not bool(getattr(self, 'overlay_adaptive_throttle', True)):
@@ -54667,6 +55688,7 @@ class _LocalFileRealtimeController(QObject):
             return base
         qlen = len(getattr(self, '_overlay_batch_queue', []) or [])
         cost = float(getattr(self, '_overlay_flush_last_cost_ms', 0.0) or 0.0)
+        rap_var = float(getattr(self, '_overlay_rap_variability_ema', 0.0) or 0.0)
         boost = 0
         if qlen >= 140 or cost >= 22.0:
             boost = 3
@@ -54674,6 +55696,11 @@ class _LocalFileRealtimeController(QObject):
             boost = 2
         elif qlen >= 40 or cost >= 8.5:
             boost = 1
+        # 副轨变动性高（说唱/高语速）时降低降采样，避免橙线过度平滑。
+        if rap_var >= 0.26:
+            boost = max(0, boost - 2)
+        elif rap_var >= 0.16:
+            boost = max(0, boost - 1)
         eff = min(8, base + boost)
         self.overlay_effective_stride = eff
         return eff
@@ -54764,12 +55791,46 @@ class _LocalFileRealtimeController(QObject):
 
         suppress = bool(main_active and main_dominant)
 
+        # 副轨能量足够时优先并行显示，避免伴唱细节点整体消失。
+        try:
+            backing_present = bool(backing_rms >= max(0.0012, main_floor * 0.55))
+        except Exception:
+            backing_present = False
+        if backing_present and main_active:
+            # 仅当主轨极端压制时才拦截，正常情况下放行副轨细点。
+            suppress = bool(main_rms >= max(main_floor * 1.35, backing_rms * (ratio + 0.22)))
+            if not suppress:
+                self._overlay_gate_state = '副轨并行放行'
+
         try:
             now_t = float(t0_sec)
         except Exception:
             now_t = 0.0
+
+        # 蓝线优先：当主唱锚点进入高音稳态时，降低对副轨的抑制倾向。
+        lead_anchor_hz = 0.0
+        lead_anchor_count = 0
+        try:
+            ap = getattr(self.ifc, 'audio_processor', None)
+            if ap is not None:
+                lead_anchor_hz = float(getattr(ap, '_lead_high_anchor_hz', 0.0) or 0.0)
+                lead_anchor_count = int(getattr(ap, '_lead_high_stable_count', 0) or 0)
+        except Exception:
+            lead_anchor_hz = 0.0
+            lead_anchor_count = 0
+        lead_priority = bool(lead_anchor_hz >= max(260.0, main_hz_thr * 1.1) and lead_anchor_count >= 3 and main_freq >= lead_anchor_hz * 0.90)
+        if lead_priority and main_active:
+            suppress = False
+            self._overlay_gate_state = '蓝线优先放行'
+
         if suppress:
-            hold_sec = max(0.0, float(getattr(self, 'overlay_gate_hold_ms', 140.0) or 140.0) / 1000.0)
+            hold_ms = max(0.0, float(getattr(self, 'overlay_gate_hold_ms', 55.0) or 55.0))
+            rap_var = float(getattr(self, '_overlay_rap_variability_ema', 0.0) or 0.0)
+            if rap_var >= 0.24:
+                hold_ms *= 0.60
+            elif rap_var >= 0.14:
+                hold_ms *= 0.80
+            hold_sec = hold_ms / 1000.0
             self._overlay_gate_hold_until = max(self._overlay_gate_hold_until, now_t + hold_sec)
         if (not suppress) and now_t < float(getattr(self, '_overlay_gate_hold_until', 0.0) or 0.0):
             suppress = True
@@ -54780,6 +55841,15 @@ class _LocalFileRealtimeController(QObject):
             self._overlay_gate_state = '主轨活跃但未占优'
         else:
             self._overlay_gate_state = '通过'
+        try:
+            self._overlay_gate_total = int(getattr(self, '_overlay_gate_total', 0) or 0) + 1
+            if suppress:
+                self._overlay_gate_hit = int(getattr(self, '_overlay_gate_hit', 0) or 0) + 1
+            hit_ratio = float(getattr(self, '_overlay_gate_hit', 0) or 0) / max(1.0, float(getattr(self, '_overlay_gate_total', 0) or 0))
+            prev_ema = float(getattr(self, '_overlay_gate_hit_ema', 0.0) or 0.0)
+            self._overlay_gate_hit_ema = (prev_ema * 0.93) + (hit_ratio * 0.07)
+        except Exception:
+            pass
         return suppress
 
     def _emit_overlay_pitch_packet(self, packet: dict) -> None:
@@ -54837,6 +55907,22 @@ class _LocalFileRealtimeController(QObject):
                 freq = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
         except Exception:
             freq = 0.0
+        if freq <= 0.0:
+            try:
+                freq = float(self._estimate_overlay_peak_freq(frame, min_hz=self.overlay_dual_low_min_hz, max_hz=self.overlay_dual_high_max_hz) or 0.0)
+            except Exception:
+                freq = 0.0
+        try:
+            prev_hz = float(getattr(self, '_overlay_prev_freq_hz', 0.0) or 0.0)
+            if prev_hz > 0.0 and freq > 0.0:
+                semi_delta = abs(12.0 * math.log2(max(freq, 1e-9) / max(prev_hz, 1e-9)))
+                v = min(1.0, semi_delta / 7.0)
+                self._overlay_rap_variability_ema = (float(getattr(self, '_overlay_rap_variability_ema', 0.0) or 0.0) * 0.90) + (v * 0.10)
+            else:
+                self._overlay_rap_variability_ema = float(getattr(self, '_overlay_rap_variability_ema', 0.0) or 0.0) * 0.96
+            self._overlay_prev_freq_hz = float(freq if freq > 0.0 else 0.0)
+        except Exception:
+            pass
         if freq > 0.0:
             if main_frame is not None and self._should_suppress_overlay(main_frame, frame, t0_sec, secondary_freq=dual_back):
                 self._overlay_packets_suppressed += 1
@@ -54856,10 +55942,10 @@ class _LocalFileRealtimeController(QObject):
                 'timestamp': time.time(),
                 'global_time': float(t0_sec),
                 'frequency': float(freq),
-                'confidence': 0.78 if dual_back > 0.0 else 0.72,
+                'confidence': 0.80 if dual_back > 0.0 else 0.65,
                 'has_pitch': True,
                 'track_label': self.overlay_label,
-                'source': 'dual-main' if dual_back > 0.0 else 'overlay-stem',
+                'source': 'dual-main' if dual_back > 0.0 else ('overlay-yin' if float(freq) > 0.0 else 'overlay-stem'),
             }
             self._emit_overlay_pitch_packet(pkt)
             return
@@ -55084,6 +56170,14 @@ class _LocalFileRealtimeController(QObject):
                 self._ana_cursor = int(self.pos_samples)
             except Exception:
                 pass
+        # seek 后重置主唱解析状态，避免平滑/门控状态跨时间段继承导致主唱细点被持续抑制。
+        try:
+            ap = getattr(self.ifc, 'audio_processor', None)
+            if ap is not None and hasattr(ap, '_reset_pitch_analysis_state'):
+                if abs(float(sec) - float(prev_sec)) >= 0.25:
+                    ap._reset_pitch_analysis_state(reason=f"lfm_seek->{float(sec):.3f}s")
+        except Exception:
+            pass
         # 关键修复：倒退 seek 后必须释放“已分析覆盖”锚点，否则 30s 之后会被误判为已处理，
         # 导致主轨不再重新分析（表现为只剩伴唱叠加）。
         try:
@@ -55116,16 +56210,9 @@ class _LocalFileRealtimeController(QObject):
                 viz = None
             if viz is not None:
                 try:
-                    bins = getattr(viz, '_lfm_main_drawn_bins', None)
-                    if isinstance(bins, set) and bins:
-                        try:
-                            lfm_eps = float(getattr(viz, '_lfm_main_timebin_eps', getattr(viz, '_timebin_eps', 0.004)))
-                        except Exception:
-                            lfm_eps = 0.004
-                        if lfm_eps <= 0.0:
-                            lfm_eps = 0.004
-                        rewind_bin = int(round((float(rewind_anchor) / float(self.sr_target)) / lfm_eps))
-                        viz._lfm_main_drawn_bins = {b for b in bins if int(b) <= rewind_bin}
+                    if hasattr(viz, '_release_lfm_main_bins_after'):
+                        rewind_sec = float(rewind_anchor) / float(self.sr_target)
+                        viz._release_lfm_main_bins_after(float(rewind_sec))
                 except Exception:
                     pass
         self.tick.emit(sec)
@@ -55252,10 +56339,50 @@ class _LocalFilePanel(QDialog):
         super().__init__(ifc)
         self.ifc = ifc
         self.ctrl = controller
-        self.setWindowTitle("本地音高检测 - 实时分析")
+        self.setWindowTitle("本地音高检测 - 实时分析 [UIv2]")
         self.setModal(False)
-        self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        self.setStyleSheet(
+            "QDialog { background-color: #0f151d; color: #edf4ff; }"
+            "QLabel { color:#dfe8f5; }"
+            "QGroupBox { border:1px solid #2f3f53; border-radius:9px; margin-top:8px; padding-top:8px; background:#121b25; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:10px; padding:0 6px; color:#b7d6ff; }"
+            "QPushButton { color:#f3f8ff; background:#1b2633; border:1px solid #31485f; border-radius:8px; padding:6px 10px; }"
+            "QPushButton:hover { background:#243547; border-color:#4c7296; }"
+            "QPushButton:pressed { background:#17212c; }"
+            "QComboBox, QLineEdit, QSpinBox { background:#0c1219; color:#f5f9ff; border:1px solid #334a62; border-radius:6px; padding:4px 6px; }"
+            "QCheckBox { color:#e8f1ff; spacing:6px; }"
+            "QCheckBox::indicator { width:15px; height:15px; border-radius:3px; border:1px solid #4e637d; background:#18212c; }"
+            "QCheckBox::indicator:checked { background:#2f6dff; border:1px solid #6c9dff; }"
+            "QSlider::groove:horizontal { border:1px solid #2f455e; height:6px; background:#16212d; border-radius:3px; }"
+            "QSlider::handle:horizontal { background:#7cb0ff; border:1px solid #a8c9ff; width:14px; margin:-5px 0; border-radius:7px; }"
+        )
+        try:
+            self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+            self.setWindowFlag(Qt.WindowType.MSWindowsFixedSizeDialogHint, False)
+        except Exception:
+            pass
+        self.setSizeGripEnabled(True)
+        try:
+            self.setMinimumSize(760, 205)
+            self.resize(840, 230)
+        except Exception:
+            pass
         v = QVBoxLayout(self)
+        try:
+            v.setContentsMargins(10, 8, 10, 8)
+            v.setSpacing(6)
+        except Exception:
+            pass
+        title_label = QLabel("本地音高解析")
+        title_label.setStyleSheet("color:#cfe4ff; font-size:14px; font-weight:700;")
+        subtitle_label = QLabel("实时追踪主唱/伴唱音高，可按需展开参数信息和调节面板")
+        subtitle_label.setStyleSheet("color:#9fb4cc; font-size:11px;")
+        v.addWidget(title_label)
+        v.addWidget(subtitle_label)
+        self._show_param_info = False
+        self._show_param_adjust = False
+        self._param_info_widgets = []
+        self._param_adjust_widgets = []
         self.track_combo = None
         try:
             sources = dict(getattr(self.ifc, '_lfm_track_sources', {}) or {})
@@ -55277,7 +56404,26 @@ class _LocalFilePanel(QDialog):
                     self.track_combo.setCurrentIndex(idx)
             self.track_combo.currentIndexChanged.connect(self._on_track_mode_changed)
             mode_row.addWidget(self.track_combo)
-            v.addLayout(mode_row)
+            mode_row_wrap = QWidget()
+            mode_row_wrap.setLayout(mode_row)
+            v.addWidget(mode_row_wrap)
+            self._param_adjust_widgets.append(mode_row_wrap)
+
+        compact_row = QHBoxLayout()
+        compact_row.addWidget(QLabel("界面模式:"))
+        self._ui_version_hint = QLabel("UIv2")
+        self._ui_version_hint.setStyleSheet("color:#8fb8ff;")
+        compact_row.addWidget(self._ui_version_hint)
+        self.btn_toggle_param_info = QPushButton("参数信息")
+        self.btn_toggle_param_info.setCheckable(True)
+        self.btn_toggle_param_info.clicked.connect(self._on_toggle_param_info)
+        compact_row.addWidget(self.btn_toggle_param_info)
+        self.btn_toggle_param_adjust = QPushButton("参数调节")
+        self.btn_toggle_param_adjust.setCheckable(True)
+        self.btn_toggle_param_adjust.clicked.connect(self._on_toggle_param_adjust)
+        compact_row.addWidget(self.btn_toggle_param_adjust)
+        compact_row.addStretch(1)
+        v.addLayout(compact_row)
 
         overlay_row = QHBoxLayout()
         overlay_row.addWidget(QLabel("副轨叠加:"))
@@ -55312,7 +56458,10 @@ class _LocalFilePanel(QDialog):
         self.overlay_alpha_slider.setValue(int(round(float(getattr(self.ifc, '_lfm_overlay_alpha', 0.72)) * 100.0)))
         self.overlay_alpha_slider.valueChanged.connect(self._on_overlay_style_changed)
         overlay_row.addWidget(self.overlay_alpha_slider)
-        v.addLayout(overlay_row)
+        overlay_row_wrap = QWidget()
+        overlay_row_wrap.setLayout(overlay_row)
+        v.addWidget(overlay_row_wrap)
+        self._param_adjust_widgets.append(overlay_row_wrap)
 
         legend_row = QHBoxLayout()
         legend_row.addWidget(QLabel("图例位置:"))
@@ -55336,33 +56485,123 @@ class _LocalFilePanel(QDialog):
         self.overlay_reset_btn = QPushButton("恢复默认")
         self.overlay_reset_btn.clicked.connect(self._on_overlay_reset_defaults)
         legend_row.addWidget(self.overlay_reset_btn)
-        v.addLayout(legend_row)
+        legend_row_wrap = QWidget()
+        legend_row_wrap.setLayout(legend_row)
+        v.addWidget(legend_row_wrap)
+        self._param_adjust_widgets.append(legend_row_wrap)
 
         perf_row = QHBoxLayout()
         perf_row.addWidget(QLabel("叠加性能:"))
         self.overlay_perf_combo = QComboBox()
-        self.overlay_perf_combo.addItem('高质量', (1, True))
-        self.overlay_perf_combo.addItem('平衡', (2, True))
-        self.overlay_perf_combo.addItem('省电', (4, True))
-        cur_stride = max(1, int(getattr(self.ifc, '_lfm_overlay_stride', 2) or 2))
+        self.overlay_perf_combo.addItem('高质量', (1, False))
+        self.overlay_perf_combo.addItem('平衡', (2, False))
+        self.overlay_perf_combo.addItem('省电', (4, False))
+        cur_stride = max(1, int(getattr(self.ifc, '_lfm_overlay_stride', 1) or 1))
         cur_play_only = bool(getattr(self.ifc, '_lfm_overlay_play_only', True))
-        cur_perf = 1
-        if cur_stride >= 4 and cur_play_only:
+        cur_perf = 0
+        if cur_stride >= 4:
             cur_perf = 2
-        elif cur_stride >= 2 and cur_play_only:
+        elif cur_stride >= 2:
             cur_perf = 1
         self.overlay_perf_combo.setCurrentIndex(cur_perf)
         self.overlay_perf_combo.currentIndexChanged.connect(self._on_overlay_perf_changed)
         perf_row.addWidget(self.overlay_perf_combo)
-        v.addLayout(perf_row)
+        perf_row_wrap = QWidget()
+        perf_row_wrap.setLayout(perf_row)
+        v.addWidget(perf_row_wrap)
+        self._param_adjust_widgets.append(perf_row_wrap)
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("伴唱演唱形式:"))
+        self.overlay_vocal_style_combo = QComboBox()
+        self.overlay_vocal_style_combo.addItem('均衡', 'balanced')
+        self.overlay_vocal_style_combo.addItem('说唱/语速快', 'rap')
+        self.overlay_vocal_style_combo.addItem('旋律连唱', 'melodic')
+        cur_style = str(getattr(self.ifc, '_lfm_overlay_vocal_style', 'balanced') or 'balanced').strip().lower()
+        idx_style = self.overlay_vocal_style_combo.findData(cur_style)
+        if idx_style >= 0:
+            self.overlay_vocal_style_combo.setCurrentIndex(idx_style)
+        self.overlay_vocal_style_combo.currentIndexChanged.connect(self._on_overlay_vocal_style_changed)
+        style_row.addWidget(self.overlay_vocal_style_combo)
+        style_row.addStretch(1)
+        style_row_wrap = QWidget()
+        style_row_wrap.setLayout(style_row)
+        v.addWidget(style_row_wrap)
+        self._param_adjust_widgets.append(style_row_wrap)
+
+        main_row = QHBoxLayout()
+        main_row.addWidget(QLabel("主轨稳态:"))
+        self.main_diag_cb = QCheckBox("诊断")
+        self.main_diag_cb.setChecked(bool(getattr(self.ifc, '_lfm_parse_diag_enabled', True)))
+        self.main_diag_cb.stateChanged.connect(self._on_mainparse_style_changed)
+        main_row.addWidget(self.main_diag_cb)
+        self.main_stable_cb = QCheckBox("分层稳态")
+        self.main_stable_cb.setChecked(bool(getattr(self.ifc, '_lfm_layered_stability_enabled', True)))
+        self.main_stable_cb.stateChanged.connect(self._on_mainparse_style_changed)
+        main_row.addWidget(self.main_stable_cb)
+        main_row.addWidget(QLabel("中高平滑"))
+        self.main_blend_slider = QSlider(Qt.Orientation.Horizontal)
+        self.main_blend_slider.setRange(0, 40)
+        self.main_blend_slider.setValue(int(round(float(getattr(self.ifc, '_lfm_mid_register_blend', 0.22) or 0.22) * 100.0)))
+        self.main_blend_slider.valueChanged.connect(self._on_mainparse_style_changed)
+        main_row.addWidget(self.main_blend_slider)
+        main_row.addWidget(QLabel("高音下坠(半音)"))
+        self.main_downlimit_slider = QSlider(Qt.Orientation.Horizontal)
+        self.main_downlimit_slider.setRange(10, 50)
+        self.main_downlimit_slider.setValue(int(round(float(getattr(self.ifc, '_lfm_high_register_down_limit_semi', 2.2) or 2.2) * 10.0)))
+        self.main_downlimit_slider.valueChanged.connect(self._on_mainparse_style_changed)
+        main_row.addWidget(self.main_downlimit_slider)
+        main_row.addWidget(QLabel("短窗(s)"))
+        self.main_tau_slider = QSlider(Qt.Orientation.Horizontal)
+        self.main_tau_slider.setRange(10, 50)
+        self.main_tau_slider.setValue(int(round(float(getattr(self.ifc, '_lfm_parse_diag_rate_tau_s', 2.0) or 2.0) * 10.0)))
+        self.main_tau_slider.valueChanged.connect(self._on_mainparse_style_changed)
+        main_row.addWidget(self.main_tau_slider)
+        self.main_restore_btn = QPushButton("恢复推荐参数")
+        self.main_restore_btn.clicked.connect(self._on_mainparse_restore_defaults)
+        main_row.addWidget(self.main_restore_btn)
+        main_row_wrap = QWidget()
+        main_row_wrap.setLayout(main_row)
+        v.addWidget(main_row_wrap)
+        self._param_adjust_widgets.append(main_row_wrap)
+
+        rap_row = QHBoxLayout()
+        rap_row.addWidget(QLabel("抗说唱阈值"))
+        self.main_rap_margin_slider = QSlider(Qt.Orientation.Horizontal)
+        self.main_rap_margin_slider.setRange(5, 80)
+        self.main_rap_margin_slider.setValue(int(round(float(getattr(self.ifc, '_lead_sep_rap_weak_margin', 0.40) or 0.40) * 100.0)))
+        self.main_rap_margin_slider.valueChanged.connect(self._on_mainparse_style_changed)
+        rap_row.addWidget(self.main_rap_margin_slider)
+        rap_row.addWidget(QLabel("偏离(半音)"))
+        self.main_rap_guard_slider = QSlider(Qt.Orientation.Horizontal)
+        self.main_rap_guard_slider.setRange(10, 80)
+        self.main_rap_guard_slider.setValue(int(round(float(getattr(self.ifc, '_lead_sep_rap_guard_semi', 2.4) or 2.4) * 10.0)))
+        self.main_rap_guard_slider.valueChanged.connect(self._on_mainparse_style_changed)
+        rap_row.addWidget(self.main_rap_guard_slider)
+        rap_row.addWidget(QLabel("回拉强度"))
+        self.main_rap_anchor_mix_slider = QSlider(Qt.Orientation.Horizontal)
+        self.main_rap_anchor_mix_slider.setRange(50, 95)
+        self.main_rap_anchor_mix_slider.setValue(int(round(float(getattr(self.ifc, '_lead_sep_rap_anchor_mix', 0.86) or 0.86) * 100.0)))
+        self.main_rap_anchor_mix_slider.valueChanged.connect(self._on_mainparse_style_changed)
+        rap_row.addWidget(self.main_rap_anchor_mix_slider)
+        rap_row_wrap = QWidget()
+        rap_row_wrap.setLayout(rap_row)
+        v.addWidget(rap_row_wrap)
+        self._param_adjust_widgets.append(rap_row_wrap)
 
         overlay_track = str(getattr(self.ctrl, 'overlay_label', '') or '').strip()
         self.overlay_track_label = QLabel(f"副轨来源: {self._pretty_track_label(overlay_track)}")
         self.overlay_track_label.setStyleSheet("color:#aaaaaa;")
         v.addWidget(self.overlay_track_label)
+        self._param_info_widgets.append(self.overlay_track_label)
 
         diag_box = QGroupBox("叠加诊断")
         diag_layout = QVBoxLayout(diag_box)
+        try:
+            diag_layout.setContentsMargins(8, 6, 8, 6)
+            diag_layout.setSpacing(4)
+        except Exception:
+            pass
         self.diag_source_label = QLabel("副轨源: -")
         self.diag_source_label.setStyleSheet("color:#b8b8b8;")
         diag_layout.addWidget(self.diag_source_label)
@@ -55378,36 +56617,93 @@ class _LocalFilePanel(QDialog):
         self.diag_packets_label = QLabel("叠加包: -")
         self.diag_packets_label.setStyleSheet("color:#8fb8ff;")
         diag_layout.addWidget(self.diag_packets_label)
+        self.diag_mainparse_label = QLabel("主轨解析: -")
+        self.diag_mainparse_label.setStyleSheet("color:#9fe3c5;")
+        self.diag_mainparse_label.setWordWrap(True)
+        diag_layout.addWidget(self.diag_mainparse_label)
+        self.diag_competition_label = QLabel("竞争度: -")
+        self.diag_competition_label.setStyleSheet("color:#f6c177;")
+        self.diag_competition_label.setWordWrap(True)
+        diag_layout.addWidget(self.diag_competition_label)
         self.diag_alert_label = QLabel("")
         self.diag_alert_label.setWordWrap(True)
         self.diag_alert_label.setStyleSheet("color:#ff8a8a; font-weight:600;")
         diag_layout.addWidget(self.diag_alert_label)
         v.addWidget(diag_box)
-        self.lbl_time = QLabel("00:00 / 00:00")
-        v.addWidget(self.lbl_time)
+        self._param_info_widgets.append(diag_box)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 1000)
+        try:
+            self.slider.setFixedHeight(20)
+        except Exception:
+            pass
         v.addWidget(self.slider)
         row = QHBoxLayout()
+        self.lbl_time = QLabel("00:00 / 00:00")
+        self.lbl_time.setStyleSheet("color:#c8d8ea; font-weight:600;")
+        row.addWidget(self.lbl_time)
+        row.addStretch(1)
         self.btn_play = QPushButton("播放")
         self.btn_pause = QPushButton("暂停")
+        self.btn_preview_tracks = QPushButton("试听分离轨")
+        self.btn_rewind = QPushButton("回到开头")
+        self.btn_close = QPushButton("关闭")
+        try:
+            self.btn_play.setStyleSheet("QPushButton{background:#2f6dff; border:1px solid #4e85ff; color:#fff; border-radius:8px; padding:8px 16px;} QPushButton:hover{background:#3e7aff;}")
+            self.btn_pause.setStyleSheet("QPushButton{background:#1f2b38; border:1px solid #36506a; color:#f2f8ff; border-radius:8px; padding:8px 16px;} QPushButton:hover{background:#27384a;}")
+            self.btn_rewind.setStyleSheet("QPushButton{background:#1f2b38; border:1px solid #36506a; color:#f2f8ff; border-radius:8px; padding:8px 16px;} QPushButton:hover{background:#27384a;}")
+            self.btn_close.setStyleSheet("QPushButton{background:#2a1f28; border:1px solid #5a3f56; color:#f9edf5; border-radius:8px; padding:8px 16px;} QPushButton:hover{background:#3a2a36;}")
+        except Exception:
+            pass
         row.addWidget(self.btn_play)
         row.addWidget(self.btn_pause)
+        row.addWidget(self.btn_preview_tracks)
+        row.addWidget(self.btn_rewind)
+        row.addWidget(self.btn_close)
         v.addLayout(row)
         self.btn_play.clicked.connect(self.ctrl.play)
         self.btn_pause.clicked.connect(self.ctrl.pause)
+        self.btn_preview_tracks.clicked.connect(self._on_preview_tracks_clicked)
+        self.btn_rewind.clicked.connect(self._on_rewind_clicked)
+        self.btn_close.clicked.connect(self.close)
         self.slider.sliderPressed.connect(self._on_slider_pressed)
         self.slider.sliderReleased.connect(self._on_slider_released)
         self.slider.valueChanged.connect(self._on_slider_changed)
         self._dragging = False
         self.ctrl.tick.connect(self._on_tick)
         self._apply_overlay_controls_to_runtime()
+        self._main_diag_prev_wall = time.time()
+        self._main_diag_prev = {}
+        self._main_diag_rate_ema = {'voiced': 0.0, 'gate_blk': 0.0, 'dedup': 0.0}
+        self._main_diag_rate_tau_s = float(getattr(self.ifc, '_lfm_parse_diag_rate_tau_s', 2.0) or 2.0)
+        self._apply_mainparse_controls_to_runtime()
         self._update_labels(0.0, self.ctrl.total_s)
         self._diag_timer = QTimer(self)
         self._diag_timer.setTimerType(Qt.TimerType.CoarseTimer)
         self._diag_timer.timeout.connect(self._update_overlay_diagnostics)
         self._diag_timer.start(250)
         self._update_overlay_diagnostics()
+        self._preview_tracks_dlg = None
+
+        # 硬隐藏一次，防止任何残留状态导致默认展开。
+        for _w in list(self._param_info_widgets) + list(self._param_adjust_widgets):
+            try:
+                _w.setVisible(False)
+            except Exception:
+                pass
+        self._apply_panel_visibility()
+
+    def showEvent(self, event):
+        try:
+            self._show_param_info = False
+            self._show_param_adjust = False
+            self._apply_panel_visibility()
+        except Exception:
+            pass
+        try:
+            super().showEvent(event)
+        except Exception:
+            pass
 
     @staticmethod
     def _fmt(sec: float) -> str:
@@ -55504,6 +56800,86 @@ class _LocalFilePanel(QDialog):
             qlen = len(list(getattr(self.ctrl, '_overlay_batch_queue', []) or []))
             stride = int(getattr(self.ctrl, 'overlay_effective_stride', getattr(self.ctrl, 'overlay_stride', 1)) or 1)
             self.diag_packets_label.setText(f"叠加包: 总{total} / 有音高{pitched} / 无音高{nop} / 抑制{sup} | 队列{qlen} | stride{stride}")
+        except Exception:
+            pass
+
+        try:
+            ap = getattr(self.ifc, 'audio_processor', None)
+            diag = dict(getattr(ap, '_lfm_parse_diag', {}) or {}) if ap is not None else {}
+            viz = getattr(self.ifc, 'visualizer', None)
+            dedup = int(getattr(viz, '_lfm_diag_dedup_drop', 0) or 0) if viz is not None else 0
+            total_f = int(diag.get('total_frames', 0) or 0)
+            voiced = int(diag.get('voiced_emit', 0) or 0)
+            no_pitch = int(diag.get('no_pitch_emit', 0) or 0)
+            gate_blk = int(diag.get('vocal_gate_block', 0) or 0)
+            soft_pass = int(diag.get('vocal_gate_soft_pass', 0) or 0)
+            hi_hold = int(diag.get('high_register_hold', 0) or 0)
+            mid_s = int(diag.get('mid_register_smooth', 0) or 0)
+            sw = int(diag.get('lead_bias_switch', 0) or 0)
+            sep_eval = int(diag.get('sep_eval_frames', 0) or 0)
+            sep_dual = int(diag.get('sep_dual_frames', 0) or 0)
+            sep_inertia = int(diag.get('sep_inertia_hold', 0) or 0)
+            sep_guard = int(diag.get('sep_backing_leak_guard', 0) or 0)
+            sep_rap = int(diag.get('sep_high_stable_rap_guard', 0) or 0)
+            sep_floor = int(diag.get('sep_anchor_floor_guard', 0) or 0)
+            sep_lock = int(diag.get('sep_rap_jitter_lock', 0) or 0)
+            sep_med_lock = int(diag.get('sep_high_median_lock', 0) or 0)
+            sep_step_clamp = int(diag.get('sep_high_step_clamp', 0) or 0)
+            sep_stab_strength = float(diag.get('sep_high_stab_strength', 0.0) or 0.0)
+            sep_interf_ema = float(diag.get('sep_high_interf_ema', 0.0) or 0.0)
+            sep_interf_prev = int(diag.get('sep_high_interf_prev_lock', 0) or 0)
+            sep_lfm_floor = int(diag.get('sep_lfm_output_floor_guard', 0) or 0)
+            main_only_force = int(diag.get('main_only_force_emit', 0) or 0)
+
+            now_wall = time.time()
+            prev_wall = float(getattr(self, '_main_diag_prev_wall', now_wall) or now_wall)
+            prev = dict(getattr(self, '_main_diag_prev', {}) or {})
+            dt = max(1e-6, now_wall - prev_wall)
+            d_voiced = max(0, voiced - int(prev.get('voiced_emit', voiced) or voiced))
+            d_gate = max(0, gate_blk - int(prev.get('vocal_gate_block', gate_blk) or gate_blk))
+            d_dedup = max(0, dedup - int(prev.get('dedup_drop', dedup) or dedup))
+            r_voiced = float(d_voiced) / dt
+            r_gate = float(d_gate) / dt
+            r_dedup = float(d_dedup) / dt
+
+            ema = dict(getattr(self, '_main_diag_rate_ema', {}) or {})
+            tau = max(0.5, float(getattr(self, '_main_diag_rate_tau_s', 2.0) or 2.0))
+            alpha = max(0.0, min(1.0, dt / (tau + dt)))
+            ema_voiced = float(ema.get('voiced', 0.0) or 0.0) + (r_voiced - float(ema.get('voiced', 0.0) or 0.0)) * alpha
+            ema_gate = float(ema.get('gate_blk', 0.0) or 0.0) + (r_gate - float(ema.get('gate_blk', 0.0) or 0.0)) * alpha
+            ema_dedup = float(ema.get('dedup', 0.0) or 0.0) + (r_dedup - float(ema.get('dedup', 0.0) or 0.0)) * alpha
+            self._main_diag_rate_ema = {'voiced': ema_voiced, 'gate_blk': ema_gate, 'dedup': ema_dedup}
+            self._main_diag_prev_wall = now_wall
+            self._main_diag_prev = {
+                'voiced_emit': voiced,
+                'vocal_gate_block': gate_blk,
+                'dedup_drop': dedup,
+            }
+
+            self.diag_mainparse_label.setText(
+                f"主轨解析: 帧{total_f} 点{voiced} 无音高{no_pitch} 去重{dedup} | 门控拦截{gate_blk} 放行{soft_pass} | 高音保持{hi_hold} 中高平滑{mid_s} 候选切换{sw}"
+                f" | 分离估计: 评估{sep_eval} 双候选{sep_dual} 惯性保持{sep_inertia} 防泄漏{sep_guard} 抗说唱{sep_rap} 锚点下限{sep_floor} 抖动锁定{sep_lock} 中位回拉{sep_med_lock} 步长限幅{sep_step_clamp} 干扰锁{sep_interf_prev} 本地下限护栏{sep_lfm_floor} 强度{sep_stab_strength:.2f} 干扰EMA{sep_interf_ema:.2f}"
+                f" | 主唱兜底发点{main_only_force}"
+                f" | 速率(瞬时/短窗): 点{r_voiced:.1f}/{ema_voiced:.1f}/s 门控{r_gate:.1f}/{ema_gate:.1f}/s 去重{r_dedup:.1f}/{ema_dedup:.1f}/s"
+            )
+        except Exception:
+            pass
+
+        try:
+            ap = getattr(self.ifc, 'audio_processor', None)
+            diag = dict(getattr(ap, '_lfm_parse_diag', {}) or {}) if ap is not None else {}
+            comp_margin = float(diag.get('lead_comp_margin', 0.0) or 0.0)
+            comp_ratio = float(diag.get('lead_comp_sep_ratio', 1.0) or 1.0)
+            comp_pressure = float(diag.get('lead_comp_pressure_ema', 0.0) or 0.0)
+            blue_pick = int(diag.get('sep_blue_priority_pick', 0) or 0)
+            gate_hit = int(getattr(self.ctrl, '_overlay_gate_hit', 0) or 0)
+            gate_total = int(getattr(self.ctrl, '_overlay_gate_total', 0) or 0)
+            gate_hit_rate = (float(gate_hit) / float(max(1, gate_total))) * 100.0
+            gate_hit_ema = float(getattr(self.ctrl, '_overlay_gate_hit_ema', 0.0) or 0.0) * 100.0
+            self.diag_competition_label.setText(
+                f"竞争度: 分差{comp_margin:.2f} 分离比{comp_ratio:.2f} 压力EMA{comp_pressure:.2f} | 蓝线优先{blue_pick}"
+                f" | 门控命中{gate_hit}/{gate_total}({gate_hit_rate:.1f}%) 短窗{gate_hit_ema:.1f}%"
+            )
         except Exception:
             pass
 
@@ -55610,7 +56986,11 @@ class _LocalFilePanel(QDialog):
             label_fontsize = int(self.overlay_legend_font_slider.value()) if hasattr(self, 'overlay_legend_font_slider') else 9
         except Exception:
             label_fontsize = 9
-        stride = 2
+        try:
+            vocal_style = str(self.overlay_vocal_style_combo.currentData() or 'balanced') if hasattr(self, 'overlay_vocal_style_combo') else 'balanced'
+        except Exception:
+            vocal_style = 'balanced'
+        stride = 1
         play_only = True
         try:
             perf = self.overlay_perf_combo.currentData() if hasattr(self, 'overlay_perf_combo') else None
@@ -55629,7 +57009,113 @@ class _LocalFilePanel(QDialog):
                 label=self._pretty_track_label(str(getattr(self.ctrl, 'overlay_label', '') or '')),
                 label_pos=label_pos,
                 label_fontsize=label_fontsize,
+                vocal_style=vocal_style,
             )
+
+    def _apply_mainparse_controls_to_runtime(self):
+        try:
+            diag_enabled = bool(self.main_diag_cb.isChecked()) if hasattr(self, 'main_diag_cb') else True
+        except Exception:
+            diag_enabled = True
+        try:
+            layered_enabled = bool(self.main_stable_cb.isChecked()) if hasattr(self, 'main_stable_cb') else True
+        except Exception:
+            layered_enabled = True
+        try:
+            mid_blend = float(self.main_blend_slider.value()) / 100.0 if hasattr(self, 'main_blend_slider') else 0.22
+        except Exception:
+            mid_blend = 0.18
+        try:
+            down_limit = float(self.main_downlimit_slider.value()) / 10.0 if hasattr(self, 'main_downlimit_slider') else 2.2
+        except Exception:
+            down_limit = 2.8
+        try:
+            tau_s = float(self.main_tau_slider.value()) / 10.0 if hasattr(self, 'main_tau_slider') else 2.0
+        except Exception:
+            tau_s = 2.0
+        try:
+            rap_margin = float(self.main_rap_margin_slider.value()) / 100.0 if hasattr(self, 'main_rap_margin_slider') else 0.28
+        except Exception:
+            rap_margin = 0.40
+        try:
+            rap_guard_semi = float(self.main_rap_guard_slider.value()) / 10.0 if hasattr(self, 'main_rap_guard_slider') else 3.0
+        except Exception:
+            rap_guard_semi = 2.4
+        try:
+            rap_anchor_mix = float(self.main_rap_anchor_mix_slider.value()) / 100.0 if hasattr(self, 'main_rap_anchor_mix_slider') else 0.76
+        except Exception:
+            rap_anchor_mix = 0.86
+
+        try:
+            self.ifc._lfm_parse_diag_enabled = bool(diag_enabled)
+            self.ifc._lfm_layered_stability_enabled = bool(layered_enabled)
+            self.ifc._lfm_mid_register_blend = max(0.0, min(0.40, float(mid_blend)))
+            self.ifc._lfm_high_register_down_limit_semi = max(1.0, min(5.0, float(down_limit)))
+            self.ifc._lfm_parse_diag_rate_tau_s = max(0.5, min(5.0, float(tau_s)))
+            self.ifc._lead_sep_rap_weak_margin = max(0.05, min(0.80, float(rap_margin)))
+            self.ifc._lead_sep_rap_guard_semi = max(1.0, min(8.0, float(rap_guard_semi)))
+            self.ifc._lead_sep_rap_anchor_mix = max(0.50, min(0.95, float(rap_anchor_mix)))
+            self.ifc._lead_sep_anchor_floor_down_semi = float(getattr(self.ifc, '_lead_sep_anchor_floor_down_semi', 1.1) or 1.1)
+            self.ifc._lfm_mid_register_hz = float(getattr(self.ifc, '_lfm_mid_register_hz', 220.0) or 220.0)
+            self.ifc._lfm_high_register_hz = float(getattr(self.ifc, '_lfm_high_register_hz', 300.0) or 300.0)
+            self._main_diag_rate_tau_s = float(self.ifc._lfm_parse_diag_rate_tau_s)
+        except Exception:
+            pass
+
+        ap = getattr(self.ifc, 'audio_processor', None)
+        if ap is not None:
+            try:
+                ap._lfm_parse_diag_enabled = bool(diag_enabled)
+                ap._lfm_layered_stability_enabled = bool(layered_enabled)
+                ap._lfm_mid_register_blend = max(0.0, min(0.40, float(mid_blend)))
+                ap._lfm_high_register_down_limit_semi = max(1.0, min(5.0, float(down_limit)))
+                ap._lfm_parse_diag_rate_tau_s = max(0.5, min(5.0, float(tau_s)))
+                ap._lead_sep_rap_weak_margin = max(0.05, min(0.80, float(rap_margin)))
+                ap._lead_sep_rap_guard_semi = max(1.0, min(8.0, float(rap_guard_semi)))
+                ap._lead_sep_rap_anchor_mix = max(0.50, min(0.95, float(rap_anchor_mix)))
+                ap._lead_sep_anchor_floor_down_semi = float(getattr(self.ifc, '_lead_sep_anchor_floor_down_semi', 1.1) or 1.1)
+                ap._lfm_mid_register_hz = float(getattr(self.ifc, '_lfm_mid_register_hz', 220.0) or 220.0)
+                ap._lfm_high_register_hz = float(getattr(self.ifc, '_lfm_high_register_hz', 300.0) or 300.0)
+            except Exception:
+                pass
+
+    def _on_mainparse_style_changed(self, _value: int):
+        self._apply_mainparse_controls_to_runtime()
+
+    def _on_mainparse_restore_defaults(self):
+        try:
+            self.main_diag_cb.setChecked(True)
+        except Exception:
+            pass
+        try:
+            self.main_stable_cb.setChecked(True)
+        except Exception:
+            pass
+        try:
+            self.main_blend_slider.setValue(18)
+        except Exception:
+            pass
+        try:
+            self.main_downlimit_slider.setValue(28)
+        except Exception:
+            pass
+        try:
+            self.main_tau_slider.setValue(20)
+        except Exception:
+            pass
+        try:
+            self.main_rap_margin_slider.setValue(40)
+        except Exception:
+            pass
+        try:
+            self.main_rap_guard_slider.setValue(24)
+        except Exception:
+            pass
+        try:
+            self.main_rap_anchor_mix_slider.setValue(86)
+        except Exception:
+            pass
+        self._apply_mainparse_controls_to_runtime()
 
     def _on_overlay_toggle_changed(self, _state: int):
         self._apply_overlay_controls_to_runtime()
@@ -55642,6 +57128,126 @@ class _LocalFilePanel(QDialog):
 
     def _on_overlay_label_style_changed(self, _value: int):
         self._apply_overlay_controls_to_runtime()
+
+    def _on_overlay_vocal_style_changed(self, _idx: int):
+        self._apply_overlay_controls_to_runtime()
+
+    def _apply_panel_visibility(self):
+        try:
+            self.btn_toggle_param_info.setText("隐藏参数信息" if self._show_param_info else "参数信息")
+            self.btn_toggle_param_info.setChecked(bool(self._show_param_info))
+        except Exception:
+            pass
+        try:
+            self.btn_toggle_param_adjust.setText("隐藏参数调节" if self._show_param_adjust else "参数调节")
+            self.btn_toggle_param_adjust.setChecked(bool(self._show_param_adjust))
+        except Exception:
+            pass
+        for w in list(getattr(self, '_param_info_widgets', []) or []):
+            try:
+                w.setVisible(bool(self._show_param_info))
+            except Exception:
+                pass
+        for w in list(getattr(self, '_param_adjust_widgets', []) or []):
+            try:
+                w.setVisible(bool(self._show_param_adjust))
+            except Exception:
+                pass
+        # 自适应尺寸：避免固定大小导致缩放和长文本裁切。
+        try:
+            if self._show_param_info and self._show_param_adjust:
+                target_w, target_h = 1080, 640
+            elif self._show_param_info:
+                target_w, target_h = 980, 540
+            elif self._show_param_adjust:
+                target_w, target_h = 1040, 340
+            else:
+                target_w, target_h = 840, 220
+            self.setMinimumSize(760, 205)
+            self.setMaximumSize(16777215, 16777215)
+            self.resize(max(self.width(), target_w), max(self.height(), target_h))
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _on_toggle_param_info(self):
+        self._show_param_info = not bool(getattr(self, '_show_param_info', False))
+        self._apply_panel_visibility()
+
+    def _on_toggle_param_adjust(self):
+        self._show_param_adjust = not bool(getattr(self, '_show_param_adjust', False))
+        self._apply_panel_visibility()
+
+    def _on_rewind_clicked(self):
+        try:
+            self.ctrl.seek_seconds(0.0)
+            self._update_labels(0.0, self.ctrl.total_s)
+            if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
+                self.ifc.visualizer.follow_playback_time(0.0)
+        except Exception:
+            pass
+
+    def _on_preview_tracks_clicked(self):
+        try:
+            sources = dict(getattr(self.ifc, '_lfm_track_sources', {}) or {})
+        except Exception:
+            sources = {}
+        tracks = []
+        seen = set()
+        for name, path in sources.items():
+            p = str(path or '').strip()
+            n = str(name or '').strip()
+            if not p or not n:
+                continue
+            key = p.lower()
+            if key in seen:
+                continue
+            # 只保留分离相关轨道，避免重复试听同一混合轨。
+            if ('主唱' not in n) and ('伴唱' not in n):
+                continue
+            seen.add(key)
+            tracks.append({'name': n, 'path': p})
+        # 若当前仅有“主唱+伴唱”混合轨，自动触发一次实时预分离并刷新来源。
+        if len(tracks) <= 1:
+            try:
+                rebuilt = self.ifc._prepare_local_realtime_track_sources(str(getattr(self.ctrl, 'file_path', '') or ''))
+            except Exception:
+                rebuilt = {}
+            if isinstance(rebuilt, dict) and rebuilt:
+                try:
+                    self.ifc._lfm_track_sources = dict(rebuilt)
+                except Exception:
+                    pass
+                tracks = []
+                seen = set()
+                for name, path in rebuilt.items():
+                    p = str(path or '').strip()
+                    n = str(name or '').strip()
+                    if not p or not n:
+                        continue
+                    key = p.lower()
+                    if key in seen:
+                        continue
+                    if ('主唱' not in n) and ('伴唱' not in n):
+                        continue
+                    seen.add(key)
+                    tracks.append({'name': n, 'path': p})
+        if not tracks:
+            try:
+                QMessageBox.information(self, "试听分离轨", "未找到可用的主唱/伴唱分离轨道，请先完成实时预分离。")
+            except Exception:
+                pass
+            return
+        try:
+            self._preview_tracks_dlg = _RealtimeSeparatedPreviewDialog(self, tracks)
+            self._preview_tracks_dlg.show()
+            self._preview_tracks_dlg.raise_()
+            self._preview_tracks_dlg.activateWindow()
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "试听分离轨", f"打开失败: {e}")
+            except Exception:
+                pass
 
     def _on_overlay_reset_defaults(self):
         try:
@@ -55658,7 +57264,12 @@ class _LocalFilePanel(QDialog):
         except Exception:
             pass
         try:
-            self.overlay_perf_combo.setCurrentIndex(1)
+            self.overlay_perf_combo.setCurrentIndex(0)
+        except Exception:
+            pass
+        try:
+            idx = self.overlay_vocal_style_combo.findData('balanced')
+            self.overlay_vocal_style_combo.setCurrentIndex(idx if idx >= 0 else 0)
         except Exception:
             pass
         try:
@@ -55730,11 +57341,19 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str, track_sources: dic
             self._lfm_overlay_alpha = 0.72
     if not hasattr(self, '_lfm_overlay_stride'):
         try:
-            self._lfm_overlay_stride = int(_lfm_settings.value('lead_backing/realtime_overlay_stride', 2)) if _lfm_settings else 2
+            self._lfm_overlay_stride = int(_lfm_settings.value('lead_backing/realtime_overlay_stride', 1)) if _lfm_settings else 1
         except Exception:
-            self._lfm_overlay_stride = 2
+            self._lfm_overlay_stride = 1
+    if not hasattr(self, '_lfm_overlay_vocal_style'):
+        try:
+            style = str(_lfm_settings.value('lead_backing/realtime_overlay_vocal_style', 'balanced') or 'balanced') if _lfm_settings else 'balanced'
+        except Exception:
+            style = 'balanced'
+        if style not in ('balanced', 'rap', 'melodic'):
+            style = 'balanced'
+        self._lfm_overlay_vocal_style = style
     if not hasattr(self, '_lfm_overlay_play_only'):
-        self._lfm_overlay_play_only = bool(_lfm_settings.value('lead_backing/realtime_overlay_play_only', True)) if _lfm_settings else True
+        self._lfm_overlay_play_only = bool(_lfm_settings.value('lead_backing/realtime_overlay_play_only', False)) if _lfm_settings else False
     if not hasattr(self, '_lfm_overlay_track_label'):
         self._lfm_overlay_track_label = ''
     if not hasattr(self, '_lfm_overlay_label_pos'):
@@ -55748,24 +57367,24 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str, track_sources: dic
         self._lfm_overlay_gate_enabled = bool(_lfm_settings.value('lead_backing/realtime_overlay_gate_enabled', True)) if _lfm_settings else True
     if not hasattr(self, '_lfm_overlay_gate_ratio'):
         try:
-            self._lfm_overlay_gate_ratio = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_ratio', 1.18)) if _lfm_settings else 1.18
+            self._lfm_overlay_gate_ratio = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_ratio', 1.10)) if _lfm_settings else 1.10
         except Exception:
-            self._lfm_overlay_gate_ratio = 1.18
+            self._lfm_overlay_gate_ratio = 1.10
     if not hasattr(self, '_lfm_overlay_gate_main_hz'):
         try:
-            self._lfm_overlay_gate_main_hz = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_main_hz', 85.0)) if _lfm_settings else 85.0
+            self._lfm_overlay_gate_main_hz = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_main_hz', 75.0)) if _lfm_settings else 75.0
         except Exception:
-            self._lfm_overlay_gate_main_hz = 85.0
+            self._lfm_overlay_gate_main_hz = 75.0
     if not hasattr(self, '_lfm_overlay_gate_main_rms'):
         try:
-            self._lfm_overlay_gate_main_rms = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_main_rms', 0.009)) if _lfm_settings else 0.009
+            self._lfm_overlay_gate_main_rms = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_main_rms', 0.0065)) if _lfm_settings else 0.0065
         except Exception:
-            self._lfm_overlay_gate_main_rms = 0.009
+            self._lfm_overlay_gate_main_rms = 0.0065
     if not hasattr(self, '_lfm_overlay_gate_hold_ms'):
         try:
-            self._lfm_overlay_gate_hold_ms = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_hold_ms', 140.0)) if _lfm_settings else 140.0
+            self._lfm_overlay_gate_hold_ms = float(_lfm_settings.value('lead_backing/realtime_overlay_gate_hold_ms', 36.0)) if _lfm_settings else 36.0
         except Exception:
-            self._lfm_overlay_gate_hold_ms = 140.0
+            self._lfm_overlay_gate_hold_ms = 36.0
     if not hasattr(self, '_lfm_overlay_adaptive_throttle'):
         self._lfm_overlay_adaptive_throttle = bool(_lfm_settings.value('lead_backing/realtime_overlay_adaptive_throttle', True)) if _lfm_settings else True
     if not hasattr(self, '_lfm_overlay_batch_flush_ms'):
@@ -55846,11 +57465,12 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str, track_sources: dic
             enabled=bool(getattr(self, '_lfm_overlay_enabled', True)),
             color=str(getattr(self, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A'),
             alpha=float(getattr(self, '_lfm_overlay_alpha', 0.72) or 0.72),
-            stride=int(getattr(self, '_lfm_overlay_stride', 2) or 2),
+            stride=int(getattr(self, '_lfm_overlay_stride', 1) or 1),
             play_only=bool(getattr(self, '_lfm_overlay_play_only', True)),
             label=str(overlay_label or ''),
             label_pos=str(getattr(self, '_lfm_overlay_label_pos', '右上') or '右上'),
             label_fontsize=int(getattr(self, '_lfm_overlay_label_fontsize', 9) or 9),
+            vocal_style=str(getattr(self, '_lfm_overlay_vocal_style', 'balanced') or 'balanced'),
         )
     except Exception:
         pass
@@ -55891,6 +57511,12 @@ def _ifc_enter_local_file_realtime_mode(self, file_path: str, track_sources: dic
         pass
     panel = _LocalFilePanel(self, ctrl)
     self._lfm_panel = panel
+    try:
+        panel._show_param_info = False
+        panel._show_param_adjust = False
+        panel._apply_panel_visibility()
+    except Exception:
+        pass
     ctrl.pause()
     panel.show()
 
@@ -55905,30 +57531,73 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
     enable_stage2 = bool(getattr(self, 'enable_lead_backing_stage2', False))
     enable_rt_stage2 = bool(getattr(self, 'enable_realtime_lead_backing', False))
     include_backing = bool(getattr(self, 'lead_backing_include_backing', False)) or int(getattr(self, 'lead_backing_count', 0) or 0) > 0
-    if not (enable_stage2 and enable_rt_stage2 and include_backing):
-        self._lfm_overlay_missing_reason = '未启用实时主唱/伴唱分离（请在“主唱/伴唱设置”中开启 Stage2 与实时轨道切换）。'
-        return sources
 
     try:
         cache = dict(getattr(self, '_lfm_stage2_sources_cache', {}) or {})
     except Exception:
         cache = {}
+    force_refresh = True
     try:
+        # 默认开启：每次实时分析都重分离，避免历史劣质结果污染体验。
+        force_refresh = bool(getattr(self, 'lead_backing_realtime_force_refresh', True))
+    except Exception:
+        force_refresh = True
+    try:
+        import hashlib as _hashlib
         from pathlib import Path
         p = Path(base_path)
-        cache_key = f"{str(p.resolve())}|{int(p.stat().st_mtime)}|stage2_sep_v2"
+        cfg_sig = {
+            'enable_stage2': bool(enable_stage2),
+            'enable_rt_stage2': bool(enable_rt_stage2),
+            'include_backing': bool(include_backing),
+            'count': int(getattr(self, 'lead_backing_count', 1) or 1),
+            'mode': str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto'),
+            'tpl': str(getattr(self, 'lead_backing_template_path', '') or ''),
+            'quality_mode': str(getattr(self, 'lead_backing_quality_mode', 'quality') or 'quality'),
+            'fallback': str(getattr(self, 'lead_backing_fallback_strategy', 'auto') or 'auto'),
+        }
+        cfg_hash = _hashlib.md5(str(cfg_sig).encode('utf-8')).hexdigest()[:10]
+        cache_key = f"{str(p.resolve())}|{int(p.stat().st_mtime)}|stage2_sep_v3|{cfg_hash}"
     except Exception:
-        cache_key = f"{base_path}|stage2_sep_v2"
+        cache_key = f"{base_path}|stage2_sep_v3"
     cached_sources = cache.get(cache_key)
-    if isinstance(cached_sources, dict) and cached_sources:
+    if (not force_refresh) and isinstance(cached_sources, dict) and cached_sources:
+        try:
+            prog_cache = _OnePassProgressDialog(self, title='实时分析 - 预分离')
+            prog_cache.set_message('检测到缓存分离结果，正在加载…')
+            for p in (8, 22, 41, 63, 82, 100):
+                prog_cache.set_progress(p)
+                QApplication.processEvents()
+                try:
+                    QThread.msleep(150)
+                except Exception:
+                    pass
+            prog_cache.accept()
+        except Exception:
+            pass
         self._lfm_overlay_missing_reason = ''
         return dict(cached_sources)
 
     prog = None
     try:
         prog = _OnePassProgressDialog(self, title='实时分析 - 预分离')
-        prog.set_progress(5)
-        prog.set_message('正在准备主唱/伴唱分离…')
+        try:
+            qmode = str(getattr(self, 'lead_backing_quality_mode', 'quality') or 'quality').strip().lower()
+        except Exception:
+            qmode = 'quality'
+        if qmode == 'fast':
+            prog.set_predictive_plan(4.8, 1.8)
+        elif qmode == 'balanced':
+            prog.set_predictive_plan(7.5, 2.2)
+        else:
+            prog.set_predictive_plan(11.0, 2.8)
+        prog.set_progress(2)
+        if not (enable_stage2 and enable_rt_stage2 and include_backing):
+            prog.set_message('检测到主唱/伴唱设置未完整启用，实时分析将临时启用预分离默认策略…')
+        elif force_refresh:
+            prog.set_message('已启用“每次重分离”，正在重新执行主唱/伴唱分离…')
+        else:
+            prog.set_message('正在准备主唱/伴唱分离…')
         try:
             prog.show()
             QApplication.processEvents()
@@ -55945,17 +57614,28 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
         except Exception:
             pass
 
+    def _prog_cb(p: int):
+        try:
+            if prog is not None:
+                prog.set_progress(int(max(0, min(100, int(p)))))
+                QApplication.processEvents()
+        except Exception:
+            pass
+
+    _prep_t0 = time.monotonic()
     try:
         options = {
             'enable_stage2': True,
             'include_backing': True,
-            'expected_backing_count': int(getattr(self, 'lead_backing_count', 1) or 1),
+            'expected_backing_count': max(1, int(getattr(self, 'lead_backing_count', 1) or 1)),
             'singer_mode': str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto'),
             'template_path': getattr(self, 'lead_backing_template_path', None),
             'enable_realtime_stage2': True,
+            'quality_mode': str(getattr(self, 'lead_backing_quality_mode', 'quality') or 'quality'),
+            'fallback_strategy': str(getattr(self, 'lead_backing_fallback_strategy', 'auto') or 'auto'),
         }
         from src.audio_processing.lead_backing import run_lead_backing_stage2
-        stage2 = run_lead_backing_stage2(base_path, options=options, message_cb=_msg_cb)
+        stage2 = run_lead_backing_stage2(base_path, options=options, message_cb=_msg_cb, progress_cb=_prog_cb)
         payload = {'vocals_path': base_path, 'lead_backing': stage2}
         built = self._build_realtime_track_sources(payload)
         if isinstance(built, dict) and built:
@@ -55972,6 +57652,23 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
     finally:
         try:
             if prog is not None:
+                try:
+                    # 预处理弹窗至少可见一小段时间，避免“瞬间消失”的体感。
+                    elapsed = float(time.monotonic() - float(_prep_t0))
+                    try:
+                        _qm = str(getattr(self, 'lead_backing_quality_mode', 'quality') or 'quality').strip().lower()
+                    except Exception:
+                        _qm = 'quality'
+                    if _qm == 'fast':
+                        min_visible = 1.4
+                    elif _qm == 'balanced':
+                        min_visible = 1.9
+                    else:
+                        min_visible = 2.4
+                    if elapsed < min_visible:
+                        QThread.msleep(int((min_visible - elapsed) * 1000.0))
+                except Exception:
+                    pass
                 prog.set_progress(100)
                 prog.accept()
         except Exception:
@@ -55980,7 +57677,7 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
     return sources
 
 @_patch_method('_update_local_realtime_overlay_config')
-def _ifc_update_local_realtime_overlay_config(self, *, enabled: bool | None = None, color: str | None = None, alpha: float | None = None, stride: int | None = None, play_only: bool | None = None, label: str | None = None, label_pos: str | None = None, label_fontsize: int | None = None, gate_enabled: bool | None = None, gate_ratio: float | None = None, gate_main_hz: float | None = None, gate_main_rms: float | None = None, gate_hold_ms: float | None = None, adaptive_throttle: bool | None = None, batch_flush_ms: int | None = None, batch_max: int | None = None):
+def _ifc_update_local_realtime_overlay_config(self, *, enabled: bool | None = None, color: str | None = None, alpha: float | None = None, stride: int | None = None, play_only: bool | None = None, label: str | None = None, label_pos: str | None = None, label_fontsize: int | None = None, vocal_style: str | None = None, gate_enabled: bool | None = None, gate_ratio: float | None = None, gate_main_hz: float | None = None, gate_main_rms: float | None = None, gate_hold_ms: float | None = None, adaptive_throttle: bool | None = None, batch_flush_ms: int | None = None, batch_max: int | None = None):
     if enabled is not None:
         self._lfm_overlay_enabled = bool(enabled)
     if color is not None:
@@ -56010,6 +57707,45 @@ def _ifc_update_local_realtime_overlay_config(self, *, enabled: bool | None = No
             self._lfm_overlay_label_fontsize = max(8, min(16, int(label_fontsize)))
         except Exception:
             pass
+    if vocal_style is not None:
+        try:
+            style = str(vocal_style or 'balanced').strip().lower()
+        except Exception:
+            style = 'balanced'
+        if style not in ('balanced', 'rap', 'melodic'):
+            style = 'balanced'
+        self._lfm_overlay_vocal_style = style
+        # 根据伴唱演唱形式切换更合适的门控参数（保持通用，不依赖单曲）。
+        if gate_ratio is None:
+            if style == 'rap':
+                self._lfm_overlay_gate_ratio = 1.04
+            elif style == 'melodic':
+                self._lfm_overlay_gate_ratio = 1.14
+            else:
+                self._lfm_overlay_gate_ratio = 1.08
+        if gate_main_hz is None:
+            if style == 'rap':
+                self._lfm_overlay_gate_main_hz = 65.0
+            elif style == 'melodic':
+                self._lfm_overlay_gate_main_hz = 78.0
+            else:
+                self._lfm_overlay_gate_main_hz = 70.0
+        if gate_main_rms is None:
+            if style == 'rap':
+                self._lfm_overlay_gate_main_rms = 0.0060
+            elif style == 'melodic':
+                self._lfm_overlay_gate_main_rms = 0.0072
+            else:
+                self._lfm_overlay_gate_main_rms = 0.0065
+        if gate_hold_ms is None:
+            if style == 'rap':
+                self._lfm_overlay_gate_hold_ms = 22.0
+            elif style == 'melodic':
+                self._lfm_overlay_gate_hold_ms = 38.0
+            else:
+                self._lfm_overlay_gate_hold_ms = 28.0
+        if adaptive_throttle is None:
+            self._lfm_overlay_adaptive_throttle = True
     if gate_enabled is not None:
         self._lfm_overlay_gate_enabled = bool(gate_enabled)
     if gate_ratio is not None:
@@ -56058,6 +57794,7 @@ def _ifc_update_local_realtime_overlay_config(self, *, enabled: bool | None = No
             _s.setValue('lead_backing/realtime_overlay_play_only', bool(getattr(self, '_lfm_overlay_play_only', True)))
             _s.setValue('lead_backing/realtime_overlay_label_pos', str(getattr(self, '_lfm_overlay_label_pos', '右上') or '右上'))
             _s.setValue('lead_backing/realtime_overlay_label_fontsize', int(getattr(self, '_lfm_overlay_label_fontsize', 9) or 9))
+            _s.setValue('lead_backing/realtime_overlay_vocal_style', str(getattr(self, '_lfm_overlay_vocal_style', 'balanced') or 'balanced'))
             _s.setValue('lead_backing/realtime_overlay_gate_enabled', bool(getattr(self, '_lfm_overlay_gate_enabled', True)))
             _s.setValue('lead_backing/realtime_overlay_gate_ratio', float(getattr(self, '_lfm_overlay_gate_ratio', 1.18) or 1.18))
             _s.setValue('lead_backing/realtime_overlay_gate_main_hz', float(getattr(self, '_lfm_overlay_gate_main_hz', 85.0) or 85.0))
@@ -56083,6 +57820,7 @@ def _ifc_update_local_realtime_overlay_config(self, *, enabled: bool | None = No
             ctrl.overlay_adaptive_throttle = bool(getattr(self, '_lfm_overlay_adaptive_throttle', True))
             ctrl.overlay_batch_flush_ms = max(20, int(getattr(self, '_lfm_overlay_batch_flush_ms', 45) or 45))
             ctrl.overlay_batch_max = max(8, int(getattr(self, '_lfm_overlay_batch_max', 64) or 64))
+            ctrl.overlay_vocal_style = str(getattr(self, '_lfm_overlay_vocal_style', 'balanced') or 'balanced')
             if getattr(ctrl, '_overlay_flush_timer', None) is not None:
                 try:
                     ctrl._overlay_flush_timer.start(ctrl.overlay_batch_flush_ms)
@@ -56617,10 +58355,35 @@ class _OnePassProgressDialog(QDialog):
         super().__init__(ifc)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setStyleSheet("QDialog { background-color: #1f1f1f; color: white; }")
+        self.setStyleSheet(
+            "QDialog { background-color:#0f151d; color:#ecf3ff; }"
+            "QLabel { color:#dfe8f6; }"
+            "QProgressBar {"
+            "  border:1px solid #2f445b; border-radius:7px; background:#101923; text-align:center; color:#e8f2ff;"
+            "  min-height:18px;"
+            "}"
+            "QProgressBar::chunk { background-color:#2f6dff; border-radius:6px; }"
+            "QPushButton { color:#f3f8ff; background:#1b2633; border:1px solid #334a61; border-radius:8px; padding:6px 12px; }"
+            "QPushButton:hover { background:#25374a; border-color:#4f7395; }"
+        )
+        try:
+            self.setMinimumWidth(420)
+            self.resize(460, 170)
+        except Exception:
+            pass
         v = QVBoxLayout(self)
+        try:
+            v.setContentsMargins(14, 12, 14, 12)
+            v.setSpacing(8)
+        except Exception:
+            pass
+        self.title_lbl = QLabel("分离处理中")
+        self.title_lbl.setStyleSheet("color:#cfe4ff; font-size:14px; font-weight:700;")
+        v.addWidget(self.title_lbl)
         # 顶部提示信息
         self.lbl = QLabel("准备中…")
+        self.lbl.setStyleSheet("color:#b9cbe0;")
+        self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
         # 进度条
         self.bar = QProgressBar()
@@ -56628,10 +58391,11 @@ class _OnePassProgressDialog(QDialog):
         v.addWidget(self.bar)
         # 时间/ETA
         self.time_lbl = QLabel("用时 00:00 | 预计剩余 — | 总≈ —")
-        self.time_lbl.setStyleSheet("color:#aaaaaa; font-size:12px;")
+        self.time_lbl.setStyleSheet("color:#9fb5cc; font-size:12px;")
         v.addWidget(self.time_lbl)
         # 操作行
         row = QHBoxLayout()
+        row.addStretch(1)
         self.btn_cancel = QPushButton("取消")
         row.addWidget(self.btn_cancel)
         v.addLayout(row)
@@ -56648,6 +58412,10 @@ class _OnePassProgressDialog(QDialog):
         self._last_anim_t = self._t0
         self._last_disp_for_rate = self._disp
         self._last_rate_t = self._t0
+        self._last_ext_update_t = self._t0
+        self._last_eta_secs = None
+        self._predict_total_s = None
+        self._predict_curve_k = 2.2
 
         # 动画计时器（平滑进度）
         # 使用已按环境导入的 QTimer（兼容 PyQt5/6）
@@ -56663,11 +58431,35 @@ class _OnePassProgressDialog(QDialog):
         # 记录外部最后一次设置的目标值，用于“预测前进”上限
         self._last_ext_target = 0.0
 
+    def set_predictive_plan(self, total_seconds: float | int | None = None, curve_k: float | None = None):
+        """设置预测进度曲线参数，用于外部回调稀疏时维持连续推进观感。"""
+        try:
+            if total_seconds is None:
+                self._predict_total_s = None
+            else:
+                self._predict_total_s = max(0.8, float(total_seconds))
+        except Exception:
+            self._predict_total_s = None
+        try:
+            if curve_k is not None:
+                self._predict_curve_k = max(0.6, min(5.0, float(curve_k)))
+        except Exception:
+            pass
+
     def _format_mmss(self, secs: float) -> str:
         try:
             secs = max(0.0, float(secs))
-            m = int(secs // 60)
-            s = int(round(secs - m * 60))
+            h = int(secs // 3600)
+            m = int((secs % 3600) // 60)
+            s = int(round(secs - h * 3600 - m * 60))
+            if s >= 60:
+                s = 0
+                m += 1
+            if m >= 60:
+                m = 0
+                h += 1
+            if h > 0:
+                return f"{h:02d}:{m:02d}:{s:02d}"
             return f"{m:02d}:{s:02d}"
         except Exception:
             return "00:00"
@@ -56679,6 +58471,47 @@ class _OnePassProgressDialog(QDialog):
             now = _time.monotonic()
             dt = max(0.0, now - self._last_anim_t)
             self._last_anim_t = now
+
+            # 若外部进度久未更新，按软上限慢速推进目标，避免“卡在 2%/5% 长时间不动”的观感。
+            stall_s = max(0.0, now - float(self._last_ext_update_t))
+            # 预测推进：若配置了预估时长，则按时间曲线维持可感知进度前进。
+            if self._predict_total_s and self._predict_total_s > 0 and self._last_ext_target < 99.0:
+                elapsed = max(0.0, now - float(self._t0))
+                ratio = max(0.0, min(1.0, elapsed / float(self._predict_total_s)))
+                try:
+                    import math as _math
+                    k = float(self._predict_curve_k or 2.2)
+                    den = max(1e-6, 1.0 - _math.exp(-k))
+                    pred_ratio = (1.0 - _math.exp(-k * ratio)) / den
+                except Exception:
+                    pred_ratio = ratio
+                # 预估进度上限：最多领先真实回调约 15%，且不到完成前不触发 100%。
+                pred_target = min(96.0, max(0.0, pred_ratio * 100.0))
+                pred_target = min(pred_target, float(self._last_ext_target) + 15.0)
+                if pred_target > self._target:
+                    self._target = float(pred_target)
+
+            if stall_s > 0.6 and self._last_ext_target < 99.0:
+                ext = float(self._last_ext_target)
+                if ext <= 10.0:
+                    soft_cap = 36.0
+                elif ext <= 25.0:
+                    soft_cap = 52.0
+                elif ext <= 45.0:
+                    soft_cap = 68.0
+                elif ext <= 65.0:
+                    soft_cap = 82.0
+                elif ext <= 85.0:
+                    soft_cap = 92.0
+                else:
+                    soft_cap = 97.0
+                base_target = max(float(self._target), ext)
+                room = max(0.0, soft_cap - base_target)
+                if room > 0.0 and dt > 0.0:
+                    creep_rate = 0.65 + min(1.60, 0.08 * stall_s)  # %/s
+                    creep = min(room, creep_rate * dt)
+                    self._target = min(99.0, base_target + creep)
+
             # 一阶滞后：时间常数 ~0.25s，dt越大推进越多
             k = 4.0  # s^-1
             delta = float(self._target) - float(self._disp)
@@ -56710,7 +58543,7 @@ class _OnePassProgressDialog(QDialog):
             if (self._target - self._disp) < 0.05 and self._last_ext_target < 95.0 and self._rate_ema and self._rate_ema > 0:
                 # 以EMA速率的75%前进，单帧最多+0.6%，且不得超过“外部目标+5%”与95%
                 predict_step = min(0.6, float(self._rate_ema) * dt * 0.75)
-                self._target = min(95.0, self._last_ext_target + 5.0, self._target + predict_step)
+                self._target = min(95.0, self._last_ext_target + 8.0, self._target + predict_step)
             # 完成时停止动画
             if self._disp >= 100.0 and self._target >= 100.0:
                 try:
@@ -56726,15 +58559,30 @@ class _OnePassProgressDialog(QDialog):
             import time as _time
             elapsed = _time.monotonic() - float(self._t0)
             used_txt = self._format_mmss(elapsed)
-            # 估算剩余：基于EMA速率与当前显示进度
+            # 估算剩余：优先用EMA速率；若EMA尚未稳定但已有进度，则退化为比例估算。
+            remain = None
+            total = None
             if self._rate_ema and float(self._rate_ema) > 1e-3:
                 remain = max(0.0, (100.0 - float(self._disp)) / float(self._rate_ema))
                 total = elapsed + remain
+            else:
+                prog = float(max(self._disp, self._target * 0.98, self._last_ext_target * 0.90))
+                if prog >= 0.5:
+                    total = elapsed * (100.0 / max(0.5, prog))
+                    remain = max(0.0, total - elapsed)
+
+            if remain is not None and total is not None:
+                self._last_eta_secs = float(remain)
                 eta_txt = self._format_mmss(remain)
                 total_txt = self._format_mmss(total)
                 self.time_lbl.setText(f"用时 {used_txt} | 预计剩余 {eta_txt} | 总≈ {total_txt}")
             else:
-                self.time_lbl.setText(f"用时 {used_txt} | 预计剩余 — | 总≈ —")
+                if self._last_eta_secs is not None:
+                    eta_txt = self._format_mmss(self._last_eta_secs)
+                    total_txt = self._format_mmss(elapsed + float(self._last_eta_secs))
+                    self.time_lbl.setText(f"用时 {used_txt} | 预计剩余 {eta_txt} | 总≈ {total_txt}")
+                else:
+                    self.time_lbl.setText(f"用时 {used_txt} | 预计剩余 计算中… | 总≈ —")
             # 完成时固定最终显示
             if self._disp >= 100.0 and self._target >= 100.0:
                 self.time_lbl.setText(f"用时 {used_txt} | 预计剩余 00:00 | 总≈ {used_txt}")
@@ -56754,12 +58602,14 @@ class _OnePassProgressDialog(QDialog):
     def set_progress(self, val: int):
         # 仅更新目标值，由动画计时器平滑推进
         try:
+            import time as _time
             v = float(int(max(0, min(100, val))))
             # 目标不得小于当前显示，避免回退导致时间估计抖动
             if v < self._disp:
                 v = self._disp
             self._target = v
             self._last_ext_target = v
+            self._last_ext_update_t = _time.monotonic()
             # 若刚开始（首次设值），把显示拉近一些避免长时间停在0
             if self._disp < 1.0 and v >= 1.0:
                 self._disp = min(1.0, v * 0.5)
@@ -56782,6 +58632,260 @@ class _OnePassProgressDialog(QDialog):
                 self._clock_timer.stop()
         except Exception:
             pass
+        return super().closeEvent(e)
+
+
+class _RealtimeSeparatedPreviewDialog(QDialog):
+    """本地实时分析阶段的分离轨试听窗口（支持拖动进度）。"""
+
+    def __init__(self, parent, tracks: list):
+        super().__init__(parent)
+        self.tracks = list(tracks or [])
+        self._cache = {}
+        self._playing = False
+        self._paused_offset = 0.0
+        self._play_started_at = 0.0
+
+        self.setWindowTitle("试听分离轨")
+        self.setModal(False)
+        self.setStyleSheet(
+            "QDialog { background:#101821; color:#eaf2ff; }"
+            "QLabel { color:#d7e5f7; }"
+            "QPushButton { color:#f3f8ff; background:#1b2633; border:1px solid #334a61; border-radius:8px; padding:6px 12px; }"
+            "QPushButton:hover { background:#25374a; border-color:#4f7395; }"
+            "QComboBox { background:#0d141d; color:#eaf2ff; border:1px solid #2f455f; border-radius:6px; padding:5px 8px; }"
+            "QSlider::groove:horizontal { border:1px solid #2f455e; height:6px; background:#16212d; border-radius:3px; }"
+            "QSlider::handle:horizontal { background:#7cb0ff; border:1px solid #a8c9ff; width:14px; margin:-5px 0; border-radius:7px; }"
+        )
+        self.resize(620, 170)
+
+        v = QVBoxLayout(self)
+        row0 = QHBoxLayout()
+        row0.addWidget(QLabel("轨道:"))
+        self.combo = QComboBox()
+        for item in self.tracks:
+            self.combo.addItem(str(item.get('name', '未命名轨道')))
+        row0.addWidget(self.combo, 1)
+        self.info = QLabel("时长: --")
+        row0.addWidget(self.info)
+        v.addLayout(row0)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 0)
+        v.addWidget(self.slider)
+
+        row1 = QHBoxLayout()
+        self.time_lbl = QLabel("00:00 / 00:00")
+        row1.addWidget(self.time_lbl)
+        row1.addStretch(1)
+        self.btn_play = QPushButton("播放")
+        self.btn_pause = QPushButton("暂停")
+        self.btn_stop = QPushButton("停止")
+        self.btn_close = QPushButton("关闭")
+        row1.addWidget(self.btn_play)
+        row1.addWidget(self.btn_pause)
+        row1.addWidget(self.btn_stop)
+        row1.addWidget(self.btn_close)
+        v.addLayout(row1)
+
+        self._dragging = False
+        self.combo.currentIndexChanged.connect(self._on_track_changed)
+        self.btn_play.clicked.connect(self._on_play)
+        self.btn_pause.clicked.connect(self._on_pause)
+        self.btn_stop.clicked.connect(self._on_stop)
+        self.btn_close.clicked.connect(self.close)
+        self.slider.sliderPressed.connect(self._on_slider_pressed)
+        self.slider.sliderReleased.connect(self._on_slider_released)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start(60)
+        self._on_track_changed(0)
+
+    @staticmethod
+    def _fmt(sec: float) -> str:
+        try:
+            sec = max(0, int(sec))
+            return f"{sec // 60:02d}:{sec % 60:02d}"
+        except Exception:
+            return "00:00"
+
+    @staticmethod
+    def _resample_linear(x, sr_in: int, sr_out: int):
+        import numpy as np
+        if sr_in == sr_out or len(x) == 0:
+            return x.copy()
+        t_in = np.linspace(0.0, 1.0, num=len(x), endpoint=False, dtype=np.float64)
+        n_out = int(round(len(x) * (sr_out / float(sr_in))))
+        if n_out <= 1:
+            return x[:1].copy()
+        t_out = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+        y = np.interp(t_out, t_in, x.astype(np.float64))
+        return y.astype(np.float32)
+
+    def _load_track(self, idx: int):
+        import numpy as np
+        if idx in self._cache:
+            return self._cache[idx]
+        item = self.tracks[idx]
+        p = str(item.get('path', '') or '').strip()
+        if not p:
+            raise RuntimeError('空轨道路径')
+        try:
+            import soundfile as sf
+            data, sr = sf.read(p, always_2d=True)
+            if data.ndim == 2 and data.shape[1] > 1:
+                data = data.mean(axis=1)
+            else:
+                data = data.squeeze()
+            arr = np.asarray(data, dtype=np.float32)
+        except Exception:
+            import wave
+            with wave.open(p, 'rb') as wf:
+                sr = wf.getframerate()
+                n = wf.getnframes()
+                ch = wf.getnchannels()
+                raw = wf.readframes(n)
+            arr = np.frombuffer(raw, dtype=np.int16)
+            if ch > 1:
+                arr = arr.reshape(-1, ch).mean(axis=1)
+            arr = arr.astype(np.float32) / 32768.0
+        # 统一重采样到设备默认采样率，降低重新播放时的抖动。
+        try:
+            import sounddevice as sd
+            out_sr = int(sd.query_devices(kind='output').get('default_samplerate', sr) or sr)
+        except Exception:
+            out_sr = int(sr)
+        if int(sr) != int(out_sr):
+            arr = self._resample_linear(arr, int(sr), int(out_sr))
+            sr = int(out_sr)
+        self._cache[idx] = (arr, int(sr))
+        return self._cache[idx]
+
+    def _track_total_sec(self) -> float:
+        try:
+            idx = int(self.combo.currentIndex())
+            data, sr = self._load_track(idx)
+            if sr <= 0:
+                return 0.0
+            return float(len(data)) / float(sr)
+        except Exception:
+            return 0.0
+
+    def _current_offset(self) -> float:
+        if not self._playing:
+            return float(self._paused_offset)
+        try:
+            import time
+            return max(0.0, float(time.monotonic() - self._play_started_at))
+        except Exception:
+            return float(self._paused_offset)
+
+    def _restart_play_from(self, offset_sec: float):
+        import sounddevice as sd
+        idx = int(self.combo.currentIndex())
+        data, sr = self._load_track(idx)
+        i0 = int(max(0, min(len(data), round(float(offset_sec) * float(sr)))))
+        sd.stop()
+        if i0 >= len(data):
+            self._playing = False
+            self._paused_offset = float(len(data)) / float(sr) if sr > 0 else 0.0
+            return
+        sd.play(data[i0:], sr, blocking=False)
+        import time
+        self._playing = True
+        self._play_started_at = float(time.monotonic() - (i0 / float(sr)))
+        self._paused_offset = float(i0) / float(sr)
+
+    def _on_track_changed(self, idx: int):
+        self._on_stop()
+        try:
+            data, sr = self._load_track(int(idx))
+            total = float(len(data)) / float(sr) if sr > 0 else 0.0
+            self.slider.setRange(0, max(0, int(round(total * 1000.0))))
+            self.slider.setValue(0)
+            self.info.setText(f"时长: {total:.2f}s | 采样率: {sr}Hz")
+            self.time_lbl.setText(f"{self._fmt(0.0)} / {self._fmt(total)}")
+            self._paused_offset = 0.0
+        except Exception as e:
+            self.info.setText(f"读取失败: {e}")
+            self.slider.setRange(0, 0)
+            self.slider.setValue(0)
+
+    def _on_play(self):
+        try:
+            self._restart_play_from(self._current_offset())
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "试听分离轨", f"播放失败: {e}")
+            except Exception:
+                pass
+
+    def _on_pause(self):
+        try:
+            import sounddevice as sd
+            self._paused_offset = self._current_offset()
+            self._playing = False
+            sd.stop()
+        except Exception:
+            pass
+
+    def _on_stop(self):
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+        self._playing = False
+        self._paused_offset = 0.0
+        if not self._dragging:
+            try:
+                self.slider.setValue(0)
+            except Exception:
+                pass
+
+    def _on_slider_pressed(self):
+        self._dragging = True
+
+    def _on_slider_released(self):
+        self._dragging = False
+        sec = float(self.slider.value()) / 1000.0
+        self._paused_offset = sec
+        if self._playing:
+            try:
+                self._restart_play_from(sec)
+            except Exception:
+                pass
+
+    def _on_slider_changed(self, value: int):
+        if self._dragging:
+            cur = float(value) / 1000.0
+            tot = self._track_total_sec()
+            self.time_lbl.setText(f"{self._fmt(cur)} / {self._fmt(tot)}")
+
+    def _on_tick(self):
+        if self._dragging:
+            return
+        cur = self._current_offset()
+        tot = self._track_total_sec()
+        if tot <= 0.0:
+            return
+        if cur >= tot and self._playing:
+            self._playing = False
+            self._paused_offset = tot
+        self.slider.blockSignals(True)
+        self.slider.setValue(max(0, min(self.slider.maximum(), int(round(cur * 1000.0)))))
+        self.slider.blockSignals(False)
+        self.time_lbl.setText(f"{self._fmt(cur)} / {self._fmt(tot)}")
+
+    def closeEvent(self, e):
+        try:
+            if getattr(self, '_timer', None):
+                self._timer.stop()
+        except Exception:
+            pass
+        self._on_stop()
         return super().closeEvent(e)
 
 

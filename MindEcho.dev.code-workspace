@@ -1,0 +1,24 @@
+{
+  "folders": [
+    {
+      "path": "src",
+    },
+    {
+      "path": "regression_tests",
+    },
+    {
+      "path": "docs",
+    },
+  ],
+  "settings": {
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.indexing": false,
+    "python.analysis.autoImportCompletions": false,
+    "git.autoRepositoryDetection": "openEditors",
+    "git.autofetch": false,
+    "git.untrackedChanges": "hidden",
+    "scm.diffDecorations": "none",
+    "search.followSymlinks": false,
+  },
+}
