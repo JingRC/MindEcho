@@ -398,6 +398,97 @@ def _quick_sep_score(mix, lead, back) -> float:
     return float(0.55 * corr_term + 0.30 * back_term + 0.15 * lead_term)
 
 
+def _roughness_ratio(x) -> float:
+    """Simple artifact proxy: excessive temporal roughness indicates over-processing."""
+    import numpy as np
+
+    a = _to_mono_f32(x)
+    if a.size <= 16:
+        return 0.0
+    eps = 1e-9
+    rms = float(np.sqrt(np.mean(a * a) + eps))
+    drms = float(np.sqrt(np.mean(np.diff(a) * np.diff(a)) + eps))
+    return float(drms / max(eps, rms))
+
+
+def _safe_corr(a, b) -> float:
+    import numpy as np
+
+    x = _to_mono_f32(a)
+    y = _to_mono_f32(b)
+    n = int(min(x.size, y.size))
+    if n <= 32:
+        return 0.0
+    x = x[:n] - float(np.mean(x[:n]))
+    y = y[:n] - float(np.mean(y[:n]))
+    den = float(np.sqrt(np.sum(x * x) * np.sum(y * y)) + 1e-9)
+    if den <= 1e-9:
+        return 0.0
+    return float(np.sum(x * y) / den)
+
+
+def _framewise_debleed(backing, lead, base_k: float, quality_mode: str = "balanced"):
+    """Frame-wise projection suppression: less aggressive and more natural than global subtraction."""
+    import numpy as np
+
+    b = _to_mono_f32(backing)
+    l = _to_mono_f32(lead)
+    n = int(min(b.size, l.size))
+    if n <= 1024:
+        return b[:n].astype(np.float32)
+
+    mode = _normalize_quality_mode(quality_mode)
+    if mode == "quality":
+        win = 4096
+        hop = 2048
+    elif mode == "fast":
+        win = 2048
+        hop = 1024
+    else:
+        win = 3072
+        hop = 1536
+
+    b = b[:n]
+    l = l[:n]
+    out = np.zeros(n, dtype=np.float32)
+    wsum = np.zeros(n, dtype=np.float32)
+    eps = 1e-9
+    w = np.hanning(win).astype(np.float32)
+    if not np.isfinite(w).all() or float(np.sum(w)) <= 0.0:
+        w = np.ones(win, dtype=np.float32)
+
+    for st in range(0, n, hop):
+        ed = min(n, st + win)
+        bw = b[st:ed].astype(np.float32)
+        lw = l[st:ed].astype(np.float32)
+        ww = w[: (ed - st)]
+        if bw.size <= 32 or lw.size <= 32:
+            out[st:ed] += bw * ww
+            wsum[st:ed] += ww
+            continue
+
+        denom = float(np.dot(lw, lw) + eps)
+        proj = float(np.dot(bw, lw) / denom)
+        corr = abs(_safe_corr(bw, lw))
+        brms = float(np.sqrt(np.mean(bw * bw) + eps))
+        lrms = float(np.sqrt(np.mean(lw * lw) + eps))
+        # 仅在“可能有明显主唱串入伴唱”时增强抑制。
+        corr_gate = max(0.0, min(1.0, (corr - 0.12) / 0.52))
+        energy_gate = max(0.0, min(1.0, (lrms / max(eps, brms) - 0.85) / 2.8))
+        sign_gate = 1.0 if proj > 0.0 else 0.35
+        k_local = float(base_k) * corr_gate * energy_gate * sign_gate
+        k_local = max(0.0, min(0.88, k_local))
+
+        rw = (bw - float(k_local) * proj * lw).astype(np.float32)
+        out[st:ed] += rw * ww
+        wsum[st:ed] += ww
+
+    mask = (wsum > 1e-8)
+    out[mask] = out[mask] / wsum[mask]
+    out[~mask] = b[~mask]
+    return out.astype(np.float32)
+
+
 def _refine_two_stem_consistent(mix, lead, backing, sr: int, quality_mode: str = "balanced"):
     """Refine two stems via mask re-estimation + consistency + de-bleeding."""
     import numpy as np
@@ -489,15 +580,37 @@ def _refine_two_stem_consistent(mix, lead, backing, sr: int, quality_mode: str =
     b2 = (b2 + 0.72 * (m - (l2 + b2))).astype(np.float32)
     l2 = (m - b2).astype(np.float32)
 
-    # 去串音：从伴唱中减去与主唱高度同向的投影分量。
-    denom = float(np.dot(l2, l2) + eps)
-    proj = float(np.dot(b2, l2) / denom)
-    b3 = (b2 - float(leak_k) * proj * l2).astype(np.float32)
+    # 去串音：自适应分帧抑制，避免单一全局投影造成过处理。
+    corr_abs = abs(_safe_corr(b2, l2))
+    leak_scale = max(0.35, min(1.18, (corr_abs - 0.06) / 0.46))
+    b3 = _framewise_debleed(b2, l2, float(leak_k) * float(leak_scale), quality_mode=mode)
+    # 再做一次一致性修正，避免声音“空洞化”。
+    b3 = (b3 + 0.42 * (m - (l2 + b3))).astype(np.float32)
     l3 = (m - b3).astype(np.float32)
 
+    # 抗过处理：若时间粗糙度上升过多，则与较自然版本做保守混合。
+    rough_mid = max(_roughness_ratio(l2), _roughness_ratio(b2))
+    rough_new = max(_roughness_ratio(l3), _roughness_ratio(b3))
+    if rough_new > (rough_mid * 1.20 + 1e-9):
+        over = max(0.0, rough_new / max(1e-9, rough_mid) - 1.20)
+        blend = max(0.0, min(0.62, 0.45 * over))
+        if blend > 1e-4:
+            b3 = ((1.0 - blend) * b3 + blend * b2).astype(np.float32)
+            l3 = (m - b3).astype(np.float32)
+
+    # 保护伴唱可听性，避免“干净但太薄”。
+    bm = float(np.sqrt(np.mean(b3 * b3) + eps))
+    mm = float(np.sqrt(np.mean(m * m) + eps))
+    if bm < (mm * 0.055):
+        b3 = (0.86 * b3 + 0.14 * b2).astype(np.float32)
+        l3 = (m - b3).astype(np.float32)
+
+    mid_score = _quick_sep_score(m, l2, b2)
     post_score = _quick_sep_score(m, l3, b3)
-    if post_score + 0.008 >= pre_score:
+    if (post_score + 0.006 >= max(pre_score, mid_score)) or (post_score + 0.010 >= pre_score):
         return l3, b3
+    if mid_score + 0.004 >= pre_score:
+        return l2, b2
     return l2, b2
 
 
