@@ -12,13 +12,30 @@ import bisect
 import time, threading, queue, json, os, sys, wave, math
 from pathlib import Path
 
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="replace")
+except Exception:
+    pass
+
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-try:
-    project_root = Path(__file__).resolve().parent.parent.parent
-except NameError:
-    project_root = Path.cwd()
+def _detect_project_root() -> Path:
+    try:
+        current = Path(__file__).resolve().parent
+    except NameError:
+        return Path.cwd()
+
+    for candidate in (current, *current.parents):
+        if (candidate / "src").exists():
+            return candidate
+    return Path.cwd()
+
+
+project_root = _detect_project_root()
 
 # 确保项目根目录与 src 包在Python路径中，解决作为脚本直接运行时的导入问题
 try:

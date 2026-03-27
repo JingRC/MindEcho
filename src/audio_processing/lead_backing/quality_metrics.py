@@ -2,18 +2,13 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Sequence
 
+from .audio_io import load_audio_mono as _decode_audio_mono
+
 
 def _load_audio_mono(path: str):
     try:
-        import numpy as np
-        import soundfile as sf
-
-        data, _sr = sf.read(path, always_2d=True)
-        if data.ndim == 2 and data.shape[1] > 1:
-            data = data.mean(axis=1)
-        else:
-            data = data.squeeze()
-        return np.asarray(data, dtype=np.float32)
+        data, _sr = _decode_audio_mono(path)
+        return data
     except Exception:
         try:
             import numpy as np

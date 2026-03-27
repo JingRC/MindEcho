@@ -12,6 +12,20 @@ import bisect
 import time, threading, queue, json, os, sys, wave, math
 from pathlib import Path
 
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            sys.stdout.reconfigure(errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            sys.stderr.reconfigure(errors="replace")
+except Exception:
+    pass
+
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -749,6 +763,9 @@ class IntegratedAudioProcessor(QThread):
         self.is_monitoring_only = False
         self.enable_pitch_visualization = False
         self.overlay_delegate = None  # Optional owner that handles retake overlay capture
+        self._monitoring_runtime_cache = None
+        self._monitoring_runtime_cache_ts = 0.0
+        self._monitoring_runtime_device_sig = None
 
         # 实时统计：保存最近的音高点（用于绘制与分析）
         # 清轴后，确保悬停注解与高亮图元可以重新挂载当前轴
@@ -3414,9 +3431,89 @@ class IntegratedAudioProcessor(QThread):
             seen.add(key)
         return deduped
 
+    def _get_audio_device_signature(self):
+        """Return a lightweight signature of current audio devices for cache invalidation."""
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            signature = []
+            for index, device in enumerate(devices):
+                try:
+                    signature.append((
+                        index,
+                        str(device.get('name', '') or ''),
+                        int(device.get('hostapi', -1) or -1),
+                        int(device.get('max_input_channels', 0) or 0),
+                        int(device.get('max_output_channels', 0) or 0),
+                        int(float(device.get('default_samplerate', 0) or 0)),
+                    ))
+                except Exception:
+                    continue
+            return tuple(signature)
+        except Exception:
+            return None
+
+    def _get_cached_monitoring_configs(self) -> list | None:
+        """Reuse the last known-good monitoring config when device topology is unchanged."""
+        cache = getattr(self, '_monitoring_runtime_cache', None)
+        if not cache:
+            return None
+        current_sig = self._get_audio_device_signature()
+        cached_sig = getattr(self, '_monitoring_runtime_device_sig', None)
+        if current_sig is None or cached_sig is None or current_sig != cached_sig:
+            return None
+
+        configs = []
+        try:
+            configs.append(dict(cache))
+        except Exception:
+            return None
+
+        fallback_rate = int(getattr(self, 'sample_rate', 48000))
+        fallback_block = int(getattr(self, 'chunk_size', 256))
+        configs.extend([
+            {
+                'name': '缓存后备-DirectSound兼容',
+                'device': None,
+                'samplerate': fallback_rate,
+                'blocksize': max(64, min(256, fallback_block)),
+                'settings': None,
+                'expected_latency': 'cached-fallback',
+            },
+            {
+                'name': '缓存后备-系统默认输入',
+                'device': None,
+                'samplerate': 44100,
+                'blocksize': 512,
+                'settings': None,
+                'expected_latency': 'safe',
+            }
+        ])
+        return self._deduplicate_monitoring_configs(configs)
+
+    def _store_monitoring_runtime_cache(self, config: dict):
+        """Persist the last successful monitoring config for fast reopen within the session."""
+        try:
+            cache = dict(config or {})
+            cache.pop('created_duplex', None)
+            if 'actual_samplerate' in cache:
+                cache['samplerate'] = cache['actual_samplerate']
+            if 'actual_blocksize' in cache:
+                cache['blocksize'] = cache['actual_blocksize']
+            self._monitoring_runtime_cache = cache
+            self._monitoring_runtime_cache_ts = time.time()
+            self._monitoring_runtime_device_sig = self._get_audio_device_signature()
+        except Exception:
+            pass
+
     def _collect_monitoring_configs(self) -> list:
         """构建多级监听配置优先级链，兼容所有耳机场景。"""
         configs: list[dict] = []
+
+        cached_configs = self._get_cached_monitoring_configs()
+        if cached_configs:
+            print("⚡ 复用上次验证成功的监听配置，跳过完整重探测")
+            return cached_configs
 
         # 1) 临时优先配置（来自上游逻辑或监听重试）
         preferred_chain = getattr(self, '_preferred_monitoring_configs', None)
@@ -4783,15 +4880,18 @@ class IntegratedAudioProcessor(QThread):
                         }
                         
                         # 为WASAPI设备使用测试验证的参数
-                        if 'device' in config and 'samplerate' in config:
-                            stream_params['device'] = config['device']
+                        device_value = config.get('device', None)
+                        has_explicit_input_device = device_value is not None and str(device_value).strip().lower() not in ('', 'none')
+                        if has_explicit_input_device and 'samplerate' in config:
+                            stream_params['device'] = device_value
                             stream_params['samplerate'] = config['samplerate']
                             stream_params['blocksize'] = config.get('blocksize', self.chunk_size)
                             verified_latency = config.get('verified_latency', None)
-                            print(f"🎯 监听使用WASAPI设备{config['device']}@{config['samplerate']}Hz (验证延迟: {_format_latency_ms(verified_latency)})")
+                            print(f"🎯 监听使用设备{device_value}@{config['samplerate']}Hz (验证延迟: {_format_latency_ms(verified_latency)})")
                         else:
-                            stream_params['samplerate'] = self.sample_rate
-                            stream_params['blocksize'] = self.chunk_size
+                            stream_params['samplerate'] = config.get('samplerate', self.sample_rate)
+                            stream_params['blocksize'] = config.get('blocksize', self.chunk_size)
+                            print(f"🎯 监听使用系统默认输入@{stream_params['samplerate']}Hz (验证延迟: 未知)")
                         
                         # 添加特定驱动设置
                         if config['settings']:
@@ -4855,7 +4955,7 @@ class IntegratedAudioProcessor(QThread):
                         # 若可定位到合适的输出设备，则优先尝试全双工回传
                         created_duplex = False
                         try:
-                            input_dev_id = int(config['device']) if 'device' in config else None
+                            input_dev_id = int(device_value) if has_explicit_input_device else None
                             out_dev_id = _find_matching_output_device(input_dev_id)
                             if out_dev_id is None:
                                 # 退回默认输出设备
@@ -4936,7 +5036,7 @@ class IntegratedAudioProcessor(QThread):
                             try:
                                 self._monitor_hifi_mode = False
                                 # 复用上方匹配输出设备的逻辑
-                                _out_dev_id = _find_matching_output_device(int(config['device']) if 'device' in config else None)
+                                _out_dev_id = _find_matching_output_device(int(device_value) if has_explicit_input_device else None)
                                 if _out_dev_id is None:
                                     # 使用系统默认输出
                                     try:
@@ -5363,9 +5463,11 @@ class IntegratedAudioProcessor(QThread):
                             self._active_monitoring_config = cfg_snapshot
                             # 同步给通用延迟测试与UI读取，避免“当前没有选定配置”
                             self._selected_device_config = dict(cfg_snapshot)
+                            self._store_monitoring_runtime_cache(cfg_snapshot)
                         except Exception:
                             self._active_monitoring_config = dict(config)
                             self._selected_device_config = dict(config)
+                            self._store_monitoring_runtime_cache(dict(config))
 
                         monitoring_stream_created = True
                         break
@@ -8192,7 +8294,7 @@ class IntegratedAudioProcessor(QThread):
             raw_frequency = 0.0
             if hasattr(self, 'pitch_service') and self.pitch_service is not None:
                 try:
-                    f0, conf = self.pitch_service.detect(np.array(processed_audio, dtype=np.float64, copy=False))
+                    f0, conf = self.pitch_service.detect(np.asarray(processed_audio, dtype=np.float64))
                     raw_frequency = float(f0 or 0.0)
                 except Exception:
                     raw_frequency = 0.0
@@ -12694,6 +12796,21 @@ class ECGStylePitchVisualizer(QWidget):
     # 跨线程安全：用于从音频/分析线程投递 overlay 预览点到 GUI 线程绘制。
     # payload 为 list[dict] 或 dict。
     retake_overlay_points = pyqtSignal(object)
+
+    def __setattr__(self, name, value):
+        if name in ('listenback_enabled', 'listenback_enableed', 'listenbaack_enabled', 'listenbackk_enabled'):
+            flag = bool(value)
+            object.__setattr__(self, 'listenback_enabled', flag)
+            object.__setattr__(self, 'listenback_enableed', flag)
+            object.__setattr__(self, 'listenbaack_enabled', flag)
+            object.__setattr__(self, 'listenbackk_enabled', flag)
+            return
+        object.__setattr__(self, name, value)
+
+    def __getattr__(self, name):
+        if name in ('listenback_enableed', 'listenbaack_enabled', 'listenbackk_enabled'):
+            return bool(self.__dict__.get('listenback_enabled', False))
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
 
     def __init__(self):
         super().__init__()
@@ -17804,9 +17921,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.last_active_pitch_y = None  # 记录最后一次有效音高（八度坐标）
 
         # ================== 回听（Listenback）UI 状态 ==================
-        self.listenback_enabled = False
-        # 兼容历史拼写错误，避免旧路径访问 listenback_enableed 时抛异常
-        self.listenback_enableed = False
+        self._sync_listenback_flag_aliases(False)
         self.selection_active = False
         # 选区模式：None / 'listenback' / 'retake'
         self.selection_mode: Optional[str] = None
@@ -17837,14 +17952,57 @@ class ECGStylePitchVisualizer(QWidget):
         self._sel_hover_side = None
         # 回听：用户触发的“暂停”标记（用于屏蔽暂停时误触发的完成回调）
         self._lb_user_paused = False
+
+    def _sync_listenback_flag_aliases(self, enabled: bool) -> bool:
+        """Keep legacy typo aliases synchronized with the canonical listenback flag."""
+        flag = bool(enabled)
+        self.listenback_enabled = flag
+        self.listenback_enableed = flag
+        self.listenbaack_enabled = flag
+        self.listenbackk_enabled = flag
+        return flag
+
+    def _get_listenback_state(self) -> str:
+        """Return a normalized listenback playback state."""
+        ap = getattr(self, 'audio_processor', None)
+        try:
+            state = str(getattr(ap, '_lb_state', 'stopped') or 'stopped')
+        except Exception:
+            return 'stopped'
+        if state not in ('playing', 'paused', 'stopped'):
+            return 'stopped'
+        return state
+
+    def _get_listenback_chunk_end(self) -> Optional[float]:
+        """Safely read the latest listenback chunk end time from the audio processor."""
+        ap = getattr(self, 'audio_processor', None)
+        try:
+            chunks = getattr(ap, '_listenback_chunks', None)
+        except Exception:
+            return None
+        if not chunks:
+            return None
+        try:
+            last_chunk = chunks[-1]
+        except Exception:
+            try:
+                chunks = list(chunks)
+            except Exception:
+                return None
+            if not chunks:
+                return None
+            last_chunk = chunks[-1]
+        try:
+            return float(last_chunk[1])
+        except Exception:
+            return None
     
 
     # ================== 回听：启用/禁用与UI搭建 ==================
     def enable_listenback_mode(self, enabled: bool = True):
         """启用/禁用回听选区模式：仅绘制与交互，暂不含音频回放。"""
         try:
-            self.listenback_enabled = bool(enabled)
-            self.listenback_enableed = self.listenback_enabled
+            self._sync_listenback_flag_aliases(enabled)
             if self.listenback_enabled:
                 if not self.retake_selection_active:
                     self.selection_mode = 'listenback'
@@ -17940,15 +18098,9 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 右侧上限：优先以回听缓冲最新结束时间 + 最大历史时长裁剪
             right_limit = None
-            ap = getattr(self, 'audio_processor', None)
-            try:
-                if ap is not None and hasattr(ap, '_listenback_chunks') and ap._listenback_chunks:
-                    last_end_abs = float(ap._listenback_chunks[-1][1])
-                    if hasattr(self, 'start_time') and self.start_time is not None:
-                        last_end_rel = last_end_abs - float(self.start_time)
-                        right_limit = last_end_rel
-            except Exception:
-                right_limit = None
+            last_end_abs = self._get_listenback_chunk_end()
+            if last_end_abs is not None and hasattr(self, 'start_time') and self.start_time is not None:
+                right_limit = last_end_abs - float(self.start_time)
             try:
                 mh = float(getattr(self, 'max_history_time', None))
                 if right_limit is None or mh < right_limit:
@@ -17988,14 +18140,9 @@ class ECGStylePitchVisualizer(QWidget):
     def _get_listenback_right_limit(self) -> Optional[float]:
         """返回回听可用的最右侧相对时间上限（秒）。"""
         right_limit = None
-        ap = getattr(self, 'audio_processor', None)
-        try:
-            if ap is not None and hasattr(ap, '_listenback_chunks') and ap._listenback_chunks:
-                last_end_abs = float(ap._listenback_chunks[-1][1])
-                if hasattr(self, 'start_time') and self.start_time is not None:
-                    right_limit = last_end_abs - float(self.start_time)
-        except Exception:
-            right_limit = None
+        last_end_abs = self._get_listenback_chunk_end()
+        if last_end_abs is not None and hasattr(self, 'start_time') and self.start_time is not None:
+            right_limit = last_end_abs - float(self.start_time)
         try:
             mh = float(getattr(self, 'max_history_time', None))
             if right_limit is None or mh < right_limit:
@@ -18035,8 +18182,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.retake_selection_active = True
         self.selection_mode = 'retake'
         self.selection_active = True
-        self.listenback_enabled = False
-        self.listenback_enableed = False
+        self._sync_listenback_flag_aliases(False)
         self._sel_dragging_side = None
         self._sel_dragging_last_x = None
         self._sel_hover_side = None
@@ -18146,8 +18292,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.retake_selection_active = True
         self.selection_mode = 'retake'
         self.selection_active = True
-        self.listenback_enabled = False
-        self.listenback_enableed = False
+        self._sync_listenback_flag_aliases(False)
         self.sel_start = start
         self.sel_end = end
         try:
@@ -18718,8 +18863,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             # 播放状态
-            ap = getattr(self, 'audio_processor', None)
-            is_playing = bool(ap and getattr(ap, '_lb_state', '') == 'playing') if selection_mode == 'listenback' else False
+            is_playing = (self._get_listenback_state() == 'playing') if selection_mode == 'listenback' else False
             # 确保播放头位置与可见性（始终可见，表示“唱到哪了/暂停到哪了”）
             try:
                 self._ensure_playhead()
@@ -18728,7 +18872,7 @@ class ECGStylePitchVisualizer(QWidget):
                     self._lb_playhead.set_ydata([0.0, 1.0])
                     self._lb_playhead.set_visible(True)
                     self._lb_playhead.set_zorder(148)
-                    ap_state = getattr(getattr(self, 'audio_processor', None), '_lb_state', '')
+                    ap_state = self._get_listenback_state()
                     if selection_mode != 'listenback' or not getattr(self, 'listenback_enabled', False):
                         # 非回听模式：播放头默认固定在左框线处
                         if not getattr(self, '_dragging_playhead', False):
@@ -20480,7 +20624,7 @@ class ECGStylePitchVisualizer(QWidget):
 
         # 状态信息显示（合并到一行）
         self.status_label = QLabel("中心: C4 | 时间: 实时 | 缩放: 1.0x | 标注: 智能 | 跟随: 开启 | 数据: 0点(0.0%)")
-        self.status_label.setStyleSheet("color: #AAAAAA; font-family: monospace; font-size: 11px;")
+        self.status_label.setStyleSheet("color: #EAF4FF; background-color: rgba(13, 25, 38, 0.92); border: 1px solid #27435C; border-radius: 6px; padding: 4px 8px; font-family: Consolas, 'Microsoft YaHei UI'; font-size: 11px; font-weight: 600;")
         controls_row2_layout.addWidget(self.status_label)
 
         # 第二行布局添加到主布局
@@ -25690,8 +25834,8 @@ class ECGStylePitchVisualizer(QWidget):
             if not ok:
                 # 一次性自愈：若没有数据，尝试自动将选区对齐到最近5秒数据并重试
                 try:
-                    if hasattr(ap, '_listenback_chunks') and ap._listenback_chunks and hasattr(self, 'start_time') and self.start_time is not None:
-                        last_end_abs = float(ap._listenback_chunks[-1][1])
+                    last_end_abs = self._get_listenback_chunk_end()
+                    if last_end_abs is not None and hasattr(self, 'start_time') and self.start_time is not None:
                         span = max(1.0, min(10.0, float(self.sel_end - self.sel_start) or 5.0))
                         new_abs_end = last_end_abs
                         new_abs_start = new_abs_end - span
@@ -45571,7 +45715,13 @@ class IntegratedRecordingInterface(QMainWindow):
             if viz is not None and hasattr(viz, 'deactivate_retake_selection'):
                 viz.deactivate_retake_selection()
         except Exception as exc:
-            if 'listenback_enableed' not in str(exc):
+            exc_text = str(exc)
+            is_legacy_listenback_attr_error = (
+                isinstance(exc, AttributeError)
+                and 'listenback' in exc_text
+                and 'enabled' in exc_text
+            )
+            if not is_legacy_listenback_attr_error and 'listenback_enableed' not in exc_text and 'listenbaack_enabled' not in exc_text and 'listenbackk_enabled' not in exc_text:
                 print(f"⚠️ 退出选区重录失败: {exc}")
         # 无论是否关闭窗口，都要彻底停止重录相关的倒计时/清理/冻结，避免后续录制区间被误裁剪。
         try:
@@ -49892,14 +50042,16 @@ class IntegratedRecordingInterface(QMainWindow):
         system_status_layout.addWidget(QLabel("系统状态"))
         
         self.system_status_label = QLabel("状态: 就绪")
+        self.system_status_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #F6FBFF; background: #1B2733; border: 1px solid #31506B; border-radius: 6px; padding: 6px 10px;")
         system_status_layout.addWidget(self.system_status_label)
         
         self.performance_label = QLabel("性能: 良好")
+        self.performance_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #D7EFFF; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
         system_status_layout.addWidget(self.performance_label)
         
         # 降噪状态显示
         self.noise_status_label = QLabel("降噪: 关闭")
-        self.noise_status_label.setStyleSheet("font-size: 12px; color: #CCCCCC;")
+        self.noise_status_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #DCEAF5; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
         system_status_layout.addWidget(self.noise_status_label)
         
         # 清除数据按钮
@@ -50816,7 +50968,7 @@ class IntegratedRecordingInterface(QMainWindow):
                             QMessageBox.information(
                                 dlg,
                                 "实时分析",
-                                "当前将以默认/降级模式进入实时分析。\n若希望更稳定的主唱/伴唱实时轨道效果，请先在“主唱/伴唱设置”中开启 Stage2、包含伴唱轨和实时轨道切换。",
+                                "当前将先执行默认预分离，再进入实时分析。\n若希望更稳定的主唱/伴唱实时轨道效果，建议在“主唱/伴唱设置”中开启 Stage2、包含伴唱轨和实时轨道切换。",
                             )
                         except Exception:
                             pass
@@ -50837,15 +50989,45 @@ class IntegratedRecordingInterface(QMainWindow):
                 if file_path:
                     dlg.accept()
                     try:
-                        # 调用占位入口（若后续提供真实实现将自动委托）
-                        _enter_local_file_realtime_mode(self, file_path)
+                        impl = getattr(self, '_enter_local_file_realtime_mode', None)
+                        if callable(impl):
+                            impl(file_path)
+                        else:
+                            _enter_local_file_realtime_mode(self, file_path)
                     except Exception as _e:
                         try:
-                            QMessageBox.information(self, "本地音高解析", f"入口已就绪，但功能尚未完全实现。\n文件: {file_path}\n异常: {_e}")
+                            QMessageBox.warning(self, "本地音高解析", f"实时分析启动失败。\n文件: {file_path}\n异常: {_e}")
                         except Exception:
                             print(f"[LocalPitch] realtime invoke error: {_e}")
 
             def _one_pass_render():
+                try:
+                    self._open_lead_backing_settings_dialog(parent=dlg)
+                    settings_label.setText(self._lead_backing_settings_summary())
+                except Exception:
+                    pass
+                try:
+                    stage2_on = bool(getattr(self, 'enable_lead_backing_stage2', False))
+                    rt_on = bool(getattr(self, 'enable_realtime_lead_backing', False))
+                    include_backing = bool(getattr(self, 'lead_backing_include_backing', False))
+                    cfg_ready = bool(stage2_on and rt_on and include_backing)
+                except Exception:
+                    cfg_ready = False
+
+                if not cfg_ready:
+                    try:
+                        ret = QMessageBox.question(
+                            dlg,
+                            "一次性绘制",
+                            "当前主唱/伴唱设置仍未完整开启。\n是否继续按默认预分离策略进行一次性绘制？",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.Yes,
+                        )
+                    except Exception:
+                        ret = QMessageBox.StandardButton.No
+                    if ret != QMessageBox.StandardButton.Yes:
+                        return
+
                 try:
                     if PYQT_VERSION == 6:
                         file_path, _ = QFileDialog.getOpenFileName(
@@ -50862,6 +51044,26 @@ class IntegratedRecordingInterface(QMainWindow):
                 if file_path:
                     dlg.accept()
                     try:
+                        try:
+                            self._onepass_track_sources = None
+                            self._onepass_active_track_mode = ''
+                        except Exception:
+                            pass
+                        if hasattr(self, '_prepare_onepass_track_sources'):
+                            try:
+                                prepared = self._prepare_onepass_track_sources(str(file_path))
+                            except Exception:
+                                prepared = {}
+                            if isinstance(prepared, dict) and prepared:
+                                try:
+                                    self._onepass_track_sources = dict(prepared)
+                                    default_mode = '主唱-only' if '主唱-only' in prepared else next(iter(prepared.keys()))
+                                    self._onepass_active_track_mode = str(default_mode)
+                                    prepared_path = str(prepared.get(default_mode, '') or '').strip()
+                                    if prepared_path:
+                                        file_path = prepared_path
+                                except Exception:
+                                    pass
                         # 启动离线一次性绘制流程
                         if hasattr(self, '_start_offline_onepass'):
                             return self._start_offline_onepass(file_path)
@@ -52286,34 +52488,65 @@ class IntegratedRecordingInterface(QMainWindow):
     def check_headphone_connection(self):
         """检查耳机连接状态"""
         try:
-            import pyaudio
-            
-            # 获取音频设备信息
-            p = pyaudio.PyAudio()
-            
-            # 检查输出设备
-            for i in range(p.get_device_count()):
-                device_info = p.get_device_info_by_index(i)
-                device_name = device_info.get('name', '').lower()
-                
-                # 检查是否包含耳机相关关键词
-                headphone_keywords = [
-                    'headphone', 'headset', 'earphone', 'earbuds', 
-                    'beats', 'sony', 'bose', 'sennheiser',
-                    '耳机', '头戴', '入耳'
-                ]
-                
-                if any(keyword in device_name for keyword in headphone_keywords):
-                    print(f"🎧 检测到耳机设备: {device_info.get('name')}")
-                    p.terminate()
+            import sounddevice as sd
+
+            headphone_keywords = (
+                'headphone', 'headset', 'earphone', 'earbuds', 'hands-free',
+                'hecate', 'gaming headset', 'chat headset', '耳机', '头戴', '入耳', '免提'
+            )
+
+            device_signature = None
+            try:
+                devices = sd.query_devices()
+                device_signature = tuple(
+                    (idx, str(dev.get('name', '') or ''), int(dev.get('max_output_channels', 0) or 0))
+                    for idx, dev in enumerate(devices)
+                )
+                cached_sig = getattr(self, '_headphone_probe_signature', None)
+                cached_ts = float(getattr(self, '_headphone_probe_ts', 0.0) or 0.0)
+                if cached_sig == device_signature and (time.time() - cached_ts) < 3.0:
+                    return bool(getattr(self, '_headphone_probe_result', False))
+            except Exception:
+                devices = []
+
+            try:
+                default_in, default_out = sd.default.device
+            except Exception:
+                default_out = None
+
+            candidates = []
+            for idx, dev in enumerate(devices):
+                try:
+                    if int(dev.get('max_output_channels', 0) or 0) <= 0:
+                        continue
+                    candidates.append((idx, dev))
+                except Exception:
+                    continue
+
+            ordered_candidates = []
+            for idx, dev in candidates:
+                if default_out is not None and idx == default_out:
+                    ordered_candidates.insert(0, (idx, dev))
+                else:
+                    ordered_candidates.append((idx, dev))
+
+            for idx, device_info in ordered_candidates:
+                device_name = str(device_info.get('name', '') or '')
+                device_name_lower = device_name.lower()
+                if any(keyword in device_name_lower for keyword in headphone_keywords):
+                    print(f"🎧 检测到耳机设备: {device_name} (设备{idx})")
+                    self._headphone_probe_result = True
+                    self._headphone_probe_signature = device_signature
+                    self._headphone_probe_ts = time.time()
                     return True
-            
-            p.terminate()
+
+            self._headphone_probe_result = False
+            self._headphone_probe_signature = device_signature
+            self._headphone_probe_ts = time.time()
             return False
-            
+
         except Exception as e:
-            print(f"❌ 检查耳机连接失败: {e}")
-            # 如果检测失败，假设没有耳机
+            print(f"⚠️ 检查耳机连接失败，改用保守判断: {e}")
             return False
 
     def on_recording_mode_changed(self, mode):
@@ -53463,20 +53696,19 @@ def main():
 
 # —— 本地文件实时分析：占位式入口（避免 NameError）——
 def _enter_local_file_realtime_mode(self, file_path: str, track_sources: dict | None = None, active_mode: str | None = None):
-    """占位入口：避免 NameError，并给出友好提示。
-    若后续已实现类方法 _enter_local_file_realtime_mode，可由调用方改为调用实例方法。
-    """
+    """兼容入口：优先委托真实实现，只有不存在实现时才提示。"""
     try:
         # 若类上已有真正实现，则委托
         impl = getattr(self, '_enter_local_file_realtime_mode', None)
         if callable(impl) and impl is not _enter_local_file_realtime_mode:
             return impl(file_path, track_sources=track_sources, active_mode=active_mode)
-    except Exception:
-        pass
+    except Exception as e:
+        raise RuntimeError(f"本地文件实时分析入口调用失败: {e}") from e
     try:
-        QMessageBox.information(self, "本地文件实时分析", "入口已就绪，但功能尚未完全实现。\n建议更新到最新版本，或等待后续实现。")
+        QMessageBox.warning(self, "本地文件实时分析", "未找到可用的实时分析实现入口。")
     except Exception:
-        print("[Info] 本地文件实时分析入口已调用：功能尚未实现。")
+        print("[Info] 未找到可用的本地文件实时分析实现入口。")
+    raise RuntimeError("未找到可用的本地文件实时分析实现入口")
 
 # ========================= 区间重录控制窗口 ========================= #
 class _RetakeControlWindow(QDialog):
@@ -54121,8 +54353,7 @@ class _RetakeControlWindow(QDialog):
                 viz.retake_selection_active = True
                 viz.selection_mode = 'retake'
                 viz.selection_active = True
-                viz.listenback_enabled = False
-                viz.listenback_enableed = False
+                viz._sync_listenback_flag_aliases(False)
                 viz.set_retake_range(
                     start,
                     end,
@@ -55963,26 +56194,7 @@ class _LocalFileRealtimeController(QObject):
     def _decode_file(self) -> None:
         import numpy as np
         path = str(self.file_path)
-        data = None
-        sr = None
-        try:
-            import soundfile as sf
-            data, sr = sf.read(path, always_2d=True)
-        except Exception:
-            try:
-                import wave
-                with wave.open(path, 'rb') as wf:
-                    sr = wf.getframerate()
-                    n = wf.getnframes()
-                    ch = wf.getnchannels()
-                    raw = wf.readframes(n)
-                arr = np.frombuffer(raw, dtype=np.int16)
-                if ch > 1:
-                    arr = arr.reshape(-1, ch).mean(axis=1)
-                data = arr.astype(np.float32) / 32768.0
-                data = data.reshape(-1, 1)
-            except Exception as e:
-                raise RuntimeError(f"无法读取音频文件: {e}")
+        data, sr = self._decode_audio_path(path)
         if data is None or sr is None:
             raise RuntimeError("解码失败")
         if data.ndim == 2 and data.shape[1] > 1:
@@ -55998,26 +56210,7 @@ class _LocalFileRealtimeController(QObject):
         if self.overlay_file_path:
             try:
                 o_path = str(self.overlay_file_path)
-                o_data = None
-                o_sr = None
-                try:
-                    import soundfile as sf
-                    o_data, o_sr = sf.read(o_path, always_2d=True)
-                except Exception:
-                    try:
-                        import wave
-                        with wave.open(o_path, 'rb') as wf:
-                            o_sr = wf.getframerate()
-                            n = wf.getnframes()
-                            ch = wf.getnchannels()
-                            raw = wf.readframes(n)
-                        arr = np.frombuffer(raw, dtype=np.int16)
-                        if ch > 1:
-                            arr = arr.reshape(-1, ch).mean(axis=1)
-                        o_data = arr.astype(np.float32) / 32768.0
-                        o_data = o_data.reshape(-1, 1)
-                    except Exception:
-                        o_data, o_sr = None, None
+                o_data, o_sr = self._decode_audio_path(o_path)
                 if o_data is not None and o_sr is not None:
                     if o_data.ndim == 2 and o_data.shape[1] > 1:
                         o_data = o_data.mean(axis=1, dtype=np.float64)
@@ -56029,6 +56222,112 @@ class _LocalFileRealtimeController(QObject):
                     self.overlay_audio = np.ascontiguousarray(o_data.astype(np.float32))
             except Exception:
                 self.overlay_audio = None
+
+    @staticmethod
+    def _read_wave_pcm(path: str):
+        import numpy as np
+        import wave
+
+        with wave.open(path, 'rb') as wf:
+            sr = wf.getframerate()
+            n = wf.getnframes()
+            ch = wf.getnchannels()
+            sw = wf.getsampwidth()
+            raw = wf.readframes(n)
+
+        if sw == 1:
+            arr = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sw == 2:
+            arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sw == 4:
+            arr = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise RuntimeError(f"不支持的 WAV 位深: {sw * 8}bit")
+
+        if ch > 1:
+            arr = arr.reshape(-1, ch)
+        else:
+            arr = arr.reshape(-1, 1)
+        return arr.astype(np.float32), int(sr)
+
+    @staticmethod
+    def _find_ffmpeg_executable() -> str:
+        import shutil
+        from pathlib import Path
+
+        ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+        if ff:
+            return str(ff)
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            candidates = [
+                project_root / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg.exe',
+                project_root / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg',
+            ]
+            for cand in candidates:
+                if cand.exists():
+                    return str(cand)
+        except Exception:
+            pass
+        return ''
+
+    @classmethod
+    def _decode_audio_path(cls, path: str):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        try:
+            import soundfile as sf
+            data, sr = sf.read(path, always_2d=True)
+            return data.astype(np.float32), int(sr)
+        except Exception:
+            pass
+
+        try:
+            import torchaudio
+            wav, sr = torchaudio.load(path)
+            arr = wav.numpy()
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            return arr.T.astype(np.float32), int(sr)
+        except Exception:
+            pass
+
+        try:
+            import librosa
+            y, sr = librosa.load(path, sr=None, mono=False)
+            if y.ndim == 1:
+                data = y[:, None]
+            else:
+                data = y.T
+            return data.astype(np.float32), int(sr)
+        except Exception:
+            pass
+
+        try:
+            ff = cls._find_ffmpeg_executable()
+            if ff:
+                tmpdir = Path(tempfile.mkdtemp(prefix='lfm_decode_'))
+                wav_path = tmpdir / 'decoded.wav'
+                try:
+                    cmd = [ff, '-y', '-i', str(path), '-ac', '2', '-ar', '44100', '-f', 'wav', str(wav_path)]
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return cls._read_wave_pcm(str(wav_path))
+                finally:
+                    try:
+                        for p in tmpdir.glob('*'):
+                            p.unlink(missing_ok=True)
+                        tmpdir.rmdir()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            return cls._read_wave_pcm(path)
+        except Exception as e:
+            raise RuntimeError(f"无法读取音频文件: {e}")
 
     @staticmethod
     def _resample_linear(x, sr_in: int, sr_out: int):
@@ -56684,6 +56983,7 @@ class _LocalFilePanel(QDialog):
         self._diag_timer.start(250)
         self._update_overlay_diagnostics()
         self._preview_tracks_dlg = None
+        self._refresh_preview_tracks_button()
 
         # 硬隐藏一次，防止任何残留状态导致默认展开。
         for _w in list(self._param_info_widgets) + list(self._param_adjust_widgets):
@@ -57187,14 +57487,14 @@ class _LocalFilePanel(QDialog):
         except Exception:
             pass
 
-    def _on_preview_tracks_clicked(self):
+    def _collect_preview_tracks(self, sources: dict | None = None) -> list:
         try:
-            sources = dict(getattr(self.ifc, '_lfm_track_sources', {}) or {})
+            src = dict(sources if sources is not None else (getattr(self.ifc, '_lfm_track_sources', {}) or {}))
         except Exception:
-            sources = {}
+            src = {}
         tracks = []
         seen = set()
-        for name, path in sources.items():
+        for name, path in src.items():
             p = str(path or '').strip()
             n = str(name or '').strip()
             if not p or not n:
@@ -57202,11 +57502,38 @@ class _LocalFilePanel(QDialog):
             key = p.lower()
             if key in seen:
                 continue
-            # 只保留分离相关轨道，避免重复试听同一混合轨。
             if ('主唱' not in n) and ('伴唱' not in n):
                 continue
             seen.add(key)
             tracks.append({'name': n, 'path': p})
+        return tracks
+
+    def _refresh_preview_tracks_button(self, tracks: list | None = None):
+        btn = getattr(self, 'btn_preview_tracks', None)
+        if btn is None:
+            return
+        items = list(tracks if tracks is not None else self._collect_preview_tracks())
+        count = len(items)
+        try:
+            btn.setText("试听分离轨")
+            if count >= 2:
+                btn.setToolTip("已检测到主唱/伴唱分离轨，可直接试听。")
+                btn.setEnabled(True)
+            elif count == 1:
+                btn.setToolTip("当前仅检测到单一分离轨，点击后会尝试补全实时预分离结果。")
+                btn.setEnabled(True)
+            else:
+                btn.setToolTip("当前还没有可试听的主唱/伴唱轨，点击后会尝试准备实时预分离结果。")
+                btn.setEnabled(True)
+        except Exception:
+            pass
+
+    def _on_preview_tracks_clicked(self):
+        try:
+            sources = dict(getattr(self.ifc, '_lfm_track_sources', {}) or {})
+        except Exception:
+            sources = {}
+        tracks = self._collect_preview_tracks(sources)
         # 若当前仅有“主唱+伴唱”混合轨，自动触发一次实时预分离并刷新来源。
         if len(tracks) <= 1:
             try:
@@ -57218,20 +57545,8 @@ class _LocalFilePanel(QDialog):
                     self.ifc._lfm_track_sources = dict(rebuilt)
                 except Exception:
                     pass
-                tracks = []
-                seen = set()
-                for name, path in rebuilt.items():
-                    p = str(path or '').strip()
-                    n = str(name or '').strip()
-                    if not p or not n:
-                        continue
-                    key = p.lower()
-                    if key in seen:
-                        continue
-                    if ('主唱' not in n) and ('伴唱' not in n):
-                        continue
-                    seen.add(key)
-                    tracks.append({'name': n, 'path': p})
+                tracks = self._collect_preview_tracks(rebuilt)
+        self._refresh_preview_tracks_button(tracks)
         if not tracks:
             try:
                 QMessageBox.information(self, "试听分离轨", "未找到可用的主唱/伴唱分离轨道，请先完成实时预分离。")
@@ -57531,17 +57846,21 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
     enable_stage2 = bool(getattr(self, 'enable_lead_backing_stage2', False))
     enable_rt_stage2 = bool(getattr(self, 'enable_realtime_lead_backing', False))
     include_backing = bool(getattr(self, 'lead_backing_include_backing', False)) or int(getattr(self, 'lead_backing_count', 0) or 0) > 0
+    using_default_presep = not (enable_stage2 and enable_rt_stage2 and include_backing)
+    if using_default_presep:
+        self._lfm_overlay_missing_reason = '当前未完整启用主唱/伴唱设置，实时分析将先使用默认预分离策略。'
+    else:
+        self._lfm_overlay_missing_reason = ''
 
     try:
         cache = dict(getattr(self, '_lfm_stage2_sources_cache', {}) or {})
     except Exception:
         cache = {}
-    force_refresh = True
+    force_refresh = False
     try:
-        # 默认开启：每次实时分析都重分离，避免历史劣质结果污染体验。
-        force_refresh = bool(getattr(self, 'lead_backing_realtime_force_refresh', True))
+        force_refresh = bool(getattr(self, 'lead_backing_realtime_force_refresh', False))
     except Exception:
-        force_refresh = True
+        force_refresh = False
     try:
         import hashlib as _hashlib
         from pathlib import Path
@@ -57550,6 +57869,7 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
             'enable_stage2': bool(enable_stage2),
             'enable_rt_stage2': bool(enable_rt_stage2),
             'include_backing': bool(include_backing),
+            'using_default_presep': bool(using_default_presep),
             'count': int(getattr(self, 'lead_backing_count', 1) or 1),
             'mode': str(getattr(self, 'lead_backing_singer_mode', 'auto') or 'auto'),
             'tpl': str(getattr(self, 'lead_backing_template_path', '') or ''),
@@ -57592,7 +57912,7 @@ def _ifc_prepare_local_realtime_track_sources(self, file_path: str) -> dict:
         else:
             prog.set_predictive_plan(11.0, 2.8)
         prog.set_progress(2)
-        if not (enable_stage2 and enable_rt_stage2 and include_backing):
+        if using_default_presep:
             prog.set_message('检测到主唱/伴唱设置未完整启用，实时分析将临时启用预分离默认策略…')
         elif force_refresh:
             prog.set_message('已启用“每次重分离”，正在重新执行主唱/伴唱分离…')
@@ -58024,8 +58344,286 @@ class _OnePassPitchWorker(QThread):
         self.ifc = ifc
         self.file_path = file_path
         self._cancel = False
+        self.overlay_path = ''
+        self.overlay_mode = ''
+        self.overlay_label = ''
+        self.overlay_color = str(getattr(ifc, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A')
+        try:
+            resolver = getattr(ifc, '_resolve_onepass_overlay_track', None)
+            if callable(resolver):
+                path, mode = resolver(
+                    str(getattr(ifc, '_onepass_active_track_mode', '') or ''),
+                    dict(getattr(ifc, '_onepass_track_sources', {}) or {}),
+                )
+                self.overlay_path = str(path or '').strip()
+                self.overlay_mode = str(mode or '').strip()
+                self.overlay_label = self.overlay_mode.replace('-only', '').strip()
+        except Exception:
+            pass
+
     def cancel(self):
         self._cancel = True
+
+    @staticmethod
+    def _hz_to_pitch_y(freq_hz: float) -> float:
+        freq = max(1e-9, float(freq_hz))
+        midi = 69.0 + 12.0 * math.log2(freq / 440.0)
+        return float(midi / 12.0 - 1.0)
+
+    @staticmethod
+    def _read_wave_pcm(path: str):
+        import numpy as np
+        import wave
+
+        with wave.open(path, 'rb') as wf:
+            sr = wf.getframerate()
+            n = wf.getnframes()
+            ch = wf.getnchannels()
+            sw = wf.getsampwidth()
+            raw = wf.readframes(n)
+
+        if sw == 1:
+            arr = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sw == 2:
+            arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sw == 4:
+            arr = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise RuntimeError(f"不支持的 WAV 位深: {sw * 8}bit")
+
+        if ch > 1:
+            arr = arr.reshape(-1, ch)
+        else:
+            arr = arr.reshape(-1, 1)
+        return arr.astype(np.float32), int(sr)
+
+    @staticmethod
+    def _find_ffmpeg_executable() -> str:
+        import shutil
+        from pathlib import Path
+
+        ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+        if ff:
+            return str(ff)
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            candidates = [
+                project_root / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg.exe',
+                project_root / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg',
+            ]
+            for cand in candidates:
+                if cand.exists():
+                    return str(cand)
+        except Exception:
+            pass
+        return ''
+
+    @staticmethod
+    def _build_overlay_packets(times, y_vals, *, stride: int = 1, confidence: float = 0.72):
+        packets = []
+        step = max(1, int(stride or 1))
+        conf = max(0.05, min(1.0, float(confidence)))
+        for idx, (ts_val, y_val) in enumerate(zip(list(times or []), list(y_vals or []))):
+            if step > 1 and (idx % step) != 0:
+                continue
+            try:
+                packets.append({
+                    'global_time': float(ts_val),
+                    'pitch_y': float(y_val),
+                    'confidence': conf,
+                    'has_pitch': True,
+                })
+            except Exception:
+                continue
+        return packets
+
+    def _decode_audio_file(self, path: str):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        # 1) soundfile
+        try:
+            import soundfile as sf
+            data, sr = sf.read(path, always_2d=True)
+            return data.astype(np.float32), int(sr)
+        except Exception:
+            pass
+
+        # 2) torchaudio
+        try:
+            import torchaudio
+            wav, sr = torchaudio.load(path)
+            arr = wav.numpy()
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            return arr.T.astype(np.float32), int(sr)
+        except Exception:
+            pass
+
+        # 3) librosa/audioread
+        try:
+            import librosa
+            y, sr = librosa.load(path, sr=None, mono=False)
+            if y.ndim == 1:
+                data = y[:, None]
+            else:
+                data = y.T
+            return data.astype(np.float32), int(sr)
+        except Exception:
+            pass
+
+        # 4) ffmpeg 转临时 WAV，再用标准 wave 读取
+        try:
+            ff = self._find_ffmpeg_executable()
+            if ff:
+                tmpdir = Path(tempfile.mkdtemp(prefix='onepass_decode_'))
+                wav_path = tmpdir / 'decoded.wav'
+                try:
+                    cmd = [ff, '-y', '-i', str(path), '-ac', '2', '-ar', '44100', '-f', 'wav', str(wav_path)]
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return self._read_wave_pcm(str(wav_path))
+                finally:
+                    try:
+                        for p in tmpdir.glob('*'):
+                            p.unlink(missing_ok=True)
+                        tmpdir.rmdir()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 5) 最后只按 PCM WAV 读
+        try:
+            return self._read_wave_pcm(path)
+        except Exception as e:
+            raise RuntimeError(f"无法读取音频文件: {e}")
+
+    def _collect_realtime_like_points(self, audio, sr: int, frame_window: int, frame_hop: int, *, progress_range: tuple[int, int] = (0, 100), status_text: str = "正在按实时分析链逐帧解析音高…", track_mode_override: str | None = None):
+        from collections import deque as _deque
+
+        ap = getattr(self.ifc, 'audio_processor', None)
+        if ap is None:
+            raise RuntimeError("音频处理器不可用")
+
+        payloads = []
+        n = int(len(audio))
+        last_prog = -1
+
+        orig_emit = getattr(ap, '_emit_pitch_data_throttled', None)
+        orig_pitch_history = getattr(ap, 'pitch_history', None)
+        try:
+            orig_lfm_ctrl = getattr(self.ifc, '_lfm_ctrl', None)
+        except Exception:
+            orig_lfm_ctrl = None
+        try:
+            orig_lfm_mode = str(getattr(self.ifc, '_lfm_active_track_mode', '') or '')
+        except Exception:
+            orig_lfm_mode = ''
+
+        dummy_lfm_ctrl = object()
+        onepass_mode = str(track_mode_override or getattr(self.ifc, '_onepass_active_track_mode', orig_lfm_mode) or orig_lfm_mode)
+
+        def _capture_payload(pitch_dict: dict):
+            try:
+                payload = ap._prepare_ui_payload(pitch_dict)
+            except Exception:
+                try:
+                    payload = dict(pitch_dict)
+                except Exception:
+                    payload = {'payload': pitch_dict}
+            payloads.append(payload)
+
+        try:
+            self.message.emit(str(status_text or "正在按实时分析链逐帧解析音高…"))
+            try:
+                ap._reset_pitch_analysis_state(reason="onepass-start")
+            except Exception:
+                pass
+            try:
+                maxlen = getattr(orig_pitch_history, 'maxlen', 20000)
+                ap.pitch_history = _deque(maxlen=maxlen)
+            except Exception:
+                pass
+            ap._emit_pitch_data_throttled = _capture_payload
+            try:
+                self.ifc._lfm_ctrl = dummy_lfm_ctrl
+            except Exception:
+                pass
+            try:
+                self.ifc._lfm_active_track_mode = onepass_mode
+            except Exception:
+                pass
+
+            i = 0
+            while i + frame_window <= n:
+                if self._cancel:
+                    return None, None
+                frame = audio[i:i+frame_window]
+                try:
+                    ap._lfm_forced_global_time = float(i) / float(sr)
+                except Exception:
+                    pass
+                ap.process_audio_for_pitch_async(frame)
+
+                raw_prog = int((i + frame_window) * 100 / max(1, n))
+                prog = int(progress_range[0] + (raw_prog * max(0, int(progress_range[1]) - int(progress_range[0])) / 100.0))
+                if prog != last_prog and prog % 2 == 0:
+                    last_prog = prog
+                    self.progress.emit(prog)
+                i += frame_hop
+        finally:
+            try:
+                if callable(orig_emit):
+                    ap._emit_pitch_data_throttled = orig_emit
+            except Exception:
+                pass
+            try:
+                ap.pitch_history = orig_pitch_history
+            except Exception:
+                pass
+            try:
+                if orig_lfm_ctrl is None:
+                    delattr(self.ifc, '_lfm_ctrl')
+                else:
+                    self.ifc._lfm_ctrl = orig_lfm_ctrl
+            except Exception:
+                pass
+            try:
+                self.ifc._lfm_active_track_mode = orig_lfm_mode
+            except Exception:
+                pass
+            try:
+                if hasattr(ap, '_lfm_forced_global_time'):
+                    delattr(ap, '_lfm_forced_global_time')
+            except Exception:
+                try:
+                    ap._lfm_forced_global_time = None
+                except Exception:
+                    pass
+            try:
+                ap._reset_pitch_analysis_state(reason="onepass-end")
+            except Exception:
+                pass
+
+        times = []
+        y_vals = []
+        for payload in payloads:
+            try:
+                if not bool(payload.get('has_pitch', False)):
+                    continue
+                freq = float(payload.get('frequency', payload.get('f0_smooth', 0.0)) or 0.0)
+                if freq <= 0.0:
+                    continue
+                t = payload.get('global_time', None)
+                if t is None:
+                    continue
+                times.append(float(t))
+                y_vals.append(self._hz_to_pitch_y(freq))
+            except Exception:
+                continue
+        return times, y_vals
+
     def run(self):
         try:
             import numpy as np
@@ -58039,26 +58637,8 @@ class _OnePassPitchWorker(QThread):
             # 1) 解码与重采样
             self.message.emit("正在解码音频…")
             sr_target = int(getattr(self.ifc.audio_processor, 'sample_rate', 48000) or 48000)
-            data, sr = None, None
             path = str(self.file_path)
-            try:
-                import soundfile as sf
-                data, sr = sf.read(path, always_2d=True)
-            except Exception:
-                try:
-                    import wave
-                    with wave.open(path, 'rb') as wf:
-                        sr = wf.getframerate()
-                        n = wf.getnframes()
-                        ch = wf.getnchannels()
-                        raw = wf.readframes(n)
-                    arr = np.frombuffer(raw, dtype=np.int16)
-                    if ch > 1:
-                        arr = arr.reshape(-1, ch).mean(axis=1)
-                    data = arr.astype(np.float32) / 32768.0
-                    data = data.reshape(-1, 1)
-                except Exception as e:
-                    raise RuntimeError(f"无法读取音频文件: {e}")
+            data, sr = self._decode_audio_file(path)
             if data is None or sr is None:
                 raise RuntimeError("解码失败")
             if self._cancel:
@@ -58079,8 +58659,7 @@ class _OnePassPitchWorker(QThread):
                 self.ifc._apply_actual_input_samplerate(int(sr))
             except Exception:
                 pass
-            # 2) 分帧YIN检测（或统一服务），构建时间/音高点
-            self.message.emit("正在分析音高…")
+            # 2) 复用实时分析链逐帧解析，确保一次性绘制与实时最终效果尽量一致
             frame_window = int(getattr(self.ifc.audio_processor, '_frame_window', 2048) or 2048)
             frame_hop = int(getattr(self.ifc.audio_processor, '_frame_hop', max(1, frame_window // 4)))
             # 默认跟随实时窗口/步长，避免一次性结果与普通模式细节点风格偏离。
@@ -58098,13 +58677,6 @@ class _OnePassPitchWorker(QThread):
                 frame_window = int(max(512, min(16384, frame_window)))
             if offline_hop_div > 0:
                 frame_hop = int(max(1, frame_window // int(offline_hop_div)))
-            n = len(audio)
-            times = []
-            y_vals = []  # 连续八度值（与实时一致的Y坐标）
-            # 稳健音高：局部中值倍频纠正 + 半音级跳变限幅（贴近实时路径）
-            recent_hz = deque(maxlen=7)
-            last_stable_midi = None
-            # 与实时一致的阈值来源（如缺省则用合理默认）
             try:
                 max_step_semi = float(getattr(self.ifc, '_max_step_semitones', 7.0))
             except Exception:
@@ -58117,81 +58689,21 @@ class _OnePassPitchWorker(QThread):
                 octave_lo, octave_hi = getattr(self.ifc, '_octave_adjust_range', (-2, 2))
             except Exception:
                 octave_lo, octave_hi = (-2, 2)
-            # 性能：批量进度更新，目标 20s ~5s 内完成 -> 较大hop也可接受
-            # 这里保持和实时一致，若需提速可将 hop 放大至 window/2
             use_service = bool(getattr(self.ifc, 'pitch_service', None)) and _PITCH_SERVICE_AVAILABLE
-            i = 0
-            last_prog = -1
-            while i + frame_window <= n:
-                if self._cancel:
-                    return
-                frame = audio[i:i+frame_window]
-                # 静音/弱声门限：过低RMS不计入，避免高次谐波假阳性
-                try:
-                    frame_rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-                except Exception:
-                    frame_rms = 0.0
-                if frame_rms < 0.0005:
-                    i += frame_hop
-                    # 保持 last_stable_midi 不被静音段污染
-                    continue
-                # 检测
-                if use_service:
-                    try:
-                        f0 = float(self.ifc.pitch_service.detect_pitch(frame, sr) or 0.0)
-                    except Exception:
-                        f0 = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
-                else:
-                    f0 = float(self.ifc.audio_processor.detect_pitch_simple_yin(frame) or 0.0)
-                t = (i + frame_window * 0.5) / float(sr)
-                if f0 > 0:
-                    # 倍频纠正：以局部中值为参考，在 [octave_lo..octave_hi] 八度中选择最接近者
-                    ref = None
-                    try:
-                        if len(recent_hz) >= 3:
-                            ref = float(np.median(np.asarray(recent_hz, dtype=float)))
-                    except Exception:
-                        ref = None
-                    f_adj = f0
-                    if ref and ref > 0:
-                        best = f0
-                        best_err = abs(np.log2(max(f0, 1e-9) / ref))
-                        eps_tie = 0.08  # 略增强“偏低八度”偏置
-                        for k in range(int(octave_lo), int(octave_hi) + 1):
-                            if k == 0:
-                                continue
-                            f_try = f0 * (2.0 ** k)
-                            err = abs(np.log2(max(f_try, 1e-9) / ref))
-                            if (err + eps_tie) < best_err or (abs(err - best_err) <= eps_tie and f_try < best):
-                                best_err = err
-                                best = f_try
-                        f_adj = best
-                    recent_hz.append(f_adj)
-                    # 转 MIDI
-                    midi = 69 + 12 * np.log2(max(f_adj, 1e-9) / 440.0)
-                    # 跳变限幅（相邻帧）
-                    if last_stable_midi is not None:
-                        delta = midi - last_stable_midi
-                        if abs(delta) > max_step_semi:
-                            clamped = last_stable_midi + np.sign(delta) * max_step_semi
-                            midi = clamp_blend * clamped + (1.0 - clamp_blend) * midi
-                    last_stable_midi = midi
-                    # 同步到处理器，激活 detect_pitch_simple_yin 内的谐波守护逻辑
-                    try:
-                        self.ifc.audio_processor._last_stable_freq = float(f_adj)
-                        self.ifc.audio_processor._last_stable_conf = 0.6
-                    except Exception:
-                        pass
-                    # 转换至Y坐标（连续八度）
-                    y = midi / 12.0 - 1.0
-                    times.append(float(t))
-                    y_vals.append(float(y))
-                # 进度
-                prog = int((i + frame_window) * 100 / max(1, n))
-                if prog != last_prog and prog % 2 == 0:
-                    last_prog = prog
-                    self.progress.emit(prog)
-                i += frame_hop
+            n = len(audio)
+            times, y_vals = self._collect_realtime_like_points(
+                audio,
+                int(sr),
+                frame_window,
+                frame_hop,
+                progress_range=(8, 74),
+                status_text="正在按实时分析链逐帧解析主轨音高…",
+                track_mode_override=str(getattr(self.ifc, '_onepass_active_track_mode', '') or ''),
+            )
+            if self._cancel:
+                return
+            if times is None or y_vals is None:
+                return
             # 轻量去尖刺：3点中值滤波（仅作用于已采样点，不改变趋势），贴近实时观感
             if onepass_cfg['enable_median_spike_filter'] and len(y_vals) >= 3:
                 try:
@@ -58344,8 +58856,50 @@ class _OnePassPitchWorker(QThread):
                     segments = refined_segments
                 except Exception:
                     pass
+            overlay_packets = []
+            overlay_label = str(self.overlay_label or '').strip()
+            if self.overlay_path and str(self.overlay_path).strip() and str(self.overlay_path).strip() != path:
+                try:
+                    overlay_data, overlay_sr = self._decode_audio_file(str(self.overlay_path))
+                    if overlay_data is not None and overlay_sr is not None:
+                        if overlay_data.ndim == 2 and overlay_data.shape[1] > 1:
+                            overlay_data = overlay_data.mean(axis=1, dtype=np.float64)
+                        else:
+                            overlay_data = overlay_data.squeeze()
+                        overlay_data = overlay_data.astype(np.float32)
+                        if int(overlay_sr) != int(sr_target):
+                            overlay_data = _LocalFileRealtimeController._resample_linear(overlay_data, int(overlay_sr), int(sr_target))
+                            overlay_sr = int(sr_target)
+                        overlay_audio = np.ascontiguousarray(overlay_data.astype(np.float32))
+                        overlay_times, overlay_y_vals = self._collect_realtime_like_points(
+                            overlay_audio,
+                            int(overlay_sr),
+                            frame_window,
+                            frame_hop,
+                            progress_range=(76, 96),
+                            status_text=f"正在补充{overlay_label or '副轨'}绘制…",
+                            track_mode_override=self.overlay_mode or overlay_label,
+                        )
+                        if self._cancel:
+                            return
+                        if overlay_times is not None and overlay_y_vals is not None:
+                            try:
+                                overlay_stride = int(getattr(self.ifc, '_onepass_overlay_stride', getattr(self.ifc, '_lfm_overlay_stride', 2)) or 2)
+                            except Exception:
+                                overlay_stride = 2
+                            if len(overlay_times) > 4800:
+                                overlay_stride = max(int(overlay_stride), int(math.ceil(len(overlay_times) / 4800.0)))
+                            overlay_packets = self._build_overlay_packets(overlay_times, overlay_y_vals, stride=overlay_stride, confidence=0.74)
+                except Exception:
+                    overlay_packets = []
             self.progress.emit(100)
-            self.finished_ok.emit({'segments': segments, 'duration': total_s})
+            self.finished_ok.emit({
+                'segments': segments,
+                'duration': total_s,
+                'overlay_packets': overlay_packets,
+                'overlay_label': overlay_label,
+                'overlay_color': self.overlay_color,
+            })
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -58725,32 +59279,13 @@ class _RealtimeSeparatedPreviewDialog(QDialog):
         return y.astype(np.float32)
 
     def _load_track(self, idx: int):
-        import numpy as np
         if idx in self._cache:
             return self._cache[idx]
         item = self.tracks[idx]
         p = str(item.get('path', '') or '').strip()
         if not p:
             raise RuntimeError('空轨道路径')
-        try:
-            import soundfile as sf
-            data, sr = sf.read(p, always_2d=True)
-            if data.ndim == 2 and data.shape[1] > 1:
-                data = data.mean(axis=1)
-            else:
-                data = data.squeeze()
-            arr = np.asarray(data, dtype=np.float32)
-        except Exception:
-            import wave
-            with wave.open(p, 'rb') as wf:
-                sr = wf.getframerate()
-                n = wf.getnframes()
-                ch = wf.getnchannels()
-                raw = wf.readframes(n)
-            arr = np.frombuffer(raw, dtype=np.int16)
-            if ch > 1:
-                arr = arr.reshape(-1, ch).mean(axis=1)
-            arr = arr.astype(np.float32) / 32768.0
+        arr, sr = _TrackPreviewDialog._load_audio(p)
         # 统一重采样到设备默认采样率，降低重新播放时的抖动。
         try:
             import sounddevice as sd
@@ -58951,26 +59486,15 @@ class _TrackPreviewDialog(QDialog):
         if not p:
             raise RuntimeError("空路径")
         try:
-            import soundfile as sf
-            data, sr = sf.read(p, always_2d=True)
+            data, sr = _LocalFileRealtimeController._decode_audio_path(p)
             if data.ndim == 2 and data.shape[1] > 1:
                 data = data.mean(axis=1)
             else:
                 data = data.squeeze()
             data = np.asarray(data, dtype=np.float32)
             return data, int(sr)
-        except Exception:
-            import wave
-            with wave.open(p, 'rb') as wf:
-                sr = wf.getframerate()
-                n = wf.getnframes()
-                ch = wf.getnchannels()
-                raw = wf.readframes(n)
-            arr = np.frombuffer(raw, dtype=np.int16)
-            if ch > 1:
-                arr = arr.reshape(-1, ch).mean(axis=1)
-            data = arr.astype(np.float32) / 32768.0
-            return data, int(sr)
+        except Exception as e:
+            raise RuntimeError(f"无法读取音频轨道: {e}")
 
     def _get_track_audio(self, idx: int):
         import numpy as np
@@ -59090,6 +59614,105 @@ def _apply_full_duration_axis(visualizer, duration: float):
         pass
 
 
+@_patch_method('_prepare_onepass_track_sources')
+def _ifc_prepare_onepass_track_sources(self, file_path: str) -> dict:
+    base_path = str(file_path or '').strip()
+    if not base_path:
+        return {}
+
+    marker = object()
+    snapshot = {}
+    for attr in ('_lfm_track_sources', '_lfm_active_track_mode', '_lfm_overlay_missing_reason'):
+        try:
+            snapshot[attr] = getattr(self, attr)
+        except Exception:
+            snapshot[attr] = marker
+
+    prepared = {}
+    try:
+        builder = getattr(self, '_prepare_local_realtime_track_sources', None)
+        if callable(builder):
+            prepared = builder(base_path)
+    finally:
+        for attr, value in snapshot.items():
+            try:
+                if value is marker:
+                    if hasattr(self, attr):
+                        delattr(self, attr)
+                else:
+                    setattr(self, attr, value)
+            except Exception:
+                pass
+
+    if isinstance(prepared, dict) and prepared:
+        return dict(prepared)
+    return {'主唱+伴唱': base_path}
+
+
+@_patch_method('_resolve_onepass_overlay_track')
+def _ifc_resolve_onepass_overlay_track(self, active_mode: str, sources: dict):
+    try:
+        resolver = getattr(self, '_resolve_local_realtime_overlay_track', None)
+        if callable(resolver):
+            return resolver(active_mode, sources)
+    except Exception:
+        pass
+    return '', ''
+
+
+@_patch_method('_apply_onepass_overlay_preview')
+def _ifc_apply_onepass_overlay_preview(self, payload: dict):
+    viz = getattr(self, 'visualizer', None)
+    if viz is None:
+        return
+    try:
+        packets = list(payload.get('overlay_packets', []) or []) if isinstance(payload, dict) else []
+    except Exception:
+        packets = []
+    try:
+        duration = float(payload.get('duration', 0.0) or 0.0) if isinstance(payload, dict) else 0.0
+    except Exception:
+        duration = 0.0
+    try:
+        color = str(payload.get('overlay_color', '') or '').strip() if isinstance(payload, dict) else ''
+    except Exception:
+        color = ''
+    if not color:
+        color = str(getattr(self, '_lfm_overlay_color', '#FF9E4A') or '#FF9E4A')
+    try:
+        label = str(payload.get('overlay_label', '') or '').strip() if isinstance(payload, dict) else ''
+    except Exception:
+        label = ''
+
+    if not packets:
+        try:
+            viz._lfm_overlay_runtime_active = False
+            viz._lfm_overlay_custom_label = ''
+            viz.clear_retake_overlay_preview()
+            viz._update_overlay_preview_artists()
+            if hasattr(viz, 'canvas') and viz.canvas is not None:
+                viz.canvas.draw_idle()
+        except Exception:
+            pass
+        return
+
+    try:
+        viz._retake_overlay_preview_enabled = True
+        viz._lfm_overlay_runtime_active = True
+        viz._lfm_overlay_custom_color = color
+        viz._lfm_overlay_custom_alpha = float(getattr(self, '_lfm_overlay_alpha', 0.78) or 0.78)
+        viz._lfm_overlay_custom_label = label
+        viz._lfm_overlay_custom_label_pos = str(getattr(self, '_lfm_overlay_label_pos', '右上') or '右上')
+        viz._lfm_overlay_custom_label_fontsize = int(getattr(self, '_lfm_overlay_label_fontsize', 9) or 9)
+        viz.activate_retake_overlay_preview(0.0, max(0.0, duration), keep_points=False)
+        viz.render_retake_overlay_points(packets, force_preview=True)
+        viz._update_overlay_preview_artists()
+        if hasattr(viz, 'canvas') and viz.canvas is not None:
+            viz.canvas.draw_idle()
+    except Exception:
+        pass
+
+
 @_patch_method('_start_offline_onepass')
 def _ifc_start_offline_onepass(self, file_path: str):
     # 保存进入一次性绘制前的界面与录音状态，供关闭回放后恢复
@@ -59097,6 +59720,15 @@ def _ifc_start_offline_onepass(self, file_path: str):
         self._op_prev = {
             'vis_max_history_time': float(getattr(self.visualizer, 'max_history_time', 300.0)),
             'vis_time_window': float(getattr(self.visualizer, 'time_window', 16.0)),
+            'vis_overlay_preview_enabled': bool(getattr(self.visualizer, '_retake_overlay_preview_enabled', True)),
+            'vis_overlay_preview_active': bool(getattr(self.visualizer, '_retake_overlay_preview_active', False)),
+            'vis_overlay_preview_range': tuple(getattr(self.visualizer, '_retake_overlay_preview_range', (0.0, 0.0)) or (0.0, 0.0)),
+            'vis_lfm_overlay_runtime_active': bool(getattr(self.visualizer, '_lfm_overlay_runtime_active', False)),
+            'vis_lfm_overlay_custom_color': str(getattr(self.visualizer, '_lfm_overlay_custom_color', '') or ''),
+            'vis_lfm_overlay_custom_alpha': float(getattr(self.visualizer, '_lfm_overlay_custom_alpha', 0.92) or 0.92),
+            'vis_lfm_overlay_custom_label': str(getattr(self.visualizer, '_lfm_overlay_custom_label', '') or ''),
+            'vis_lfm_overlay_custom_label_pos': str(getattr(self.visualizer, '_lfm_overlay_custom_label_pos', '右上') or '右上'),
+            'vis_lfm_overlay_custom_label_fontsize': int(getattr(self.visualizer, '_lfm_overlay_custom_label_fontsize', 9) or 9),
             'ap_is_recording': bool(getattr(self.audio_processor, 'is_recording', False)),
             'ap_monitoring': bool(getattr(self.audio_processor, 'is_global_monitoring_active', False)),
             'ap_monitoring_only': bool(getattr(self.audio_processor, 'is_monitoring_only', False)),
@@ -59153,6 +59785,11 @@ def _ifc_start_offline_onepass(self, file_path: str):
                 pass
             # 一次性绘制分段曲线
             self.visualizer.draw_segmented_pitch_line(segs)
+            try:
+                if hasattr(self, '_apply_onepass_overlay_preview'):
+                    self._apply_onepass_overlay_preview(payload)
+            except Exception:
+                pass
             # 创建回放控制（一次性绘制后的浏览与试听）
             try:
                 # 保存音频缓存以便回放
@@ -59276,14 +59913,27 @@ class _OnePassPlaybackController(QObject):
             data, sr = sf.read(self.file_path, always_2d=True)
         except Exception:
             try:
-                import wave
-                with wave.open(self.file_path, 'rb') as wf:
-                    sr = wf.getframerate(); n = wf.getnframes(); ch = wf.getnchannels(); raw = wf.readframes(n)
-                arr = np.frombuffer(raw, dtype=np.int16)
-                if ch > 1:
-                    arr = arr.reshape(-1, ch).mean(axis=1)
-                data = arr.astype(np.float32)/32768.0
-                data = data.reshape(-1, 1)
+                import subprocess
+                import tempfile
+                from pathlib import Path
+
+                ff = _OnePassPitchWorker._find_ffmpeg_executable()
+                if ff:
+                    tmpdir = Path(tempfile.mkdtemp(prefix='onepass_playback_'))
+                    wav_path = tmpdir / 'decoded.wav'
+                    try:
+                        cmd = [ff, '-y', '-i', str(self.file_path), '-ac', '2', '-ar', str(int(self.sr)), '-f', 'wav', str(wav_path)]
+                        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        data, sr = _OnePassPitchWorker._read_wave_pcm(str(wav_path))
+                    finally:
+                        try:
+                            for p in tmpdir.glob('*'):
+                                p.unlink(missing_ok=True)
+                            tmpdir.rmdir()
+                        except Exception:
+                            pass
+                else:
+                    data, sr = _OnePassPitchWorker._read_wave_pcm(str(self.file_path))
             except Exception as e:
                 raise RuntimeError(f"无法读取音频文件: {e}")
         if data.ndim == 2 and data.shape[1] > 1:
@@ -59541,6 +60191,24 @@ def _ifc_exit_onepass_mode(self):
     try:
         self.visualizer.clear_data()
         prev = getattr(self, '_op_prev', {}) or {}
+        try:
+            if hasattr(self.visualizer, 'clear_retake_overlay_preview'):
+                self.visualizer.clear_retake_overlay_preview()
+        except Exception:
+            pass
+        try:
+            self.visualizer._retake_overlay_preview_enabled = bool(prev.get('vis_overlay_preview_enabled', True))
+            self.visualizer._retake_overlay_preview_active = bool(prev.get('vis_overlay_preview_active', False))
+            self.visualizer._retake_overlay_preview_range = tuple(prev.get('vis_overlay_preview_range', (0.0, 0.0)) or (0.0, 0.0))
+            self.visualizer._lfm_overlay_runtime_active = bool(prev.get('vis_lfm_overlay_runtime_active', False))
+            self.visualizer._lfm_overlay_custom_color = str(prev.get('vis_lfm_overlay_custom_color', '') or '')
+            self.visualizer._lfm_overlay_custom_alpha = float(prev.get('vis_lfm_overlay_custom_alpha', 0.92) or 0.92)
+            self.visualizer._lfm_overlay_custom_label = str(prev.get('vis_lfm_overlay_custom_label', '') or '')
+            self.visualizer._lfm_overlay_custom_label_pos = str(prev.get('vis_lfm_overlay_custom_label_pos', '右上') or '右上')
+            self.visualizer._lfm_overlay_custom_label_fontsize = int(prev.get('vis_lfm_overlay_custom_label_fontsize', 9) or 9)
+            self.visualizer._lfm_main_drawn_bins = set()
+        except Exception:
+            pass
         self.visualizer.max_history_time = float(prev.get('vis_max_history_time', 300.0))
         self.visualizer.time_window = float(prev.get('vis_time_window', 16.0))
         self.visualizer.time_offset = 0.0
