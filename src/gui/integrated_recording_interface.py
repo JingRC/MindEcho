@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QSlider, QLabel, QPushButton, QMainWindow,
     QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
     QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication,
-    QDoubleSpinBox, QSizePolicy, QFormLayout, QAbstractSpinBox, QToolButton
+    QDoubleSpinBox, QSizePolicy, QFormLayout, QAbstractSpinBox, QToolButton, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 from collections import deque
@@ -586,6 +586,7 @@ class PitchFrame:
     vibrato_info: Optional[Dict[str, Any]] = None
     # 兼容历史字段：部分路径可能直接传入/读取 frequency
     frequency: Optional[float] = None
+    display_frequency: Optional[float] = None
 
     def to_dict(self) -> dict:
         """统一导出为 UI/绘制使用的字典结构。
@@ -602,6 +603,8 @@ class PitchFrame:
         d = {
             'timestamp': float(self.timestamp),
             'frequency': float(freq),            # 平滑后频率（用于绘制）
+            'detected_frequency': float(freq),   # 检测层输出（尽量保真）
+            'display_frequency': float(self.display_frequency if (self.display_frequency and self.display_frequency > 0) else freq),
             'raw_frequency': float(raw),         # 原始频率（可选调试/对比）
             'confidence': float(self.confidence or 0.0),
             'note_info': self.note_info,
@@ -2918,6 +2921,7 @@ class IntegratedAudioProcessor(QThread):
             # 录音态核心
             "_last_stable_frequency", "_freq_smooth", "_pitch_analysis_counter", "_audio_accumulator_buffer", "_last_raw_frequency",
             "_last_frame_rms", "_yin_miss_streak",
+            "_display_pitch_prev", "_display_pitch_prev_t", "_display_pitch_jump_candidate", "_display_pitch_jump_count",
             # 换气/边界/绘制参考
             "_bj_streak", "_bj_last_f0", "_bj_last_t", "_breath_suppress_until", "_prevoice_wait_frames",
             "_last_drawn_t", "_last_drawn_f0",
@@ -2939,6 +2943,7 @@ class IntegratedAudioProcessor(QThread):
             "_frame_buffer",
             # 监听态专用（防止残留影响录音）
             "_mon_last_stable_frequency", "_mon_freq_smooth", "_mon_last_frame_rms",
+            "_mon_display_pitch_prev", "_mon_display_pitch_prev_t", "_mon_display_pitch_jump_candidate", "_mon_display_pitch_jump_count",
             "_mon_bj_streak", "_mon_bj_last_f0", "_mon_bj_last_t", "_mon_breath_suppress_until", "_mon_prevoice_wait_frames",
             "_mon_last_drawn_t", "_mon_last_drawn_f0",
             "_mon_lead_high_anchor_hz", "_mon_lead_high_stable_count", "_mon_lead_rap_jitter_streak",
@@ -3070,6 +3075,176 @@ class IntegratedAudioProcessor(QThread):
             setattr(self, fs_name, smooth)
             setattr(self, ls_name, smooth)
             return smooth
+
+    def _pitch_semitone_distance(self, a: float, b: float) -> float:
+        try:
+            if a <= 0 or b <= 0:
+                return 999.0
+            return abs(12.0 * np.log2(max(float(a), 1e-9) / max(float(b), 1e-9)))
+        except Exception:
+            return 999.0
+
+    def _pick_display_fundamental_candidate(self, reference_frequency: float, true_candidates: List[Dict[str, float]], last_display: float) -> float:
+        try:
+            ref = float(reference_frequency or 0.0)
+            if ref <= 0 or not true_candidates:
+                return 0.0
+            best_freq = 0.0
+            best_score = -1e9
+            for cand in true_candidates:
+                try:
+                    cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                    cand_conf = float(cand.get('confidence', 0.55) or 0.55)
+                except Exception:
+                    continue
+                if cand_freq <= 0.0 or cand_freq >= ref * 0.985:
+                    continue
+                semi_gap = self._pitch_semitone_distance(ref, cand_freq)
+                if semi_gap < 4.5 or semi_gap > 13.8:
+                    continue
+                ratio = ref / max(cand_freq, 1e-9)
+                harmonic_like = max(0.0, 1.0 - min(abs(ratio - 2.0), 0.60) / 0.60)
+                octave_like = max(0.0, 1.0 - min(abs(semi_gap - 12.0), 6.5) / 6.5)
+                continuity = 0.0
+                if last_display > 0.0:
+                    continuity = max(0.0, 1.0 - min(self._pitch_semitone_distance(cand_freq, last_display), 7.0) / 7.0)
+                score = (1.35 * cand_conf) + (0.55 * harmonic_like) + (0.32 * octave_like) + (0.70 * continuity)
+                if score > best_score:
+                    best_score = score
+                    best_freq = cand_freq
+            return float(best_freq)
+        except Exception:
+            return 0.0
+
+    def _compute_normal_mode_display_frequency(
+        self,
+        raw_frequency: float,
+        smooth_frequency: float,
+        true_candidates: List[Dict[str, float]],
+        *,
+        audio_rms: float,
+        min_voice_rms: float,
+        preview_only: bool = False,
+    ) -> float:
+        try:
+            host = getattr(self, '_host_interface', None)
+            viz = getattr(host, 'visualizer', None) if host is not None else None
+            if viz is None or not hasattr(viz, 'display_mode'):
+                return float(smooth_frequency)
+            if viz.display_mode.currentText() != "普通模式":
+                return float(smooth_frequency)
+        except Exception:
+            return float(smooth_frequency)
+
+        try:
+            display_frequency = float(smooth_frequency or 0.0)
+        except Exception:
+            display_frequency = 0.0
+        if display_frequency <= 0.0:
+            return 0.0
+
+        prev_name = '_mon_display_pitch_prev' if preview_only else '_display_pitch_prev'
+        prev_t_name = '_mon_display_pitch_prev_t' if preview_only else '_display_pitch_prev_t'
+        jump_name = '_mon_display_pitch_jump_candidate' if preview_only else '_display_pitch_jump_candidate'
+        jump_count_name = '_mon_display_pitch_jump_count' if preview_only else '_display_pitch_jump_count'
+
+        now_t = time.time()
+        try:
+            last_display = float(getattr(self, prev_name, 0.0) or 0.0)
+        except Exception:
+            last_display = 0.0
+        try:
+            last_display_t = float(getattr(self, prev_t_name, 0.0) or 0.0)
+        except Exception:
+            last_display_t = 0.0
+
+        onset_gap = float(getattr(self, '_normal_display_onset_gap_s', 0.15) or 0.15)
+        weak_voice_mul = float(getattr(self, '_normal_display_weak_voice_mul', 1.55) or 1.55)
+        high_register_hz = float(getattr(self, '_normal_display_high_register_hz', 460.0) or 460.0)
+        spike_guard_semi = float(getattr(self, '_normal_display_spike_guard_semi', 1.45) or 1.45)
+        onset_like = bool(last_display <= 0.0 or ((now_t - last_display_t) >= onset_gap))
+        weak_voice = bool(float(audio_rms) <= float(min_voice_rms) * weak_voice_mul)
+
+        lower_candidate = self._pick_display_fundamental_candidate(
+            max(float(raw_frequency or 0.0), float(display_frequency)),
+            true_candidates,
+            last_display,
+        )
+        if lower_candidate > 0.0:
+            lower_gap = self._pitch_semitone_distance(display_frequency, lower_candidate)
+            harmonic_ratio = max(float(raw_frequency or 0.0), float(display_frequency)) / max(float(lower_candidate), 1e-9)
+            harmonic_like = bool(1.72 <= harmonic_ratio <= 2.55)
+            raw_supports_display = bool(float(raw_frequency or 0.0) > 0.0 and self._pitch_semitone_distance(float(raw_frequency), display_frequency) <= 1.15)
+            better_than_current = bool(
+                last_display > 0.0 and
+                self._pitch_semitone_distance(lower_candidate, last_display) + 0.35 < self._pitch_semitone_distance(display_frequency, last_display)
+            )
+            lower_matches_history = bool(last_display > 0.0 and self._pitch_semitone_distance(lower_candidate, last_display) <= 2.4)
+            if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
+                display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
+            elif weak_voice and lower_gap >= 5.6:
+                display_frequency = 0.50 * float(display_frequency) + 0.50 * float(lower_candidate)
+            elif harmonic_like and lower_gap >= 5.2 and (not raw_supports_display):
+                display_frequency = 0.36 * float(display_frequency) + 0.64 * float(lower_candidate)
+            elif lower_matches_history and lower_gap >= 5.2 and (not raw_supports_display):
+                display_frequency = 0.28 * float(display_frequency) + 0.72 * float(lower_candidate)
+            elif better_than_current and lower_gap >= 6.0:
+                display_frequency = 0.56 * float(display_frequency) + 0.44 * float(lower_candidate)
+
+        support_high_jump = False
+        if true_candidates:
+            for cand in true_candidates:
+                try:
+                    cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                    cand_conf = float(cand.get('confidence', 0.0) or 0.0)
+                except Exception:
+                    continue
+                if cand_freq <= 0.0:
+                    continue
+                if cand_conf >= 0.42 and self._pitch_semitone_distance(cand_freq, display_frequency) <= 0.95:
+                    support_high_jump = True
+                    break
+
+        up_jump_semi = 0.0
+        if last_display > 0.0 and display_frequency > last_display:
+            try:
+                up_jump_semi = 12.0 * np.log2(max(display_frequency, 1e-9) / max(last_display, 1e-9))
+            except Exception:
+                up_jump_semi = 0.0
+
+        try:
+            prev_jump_target = float(getattr(self, jump_name, 0.0) or 0.0)
+        except Exception:
+            prev_jump_target = 0.0
+        try:
+            jump_count = int(getattr(self, jump_count_name, 0) or 0)
+        except Exception:
+            jump_count = 0
+
+        if last_display >= high_register_hz and up_jump_semi >= spike_guard_semi:
+            target_gap = self._pitch_semitone_distance(prev_jump_target, display_frequency)
+            if prev_jump_target > 0.0 and target_gap <= 0.85:
+                jump_count = min(4, jump_count + 1)
+            else:
+                prev_jump_target = float(display_frequency)
+                jump_count = 1
+            if jump_count < 2 and (weak_voice or (not support_high_jump)):
+                max_step = 0.62 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 0.88
+                display_frequency = min(float(display_frequency), float(last_display) * (2.0 ** (float(max_step) / 12.0)))
+            elif jump_count == 2 and (not support_high_jump) and float(audio_rms) <= float(min_voice_rms) * 2.1:
+                display_frequency = 0.72 * float(display_frequency) + 0.28 * float(last_display)
+        else:
+            prev_jump_target = 0.0
+            jump_count = 0
+
+        try:
+            setattr(self, jump_name, float(prev_jump_target))
+            setattr(self, jump_count_name, int(jump_count))
+            setattr(self, prev_name, float(display_frequency))
+            setattr(self, prev_t_name, float(now_t))
+        except Exception:
+            pass
+        return float(max(50.0, min(2500.0, display_frequency)))
 
         # ====== 异常大幅下跳快速复位逻辑 ======
         # 说明: 之前算法在遇到 800Hz -> 150Hz 这类巨大下降时会“拉回”导致 smooth 远高于真实 raw
@@ -8552,6 +8727,19 @@ class IntegratedAudioProcessor(QThread):
                             pass
 
             smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only) if raw_frequency > 0 else 0.0
+            display_frequency = smooth_frequency
+            if smooth_frequency > 0:
+                try:
+                    display_frequency = self._compute_normal_mode_display_frequency(
+                        raw_frequency,
+                        smooth_frequency,
+                        true_candidates,
+                        audio_rms=float(audio_rms),
+                        min_voice_rms=float(min_voice_rms),
+                        preview_only=preview_only,
+                    )
+                except Exception:
+                    display_frequency = smooth_frequency
 
             # ========= 换气抑制：低能量 + 短时多半音跨幅（轻量规则） ========= #
             # 目标：在换气时常出现半个八度到一个八度的快速上下抖动；在低能量段触发抑制绘制，但不影响时间推进
@@ -8764,6 +8952,7 @@ class IntegratedAudioProcessor(QThread):
                     timestamp=current_time,
                     f0_raw=raw_frequency,
                     f0_smooth=smooth_frequency,
+                    display_frequency=display_frequency,
                     confidence=confidence,
                     note_info=note_info,
                     has_pitch=True,
@@ -8784,6 +8973,12 @@ class IntegratedAudioProcessor(QThread):
                 try:
                     if true_candidates:
                         pitch_data['harmonic_candidates'] = true_candidates
+                except Exception:
+                    pass
+                try:
+                    pitch_data['detected_frequency'] = float(smooth_frequency)
+                    pitch_data['display_frequency'] = float(display_frequency if display_frequency > 0 else smooth_frequency)
+                    pitch_data['display_note_info'] = self.frequency_to_note_info(float(pitch_data['display_frequency'])) if pitch_data['display_frequency'] > 0 else note_info
                 except Exception:
                     pass
                 
@@ -42007,6 +42202,17 @@ class IntegratedRecordingInterface(QMainWindow):
         self._normal_mode_plot_freq_fast_alpha = 0.90
         self._normal_mode_plot_fast_turn_semi = 0.42
         self._normal_mode_plot_fast_turn_dt = 0.14
+        self._normal_mode_pitch_value_mode = 'display'
+        self._normal_mode_pitch_value_label = '演唱展示值'
+        self._normal_mode_pitch_value_prompt_each_start = True
+        self._normal_mode_display_ui_silence_gap = 0.18
+        self._normal_mode_display_ui_warmup_max = 0.20
+        self._normal_mode_display_ui_confirm_close_semi = 3.2
+        self._normal_mode_display_ui_reject_jump_semi = 5.8
+        self._normal_mode_display_ui_early_step_semi = 2.4
+        self._normal_mode_display_ui_bridge_hold_s = 0.18
+        self._normal_mode_display_ui_bridge_rms_mul = 1.10
+        self._normal_mode_display_ui_bridge_release_mul = 0.82
         self._adaptive_perf_enabled = True
         self._adaptive_perf_update_interval = 0.24
         self._adaptive_perf_last_wall = 0.0
@@ -50287,9 +50493,375 @@ class IntegratedRecordingInterface(QMainWindow):
                     return
             except Exception:
                 return
+            try:
+                if not self._confirm_normal_mode_pitch_value_selection():
+                    return
+            except Exception:
+                return
             self.start_recording()
         else:
             self.stop_recording()
+
+    def _is_normal_mode_active(self) -> bool:
+        try:
+            viz = getattr(self, 'visualizer', None)
+            return bool(viz is not None and hasattr(viz, 'display_mode') and viz.display_mode.currentText() == "普通模式")
+        except Exception:
+            return False
+
+    def _use_normal_mode_display_value(self) -> bool:
+        try:
+            if not self._is_normal_mode_active():
+                return False
+            return str(getattr(self, '_normal_mode_pitch_value_mode', 'display') or 'display').lower() == 'display'
+        except Exception:
+            return False
+
+    def _apply_normal_mode_pitch_value_mode(self, mode: str, *, update_status: bool = True):
+        mode_text = str(mode or 'display').strip().lower()
+        if mode_text not in ('detected', 'display'):
+            mode_text = 'display'
+        self._normal_mode_pitch_value_mode = mode_text
+        self._normal_mode_pitch_value_label = '检测值' if mode_text == 'detected' else '演唱展示值'
+        try:
+            self._reset_normal_mode_display_ui_warmup()
+        except Exception:
+            pass
+        if update_status:
+            try:
+                self.system_status_label.setText(f"状态: 普通模式已选择{self._normal_mode_pitch_value_label}")
+            except Exception:
+                pass
+
+    def _reset_normal_mode_display_ui_warmup(self):
+        for attr in (
+            '_normal_mode_display_ui_last_voiced_wall',
+            '_normal_mode_display_ui_segment_start_wall',
+            '_normal_mode_display_ui_segment_count',
+            '_normal_mode_display_ui_last_plot_freq',
+            '_normal_mode_display_ui_last_real_voiced_wall',
+            '_normal_mode_display_ui_last_real_voiced_freq',
+            '_normal_mode_display_ui_warmup_done',
+            '_normal_mode_display_ui_warmup_buf',
+        ):
+            try:
+                if hasattr(self, attr):
+                    delattr(self, attr)
+            except Exception:
+                pass
+
+    def _normal_mode_ui_semitone_distance(self, a: float, b: float) -> float:
+        try:
+            if a <= 0 or b <= 0:
+                return 999.0
+            return abs(12.0 * math.log2(max(float(a), 1e-9) / max(float(b), 1e-9)))
+        except Exception:
+            return 999.0
+
+    def _refine_normal_mode_display_value_for_ui(self, pitch_data, frequency: float) -> float:
+        try:
+            if not self._use_normal_mode_display_value():
+                self._reset_normal_mode_display_ui_warmup()
+                return float(frequency or 0.0)
+        except Exception:
+            return float(frequency or 0.0)
+
+        try:
+            current_frequency = float(frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0:
+            self._reset_normal_mode_display_ui_warmup()
+            return 0.0
+
+        now_wall = time.time()
+        try:
+            last_voiced_wall = float(getattr(self, '_normal_mode_display_ui_last_voiced_wall', 0.0) or 0.0)
+        except Exception:
+            last_voiced_wall = 0.0
+        try:
+            silence_gap = float(getattr(self, '_normal_mode_display_ui_silence_gap', 0.18) or 0.18)
+        except Exception:
+            silence_gap = 0.18
+
+        if last_voiced_wall <= 0.0 or (now_wall - last_voiced_wall) >= silence_gap:
+            self._reset_normal_mode_display_ui_warmup()
+            self._normal_mode_display_ui_segment_start_wall = now_wall
+            self._normal_mode_display_ui_segment_count = 0
+            self._normal_mode_display_ui_warmup_buf = []
+            self._normal_mode_display_ui_warmup_done = False
+            self._normal_mode_display_ui_last_plot_freq = 0.0
+
+        self._normal_mode_display_ui_last_voiced_wall = now_wall
+        self._normal_mode_display_ui_segment_count = int(getattr(self, '_normal_mode_display_ui_segment_count', 0) or 0) + 1
+        segment_count = int(self._normal_mode_display_ui_segment_count)
+
+        try:
+            warmup_buf = list(getattr(self, '_normal_mode_display_ui_warmup_buf', []) or [])
+        except Exception:
+            warmup_buf = []
+        warmup_buf.append((now_wall, float(current_frequency)))
+        if len(warmup_buf) > 4:
+            warmup_buf = warmup_buf[-4:]
+        self._normal_mode_display_ui_warmup_buf = warmup_buf
+
+        try:
+            segment_start_wall = float(getattr(self, '_normal_mode_display_ui_segment_start_wall', now_wall) or now_wall)
+        except Exception:
+            segment_start_wall = now_wall
+        warmup_elapsed = max(0.0, now_wall - segment_start_wall)
+        warmup_done = bool(getattr(self, '_normal_mode_display_ui_warmup_done', False))
+
+        try:
+            confirm_close_semi = float(getattr(self, '_normal_mode_display_ui_confirm_close_semi', 3.2) or 3.2)
+        except Exception:
+            confirm_close_semi = 3.2
+        try:
+            reject_jump_semi = float(getattr(self, '_normal_mode_display_ui_reject_jump_semi', 5.8) or 5.8)
+        except Exception:
+            reject_jump_semi = 5.8
+        try:
+            early_step_semi = float(getattr(self, '_normal_mode_display_ui_early_step_semi', 2.4) or 2.4)
+        except Exception:
+            early_step_semi = 2.4
+        try:
+            warmup_max = float(getattr(self, '_normal_mode_display_ui_warmup_max', 0.20) or 0.20)
+        except Exception:
+            warmup_max = 0.20
+
+        if not warmup_done:
+            freq_values = [float(item[1]) for item in warmup_buf if float(item[1]) > 0.0]
+            if len(freq_values) <= 1:
+                return 0.0
+
+            if len(freq_values) == 2:
+                semi_2 = self._normal_mode_ui_semitone_distance(freq_values[0], freq_values[1])
+                if semi_2 <= confirm_close_semi:
+                    stable = 0.55 * float(freq_values[-1]) + 0.45 * float(freq_values[-2])
+                    self._normal_mode_display_ui_warmup_done = True
+                    self._normal_mode_display_ui_last_plot_freq = float(stable)
+                    return float(stable)
+                if warmup_elapsed < warmup_max:
+                    return 0.0
+
+            stable_center = float(np.median(np.asarray(freq_values, dtype=np.float64))) if freq_values else float(current_frequency)
+            latest_freq = float(freq_values[-1]) if freq_values else float(current_frequency)
+            latest_gap = self._normal_mode_ui_semitone_distance(latest_freq, stable_center)
+            if latest_gap >= reject_jump_semi and len(freq_values) < 4 and warmup_elapsed < warmup_max:
+                return 0.0
+
+            stabilized = 0.72 * float(latest_freq) + 0.28 * float(stable_center)
+            self._normal_mode_display_ui_warmup_done = True
+            self._normal_mode_display_ui_last_plot_freq = float(stabilized)
+            return float(stabilized)
+
+        try:
+            last_plot_freq = float(getattr(self, '_normal_mode_display_ui_last_plot_freq', 0.0) or 0.0)
+        except Exception:
+            last_plot_freq = 0.0
+        refined_frequency = float(current_frequency)
+
+        try:
+            pitch_confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            pitch_confidence = 0.0
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+
+        try:
+            fast_turn = bool(pitch_data.get('_fast_change', False))
+        except Exception:
+            fast_turn = False
+
+        if last_plot_freq > 0.0 and segment_count <= 4 and (not fast_turn):
+            early_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
+            if early_gap >= reject_jump_semi:
+                step_ratio = 2.0 ** (float(early_step_semi) / 12.0)
+                if refined_frequency > last_plot_freq:
+                    refined_frequency = min(refined_frequency, float(last_plot_freq) * step_ratio)
+                else:
+                    refined_frequency = max(refined_frequency, float(last_plot_freq) / step_ratio)
+                refined_frequency = 0.68 * float(refined_frequency) + 0.32 * float(last_plot_freq)
+
+        if last_plot_freq > 0.0 and (not fast_turn):
+            up_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
+            raw_supports_high = bool(raw_frequency > 0.0 and self._normal_mode_ui_semitone_distance(raw_frequency, refined_frequency) <= 1.05)
+            if up_gap >= 5.6 and pitch_confidence < 0.90 and (not raw_supports_high):
+                max_step_ratio = 2.0 ** (2.6 / 12.0)
+                refined_frequency = min(float(refined_frequency), float(last_plot_freq) * max_step_ratio)
+                refined_frequency = 0.88 * float(refined_frequency) + 0.12 * float(last_plot_freq)
+
+        self._normal_mode_display_ui_last_plot_freq = float(refined_frequency)
+        return float(refined_frequency)
+
+    def _bridge_normal_mode_display_gap_for_ui(self, pitch_data) -> float:
+        try:
+            if not self._use_normal_mode_display_value():
+                return 0.0
+        except Exception:
+            return 0.0
+
+        try:
+            now_wall = time.time()
+            last_real_wall = float(getattr(self, '_normal_mode_display_ui_last_real_voiced_wall', 0.0) or 0.0)
+            last_real_freq = float(getattr(self, '_normal_mode_display_ui_last_real_voiced_freq', 0.0) or 0.0)
+        except Exception:
+            return 0.0
+        if last_real_wall <= 0.0 or last_real_freq <= 0.0:
+            return 0.0
+
+        try:
+            hold_s = float(getattr(self, '_normal_mode_display_ui_bridge_hold_s', 0.18) or 0.18)
+        except Exception:
+            hold_s = 0.18
+        if (now_wall - last_real_wall) > hold_s:
+            return 0.0
+
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
+        except Exception:
+            min_voice_rms = 0.0005
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            bridge_rms_mul = float(getattr(self, '_normal_mode_display_ui_bridge_rms_mul', 1.10) or 1.10)
+        except Exception:
+            bridge_rms_mul = 1.10
+        try:
+            release_mul = float(getattr(self, '_normal_mode_display_ui_bridge_release_mul', 0.82) or 0.82)
+        except Exception:
+            release_mul = 0.82
+
+        if audio_rms < max(min_voice_rms * bridge_rms_mul, min_voice_rms + 1e-5):
+            if audio_rms <= max(min_voice_rms * release_mul, min_voice_rms * 0.95):
+                return 0.0
+
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        bridged = float(last_real_freq)
+        if raw_frequency > 0.0:
+            semi_gap = self._normal_mode_ui_semitone_distance(raw_frequency, last_real_freq)
+            if semi_gap <= 2.6:
+                bridged = 0.72 * float(last_real_freq) + 0.28 * float(raw_frequency)
+        return float(bridged)
+
+    def _confirm_normal_mode_pitch_value_selection(self) -> bool:
+        if not bool(getattr(self, '_normal_mode_pitch_value_prompt_each_start', True)):
+            return True
+        if not self._is_normal_mode_active():
+            return True
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("普通模式输出选择")
+        dlg.setModal(True)
+        dlg.resize(560, 310)
+        dlg.setStyleSheet("""
+            QDialog {
+                background-color: #121922;
+                color: #E6EEF8;
+            }
+            QLabel#title {
+                color: #F6FBFF;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            QLabel#detail {
+                color: #B7CCE1;
+                font-size: 12px;
+            }
+            QRadioButton {
+                font-size: 14px;
+                font-weight: 600;
+                color: #EAF4FF;
+                spacing: 10px;
+                padding: 4px 0;
+            }
+            QPushButton {
+                background-color: #233244;
+                border: 1px solid #45617D;
+                border-radius: 6px;
+                padding: 7px 14px;
+                color: #EAF4FF;
+                font-weight: 600;
+            }
+            QPushButton#primary {
+                background-color: #2C8559;
+                border-color: #3BAE75;
+            }
+        """)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(18, 16, 18, 14)
+        root.setSpacing(10)
+
+        title = QLabel("普通模式音高输出方式")
+        title.setObjectName("title")
+        root.addWidget(title)
+
+        detail = QLabel(
+            "环境噪音测试完成后，请选择本次普通模式要显示哪一层。\n"
+            "检测值：尽量保留实时检测结果。\n"
+            "演唱展示值：只对已确认的人声音高做很轻的抗虚高修正，减少起音偏高、弱声泛音抢占和高音单帧冲顶。"
+        )
+        detail.setObjectName("detail")
+        detail.setWordWrap(True)
+        root.addWidget(detail)
+
+        radio_group = QButtonGroup(dlg)
+        detected_radio = QRadioButton("使用检测值")
+        display_radio = QRadioButton("使用演唱展示值（推荐）")
+        radio_group.addButton(detected_radio)
+        radio_group.addButton(display_radio)
+        root.addWidget(detected_radio)
+        root.addWidget(display_radio)
+
+        detected_desc = QLabel("检测层保持尽量真实，适合排查识别逻辑、观察真实起伏。")
+        detected_desc.setObjectName("detail")
+        detected_desc.setWordWrap(True)
+        root.addWidget(detected_desc)
+
+        display_desc = QLabel("展示层只轻修正明显的虚高，不做统一平滑，适合日常演唱观察。")
+        display_desc.setObjectName("detail")
+        display_desc.setWordWrap(True)
+        root.addWidget(display_desc)
+
+        if self._use_normal_mode_display_value():
+            display_radio.setChecked(True)
+        else:
+            detected_radio.setChecked(True)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("取消开始")
+        ok_btn = QPushButton("确认并开始")
+        ok_btn.setObjectName("primary")
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        root.addLayout(btn_row)
+
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn.clicked.connect(dlg.accept)
+
+        accepted = dlg.exec() == int(QDialog.DialogCode.Accepted)
+        try:
+            dlg.deleteLater()
+        except Exception:
+            pass
+        if not accepted:
+            try:
+                self.system_status_label.setText("状态: 已取消开始录音")
+            except Exception:
+                pass
+            return False
+
+        self._apply_normal_mode_pitch_value_mode('display' if display_radio.isChecked() else 'detected')
+        return True
 
     def _on_environment_noise_button_clicked(self):
         """手动打开环境噪音档位配置。"""
@@ -53500,6 +54072,50 @@ class IntegratedRecordingInterface(QMainWindow):
             raw_frequency = pitch_data.get('raw_frequency', None)
             note_info = pitch_data.get('note_info', {})
             has_pitch = pitch_data.get('has_pitch', frequency > 0)
+            try:
+                detected_frequency = float(pitch_data.get('detected_frequency', frequency) or 0.0)
+            except Exception:
+                detected_frequency = float(frequency or 0.0)
+            try:
+                display_frequency = float(pitch_data.get('display_frequency', detected_frequency) or 0.0)
+            except Exception:
+                display_frequency = float(detected_frequency or 0.0)
+            try:
+                audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+            except Exception:
+                audio_rms = 0.0
+            display_value_selected = False
+            try:
+                display_value_selected = bool(self._use_normal_mode_display_value())
+            except Exception:
+                display_value_selected = False
+            if has_pitch:
+                if display_value_selected and display_frequency > 0.0:
+                    frequency = self._refine_normal_mode_display_value_for_ui(pitch_data, display_frequency)
+                    if frequency > 0.0:
+                        note_info = pitch_data.get('display_note_info') or self.audio_processor.frequency_to_note_info(frequency)
+                        try:
+                            self._normal_mode_display_ui_last_real_voiced_wall = time.time()
+                            self._normal_mode_display_ui_last_real_voiced_freq = float(frequency)
+                        except Exception:
+                            pass
+                    else:
+                        has_pitch = False
+                        note_info = {}
+                else:
+                    if not display_value_selected:
+                        self._reset_normal_mode_display_ui_warmup()
+                    frequency = detected_frequency
+                    note_info = pitch_data.get('note_info') or self.audio_processor.frequency_to_note_info(detected_frequency)
+            else:
+                if display_value_selected:
+                    bridged_frequency = self._bridge_normal_mode_display_gap_for_ui(pitch_data)
+                    if bridged_frequency > 0.0:
+                        has_pitch = True
+                        frequency = float(bridged_frequency)
+                        note_info = self.audio_processor.frequency_to_note_info(frequency)
+                    else:
+                        self._reset_normal_mode_display_ui_warmup()
             
             if has_pitch and frequency > 0:
                 # 记录平滑频率用于原逻辑
@@ -53685,6 +54301,21 @@ class IntegratedRecordingInterface(QMainWindow):
                                     pass
                         return
                     base_payload = dict(pitch_data)
+                    try:
+                        if display_value_selected:
+                            base_payload['frequency'] = float(base_payload.get('display_frequency', base_payload.get('frequency', 0.0)) or 0.0)
+                        else:
+                            base_payload['frequency'] = float(base_payload.get('detected_frequency', base_payload.get('frequency', 0.0)) or 0.0)
+                    except Exception:
+                        pass
+                    if display_value_selected:
+                        try:
+                            base_payload['frequency'] = float(frequency or 0.0)
+                            base_payload['has_pitch'] = bool(has_pitch and float(frequency or 0.0) > 0.0)
+                            if base_payload['has_pitch']:
+                                base_payload['note_info'] = note_info
+                        except Exception:
+                            pass
                     # 显示层平滑：普通模式实时录音优先用轻量 EMA，避免每帧 Savitzky-Golay 拖慢 GUI。
                     try:
                         f = float(base_payload.get('frequency', 0.0))
