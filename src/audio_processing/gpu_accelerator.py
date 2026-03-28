@@ -10,53 +10,85 @@ import threading
 
 class GPUAcceleratedProcessor:
     """GPU加速音频处理器"""
+
+    _probe_cache = None
+    _printed_status = False
     
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
         self.gpu_available = False
         self.gpu_type = None
         self.context = None
+        self.queue = None
+        self.cp = None
+        self.cl = None
         
         # 尝试初始化GPU
         self._initialize_gpu()
+
+    def _apply_cached_probe(self, cache: dict):
+        self.gpu_available = bool(cache.get("gpu_available", False))
+        self.gpu_type = cache.get("gpu_type")
+        self.context = cache.get("context")
+        self.queue = cache.get("queue")
+        self.cp = cache.get("cp")
+        self.cl = cache.get("cl")
         
     def _initialize_gpu(self):
         """初始化GPU计算环境"""
-        # 仅首次初始化时打印成功信息，避免重复刷屏
-        if not hasattr(GPUAcceleratedProcessor, "_printed_once"):
-            GPUAcceleratedProcessor._printed_once = False
+        cache = getattr(GPUAcceleratedProcessor, "_probe_cache", None)
+        if isinstance(cache, dict):
+            self._apply_cached_probe(cache)
+            return
+
+        probe = {
+            "gpu_available": False,
+            "gpu_type": None,
+            "context": None,
+            "queue": None,
+            "cp": None,
+            "cl": None,
+        }
         # 尝试CUDA
         try:
             import cupy as cp
             cp.cuda.runtime.getDeviceCount()
-            self.gpu_available = True
-            self.gpu_type = "CUDA"
-            self.cp = cp
-            if not GPUAcceleratedProcessor._printed_once:
+            probe["gpu_available"] = True
+            probe["gpu_type"] = "CUDA"
+            probe["cp"] = cp
+            if not GPUAcceleratedProcessor._printed_status:
                 print("✅ CUDA GPU 加速已启用")
-                GPUAcceleratedProcessor._printed_once = True
+                GPUAcceleratedProcessor._printed_status = True
+            GPUAcceleratedProcessor._probe_cache = probe
+            self._apply_cached_probe(probe)
             return
-        except Exception as e:
-            print(f"⚠️ CUDA 不可用: {e}")
+        except Exception:
+            pass
         
         # 尝试OpenCL
         try:
             import pyopencl as cl
             platforms = cl.get_platforms()
             if platforms:
-                self.context = cl.Context()
-                self.queue = cl.CommandQueue(self.context)
-                self.gpu_available = True
-                self.gpu_type = "OpenCL"
-                self.cl = cl
-                if not GPUAcceleratedProcessor._printed_once:
+                probe["context"] = cl.Context()
+                probe["queue"] = cl.CommandQueue(probe["context"])
+                probe["gpu_available"] = True
+                probe["gpu_type"] = "OpenCL"
+                probe["cl"] = cl
+                if not GPUAcceleratedProcessor._printed_status:
                     print("✅ OpenCL GPU 加速已启用")
-                    GPUAcceleratedProcessor._printed_once = True
+                    GPUAcceleratedProcessor._printed_status = True
+                GPUAcceleratedProcessor._probe_cache = probe
+                self._apply_cached_probe(probe)
                 return
-        except Exception as e:
-            print(f"⚠️ OpenCL 不可用: {e}")
+        except Exception:
+            pass
         
-        print("❌ GPU 加速不可用，使用 CPU 处理")
+        GPUAcceleratedProcessor._probe_cache = probe
+        self._apply_cached_probe(probe)
+        if not GPUAcceleratedProcessor._printed_status:
+            print("ℹ️ 未检测到可用GPU后端，继续使用CPU处理")
+            GPUAcceleratedProcessor._printed_status = True
     
     def is_gpu_available(self) -> bool:
         """检查GPU是否可用"""

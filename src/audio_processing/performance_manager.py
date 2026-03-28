@@ -103,24 +103,24 @@ class PerformanceManager:
     def _create_quiet_config(self) -> PerformanceConfig:
         """创建安静模式配置 - 最低资源消耗"""
         return PerformanceConfig(
-            # 音频处理 - 大块处理，低频率
-            chunk_size=1024,
-            buffer_size=4096,
-            overlap_ratio=0.25,
+            # 音频处理 - 保守但避免过度稀疏，优先稳定与低占用
+            chunk_size=768,
+            buffer_size=3072,
+            overlap_ratio=0.34,
             
             # 检测参数 - 降低精度，提高速度
-            detection_frequency=45.0,  # 提升到最低稳定目标，避免点过稀
-            yin_threshold=0.24,        # 略放宽，提升弱声段命中
-            signal_threshold=0.001,
+            detection_frequency=52.0,
+            yin_threshold=0.22,
+            signal_threshold=0.0009,
             
             # 资源使用 - 最小化
             use_gpu_acceleration=False,
-            thread_pool_size=1,
-            memory_buffer_mb=32,
+            thread_pool_size=1 if self.cpu_cores <= 4 else 2,
+            memory_buffer_mb=48,
             
             # 质量参数 - 基础质量
             interpolation_factor=1,
-            smoothing_window=3,
+            smoothing_window=5,
             gradient_quality="basic",
             
             # 优化选项 - 关闭复杂功能
@@ -132,20 +132,20 @@ class PerformanceManager:
     def _create_balanced_config(self) -> PerformanceConfig:
         """创建平衡模式配置 - 合理的性能与质量平衡"""
         return PerformanceConfig(
-            # 音频处理 - 中等配置
-            chunk_size=512,
-            buffer_size=2048,
-            overlap_ratio=0.5,
+            # 音频处理 - 默认主力配置，兼顾普通模式连续性与整体稳定性
+            chunk_size=384,
+            buffer_size=1536,
+            overlap_ratio=0.60,
             
             # 检测参数 - 平衡精度与速度
-            detection_frequency=60.0,  # 60Hz检测频率，保证细节点密度
-            yin_threshold=0.20,        # 更灵敏
-            signal_threshold=0.0008,
+            detection_frequency=72.0,
+            yin_threshold=0.19,
+            signal_threshold=0.00065,
             
             # 资源使用 - 适度使用
             use_gpu_acceleration=self.gpu_available,
-            thread_pool_size=min(2, self.cpu_cores // 2),
-            memory_buffer_mb=64,
+            thread_pool_size=max(2, min(3, self.cpu_cores - 1 if self.cpu_cores > 2 else 2)),
+            memory_buffer_mb=96,
             
             # 质量参数 - 增强质量
             interpolation_factor=2,
@@ -161,23 +161,23 @@ class PerformanceManager:
     def _create_high_performance_config(self) -> PerformanceConfig:
         """创建高性能模式配置 - 充分利用计算资源"""
         return PerformanceConfig(
-            # 音频处理 - 小块高频处理
-            chunk_size=256,
-            buffer_size=1024,
-            overlap_ratio=0.75,
+            # 音频处理 - 高响应，但给 GUI 留一点余量，避免把主线程压满
+            chunk_size=320,
+            buffer_size=1280,
+            overlap_ratio=0.68,
             
             # 检测参数 - 最高精度
-            detection_frequency=90.0,  # 更高检测频率上限（代码中仍有限制≤120Hz）
-            yin_threshold=0.16,
-            signal_threshold=0.0005,
+            detection_frequency=82.0,
+            yin_threshold=0.15,
+            signal_threshold=0.00045,
             
             # 资源使用 - 充分利用
             use_gpu_acceleration=self.gpu_available,
-            thread_pool_size=self.cpu_cores,
-            memory_buffer_mb=min(256, int(self.memory_gb * 1024 * 0.1)),  # 10%内存
+            thread_pool_size=max(3, min(self.cpu_cores, max(3, self.cpu_cores - 1))),
+            memory_buffer_mb=min(320, int(self.memory_gb * 1024 * 0.12)),
             
             # 质量参数 - 最高质量
-            interpolation_factor=4,
+            interpolation_factor=3,
             smoothing_window=7,
             gradient_quality="ultra",
             
@@ -256,9 +256,9 @@ class PerformanceManager:
         
         # 预测实际性能
         processing_overhead = {
-            PerformanceMode.QUIET: 0.3,      # 30%开销
-            PerformanceMode.BALANCED: 0.5,   # 50%开销  
-            PerformanceMode.HIGH_PERFORMANCE: 0.8  # 80%开销（更复杂算法）
+            PerformanceMode.QUIET: 0.26,
+            PerformanceMode.BALANCED: 0.38,
+            PerformanceMode.HIGH_PERFORMANCE: 0.52
         }
         
         overhead = processing_overhead[self.current_mode]
