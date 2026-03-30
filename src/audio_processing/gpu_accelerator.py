@@ -22,6 +22,8 @@ class GPUAcceleratedProcessor:
         self.queue = None
         self.cp = None
         self.cl = None
+        self.probe_reason = ""
+        self.probe_details = {}
         
         # 尝试初始化GPU
         self._initialize_gpu()
@@ -33,6 +35,8 @@ class GPUAcceleratedProcessor:
         self.queue = cache.get("queue")
         self.cp = cache.get("cp")
         self.cl = cache.get("cl")
+        self.probe_reason = str(cache.get("reason", "") or "")
+        self.probe_details = dict(cache.get("details", {}) or {})
         
     def _initialize_gpu(self):
         """初始化GPU计算环境"""
@@ -48,51 +52,94 @@ class GPUAcceleratedProcessor:
             "queue": None,
             "cp": None,
             "cl": None,
+            "reason": "未检测到可用GPU后端",
+            "details": {},
         }
         # 尝试CUDA
         try:
             import cupy as cp
-            cp.cuda.runtime.getDeviceCount()
+            device_count = int(cp.cuda.runtime.getDeviceCount())
+            if device_count <= 0:
+                raise RuntimeError("CuPy 已安装，但未检测到 CUDA 设备")
             probe["gpu_available"] = True
             probe["gpu_type"] = "CUDA"
             probe["cp"] = cp
+            probe["reason"] = f"CUDA 可用，检测到 {device_count} 个设备"
+            probe["details"] = {"backend": "CUDA", "device_count": device_count}
             if not GPUAcceleratedProcessor._printed_status:
                 print("✅ CUDA GPU 加速已启用")
                 GPUAcceleratedProcessor._printed_status = True
             GPUAcceleratedProcessor._probe_cache = probe
             self._apply_cached_probe(probe)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            probe["details"]["cuda"] = f"{type(exc).__name__}: {exc}"
         
         # 尝试OpenCL
         try:
             import pyopencl as cl
             platforms = cl.get_platforms()
-            if platforms:
-                probe["context"] = cl.Context()
+            gpu_device = None
+            for platform in platforms:
+                try:
+                    devices = platform.get_devices(device_type=cl.device_type.GPU)
+                except Exception:
+                    devices = []
+                if devices:
+                    gpu_device = devices[0]
+                    break
+            if gpu_device is not None:
+                probe["context"] = cl.Context(devices=[gpu_device])
                 probe["queue"] = cl.CommandQueue(probe["context"])
                 probe["gpu_available"] = True
                 probe["gpu_type"] = "OpenCL"
                 probe["cl"] = cl
+                probe["reason"] = f"OpenCL 可用，设备: {str(getattr(gpu_device, 'name', '') or '').strip()}"
+                probe["details"] = {
+                    **dict(probe.get("details", {}) or {}),
+                    "backend": "OpenCL",
+                    "device_name": str(getattr(gpu_device, 'name', '') or '').strip(),
+                }
                 if not GPUAcceleratedProcessor._printed_status:
                     print("✅ OpenCL GPU 加速已启用")
                     GPUAcceleratedProcessor._printed_status = True
                 GPUAcceleratedProcessor._probe_cache = probe
                 self._apply_cached_probe(probe)
                 return
-        except Exception:
-            pass
+            raise RuntimeError("PyOpenCL 已安装，但未检测到 GPU 设备")
+        except Exception as exc:
+            probe["details"]["opencl"] = f"{type(exc).__name__}: {exc}"
+
+        cuda_reason = str(probe["details"].get("cuda", "") or "")
+        opencl_reason = str(probe["details"].get("opencl", "") or "")
+        if "No module named 'cupy'" in cuda_reason and "No module named 'pyopencl'" in opencl_reason:
+            probe["reason"] = "未安装 CuPy / PyOpenCL，当前仅能使用 CPU"
+        else:
+            reason_parts = []
+            if cuda_reason:
+                reason_parts.append(f"CUDA: {cuda_reason}")
+            if opencl_reason:
+                reason_parts.append(f"OpenCL: {opencl_reason}")
+            if reason_parts:
+                probe["reason"] = '；'.join(reason_parts)
         
         GPUAcceleratedProcessor._probe_cache = probe
         self._apply_cached_probe(probe)
         if not GPUAcceleratedProcessor._printed_status:
-            print("ℹ️ 未检测到可用GPU后端，继续使用CPU处理")
+            print(f"ℹ️ {self.probe_reason or '未检测到可用GPU后端，继续使用CPU处理'}")
             GPUAcceleratedProcessor._printed_status = True
     
     def is_gpu_available(self) -> bool:
         """检查GPU是否可用"""
         return self.gpu_available
+
+    def get_probe_status(self) -> dict:
+        return {
+            'gpu_available': bool(self.gpu_available),
+            'gpu_type': self.gpu_type,
+            'reason': str(self.probe_reason or ''),
+            'details': dict(self.probe_details or {}),
+        }
     
     def accelerated_yin_detection(self, audio_data: np.ndarray, threshold: float = 0.25) -> Tuple[float, float]:
         """GPU加速的YIN音高检测"""

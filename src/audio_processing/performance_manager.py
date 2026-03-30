@@ -50,6 +50,7 @@ class PerformanceManager:
     def __init__(self):
         self.current_mode = PerformanceMode.BALANCED
         self.current_config = None
+        self.gpu_reason = ""
         self.gpu_available = self._check_gpu_availability()
         self.cpu_cores = self._get_cpu_cores()
         self.memory_gb = self._get_memory_info()
@@ -67,6 +68,8 @@ class PerformanceManager:
 
         print("🖥️ 性能管理器初始化完成")
         print(f"   GPU可用: {'✅' if self.gpu_available else '❌'}")
+        if self.gpu_reason:
+            print(f"   GPU状态: {self.gpu_reason}")
         print(f"   CPU核心: {self.cpu_cores}")
         print(f"   内存: {self.memory_gb:.1f}GB")
         print(f"   当前模式: {self.current_mode.value}")
@@ -74,18 +77,13 @@ class PerformanceManager:
     def _check_gpu_availability(self) -> bool:
         """检查GPU可用性"""
         try:
-            # 检查CUDA
-            import cupy
-            cupy.cuda.runtime.getDeviceCount()
-            return True
-        except:
-            try:
-                # 检查OpenCL
-                import pyopencl as cl
-                platforms = cl.get_platforms()
-                return len(platforms) > 0
-            except:
-                return False
+            from src.audio_processing.gpu_accelerator import GPUAcceleratedProcessor
+            status = GPUAcceleratedProcessor().get_probe_status()
+            self.gpu_reason = str(status.get('reason', '') or '')
+            return bool(status.get('gpu_available', False))
+        except Exception as exc:
+            self.gpu_reason = f"GPU探测失败: {type(exc).__name__}: {exc}"
+            return False
     
     def _get_cpu_cores(self) -> int:
         """获取CPU核心数"""

@@ -89,7 +89,9 @@ class LatencyMeasurer:
         self.values.append(float(v))
 
     def avg(self):
-        return sum(self.values) / len(self.values) if self.values else 0.0
+        if not self.values:
+            return 0.0
+        return sum(self.values) / len(self.values)
 
 
 class SegmentedPitchBuffer:
@@ -97,7 +99,6 @@ class SegmentedPitchBuffer:
 
     class _Segment:
         __slots__ = ("times", "pitches", "confidences", "notes", "start", "end")
-
         def __init__(self, time_val: float, pitch_val: float, conf_val: float, note_val):
             self.times = [float(time_val)]
             self.pitches = [float(pitch_val)]
@@ -548,6 +549,13 @@ try:
 except Exception as _e:
     print(f"⚠️ PitchDetectionService 不可用: {_e}")
 
+_OFFLINE_TECHNIQUE_SERVICE_AVAILABLE = False
+try:
+    from src.audio_processing.offline_technique_service import OfflineTechniqueAnalysisService, OfflineVibratoConfig
+    _OFFLINE_TECHNIQUE_SERVICE_AVAILABLE = True
+except Exception as _e:
+    print(f"⚠️ OfflineTechniqueAnalysisService 不可用: {_e}")
+
 # 可选导入：Hecate 设备映射器（若存在）
 try:
     from hecate_device_id_fixer import HecateDeviceMapper
@@ -714,6 +722,165 @@ class RetakeSessionContext:
         self.discarded = False
         self.recording_started_at = None
         self.phase = RetakePhase.IDLE
+
+
+@dataclass
+class TechniqueRecognitionConfig:
+    enabled: bool = False
+    detect_breath: bool = True
+    detect_register_transition: bool = True
+    detect_slide: bool = True
+    detect_vibrato: bool = True
+    detect_breathy_phonation: bool = True
+    min_event_confidence: float = 0.55
+    merge_gap_s: float = 0.12
+    min_breath_duration_s: float = 0.06
+    min_slide_duration_s: float = 0.08
+    min_vibrato_duration_s: float = 0.18
+    min_register_transition_s: float = 0.10
+    min_breathy_duration_s: float = 0.10
+    show_in_normal_mode: bool = True
+    show_in_professional_mode: bool = True
+    show_labels: bool = True
+    show_regions: bool = True
+    show_fill_overlay: bool = False
+    show_summary_panel: bool = False
+    auto_focus_after_analysis: bool = False
+
+
+@dataclass
+class TechniquePanelState:
+    config: TechniqueRecognitionConfig = field(default_factory=TechniqueRecognitionConfig)
+    selected_types: List[str] = field(default_factory=lambda: [
+        'breath',
+        'register_transition',
+        'slide',
+        'vibrato',
+        'breathy_phonation',
+    ])
+    visible_rows: List[str] = field(default_factory=lambda: ['换气', '换声区', '滑音', '颤音', '气声'])
+    last_summary: Dict[str, Any] = field(default_factory=dict)
+    analysis_ready: bool = False
+    last_analysis_event_count: int = 0
+    last_analyzed_duration: float = 0.0
+    last_source_frame_count: int = 0
+    last_analysis_mode: str = 'idle'
+
+
+@dataclass
+class FrameFeatures:
+    timeline_time: float
+    wall_time: float
+    raw_frequency_hz: float
+    detected_frequency_hz: float
+    display_frequency_hz: float
+    has_pitch: bool
+    confidence: float
+    audio_rms: float
+    note_name: Optional[str] = None
+    octave: Optional[int] = None
+    midi_number: Optional[float] = None
+    cents: Optional[float] = None
+    zcr: Optional[float] = None
+    voiced_score: Optional[float] = None
+    breath_score: Optional[float] = None
+    noise_score: Optional[float] = None
+    periodicity_score: Optional[float] = None
+    fast_change: bool = False
+    semitone_delta_prev: Optional[float] = None
+    semitone_rate: Optional[float] = None
+    semitone_accel: Optional[float] = None
+    continuity_score: Optional[float] = None
+    stable_anchor_frequency_hz: Optional[float] = None
+    harmonic_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    lower_candidate_hz: Optional[float] = None
+    harmonic_ratio_to_lower: Optional[float] = None
+    harmonic_stability_score: Optional[float] = None
+    candidate_spread_semitone: Optional[float] = None
+    mid_high_ratio: Optional[float] = None
+    hm_over_hh: Optional[float] = None
+    spectral_tilt: Optional[float] = None
+    tonal_hum: Optional[bool] = None
+    breath_detect_hint: bool = False
+    vibrato_info: Dict[str, Any] = field(default_factory=dict)
+    mode_name: str = '普通模式'
+    preview_only: bool = False
+    source_flags: Dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
+class BaseTechniqueEvent:
+    event_type: str
+    start_time: float
+    end_time: float
+    confidence: float
+    strength: float
+    center_time: float
+    duration: float
+    source_layer: str
+    display_label: str
+    display_color: str
+    feature_snapshot: Dict[str, Any] = field(default_factory=dict)
+    display_payload: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class BreathEvent(BaseTechniqueEvent):
+    subtype: str = 'normal_breath'
+    mean_rms: Optional[float] = None
+    mean_zcr: Optional[float] = None
+    breath_score_peak: Optional[float] = None
+    voiced_drop_score: Optional[float] = None
+    pitch_break_score: Optional[float] = None
+    pre_pitch_hz: Optional[float] = None
+    post_pitch_hz: Optional[float] = None
+    recovery_delay_ms: Optional[float] = None
+    suppressed_pitch_frames: int = 0
+
+
+@dataclass
+class SlideEvent(BaseTechniqueEvent):
+    direction: str = 'mixed'
+    start_pitch_hz: Optional[float] = None
+    end_pitch_hz: Optional[float] = None
+    pitch_span_semitones: Optional[float] = None
+    mean_semitone_rate: Optional[float] = None
+    peak_semitone_rate: Optional[float] = None
+    smoothness_score: Optional[float] = None
+    continuity_score: Optional[float] = None
+    interrupted_by_breath: bool = False
+    note_crossings: int = 0
+
+
+@dataclass
+class VibratoEvent(BaseTechniqueEvent):
+    rate_hz: Optional[float] = None
+    depth_hz: Optional[float] = None
+    depth_cents: Optional[float] = None
+    regularity_score: Optional[float] = None
+    stability_score: Optional[float] = None
+    base_pitch_hz: Optional[float] = None
+    is_natural_like: Optional[bool] = None
+
+
+@dataclass
+class RegisterTransitionEvent(BaseTechniqueEvent):
+    subtype: str = 'uncertain'
+    pre_register_state: Optional[str] = None
+    post_register_state: Optional[str] = None
+    center_pitch_hz: Optional[float] = None
+    span_semitones: Optional[float] = None
+    pitch_continuity_score: Optional[float] = None
+    timbre_shift_score: Optional[float] = None
+    harmonic_shift_score: Optional[float] = None
+    energy_redistribution_score: Optional[float] = None
+
+
+@dataclass
+class BreathyPhonationEvent(BaseTechniqueEvent):
+    mean_rms: Optional[float] = None
+    voiced_soft_score: Optional[float] = None
+    breathy_score: Optional[float] = None
 
 
 # 通用：延迟显示格式化（避免出现 "Nonems" 等）
@@ -963,6 +1130,16 @@ class IntegratedAudioProcessor(QThread):
                 return False
 
         self._should_suppress_audio_debug = _should_suppress_audio_debug
+        self._runtime_perf_snapshot = {
+            'queue_backlog': 0,
+            'packet_count': 0,
+            'produced_frames': 0,
+            'frame_buffer_len': 0,
+            'loop_ms': 0.0,
+            'analysis_hz': 0.0,
+            'updated_at': 0.0,
+        }
+        self._runtime_perf_last_update_wall = 0.0
         # 🔧 统计计数器（回调中引用，避免 AttributeError）
         self._stat_counters = {
             'vocal_protect': 0,
@@ -1415,6 +1592,13 @@ class IntegratedAudioProcessor(QThread):
             self.gpu_processor = GPUAcceleratedProcessor(self.sample_rate)
             if self.gpu_processor.is_gpu_available():
                 print("✅ IntegratedAudioProcessor: GPU加速器可用")
+            else:
+                try:
+                    gpu_reason = str(self.gpu_processor.get_probe_status().get('reason', '') or '')
+                except Exception:
+                    gpu_reason = ''
+                if gpu_reason:
+                    print(f"ℹ️ IntegratedAudioProcessor: {gpu_reason}")
         except ImportError:
             print("ℹ️ IntegratedAudioProcessor: GPU加速器未安装")
             self.gpu_processor = None
@@ -2794,8 +2978,8 @@ class IntegratedAudioProcessor(QThread):
         """专用音频处理工作线程"""
         while True:
             try:
-                # 非阻塞获取音频数据
-                audio_data = self.audio_queue.get(timeout=0.001)
+                # 使用较短阻塞等待，避免空队列时线程高频空转占用 CPU
+                audio_data = self.audio_queue.get(timeout=0.02)
                 if audio_data is None:  # 停止信号
                     break
                 
@@ -2809,6 +2993,32 @@ class IntegratedAudioProcessor(QThread):
             except Exception as e:
                 print(f"⚠️ IntegratedAudioProcessor: 音频处理线程错误: {e}")
 
+    def _update_runtime_perf_snapshot(self, queue_backlog: int, packet_count: int, produced_frames: int, frame_buffer_len: int, loop_ms: float):
+        """记录处理循环的轻量运行时快照，供 UI 侧低频读取。"""
+        try:
+            now = time.time()
+            if (now - float(getattr(self, '_runtime_perf_last_update_wall', 0.0) or 0.0)) < 0.25:
+                return
+            self._runtime_perf_last_update_wall = now
+            self._runtime_perf_snapshot = {
+                'queue_backlog': max(0, int(queue_backlog)),
+                'packet_count': max(0, int(packet_count)),
+                'produced_frames': max(0, int(produced_frames)),
+                'frame_buffer_len': max(0, int(frame_buffer_len)),
+                'loop_ms': max(0.0, float(loop_ms)),
+                'analysis_hz': float(getattr(self, '_analysis_target_hz', 0.0) or 0.0),
+                'updated_at': now,
+            }
+        except Exception:
+            pass
+
+    def get_runtime_perf_snapshot(self):
+        """返回最近一次处理循环快照。"""
+        try:
+            return dict(getattr(self, '_runtime_perf_snapshot', {}) or {})
+        except Exception:
+            return {}
+
     def _process_audio_zero_copy(self, indata):
         """零拷贝音频处理"""
         try:
@@ -2817,19 +3027,21 @@ class IntegratedAudioProcessor(QThread):
             
             # 直接操作内存视图，避免数据复制
             audio_view = indata.view()  # 零拷贝视图
+            audio_flat = np.ravel(audio_view)
             
             # 使用预分配缓冲区
-            buffer_size = min(len(audio_view), len(self.preallocated_buffers['processing_buffer']))
+            buffer_size = min(audio_flat.size, len(self.preallocated_buffers['processing_buffer']))
             processing_slice = self.preallocated_buffers['processing_buffer'][:buffer_size]
             
             # 零拷贝赋值
-            processing_slice[:] = audio_view.flatten()[:buffer_size]
+            processing_slice[:] = audio_flat[:buffer_size]
             
             # 快速信号检测（零拷贝）
-            if np.max(np.abs(processing_slice)) > 0.01:
+            peak = float(np.max(np.abs(processing_slice))) if buffer_size > 0 else 0.0
+            if peak > 0.01:
                 # 触发界面更新（使用信号）
                 try:
-                    self.audio_level_updated.emit(float(np.max(np.abs(processing_slice))))
+                    self.audio_level_updated.emit(peak)
                 except RuntimeError:
                     pass  # 如果Qt对象已销毁，忽略
                 
@@ -2841,9 +3053,10 @@ class IntegratedAudioProcessor(QThread):
         """标准音频处理（回退方案）"""
         try:
             audio_data = indata.copy()
-            if np.max(np.abs(audio_data)) > 0.01:
+            peak = float(np.max(np.abs(audio_data))) if audio_data.size > 0 else 0.0
+            if peak > 0.01:
                 try:
-                    self.audio_level_updated.emit(float(np.max(np.abs(audio_data))))
+                    self.audio_level_updated.emit(peak)
                 except RuntimeError:
                     pass  # 如果Qt对象已销毁，忽略
         except Exception as e:
@@ -8208,6 +8421,17 @@ class IntegratedAudioProcessor(QThread):
                 except Exception as audio_error:
                     print(f"❌ 帧化处理错误: {audio_error}")
                     continue
+
+            try:
+                self._update_runtime_perf_snapshot(
+                    queue_backlog=int(self.audio_buffer_queue.qsize()),
+                    packet_count=len(audio_packets),
+                    produced_frames=int(locals().get('produced', 0) or 0),
+                    frame_buffer_len=len(getattr(self, '_frame_buffer', []) or []),
+                    loop_ms=(time.time() - start_time) * 1000.0,
+                )
+            except Exception:
+                pass
             
             # ================== 动态节流 ==================
             elapsed = time.time() - start_time
@@ -8333,6 +8557,22 @@ class IntegratedAudioProcessor(QThread):
                     _proc_audio = np.clip(audio_data * 2.0, -1.0, 1.0)
                 except Exception:
                     _proc_audio = audio_data
+            else:
+                try:
+                    # 对低电平桌面麦克风做轻量分析预增益，只影响检测链，不改保存音频。
+                    raw_arr = np.asarray(audio_data, dtype=np.float32)
+                    raw_peak = float(np.max(np.abs(raw_arr))) if raw_arr.size > 0 else 0.0
+                    raw_rms = float(np.sqrt(np.mean(np.square(raw_arr, dtype=np.float64), dtype=np.float64))) if raw_arr.size > 0 else 0.0
+                    if 1e-5 < raw_rms < 0.0012 and raw_peak < 0.25:
+                        target_rms = 0.0012
+                        gain = min(6.0, max(1.0, target_rms / max(raw_rms, 1e-6)))
+                        if gain > 1.05:
+                            _proc_audio = np.clip(raw_arr * gain, -1.0, 1.0)
+                            if not hasattr(self, '_low_level_input_gain_logged'):
+                                print(f"🎙️ 低电平输入补偿已启用: x{gain:.2f}")
+                                self._low_level_input_gain_logged = True
+                except Exception:
+                    _proc_audio = audio_data
             audio_rms = np.sqrt(np.mean(_proc_audio ** 2))
             # 保存本帧RMS供平滑阶段自适应使用（监听/录音分离）
             try:
@@ -8413,7 +8653,7 @@ class IntegratedAudioProcessor(QThread):
             breath_rms_threshold = float(getattr(self, '_breath_rms_threshold', 0.0025))  # 环境噪音档位可覆盖
             # 进一步放宽静音阈值，减少安静高音被直接判无音高
             # 蓝牙语音/HFP输入通常电平很低，进一步降低阈值
-            min_voice_rms = float(getattr(self, '_min_voice_rms_override', (0.00035 if _bt_voice else 0.0005)))
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', (0.00028 if _bt_voice else 0.00022)))
 
             # 若 RMS 极低，直接判定无音高（不更新平滑状态）
             if audio_rms < min_voice_rms:
@@ -8591,6 +8831,13 @@ class IntegratedAudioProcessor(QThread):
                 if not spurious_high and _ls_for_jump > 0:
                     if raw_frequency > _ls_for_jump * 2.5 and audio_rms < low_energy_thr:
                         spurious_high = True
+                    if not spurious_high:
+                        try:
+                            jump_semi = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(_ls_for_jump, 1e-9)))
+                        except Exception:
+                            jump_semi = 0.0
+                        if raw_frequency > max(1200.0, _ls_for_jump * 1.9) and jump_semi >= 8.5 and audio_rms < low_energy_thr * 0.78:
+                            spurious_high = True
                 # 条件3：呼吸期（RMS 在静音与正常之间）且高频>1500
                 if not spurious_high and breath_rms_threshold > audio_rms >= min_voice_rms and raw_frequency > 1500:
                     spurious_high = True
@@ -13408,6 +13655,29 @@ class ECGStylePitchVisualizer(QWidget):
         self._hover_glow = None   # PathCollection (scatter)
         self._hover_ring = None   # PathCollection (scatter)
         self._hover_highlight_last_xy = None
+
+        # 技巧识别：事件缓存、artist 容器与配置状态
+        self._technique_panel_state = TechniquePanelState()
+        self._technique_recent_frames = deque(maxlen=240)
+        self._technique_events = deque(maxlen=240)
+        self._technique_active_states = {}
+        self._technique_region_artists = []
+        self._technique_label_artists = []
+        self._technique_summary_artist = None
+        self._technique_last_overlay_refresh = 0.0
+        self._technique_overlay_interval = 0.12
+        self._technique_last_frame_time = 0.0
+        self._technique_last_frame_pitch = 0.0
+        self._technique_last_frame_rate = 0.0
+        self._offline_technique_service = None
+        self._disable_realtime_vibrato_detection = False
+        self._technique_visible_types = {
+            'breath': '换气',
+            'register_transition': '换声区',
+            'slide': '滑音',
+            'vibrato': '颤音',
+            'breathy_phonation': '气声',
+        }
 
         # 自定义“蓝色羽毛”鼠标指针
         self._cursor_feather_blue = None
@@ -19679,6 +19949,10 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_data.clear()
         self.confidence_data.clear()
         self.note_data.clear()
+        try:
+            self._reset_technique_tracking(clear_events=True)
+        except Exception:
+            pass
         # 回到默认：清会话后时间序列视为单调，恢复二分筛选
         try:
             self._assume_unsorted_time_data = False
@@ -20298,6 +20572,16 @@ class ECGStylePitchVisualizer(QWidget):
             
             print("✅ 性能管理器初始化成功")
             print(f"   GPU加速: {'✅ 可用' if self.gpu_accelerator.is_gpu_available() else '❌ 不可用'}")
+            try:
+                gpu_status = self.gpu_accelerator.get_probe_status() if self.gpu_accelerator is not None else {}
+            except Exception:
+                gpu_status = {}
+            try:
+                self._gpu_status_detail = str(gpu_status.get('reason', '') or '')
+            except Exception:
+                self._gpu_status_detail = ''
+            if self._gpu_status_detail:
+                print(f"   GPU状态: {self._gpu_status_detail}")
 
             # 启动时自动评估本机并选择更优模式
             try:
@@ -20787,6 +21071,25 @@ class ECGStylePitchVisualizer(QWidget):
             }
         """)
         controls_row2_layout.addWidget(self.auto_scale_btn)
+
+        self.technique_recognition_btn = QPushButton("技巧识别")
+        self.technique_recognition_btn.setToolTip("选择需要识别和展示的演唱技巧事件")
+        self.technique_recognition_btn.clicked.connect(self.open_technique_recognition_dialog)
+        self.technique_recognition_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1F4F6B;
+                border: 1px solid #4FA7D6;
+                border-radius: 3px;
+                padding: 5px 8px;
+                color: white;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #276584;
+                border-color: #79C7F0;
+            }
+        """)
+        controls_row2_layout.addWidget(self.technique_recognition_btn)
         
         # 清除按钮
         clear_btn = QPushButton("清除")
@@ -25545,6 +25848,10 @@ class ECGStylePitchVisualizer(QWidget):
 
         # 强制刷新画布以确保时间轴标签正确显示
         self.canvas.draw_idle()
+        try:
+            self._refresh_technique_artists(force=False)
+        except Exception:
+            pass
         # 回听图元随坐标变化同步更新
         try:
             if hasattr(self, 'update_listenback_artists'):
@@ -28219,6 +28526,10 @@ class ECGStylePitchVisualizer(QWidget):
         # 立即同步以避免下一次刷新覆盖视觉效果
         self.update_scrollbars()
         try:
+            self._refresh_technique_artists(force=True)
+        except Exception:
+            pass
+        try:
             ylim = self.ax.get_ylim()
             print(f"[VSCROLL AXIS] mode={prof.get('mode')} ylim={ylim}")
         except Exception:
@@ -28973,6 +29284,1100 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
         except Exception:
             pass
+
+    def set_technique_panel_state(self, state: Optional[TechniquePanelState]) -> None:
+        try:
+            self._technique_panel_state = state if isinstance(state, TechniquePanelState) else TechniquePanelState()
+        except Exception:
+            self._technique_panel_state = TechniquePanelState()
+        try:
+            self._update_technique_button_text_visualizer()
+        except Exception:
+            pass
+        try:
+            self._refresh_technique_artists(force=True)
+        except Exception:
+            pass
+
+    def _update_technique_button_text_visualizer(self) -> None:
+        try:
+            btn = getattr(self, 'technique_recognition_btn', None)
+            if btn is None:
+                return
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None)
+            enabled = bool(cfg is not None and getattr(cfg, 'enabled', False))
+            selected = list(getattr(state, 'selected_types', []) or [])
+            count = len(selected) if enabled else 0
+            analysis_ready = bool(getattr(state, 'analysis_ready', False))
+            if enabled and bool(getattr(state, 'last_source_frame_count', 0) or 0) > 0:
+                base_text = '重分析技巧' if analysis_ready else '分析技巧'
+            elif enabled:
+                base_text = '技巧识别设置'
+            else:
+                base_text = '技巧识别'
+            btn.setText(f"{base_text} ({count})" if count > 0 else base_text)
+            if enabled and bool(getattr(state, 'last_source_frame_count', 0) or 0) > 0:
+                btn.setToolTip('点击后对当前普通模式录音做离线技巧分区与标注；按住 Ctrl 再点击可打开设置')
+            else:
+                btn.setToolTip('配置录音完成后的技巧识别项目与展示方式')
+        except Exception:
+            pass
+
+    def open_technique_recognition_dialog(self):
+        try:
+            host = getattr(self, '_host_interface', None)
+        except Exception:
+            host = None
+        if host is not None and hasattr(host, 'open_technique_recognition_dialog'):
+            host.open_technique_recognition_dialog()
+
+    def _reset_technique_tracking(self, *, clear_events: bool = False) -> None:
+        try:
+            self._technique_recent_frames.clear()
+        except Exception:
+            self._technique_recent_frames = deque(maxlen=240)
+        self._technique_active_states = {}
+        self._technique_last_frame_time = 0.0
+        self._technique_last_frame_pitch = 0.0
+        self._technique_last_frame_rate = 0.0
+        if clear_events:
+            try:
+                self._technique_events.clear()
+            except Exception:
+                self._technique_events = deque(maxlen=240)
+            self._clear_technique_artists()
+
+    def _clear_technique_artists(self) -> None:
+        for attr_name in ('_technique_region_artists', '_technique_label_artists'):
+            artists = list(getattr(self, attr_name, []) or [])
+            for artist in artists:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+            setattr(self, attr_name, [])
+        summary_artist = getattr(self, '_technique_summary_artist', None)
+        if summary_artist is not None:
+            try:
+                summary_artist.remove()
+            except Exception:
+                pass
+        self._technique_summary_artist = None
+
+    def _technique_enabled_for_current_mode(self) -> bool:
+        try:
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None)
+            if cfg is None or not bool(getattr(cfg, 'enabled', False)):
+                return False
+            mode_text = self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式'
+            if mode_text == '普通模式':
+                return bool(getattr(cfg, 'show_in_normal_mode', True))
+            if mode_text == '专业模式':
+                return bool(getattr(cfg, 'show_in_professional_mode', True))
+            return bool(getattr(cfg, 'show_in_normal_mode', True))
+        except Exception:
+            return False
+
+    def _technique_type_selected(self, event_type: str) -> bool:
+        try:
+            selected = list(getattr(getattr(self, '_technique_panel_state', None), 'selected_types', []) or [])
+            return str(event_type or '') in selected
+        except Exception:
+            return False
+
+    def _extract_frame_features_from_payload(self, pitch_data: dict, global_time: float) -> Optional[FrameFeatures]:
+        features = pitch_data.get('_frame_features') if isinstance(pitch_data, dict) else None
+        if isinstance(features, FrameFeatures):
+            return features
+        try:
+            note_info = pitch_data.get('note_info') or {}
+        except Exception:
+            note_info = {}
+        try:
+            mode_name = self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式'
+        except Exception:
+            mode_name = '普通模式'
+        try:
+            return FrameFeatures(
+                timeline_time=float(global_time),
+                wall_time=float(time.time()),
+                raw_frequency_hz=float(pitch_data.get('raw_frequency', 0.0) or 0.0),
+                detected_frequency_hz=float(pitch_data.get('detected_frequency', pitch_data.get('frequency', 0.0)) or 0.0),
+                display_frequency_hz=float(pitch_data.get('display_frequency', pitch_data.get('frequency', 0.0)) or 0.0),
+                has_pitch=bool(pitch_data.get('has_pitch', False)),
+                confidence=float(pitch_data.get('confidence', 0.0) or 0.0),
+                audio_rms=float(pitch_data.get('audio_rms', 0.0) or 0.0),
+                note_name=note_info.get('note_name'),
+                octave=note_info.get('octave'),
+                midi_number=note_info.get('midi_number'),
+                cents=note_info.get('cents'),
+                zcr=pitch_data.get('zcr'),
+                fast_change=bool(pitch_data.get('_fast_change', False)),
+                harmonic_candidates=list(pitch_data.get('harmonic_candidates', []) or []),
+                breath_detect_hint=bool(pitch_data.get('breath_detect_hint', False)),
+                vibrato_info=dict(pitch_data.get('vibrato_info', {}) or {}),
+                mode_name=str(mode_name),
+                preview_only=bool(pitch_data.get('_preview_only', False)),
+                source_flags={},
+            )
+        except Exception:
+            return None
+
+    def _estimate_feature_scores(self, features: FrameFeatures) -> None:
+        try:
+            if features.voiced_score is None:
+                voiced = 0.0
+                if features.has_pitch:
+                    voiced += 0.55
+                voiced += min(0.25, max(0.0, float(features.confidence)) * 0.25)
+                voiced += min(0.20, max(0.0, float(features.audio_rms)) / 0.010 * 0.20)
+                features.voiced_score = max(0.0, min(1.0, voiced))
+        except Exception:
+            pass
+        try:
+            if features.breath_score is None:
+                breath = 0.0
+                if not features.has_pitch:
+                    breath += 0.38
+                if features.breath_detect_hint:
+                    breath += 0.40
+                rms = max(0.0, float(features.audio_rms or 0.0))
+                if 0.00045 <= rms <= 0.0062:
+                    breath += 0.16
+                features.breath_score = max(0.0, min(1.0, breath))
+        except Exception:
+            pass
+        try:
+            if features.noise_score is None:
+                noise = 0.0
+                if not features.has_pitch and float(features.audio_rms or 0.0) < 0.0004:
+                    noise += 0.50
+                features.noise_score = max(0.0, min(1.0, noise))
+        except Exception:
+            pass
+
+    def _update_feature_dynamics(self, features: FrameFeatures) -> None:
+        try:
+            prev_t = float(getattr(self, '_technique_last_frame_time', 0.0) or 0.0)
+            prev_f = float(getattr(self, '_technique_last_frame_pitch', 0.0) or 0.0)
+            prev_rate = float(getattr(self, '_technique_last_frame_rate', 0.0) or 0.0)
+        except Exception:
+            prev_t, prev_f, prev_rate = 0.0, 0.0, 0.0
+        try:
+            cur_f = float(features.detected_frequency_hz or 0.0)
+        except Exception:
+            cur_f = 0.0
+        try:
+            dt = float(features.timeline_time) - prev_t if prev_t > 0.0 else 0.0
+        except Exception:
+            dt = 0.0
+        try:
+            if prev_f > 0.0 and cur_f > 0.0:
+                semi = abs(12.0 * math.log2(max(cur_f, 1e-9) / max(prev_f, 1e-9)))
+                features.semitone_delta_prev = semi
+                if dt > 1e-6:
+                    rate = semi / dt
+                    features.semitone_rate = rate
+                    features.semitone_accel = (rate - prev_rate) / dt if prev_t > 0.0 else 0.0
+                    features.continuity_score = max(0.0, min(1.0, 1.0 - semi / 6.0))
+                    self._technique_last_frame_rate = float(rate)
+                else:
+                    features.semitone_rate = 0.0
+                    features.semitone_accel = 0.0
+            else:
+                features.semitone_delta_prev = None
+                features.semitone_rate = 0.0
+                features.semitone_accel = 0.0
+        except Exception:
+            pass
+        self._technique_last_frame_time = float(features.timeline_time or 0.0)
+        if cur_f > 0.0:
+            self._technique_last_frame_pitch = cur_f
+
+    def _append_technique_event(self, event: BaseTechniqueEvent) -> None:
+        try:
+            cfg = getattr(getattr(self, '_technique_panel_state', None), 'config', None)
+            merge_gap = float(getattr(cfg, 'merge_gap_s', 0.12) or 0.12) if cfg is not None else 0.12
+        except Exception:
+            merge_gap = 0.12
+        try:
+            if self._technique_events:
+                last_event = self._technique_events[-1]
+                if (
+                    getattr(last_event, 'event_type', None) == getattr(event, 'event_type', None)
+                    and (float(event.start_time) - float(last_event.end_time)) <= merge_gap
+                ):
+                    last_event.end_time = max(float(last_event.end_time), float(event.end_time))
+                    last_event.center_time = 0.5 * (float(last_event.start_time) + float(last_event.end_time))
+                    last_event.duration = max(0.0, float(last_event.end_time) - float(last_event.start_time))
+                    last_event.confidence = max(float(last_event.confidence), float(event.confidence))
+                    last_event.strength = max(float(last_event.strength), float(event.strength))
+                    return
+        except Exception:
+            pass
+        try:
+            self._technique_events.append(event)
+        except Exception:
+            pass
+
+    def _finalize_active_event(self, event_type: str, now_t: float, *, final_features: Optional[FrameFeatures] = None) -> None:
+        state = dict(getattr(self, '_technique_active_states', {}).get(event_type, {}) or {})
+        if not state:
+            return
+        try:
+            cfg = getattr(getattr(self, '_technique_panel_state', None), 'config', None)
+        except Exception:
+            cfg = None
+        start_time = float(state.get('start_time', now_t) or now_t)
+        end_time = max(float(state.get('last_time', now_t) or now_t), start_time)
+        duration = max(0.0, end_time - start_time)
+        if event_type == 'breath':
+            min_dur = float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06) if cfg is not None else 0.06
+            if duration < min_dur:
+                self._technique_active_states.pop(event_type, None)
+                return
+            event = BreathEvent(
+                event_type='breath',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=float(state.get('confidence', 0.62) or 0.62),
+                strength=float(state.get('strength', 0.60) or 0.60),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='state_machine',
+                display_label='换气',
+                display_color='#6EC6FF',
+                subtype=str(state.get('subtype', 'normal_breath') or 'normal_breath'),
+                mean_rms=float(state.get('mean_rms', 0.0) or 0.0),
+                mean_zcr=state.get('mean_zcr'),
+                breath_score_peak=state.get('breath_score_peak'),
+                pre_pitch_hz=state.get('pre_pitch_hz'),
+                post_pitch_hz=float(getattr(final_features, 'detected_frequency_hz', 0.0) or 0.0) if final_features is not None else None,
+                suppressed_pitch_frames=int(state.get('suppressed_pitch_frames', 0) or 0),
+            )
+            self._append_technique_event(event)
+        elif event_type == 'slide':
+            min_dur = float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08) if cfg is not None else 0.08
+            if duration < min_dur:
+                self._technique_active_states.pop(event_type, None)
+                return
+            start_pitch = float(state.get('start_pitch_hz', 0.0) or 0.0)
+            end_pitch = float(state.get('last_pitch_hz', start_pitch) or start_pitch)
+            try:
+                span = abs(12.0 * math.log2(max(end_pitch, 1e-9) / max(start_pitch, 1e-9))) if start_pitch > 0 and end_pitch > 0 else 0.0
+            except Exception:
+                span = 0.0
+            event = SlideEvent(
+                event_type='slide',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=float(state.get('confidence', 0.60) or 0.60),
+                strength=float(state.get('strength', 0.58) or 0.58),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='state_machine',
+                display_label='滑音',
+                display_color='#FFB74D',
+                direction=str(state.get('direction', 'mixed') or 'mixed'),
+                start_pitch_hz=start_pitch,
+                end_pitch_hz=end_pitch,
+                pitch_span_semitones=span,
+                mean_semitone_rate=state.get('mean_rate'),
+                peak_semitone_rate=state.get('peak_rate'),
+                smoothness_score=state.get('smoothness_score'),
+                continuity_score=state.get('continuity_score'),
+            )
+            self._append_technique_event(event)
+        elif event_type == 'vibrato':
+            min_dur = float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18) if cfg is not None else 0.18
+            if duration < min_dur:
+                self._technique_active_states.pop(event_type, None)
+                return
+            event = VibratoEvent(
+                event_type='vibrato',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=float(state.get('confidence', 0.68) or 0.68),
+                strength=float(state.get('strength', 0.66) or 0.66),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='pattern',
+                display_label='颤音',
+                display_color='#BA68C8',
+                rate_hz=state.get('rate_hz'),
+                depth_hz=state.get('depth_hz'),
+                depth_cents=state.get('depth_cents'),
+                regularity_score=state.get('regularity_score'),
+                stability_score=state.get('stability_score'),
+                base_pitch_hz=state.get('base_pitch_hz'),
+            )
+            self._append_technique_event(event)
+        elif event_type == 'register_transition':
+            min_dur = float(getattr(cfg, 'min_register_transition_s', 0.10) or 0.10) if cfg is not None else 0.10
+            if duration < min_dur:
+                self._technique_active_states.pop(event_type, None)
+                return
+            event = RegisterTransitionEvent(
+                event_type='register_transition',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=float(state.get('confidence', 0.56) or 0.56),
+                strength=float(state.get('strength', 0.54) or 0.54),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='state_machine',
+                display_label='换声区',
+                display_color='#EF9A9A',
+                subtype=str(state.get('subtype', 'uncertain') or 'uncertain'),
+                pre_register_state=state.get('pre_register_state'),
+                post_register_state=state.get('post_register_state'),
+                center_pitch_hz=state.get('center_pitch_hz'),
+                span_semitones=state.get('span_semitones'),
+                pitch_continuity_score=state.get('continuity_score'),
+                harmonic_shift_score=state.get('harmonic_shift_score'),
+                timbre_shift_score=state.get('timbre_shift_score'),
+            )
+            self._append_technique_event(event)
+        elif event_type == 'breathy_phonation':
+            min_dur = float(getattr(cfg, 'min_breathy_duration_s', 0.10) or 0.10) if cfg is not None else 0.10
+            if duration < min_dur:
+                self._technique_active_states.pop(event_type, None)
+                return
+            event = BreathyPhonationEvent(
+                event_type='breathy_phonation',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=float(state.get('confidence', 0.57) or 0.57),
+                strength=float(state.get('strength', 0.52) or 0.52),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='state_machine',
+                display_label='气声',
+                display_color='#80CBC4',
+                mean_rms=state.get('mean_rms'),
+                voiced_soft_score=state.get('voiced_soft_score'),
+                breathy_score=state.get('breathy_score'),
+            )
+            self._append_technique_event(event)
+        self._technique_active_states.pop(event_type, None)
+
+    def _ingest_technique_frame(self, features: FrameFeatures) -> None:
+        self._estimate_feature_scores(features)
+        self._update_feature_dynamics(features)
+        try:
+            self._technique_recent_frames.append(features)
+        except Exception:
+            return
+
+        breath_state = self._technique_active_states.get('breath')
+        breath_candidate = bool(
+            self._technique_type_selected('breath')
+            and ((float(features.breath_score or 0.0) >= 0.48) or (not features.has_pitch and 0.00045 <= float(features.audio_rms or 0.0) <= 0.0062))
+        )
+        if breath_candidate:
+            if breath_state is None:
+                pre_pitch = None
+                for item in reversed(list(self._technique_recent_frames)[:-1]):
+                    try:
+                        if item.has_pitch and float(item.detected_frequency_hz or 0.0) > 0.0:
+                            pre_pitch = float(item.detected_frequency_hz)
+                            break
+                    except Exception:
+                        continue
+                self._technique_active_states['breath'] = {
+                    'start_time': float(features.timeline_time),
+                    'last_time': float(features.timeline_time),
+                    'mean_rms': float(features.audio_rms or 0.0),
+                    'breath_score_peak': float(features.breath_score or 0.0),
+                    'pre_pitch_hz': pre_pitch,
+                    'suppressed_pitch_frames': 0,
+                    'confidence': max(0.55, float(features.breath_score or 0.55)),
+                    'strength': max(0.50, float(features.breath_score or 0.50)),
+                }
+            else:
+                breath_state['last_time'] = float(features.timeline_time)
+                breath_state['mean_rms'] = 0.82 * float(breath_state.get('mean_rms', features.audio_rms) or features.audio_rms) + 0.18 * float(features.audio_rms or 0.0)
+                breath_state['breath_score_peak'] = max(float(breath_state.get('breath_score_peak', 0.0) or 0.0), float(features.breath_score or 0.0))
+                if not features.has_pitch:
+                    breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
+        elif breath_state is not None:
+            self._finalize_active_event('breath', float(features.timeline_time), final_features=features)
+
+        slide_state = self._technique_active_states.get('slide')
+        slide_candidate = bool(
+            self._technique_type_selected('slide')
+            and features.has_pitch
+            and bool(features.fast_change)
+            and float(features.semitone_delta_prev or 0.0) >= 0.45
+            and float(features.semitone_rate or 0.0) >= 2.8
+        )
+        if slide_candidate:
+            direction = 'up'
+            try:
+                prev_pitch = float(getattr(self, '_technique_last_frame_pitch', 0.0) or 0.0)
+                if prev_pitch > 0.0 and float(features.detected_frequency_hz or 0.0) < prev_pitch:
+                    direction = 'down'
+            except Exception:
+                direction = 'mixed'
+            if slide_state is None:
+                self._technique_active_states['slide'] = {
+                    'start_time': float(features.timeline_time),
+                    'last_time': float(features.timeline_time),
+                    'start_pitch_hz': float(features.detected_frequency_hz or 0.0),
+                    'last_pitch_hz': float(features.detected_frequency_hz or 0.0),
+                    'direction': direction,
+                    'peak_rate': float(features.semitone_rate or 0.0),
+                    'mean_rate': float(features.semitone_rate or 0.0),
+                    'smoothness_score': max(0.0, min(1.0, 1.0 - float(features.semitone_accel or 0.0) / 20.0)),
+                    'continuity_score': float(features.continuity_score or 0.0),
+                    'confidence': max(0.56, min(0.86, 0.50 + float(features.confidence or 0.0) * 0.35)),
+                    'strength': max(0.52, min(0.88, float(features.semitone_rate or 0.0) / 8.0)),
+                }
+            else:
+                if str(slide_state.get('direction', direction)) != direction:
+                    slide_state['direction'] = 'mixed'
+                slide_state['last_time'] = float(features.timeline_time)
+                slide_state['last_pitch_hz'] = float(features.detected_frequency_hz or 0.0)
+                slide_state['peak_rate'] = max(float(slide_state.get('peak_rate', 0.0) or 0.0), float(features.semitone_rate or 0.0))
+                slide_state['mean_rate'] = 0.78 * float(slide_state.get('mean_rate', 0.0) or 0.0) + 0.22 * float(features.semitone_rate or 0.0)
+                slide_state['continuity_score'] = max(float(slide_state.get('continuity_score', 0.0) or 0.0), float(features.continuity_score or 0.0))
+        elif slide_state is not None:
+            self._finalize_active_event('slide', float(features.timeline_time), final_features=features)
+
+        vibrato_state = self._technique_active_states.get('vibrato')
+        vibrato_info = dict(features.vibrato_info or {})
+        vibrato_candidate = bool(
+            self._technique_type_selected('vibrato')
+            and (not bool(getattr(self, '_disable_realtime_vibrato_detection', False)))
+            and vibrato_info.get('has_vibrato')
+        )
+        if vibrato_candidate:
+            if vibrato_state is None:
+                self._technique_active_states['vibrato'] = {
+                    'start_time': float(features.timeline_time),
+                    'last_time': float(features.timeline_time),
+                    'rate_hz': float(vibrato_info.get('rate', 0.0) or 0.0),
+                    'depth_hz': float(vibrato_info.get('depth', 0.0) or 0.0),
+                    'base_pitch_hz': float(features.detected_frequency_hz or 0.0),
+                    'confidence': max(0.62, min(0.90, 0.55 + float(features.confidence or 0.0) * 0.35)),
+                    'strength': max(0.60, min(0.92, float(vibrato_info.get('depth', 0.0) or 0.0) / 8.0)),
+                    'regularity_score': 0.68,
+                    'stability_score': float(features.continuity_score or 0.0),
+                    'depth_cents': float(vibrato_info.get('depth', 0.0) or 0.0) * 100.0 / max(float(features.detected_frequency_hz or 1.0), 1.0),
+                }
+            else:
+                vibrato_state['last_time'] = float(features.timeline_time)
+                vibrato_state['rate_hz'] = 0.72 * float(vibrato_state.get('rate_hz', 0.0) or 0.0) + 0.28 * float(vibrato_info.get('rate', 0.0) or 0.0)
+                vibrato_state['depth_hz'] = max(float(vibrato_state.get('depth_hz', 0.0) or 0.0), float(vibrato_info.get('depth', 0.0) or 0.0))
+        elif vibrato_state is not None:
+            self._finalize_active_event('vibrato', float(features.timeline_time), final_features=features)
+
+        breathy_state = self._technique_active_states.get('breathy_phonation')
+        breathy_candidate = bool(
+            self._technique_type_selected('breathy_phonation')
+            and features.has_pitch
+            and 0.00045 <= float(features.audio_rms or 0.0) <= 0.0026
+            and float(features.confidence or 0.0) <= 0.86
+            and (float(features.breath_score or 0.0) >= 0.22 or bool(features.breath_detect_hint))
+        )
+        if breathy_candidate:
+            if breathy_state is None:
+                self._technique_active_states['breathy_phonation'] = {
+                    'start_time': float(features.timeline_time),
+                    'last_time': float(features.timeline_time),
+                    'mean_rms': float(features.audio_rms or 0.0),
+                    'voiced_soft_score': float(features.voiced_score or 0.0),
+                    'breathy_score': max(float(features.breath_score or 0.0), 0.32),
+                    'confidence': 0.58,
+                    'strength': max(0.48, float(features.breath_score or 0.48)),
+                }
+            else:
+                breathy_state['last_time'] = float(features.timeline_time)
+                breathy_state['mean_rms'] = 0.82 * float(breathy_state.get('mean_rms', features.audio_rms) or features.audio_rms) + 0.18 * float(features.audio_rms or 0.0)
+                breathy_state['breathy_score'] = max(float(breathy_state.get('breathy_score', 0.0) or 0.0), float(features.breath_score or 0.0))
+        elif breathy_state is not None:
+            self._finalize_active_event('breathy_phonation', float(features.timeline_time), final_features=features)
+
+        register_state = self._technique_active_states.get('register_transition')
+        register_candidate = bool(
+            self._technique_type_selected('register_transition')
+            and features.has_pitch
+            and bool(features.fast_change)
+            and len(list(features.harmonic_candidates or [])) >= 2
+            and 0.75 <= float(features.semitone_delta_prev or 0.0) <= 4.5
+            and float(features.audio_rms or 0.0) >= 0.0008
+        )
+        if register_candidate:
+            if register_state is None:
+                self._technique_active_states['register_transition'] = {
+                    'start_time': float(features.timeline_time),
+                    'last_time': float(features.timeline_time),
+                    'center_pitch_hz': float(features.detected_frequency_hz or 0.0),
+                    'span_semitones': float(features.semitone_delta_prev or 0.0),
+                    'continuity_score': float(features.continuity_score or 0.0),
+                    'harmonic_shift_score': min(1.0, len(list(features.harmonic_candidates or [])) / 5.0),
+                    'timbre_shift_score': max(0.35, float(features.breath_score or 0.0)),
+                    'confidence': 0.56,
+                    'strength': 0.52,
+                    'subtype': 'uncertain',
+                }
+            else:
+                register_state['last_time'] = float(features.timeline_time)
+                register_state['span_semitones'] = max(float(register_state.get('span_semitones', 0.0) or 0.0), float(features.semitone_delta_prev or 0.0))
+                register_state['continuity_score'] = max(float(register_state.get('continuity_score', 0.0) or 0.0), float(features.continuity_score or 0.0))
+        elif register_state is not None:
+            self._finalize_active_event('register_transition', float(features.timeline_time), final_features=features)
+
+    def _ingest_technique_features(self, pitch_data: dict, global_time: float) -> None:
+        if not self._technique_enabled_for_current_mode():
+            return
+        features = self._extract_frame_features_from_payload(pitch_data, global_time)
+        if features is None:
+            return
+        self._ingest_technique_frame(features)
+
+    def _build_offline_vibrato_events(self, frames: List[FrameFeatures]) -> List[VibratoEvent]:
+        if (not _OFFLINE_TECHNIQUE_SERVICE_AVAILABLE) or (not self._technique_type_selected('vibrato')):
+            return []
+        try:
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None)
+        except Exception:
+            cfg = None
+        try:
+            service_cfg = OfflineVibratoConfig(
+                min_duration_s=max(0.26, float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18)),
+                merge_gap_s=float(getattr(cfg, 'merge_gap_s', 0.12) or 0.12) if cfg is not None else 0.12,
+            )
+            service = OfflineTechniqueAnalysisService(config=service_cfg)
+            self._offline_technique_service = service
+            regions = service.detect_vibrato(list(frames or []))
+        except Exception:
+            return []
+        events: List[VibratoEvent] = []
+        for region in regions:
+            try:
+                event = VibratoEvent(
+                    event_type='vibrato',
+                    start_time=float(region.start_time),
+                    end_time=float(region.end_time),
+                    confidence=float(region.confidence),
+                    strength=float(region.strength),
+                    center_time=float(region.center_time),
+                    duration=float(region.duration),
+                    source_layer='offline_service',
+                    display_label='颤音',
+                    display_color='#BA68C8',
+                    feature_snapshot={
+                        'base_pitch_hz': float(region.base_pitch_hz),
+                        'rate_hz': float(region.rate_hz),
+                        'depth_cents': float(region.depth_cents),
+                    },
+                    display_payload={
+                        'detector': 'offline_v1',
+                        **dict(getattr(region, 'debug_payload', {}) or {}),
+                    },
+                    rate_hz=float(region.rate_hz),
+                    depth_hz=float(region.depth_hz),
+                    depth_cents=float(region.depth_cents),
+                    regularity_score=float(region.regularity_score),
+                    stability_score=float(region.stability_score),
+                    base_pitch_hz=float(region.base_pitch_hz),
+                    is_natural_like=bool(
+                        3.8 <= float(region.rate_hz) <= 7.5
+                        and 12.0 <= float(region.depth_cents) <= 120.0
+                        and float(region.regularity_score) >= 0.30
+                    ),
+                )
+            except Exception:
+                continue
+            events.append(event)
+        return events
+
+    def analyze_technique_frames(self, frames: List[FrameFeatures]) -> Dict[str, Any]:
+        self._reset_technique_tracking(clear_events=True)
+        summary = {
+            'event_count': 0,
+            'counts': {},
+            'duration': 0.0,
+        }
+        if not self._technique_enabled_for_current_mode():
+            self._refresh_technique_artists(force=True)
+            return summary
+        offline_vibrato_events = self._build_offline_vibrato_events(frames)
+        last_feature = None
+        prev_vibrato_guard = bool(getattr(self, '_disable_realtime_vibrato_detection', False))
+        self._disable_realtime_vibrato_detection = bool(offline_vibrato_events)
+        try:
+            for features in list(frames or []):
+                if not isinstance(features, FrameFeatures):
+                    continue
+                if bool(getattr(features, 'preview_only', False)):
+                    continue
+                self._ingest_technique_frame(features)
+                last_feature = features
+        finally:
+            self._disable_realtime_vibrato_detection = prev_vibrato_guard
+        if last_feature is not None:
+            for event_type in list(getattr(self, '_technique_active_states', {}).keys()):
+                try:
+                    self._finalize_active_event(event_type, float(last_feature.timeline_time), final_features=last_feature)
+                except Exception:
+                    pass
+        try:
+            cfg = getattr(getattr(self, '_technique_panel_state', None), 'config', None)
+            min_conf = float(getattr(cfg, 'min_event_confidence', 0.55) or 0.55) if cfg is not None else 0.55
+        except Exception:
+            min_conf = 0.55
+        filtered_events = []
+        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_vibrato_events or [])
+        for event in all_events:
+            try:
+                if float(getattr(event, 'confidence', 0.0) or 0.0) < min_conf:
+                    continue
+            except Exception:
+                continue
+            filtered_events.append(event)
+        filtered_events = self._postprocess_technique_events(filtered_events)
+        self._technique_events = deque(filtered_events, maxlen=240)
+        counts = {}
+        duration = 0.0
+        for event in filtered_events:
+            counts[event.event_type] = int(counts.get(event.event_type, 0)) + 1
+            try:
+                duration = max(duration, float(event.end_time or 0.0))
+            except Exception:
+                pass
+        if last_feature is not None:
+            try:
+                duration = max(duration, float(last_feature.timeline_time or 0.0))
+            except Exception:
+                pass
+        summary['event_count'] = len(filtered_events)
+        summary['counts'] = counts
+        summary['duration'] = duration
+        self._refresh_technique_artists(force=True)
+        try:
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+        return summary
+
+    def _get_technique_event_style(self, event_type: str) -> Tuple[str, str]:
+        mapping = {
+            'breath': ('换气', '#6EC6FF'),
+            'register_transition': ('换声区', '#EF9A9A'),
+            'slide': ('滑音', '#FFB74D'),
+            'vibrato': ('颤音', '#BA68C8'),
+            'breathy_phonation': ('气声', '#80CBC4'),
+        }
+        return mapping.get(str(event_type or ''), (str(event_type or '技巧'), '#90CAF9'))
+
+    def _selected_technique_events(self) -> List[BaseTechniqueEvent]:
+        selected_events = []
+        for event in list(getattr(self, '_technique_events', []) or []):
+            try:
+                if not self._technique_type_selected(getattr(event, 'event_type', '')):
+                    continue
+            except Exception:
+                continue
+            selected_events.append(event)
+        return selected_events
+
+    def _score_technique_event(self, event: BaseTechniqueEvent) -> float:
+        try:
+            duration = max(0.0, float(getattr(event, 'duration', 0.0) or 0.0))
+        except Exception:
+            duration = 0.0
+        try:
+            confidence = max(0.0, float(getattr(event, 'confidence', 0.0) or 0.0))
+        except Exception:
+            confidence = 0.0
+        try:
+            strength = max(0.0, float(getattr(event, 'strength', 0.0) or 0.0))
+        except Exception:
+            strength = 0.0
+        duration_term = min(duration, 0.9) / 0.9 if duration > 0.0 else 0.0
+        return confidence * 0.58 + strength * 0.27 + duration_term * 0.15
+
+    def _merge_technique_events(self, target: BaseTechniqueEvent, incoming: BaseTechniqueEvent) -> BaseTechniqueEvent:
+        try:
+            target.start_time = min(float(target.start_time), float(incoming.start_time))
+            target.end_time = max(float(target.end_time), float(incoming.end_time))
+            target.center_time = 0.5 * (float(target.start_time) + float(target.end_time))
+            target.duration = max(0.0, float(target.end_time) - float(target.start_time))
+            target.confidence = max(float(target.confidence), float(incoming.confidence))
+            target.strength = max(float(target.strength), float(incoming.strength))
+        except Exception:
+            return target
+        try:
+            target.feature_snapshot.update(dict(getattr(incoming, 'feature_snapshot', {}) or {}))
+        except Exception:
+            pass
+        try:
+            target.display_payload.update(dict(getattr(incoming, 'display_payload', {}) or {}))
+        except Exception:
+            pass
+        try:
+            if isinstance(target, BreathEvent) and isinstance(incoming, BreathEvent):
+                target.mean_rms = max(float(target.mean_rms or 0.0), float(incoming.mean_rms or 0.0)) or target.mean_rms or incoming.mean_rms
+                target.mean_zcr = max(float(target.mean_zcr or 0.0), float(incoming.mean_zcr or 0.0)) or target.mean_zcr or incoming.mean_zcr
+                target.breath_score_peak = max(float(target.breath_score_peak or 0.0), float(incoming.breath_score_peak or 0.0))
+                target.suppressed_pitch_frames = max(int(target.suppressed_pitch_frames or 0), int(incoming.suppressed_pitch_frames or 0))
+                target.post_pitch_hz = incoming.post_pitch_hz or target.post_pitch_hz
+            elif isinstance(target, SlideEvent) and isinstance(incoming, SlideEvent):
+                target.end_pitch_hz = incoming.end_pitch_hz or target.end_pitch_hz
+                target.pitch_span_semitones = max(float(target.pitch_span_semitones or 0.0), float(incoming.pitch_span_semitones or 0.0))
+                target.mean_semitone_rate = max(float(target.mean_semitone_rate or 0.0), float(incoming.mean_semitone_rate or 0.0))
+                target.peak_semitone_rate = max(float(target.peak_semitone_rate or 0.0), float(incoming.peak_semitone_rate or 0.0))
+                target.smoothness_score = max(float(target.smoothness_score or 0.0), float(incoming.smoothness_score or 0.0))
+                target.continuity_score = max(float(target.continuity_score or 0.0), float(incoming.continuity_score or 0.0))
+                if str(target.direction or 'mixed') != str(incoming.direction or 'mixed'):
+                    target.direction = 'mixed'
+            elif isinstance(target, VibratoEvent) and isinstance(incoming, VibratoEvent):
+                target.rate_hz = incoming.rate_hz or target.rate_hz
+                target.depth_hz = max(float(target.depth_hz or 0.0), float(incoming.depth_hz or 0.0))
+                target.depth_cents = max(float(target.depth_cents or 0.0), float(incoming.depth_cents or 0.0))
+                target.regularity_score = max(float(target.regularity_score or 0.0), float(incoming.regularity_score or 0.0))
+                target.stability_score = max(float(target.stability_score or 0.0), float(incoming.stability_score or 0.0))
+            elif isinstance(target, RegisterTransitionEvent) and isinstance(incoming, RegisterTransitionEvent):
+                target.center_pitch_hz = incoming.center_pitch_hz or target.center_pitch_hz
+                target.span_semitones = max(float(target.span_semitones or 0.0), float(incoming.span_semitones or 0.0))
+                target.pitch_continuity_score = max(float(target.pitch_continuity_score or 0.0), float(incoming.pitch_continuity_score or 0.0))
+                target.harmonic_shift_score = max(float(target.harmonic_shift_score or 0.0), float(incoming.harmonic_shift_score or 0.0))
+                target.timbre_shift_score = max(float(target.timbre_shift_score or 0.0), float(incoming.timbre_shift_score or 0.0))
+            elif isinstance(target, BreathyPhonationEvent) and isinstance(incoming, BreathyPhonationEvent):
+                target.mean_rms = max(float(target.mean_rms or 0.0), float(incoming.mean_rms or 0.0)) or target.mean_rms or incoming.mean_rms
+                target.voiced_soft_score = max(float(target.voiced_soft_score or 0.0), float(incoming.voiced_soft_score or 0.0))
+                target.breathy_score = max(float(target.breathy_score or 0.0), float(incoming.breathy_score or 0.0))
+        except Exception:
+            pass
+        return target
+
+    def _technique_event_meaningful(self, event: BaseTechniqueEvent, cfg: Optional[TechniqueRecognitionConfig]) -> bool:
+        try:
+            duration = max(0.0, float(getattr(event, 'duration', 0.0) or 0.0))
+        except Exception:
+            return False
+        event_type = str(getattr(event, 'event_type', '') or '')
+        confidence = max(0.0, float(getattr(event, 'confidence', 0.0) or 0.0))
+        strength = max(0.0, float(getattr(event, 'strength', 0.0) or 0.0))
+        if event_type == 'breath':
+            min_d = max(0.08, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.08
+            suppressed = int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
+            return duration >= min_d and (suppressed >= 1 or confidence >= 0.62 or strength >= 0.60)
+        if event_type == 'slide':
+            min_d = max(0.12, float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08)) if cfg is not None else 0.12
+            span = float(getattr(event, 'pitch_span_semitones', 0.0) or 0.0)
+            peak_rate = float(getattr(event, 'peak_semitone_rate', 0.0) or 0.0)
+            continuity = float(getattr(event, 'continuity_score', 0.0) or 0.0)
+            return duration >= min_d and span >= 1.25 and peak_rate >= 3.1 and continuity >= 0.22
+        if event_type == 'vibrato':
+            min_d = max(0.26, float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18)) if cfg is not None else 0.26
+            rate_hz = float(getattr(event, 'rate_hz', 0.0) or 0.0)
+            depth_cents = abs(float(getattr(event, 'depth_cents', 0.0) or 0.0))
+            stability = float(getattr(event, 'stability_score', 0.0) or 0.0)
+            return duration >= min_d and 3.0 <= rate_hz <= 8.8 and 10.0 <= depth_cents <= 180.0 and stability >= 0.18
+        if event_type == 'register_transition':
+            min_d = max(0.14, float(getattr(cfg, 'min_register_transition_s', 0.10) or 0.10)) if cfg is not None else 0.14
+            span = float(getattr(event, 'span_semitones', 0.0) or 0.0)
+            harmonic_shift = float(getattr(event, 'harmonic_shift_score', 0.0) or 0.0)
+            timbre_shift = float(getattr(event, 'timbre_shift_score', 0.0) or 0.0)
+            return duration >= min_d and 1.0 <= span <= 6.0 and max(harmonic_shift, timbre_shift) >= 0.34 and confidence >= 0.58
+        if event_type == 'breathy_phonation':
+            min_d = max(0.18, float(getattr(cfg, 'min_breathy_duration_s', 0.10) or 0.10)) if cfg is not None else 0.18
+            breathy = float(getattr(event, 'breathy_score', 0.0) or 0.0)
+            return duration >= min_d and breathy >= 0.34 and strength >= 0.50
+        return duration >= 0.10 and confidence >= 0.58
+
+    def _technique_event_spacing(self, event_type: str) -> float:
+        spacing_map = {
+            'breath': 0.26,
+            'register_transition': 0.58,
+            'slide': 0.46,
+            'vibrato': 0.90,
+            'breathy_phonation': 0.65,
+        }
+        return float(spacing_map.get(str(event_type or ''), 0.35))
+
+    def _postprocess_technique_events(self, events: List[BaseTechniqueEvent]) -> List[BaseTechniqueEvent]:
+        try:
+            cfg = getattr(getattr(self, '_technique_panel_state', None), 'config', None)
+            merge_gap = float(getattr(cfg, 'merge_gap_s', 0.12) or 0.12) if cfg is not None else 0.12
+        except Exception:
+            cfg = None
+            merge_gap = 0.12
+        prepared = []
+        for event in sorted(list(events or []), key=lambda item: (float(getattr(item, 'start_time', 0.0) or 0.0), float(getattr(item, 'end_time', 0.0) or 0.0))):
+            if not self._technique_event_meaningful(event, cfg):
+                continue
+            if prepared:
+                prev = prepared[-1]
+                same_type = str(getattr(prev, 'event_type', '') or '') == str(getattr(event, 'event_type', '') or '')
+                gap = float(getattr(event, 'start_time', 0.0) or 0.0) - float(getattr(prev, 'end_time', 0.0) or 0.0)
+                if same_type and gap <= max(merge_gap * 1.4, self._technique_event_spacing(getattr(event, 'event_type', '')) * 0.42):
+                    self._merge_technique_events(prev, event)
+                    continue
+            prepared.append(event)
+
+        filtered = []
+        recent_by_type: Dict[str, BaseTechniqueEvent] = {}
+        for event in prepared:
+            event_type = str(getattr(event, 'event_type', '') or '')
+            prev = recent_by_type.get(event_type)
+            if prev is not None:
+                gap = float(getattr(event, 'start_time', 0.0) or 0.0) - float(getattr(prev, 'end_time', 0.0) or 0.0)
+                overlap = min(float(getattr(prev, 'end_time', 0.0) or 0.0), float(getattr(event, 'end_time', 0.0) or 0.0)) - max(float(getattr(prev, 'start_time', 0.0) or 0.0), float(getattr(event, 'start_time', 0.0) or 0.0))
+                overlap = max(0.0, overlap)
+                spacing = self._technique_event_spacing(event_type)
+                if overlap > 0.0 or gap < spacing:
+                    prev_score = self._score_technique_event(prev)
+                    cur_score = self._score_technique_event(event)
+                    if overlap > 0.0 or gap <= max(merge_gap * 1.2, spacing * 0.35):
+                        if cur_score >= prev_score * 0.92:
+                            self._merge_technique_events(prev, event)
+                        continue
+                    if cur_score > prev_score * 1.10:
+                        filtered[-1] = event
+                        recent_by_type[event_type] = event
+                    continue
+            filtered.append(event)
+            recent_by_type[event_type] = event
+
+        return filtered
+
+    def _technique_fill_alpha(self, event_type: str) -> float:
+        alpha_map = {
+            'breath': 0.08,
+            'register_transition': 0.07,
+            'slide': 0.08,
+            'vibrato': 0.06,
+            'breathy_phonation': 0.07,
+        }
+        return float(alpha_map.get(str(event_type or ''), 0.07))
+
+    def _technique_label_lane(self, lane_end_times: List[float], start_time: float, spacing: float, max_lanes: int = 3) -> int:
+        for idx, lane_end in enumerate(lane_end_times):
+            if start_time >= (float(lane_end) + spacing):
+                lane_end_times[idx] = start_time
+                return idx
+        if len(lane_end_times) < max_lanes:
+            lane_end_times.append(start_time)
+            return len(lane_end_times) - 1
+        return -1
+
+    def _refresh_technique_artists(self, *, force: bool = False) -> None:
+        if not hasattr(self, 'ax'):
+            return
+        if not self._technique_enabled_for_current_mode():
+            self._clear_technique_artists()
+            return
+        now = time.time()
+        if (not force) and (now - float(getattr(self, '_technique_last_overlay_refresh', 0.0) or 0.0) < float(getattr(self, '_technique_overlay_interval', 0.12) or 0.12)):
+            return
+        self._technique_last_overlay_refresh = now
+        self._clear_technique_artists()
+        try:
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None)
+        except Exception:
+            state, cfg = None, None
+        try:
+            x0, x1 = self.ax.get_xlim()
+        except Exception:
+            x0, x1 = 0.0, 0.0
+        try:
+            y0, y1 = self.ax.get_ylim()
+        except Exception:
+            y0, y1 = 0.0, 8.0
+        y_min = min(float(y0), float(y1))
+        y_max = max(float(y0), float(y1))
+        y_span = max(1e-6, y_max - y_min)
+        visible_events = []
+        for event in self._selected_technique_events():
+            try:
+                if float(event.end_time) < float(x0) or float(event.start_time) > float(x1):
+                    continue
+            except Exception:
+                continue
+            visible_events.append(event)
+        if not visible_events:
+            return
+        visible_events = sorted(visible_events, key=lambda item: (float(getattr(item, 'start_time', 0.0) or 0.0), float(getattr(item, 'end_time', 0.0) or 0.0)))
+        lane_end_times: List[float] = []
+        label_count = 0
+        for event in visible_events[-20:]:
+            label_text, color = self._get_technique_event_style(getattr(event, 'event_type', ''))
+            start_time = float(getattr(event, 'start_time', 0.0) or 0.0)
+            end_time = float(getattr(event, 'end_time', 0.0) or 0.0)
+            center_time = 0.5 * (start_time + end_time)
+            clipped_start = min(max(start_time, float(x0)), float(x1))
+            clipped_end = min(max(end_time, float(x0)), float(x1))
+            if clipped_end <= clipped_start:
+                continue
+            try:
+                if cfg is None or bool(getattr(cfg, 'show_fill_overlay', True)):
+                    patch = self.ax.axvspan(
+                        clipped_start,
+                        clipped_end,
+                        ymin=0.0,
+                        ymax=1.0,
+                        facecolor=color,
+                        alpha=self._technique_fill_alpha(getattr(event, 'event_type', '')),
+                        edgecolor='none',
+                        zorder=18,
+                    )
+                    self._technique_region_artists.append(patch)
+            except Exception:
+                pass
+            try:
+                if cfg is None or bool(getattr(cfg, 'show_regions', True)):
+                    line_y0 = y_min + y_span * 0.04
+                    line_y1 = y_max - y_span * 0.06
+                    left_line = self.ax.plot([clipped_start, clipped_start], [line_y0, line_y1], color=color, linewidth=0.68, alpha=0.96, zorder=23, solid_capstyle='butt', clip_on=True)[0]
+                    right_line = self.ax.plot([clipped_end, clipped_end], [line_y0, line_y1], color=color, linewidth=0.68, alpha=0.96, zorder=23, solid_capstyle='butt', clip_on=True)[0]
+                    self._technique_region_artists.extend([left_line, right_line])
+            except Exception:
+                pass
+            try:
+                if cfg is None or bool(getattr(cfg, 'show_labels', True)):
+                    lane = self._technique_label_lane(lane_end_times, clipped_start, spacing=0.45, max_lanes=3)
+                    if lane < 0:
+                        continue
+                    label_y = y_max - y_span * (0.035 + lane * 0.075)
+                    label_x = min(max(center_time, float(x0) + 0.18), float(x1) - 0.18)
+                    txt = self.ax.text(
+                        label_x,
+                        label_y,
+                        label_text,
+                        ha='center',
+                        va='bottom',
+                        fontsize=7.9,
+                        fontweight='semibold',
+                        color='#EAF4FF',
+                        alpha=0.92,
+                        zorder=24,
+                        clip_on=True,
+                    )
+                    self._technique_label_artists.append(txt)
+                    label_count += 1
+            except Exception:
+                pass
+        try:
+            if cfg is None or bool(getattr(cfg, 'show_summary_panel', True)):
+                counts = {}
+                for event in self._selected_technique_events():
+                    counts[event.event_type] = int(counts.get(event.event_type, 0)) + 1
+                summary_lines = []
+                for key in ('breath', 'register_transition', 'slide', 'vibrato', 'breathy_phonation'):
+                    if counts.get(key):
+                        summary_lines.append(f"{self._technique_visible_types.get(key, key)} {counts[key]}")
+                if summary_lines:
+                    self._technique_summary_artist = self.ax.text(
+                        0.985,
+                        0.985,
+                        '\n'.join(summary_lines),
+                        transform=self.ax.transAxes,
+                        ha='right',
+                        va='top',
+                        fontsize=8.5,
+                        color='#EAF5FF',
+                        zorder=25,
+                        bbox=dict(facecolor=(0.03, 0.05, 0.08, 0.76), edgecolor='#3A556A', linewidth=0.8, boxstyle='round,pad=0.26'),
+                    )
+        except Exception:
+            pass
+
+    def focus_on_technique_region(self, *, prefer_first: bool = True, padding_ratio: float = 0.18) -> bool:
+        if not hasattr(self, 'ax'):
+            return False
+        events = self._selected_technique_events()
+        if not events:
+            return False
+        try:
+            x0, x1 = self.ax.get_xlim()
+        except Exception:
+            x0, x1 = 0.0, float(getattr(self, 'time_window', 16.0) or 16.0)
+        visible = []
+        for event in events:
+            try:
+                if float(event.end_time) >= float(x0) and float(event.start_time) <= float(x1):
+                    visible.append(event)
+            except Exception:
+                continue
+        if visible:
+            try:
+                self._refresh_technique_artists(force=True)
+                if hasattr(self, 'canvas') and self.canvas is not None:
+                    self.canvas.draw_idle()
+            except Exception:
+                pass
+            return True
+        target = events[0] if prefer_first else events[-1]
+        try:
+            start_time = float(getattr(target, 'start_time', 0.0) or 0.0)
+            end_time = float(getattr(target, 'end_time', start_time) or start_time)
+        except Exception:
+            return False
+        try:
+            window = float(getattr(self, 'time_window', 16.0) or 16.0)
+        except Exception:
+            window = 16.0
+        padding = max(0.20, min(window * 0.35, max(0.30, (end_time - start_time) * max(0.05, float(padding_ratio)))))
+        target_center = 0.5 * (start_time + end_time)
+        new_x0 = max(0.0, target_center - window * 0.5)
+        event_left = max(0.0, start_time - padding)
+        if event_left < new_x0:
+            new_x0 = event_left
+        try:
+            max_offset = max(0.0, float(getattr(self, 'max_history_time', 300.0) or 300.0) - window)
+            new_x0 = min(new_x0, max_offset)
+        except Exception:
+            pass
+        try:
+            self.auto_follow = False
+        except Exception:
+            pass
+        try:
+            self.auto_scroll_enabled = False
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'auto_follow_btn') and self.auto_follow_btn is not None:
+                self.auto_follow_btn.setChecked(False)
+        except Exception:
+            pass
+        try:
+            import time as _t
+            hold_until = _t.time() + 3.0
+            self._manual_time_offset_override_until = hold_until
+            self._manual_scroll_active_until = hold_until
+            self._suppress_smooth_until = hold_until
+        except Exception:
+            pass
+        try:
+            self.time_offset = float(new_x0)
+            self._suppress_next_smooth_xlim = True
+            if hasattr(self, '_smoothed_xlim'):
+                self._smoothed_xlim = (float(new_x0), float(new_x0 + window))
+            self.update_axis_ranges()
+            if hasattr(self, 'update_scrollbars'):
+                self.update_scrollbars()
+        except Exception:
+            try:
+                self.ax.set_xlim(float(new_x0), float(new_x0 + window))
+            except Exception:
+                return False
+        try:
+            self._refresh_technique_artists(force=True)
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+        return True
 
     def add_pitch_data(self, pitch_data):
         """添加音高数据（支持历史数据存储和断续音调曲线）"""
@@ -30372,6 +31777,8 @@ class ECGStylePitchVisualizer(QWidget):
                     self._professional_last_data_wall_t = time.time()
             except Exception:
                 pass
+
+            # 技巧识别改为录音结束后的离线整段分析；实时阶段仅缓存宿主构建的特征。
             
             # 回听暂停拖动时：不绘制细节点（保持时间推进但不新增点）
             try:
@@ -32390,6 +33797,10 @@ class ECGStylePitchVisualizer(QWidget):
             # 节制触发重绘（draw_idle），高倍缩放下放宽到更低频率
             if hasattr(self, 'canvas'):
                 try:
+                    try:
+                        self._refresh_technique_artists(force=False)
+                    except Exception:
+                        pass
                     min_redraw = params['min_redraw'] if zoom >= 2.0 else 0.0
                     last_di = getattr(self, '_last_guides_draw_idle_time', 0.0)
                     if min_redraw == 0.0 or (now - last_di) >= min_redraw:
@@ -39194,6 +40605,10 @@ class ECGStylePitchVisualizer(QWidget):
         self.ecg_print_counter += 1
         if self.ecg_print_counter % self.ecg_print_interval == 0:
             print(f"💚 普通模式：{self.current_linewidth:.1f}px线条，数据点={len(times)} (第{self.ecg_print_counter}次更新)")
+        try:
+            self._refresh_technique_artists(force=False)
+        except Exception:
+            pass
     
     def update_frequency_mode(self, times, pitches, confidences):
         """频率曲线模式"""
@@ -39372,6 +40787,10 @@ class ECGStylePitchVisualizer(QWidget):
                             coll.set_zorder(14)
                         except Exception:
                             pass
+                try:
+                    self._refresh_technique_artists(force=True)
+                except Exception:
+                    pass
             elif mode == "专业模式":
                 try:
                     self.switch_display_widget(target="professional")
@@ -40732,10 +42151,15 @@ class ECGStylePitchVisualizer(QWidget):
             
             # 合并为一行显示状态信息
             status_text = f"中心: {center_note} | 时间: {time_str} | 缩放: {self.zoom_level:.1f}x | 标注: {mode_str} | 跟随: {follow_str} | 数据: {data_count}点({buffer_usage:.1f}%){buffer_warning}"
-            self.status_label.setText(status_text)
+            if getattr(self, '_last_status_label_text', None) != status_text:
+                self._last_status_label_text = status_text
+                self.status_label.setText(status_text)
             
         except Exception as e:
-            self.status_label.setText(f"状态更新错误: {e}")
+            err_text = f"状态更新错误: {e}"
+            if getattr(self, '_last_status_label_text', None) != err_text:
+                self._last_status_label_text = err_text
+                self.status_label.setText(err_text)
     
     def clear_data_simple_legacy(self):  # 不再绑定按钮，保留兼容（不要覆盖高级 clear_data）
         """[LEGACY - DO NOT USE] 旧版简化清除：仅清空缓存与主曲线，不做深度 artist 清理/网格延迟重建。"""
@@ -42193,15 +43617,15 @@ class IntegratedRecordingInterface(QMainWindow):
         # 可视化节流/平滑参数
         self._vis_last_draw_wall = 0.0
         self._vis_min_interval_sec = 0.018
-        self._plot_freq_history = []
+        self._plot_freq_history = deque(maxlen=33)
         self._plot_freq_alpha = 0.35
         self._plot_freq_history_maxlen = 33
         self._plot_savgol_win = 9
         self._plot_savgol_poly = 2
         self._normal_mode_plot_freq_alpha = 0.62
         self._normal_mode_plot_freq_fast_alpha = 0.90
-        self._normal_mode_plot_fast_turn_semi = 0.42
-        self._normal_mode_plot_fast_turn_dt = 0.14
+        self._normal_mode_plot_fast_turn_semi = 0.34
+        self._normal_mode_plot_fast_turn_dt = 0.11
         self._normal_mode_pitch_value_mode = 'display'
         self._normal_mode_pitch_value_label = '演唱展示值'
         self._normal_mode_pitch_value_prompt_each_start = True
@@ -42210,12 +43634,25 @@ class IntegratedRecordingInterface(QMainWindow):
         self._normal_mode_display_ui_confirm_close_semi = 3.2
         self._normal_mode_display_ui_reject_jump_semi = 5.8
         self._normal_mode_display_ui_early_step_semi = 2.4
-        self._normal_mode_display_ui_bridge_hold_s = 0.18
+        self._normal_mode_display_ui_bridge_hold_s = 0.12
         self._normal_mode_display_ui_bridge_rms_mul = 1.10
         self._normal_mode_display_ui_bridge_release_mul = 0.82
+        self._technique_panel_state = TechniquePanelState()
+        self._technique_last_feature_time = 0.0
+        self._technique_last_feature_frequency = 0.0
+        self._technique_last_feature_rate = 0.0
+        self._technique_recorded_frames = []
+        self._technique_recording_ready = False
+        self._technique_recording_mode_name = ''
+        self._technique_last_recording_duration = 0.0
+        self._gpu_status_detail = ''
         self._adaptive_perf_enabled = True
         self._adaptive_perf_update_interval = 0.24
         self._adaptive_perf_last_wall = 0.0
+        self._last_system_status_text = None
+        self._last_performance_text = None
+        self._last_performance_tooltip = None
+        self._runtime_perf_ui_last_wall = 0.0
         self._adaptive_perf_last_level_percent = 0
         self._adaptive_perf_bar_style_key = None
         self._adaptive_perf_base = {}
@@ -42551,6 +43988,10 @@ class IntegratedRecordingInterface(QMainWindow):
         self.visualizer = ECGStylePitchVisualizer()
         try:
             self.visualizer._host_interface = self
+        except Exception:
+            pass
+        try:
+            self.visualizer.set_technique_panel_state(self._technique_panel_state)
         except Exception:
             pass
         # 设置音频处理器引用
@@ -50373,6 +51814,10 @@ class IntegratedRecordingInterface(QMainWindow):
             self._apply_environment_noise_profile(getattr(self, '_environment_noise_profile', 'normal'))
         except Exception:
             pass
+        try:
+            self._update_technique_button_text()
+        except Exception:
+            pass
 
         return control_group
     
@@ -50533,6 +51978,427 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
 
+    def _update_technique_button_text(self):
+        try:
+            btn = getattr(self, 'technique_recognition_btn', None)
+            if btn is None:
+                return
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None)
+            enabled = bool(cfg is not None and getattr(cfg, 'enabled', False))
+            selected = list(getattr(state, 'selected_types', []) or [])
+            count = len(selected) if enabled else 0
+            analysis_ready = bool(getattr(state, 'analysis_ready', False))
+            source_ready = bool(self._technique_analysis_source_ready())
+            if enabled and source_ready:
+                base_text = '重分析技巧' if analysis_ready else '分析技巧'
+            elif enabled:
+                base_text = '技巧识别设置'
+            else:
+                base_text = '技巧识别'
+            btn.setText(f"{base_text} ({count})" if count > 0 else base_text)
+            if enabled and source_ready:
+                btn.setToolTip('点击后对当前普通模式录音做离线技巧分区与标注；按住 Ctrl 再点击可打开设置')
+            else:
+                btn.setToolTip('配置录音完成后的技巧识别项目与展示方式')
+        except Exception:
+            pass
+
+    def _reset_technique_analysis_state(self, *, clear_visualizer: bool = False):
+        self._technique_recorded_frames = []
+        self._technique_recording_ready = False
+        self._technique_recording_mode_name = ''
+        self._technique_last_recording_duration = 0.0
+        self._technique_last_feature_time = 0.0
+        self._technique_last_feature_frequency = 0.0
+        self._technique_last_feature_rate = 0.0
+        state = getattr(self, '_technique_panel_state', None)
+        if isinstance(state, TechniquePanelState):
+            state.last_summary = {}
+            state.analysis_ready = False
+            state.last_analysis_event_count = 0
+            state.last_analyzed_duration = 0.0
+            state.last_source_frame_count = 0
+            state.last_analysis_mode = 'idle'
+        if clear_visualizer:
+            try:
+                viz = getattr(self, 'visualizer', None)
+                if viz is not None and hasattr(viz, '_reset_technique_tracking'):
+                    viz._reset_technique_tracking(clear_events=True)
+            except Exception:
+                pass
+
+    def _technique_analysis_source_ready(self) -> bool:
+        try:
+            if bool(getattr(self, 'is_recording', False)):
+                return False
+        except Exception:
+            return False
+        frames = list(getattr(self, '_technique_recorded_frames', []) or [])
+        if len(frames) < 8:
+            return False
+        if not bool(getattr(self, '_technique_recording_ready', False)):
+            return False
+        return str(getattr(self, '_technique_recording_mode_name', '') or '') == '普通模式'
+
+    def _capture_technique_frame(self, features: Optional[FrameFeatures]) -> None:
+        if features is None:
+            return
+        try:
+            if not bool(getattr(self, 'is_recording', False)):
+                return
+        except Exception:
+            return
+        try:
+            if bool(getattr(features, 'preview_only', False)):
+                return
+        except Exception:
+            pass
+        try:
+            mode_name = str(getattr(features, 'mode_name', '') or '')
+        except Exception:
+            mode_name = ''
+        if mode_name != '普通模式':
+            return
+        try:
+            self._technique_recorded_frames.append(features)
+            self._technique_recording_mode_name = mode_name
+        except Exception:
+            pass
+
+    def _run_offline_technique_analysis(self, *, show_feedback: bool = True):
+        result = {
+            'ok': False,
+            'reason': '',
+            'event_count': 0,
+            'counts': {},
+            'duration': 0.0,
+        }
+        state = getattr(self, '_technique_panel_state', None)
+        cfg = getattr(state, 'config', None)
+        if cfg is None or not bool(getattr(cfg, 'enabled', False)):
+            result['reason'] = '技巧识别尚未启用'
+            return result
+        if not list(getattr(state, 'selected_types', []) or []):
+            result['reason'] = '尚未选择识别项目'
+            return result
+        if not self._technique_analysis_source_ready():
+            result['reason'] = '当前没有可分析的普通模式录音数据'
+            return result
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None or not hasattr(viz, 'analyze_technique_frames'):
+            result['reason'] = '技巧识别渲染器不可用'
+            return result
+        try:
+            mode_text = viz.display_mode.currentText() if hasattr(viz, 'display_mode') else '普通模式'
+        except Exception:
+            mode_text = '普通模式'
+        if mode_text != '普通模式':
+            result['reason'] = '技巧识别当前仅支持普通模式录音后的离线分析'
+            return result
+        frames = list(getattr(self, '_technique_recorded_frames', []) or [])
+        summary = viz.analyze_technique_frames(frames)
+        counts = dict(summary.get('counts', {}) or {}) if isinstance(summary, dict) else {}
+        event_count = int(summary.get('event_count', 0) or 0) if isinstance(summary, dict) else 0
+        duration = float(summary.get('duration', 0.0) or 0.0) if isinstance(summary, dict) else 0.0
+        result.update({
+            'ok': True,
+            'event_count': event_count,
+            'counts': counts,
+            'duration': duration,
+        })
+        if isinstance(state, TechniquePanelState):
+            state.last_summary = counts
+            state.analysis_ready = True
+            state.last_analysis_event_count = event_count
+            state.last_analyzed_duration = duration
+            state.last_source_frame_count = len(frames)
+            state.last_analysis_mode = 'offline_normal_recording'
+        self._sync_technique_panel_state_to_visualizer()
+        try:
+            if hasattr(viz, '_refresh_technique_artists'):
+                viz._refresh_technique_artists(force=True)
+                if event_count > 0 and bool(getattr(cfg, 'auto_focus_after_analysis', False)) and hasattr(viz, 'focus_on_technique_region'):
+                    try:
+                        viz.focus_on_technique_region(prefer_first=True, padding_ratio=0.22)
+                    except Exception:
+                        pass
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+        except Exception:
+            pass
+        try:
+            if event_count > 0:
+                joined = '，'.join(f"{viz._technique_visible_types.get(k, k)} {v}" for k, v in counts.items() if v)
+                self.system_status_label.setText(f"状态: 技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}")
+            else:
+                self.system_status_label.setText('状态: 技巧识别完成，当前录音未检测到需要标注的技巧区间')
+        except Exception:
+            pass
+        if show_feedback:
+            try:
+                if event_count > 0:
+                    msg = f"已完成离线技巧识别，共标注 {event_count} 段。\n录音时长: {duration:.1f}秒"
+                    if counts:
+                        msg += '\n' + ' / '.join(f"{viz._technique_visible_types.get(k, k)} {v}" for k, v in counts.items() if v)
+                else:
+                    msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
+                QMessageBox.information(self, '技巧识别', msg)
+            except Exception:
+                pass
+        return result
+
+    def _sync_technique_panel_state_to_visualizer(self):
+        try:
+            viz = getattr(self, 'visualizer', None)
+            if viz is not None and hasattr(viz, 'set_technique_panel_state'):
+                viz.set_technique_panel_state(getattr(self, '_technique_panel_state', None))
+        except Exception:
+            pass
+        try:
+            self._update_technique_button_text()
+        except Exception:
+            pass
+
+    def open_technique_recognition_dialog(self):
+        try:
+            state = getattr(self, '_technique_panel_state', None) or TechniquePanelState()
+            cfg = getattr(state, 'config', None) or TechniqueRecognitionConfig()
+            selected_types = list(getattr(state, 'selected_types', []) or [])
+        except Exception:
+            state = TechniquePanelState()
+            cfg = TechniqueRecognitionConfig()
+            selected_types = []
+        try:
+            modifiers = QApplication.keyboardModifiers()
+            open_settings_only = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        except Exception:
+            open_settings_only = False
+        if (not open_settings_only) and bool(getattr(cfg, 'enabled', False)) and bool(selected_types) and self._technique_analysis_source_ready():
+            try:
+                analysis_result = self._run_offline_technique_analysis(show_feedback=True)
+            except Exception:
+                analysis_result = None
+            if analysis_result and bool(analysis_result.get('ok', False)):
+                return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('技巧识别')
+        dlg.setModal(True)
+        dlg.resize(460, 360)
+        dlg.setStyleSheet("""
+            QDialog { background-color: #121922; color: #E6EEF8; }
+            QLabel { color: #E6EEF8; }
+            QCheckBox { color: #E6EEF8; spacing: 6px; }
+            QPushButton { background-color: #2B3948; border: 1px solid #4A647D; border-radius: 6px; padding: 6px 12px; color: #F4FAFF; }
+            QPushButton:hover { border-color: #74B7E6; }
+        """)
+        layout = QVBoxLayout(dlg)
+
+        selected_types = set(selected_types)
+
+        intro = QLabel('技巧识别改为普通模式录音完成后的离线分析。录音完成后直接点击“技巧识别”会立即做分区标注；按住 Ctrl 再点击可进入设置。')
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        enable_chk = QCheckBox('启用技巧识别')
+        enable_chk.setChecked(bool(getattr(cfg, 'enabled', False)))
+        layout.addWidget(enable_chk)
+
+        group = QGroupBox('识别项目')
+        group_layout = QVBoxLayout(group)
+        option_defs = [
+            ('breath', '换气'),
+            ('register_transition', '换声区'),
+            ('slide', '滑音'),
+            ('vibrato', '颤音'),
+            ('breathy_phonation', '气声'),
+        ]
+        option_checks = {}
+        for value, label in option_defs:
+            chk = QCheckBox(label)
+            chk.setChecked(value in selected_types)
+            group_layout.addWidget(chk)
+            option_checks[value] = chk
+        layout.addWidget(group)
+
+        display_group = QGroupBox('展示方式')
+        display_layout = QVBoxLayout(display_group)
+        normal_chk = QCheckBox('普通模式显示')
+        normal_chk.setChecked(bool(getattr(cfg, 'show_in_normal_mode', True)))
+        pro_chk = QCheckBox('专业模式显示')
+        pro_chk.setChecked(bool(getattr(cfg, 'show_in_professional_mode', True)))
+        label_chk = QCheckBox('显示文字标签')
+        label_chk.setChecked(bool(getattr(cfg, 'show_labels', True)))
+        region_chk = QCheckBox('显示区域框线')
+        region_chk.setChecked(bool(getattr(cfg, 'show_regions', True)))
+        fill_chk = QCheckBox('显示区域滤镜底色')
+        fill_chk.setChecked(bool(getattr(cfg, 'show_fill_overlay', False)))
+        summary_chk = QCheckBox('显示右上角摘要')
+        summary_chk.setChecked(bool(getattr(cfg, 'show_summary_panel', True)))
+        auto_focus_chk = QCheckBox('识别后自动定位到技巧区间')
+        auto_focus_chk.setChecked(bool(getattr(cfg, 'auto_focus_after_analysis', False)))
+        for chk in (normal_chk, pro_chk, label_chk, region_chk, fill_chk, summary_chk, auto_focus_chk):
+            display_layout.addWidget(chk)
+        layout.addWidget(display_group)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton('取消')
+        ok_btn = QPushButton('确定')
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_cfg = TechniqueRecognitionConfig(
+            enabled=bool(enable_chk.isChecked()),
+            detect_breath=bool(option_checks['breath'].isChecked()),
+            detect_register_transition=bool(option_checks['register_transition'].isChecked()),
+            detect_slide=bool(option_checks['slide'].isChecked()),
+            detect_vibrato=bool(option_checks['vibrato'].isChecked()),
+            detect_breathy_phonation=bool(option_checks['breathy_phonation'].isChecked()),
+            min_event_confidence=float(getattr(cfg, 'min_event_confidence', 0.55) or 0.55),
+            merge_gap_s=float(getattr(cfg, 'merge_gap_s', 0.12) or 0.12),
+            min_breath_duration_s=float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06),
+            min_slide_duration_s=float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08),
+            min_vibrato_duration_s=float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18),
+            min_register_transition_s=float(getattr(cfg, 'min_register_transition_s', 0.10) or 0.10),
+            min_breathy_duration_s=float(getattr(cfg, 'min_breathy_duration_s', 0.10) or 0.10),
+            show_in_normal_mode=bool(normal_chk.isChecked()),
+            show_in_professional_mode=bool(pro_chk.isChecked()),
+            show_labels=bool(label_chk.isChecked()),
+            show_regions=bool(region_chk.isChecked()),
+            show_fill_overlay=bool(fill_chk.isChecked()),
+            show_summary_panel=bool(summary_chk.isChecked()),
+            auto_focus_after_analysis=bool(auto_focus_chk.isChecked()),
+        )
+        self._technique_panel_state = TechniquePanelState(
+            config=new_cfg,
+            selected_types=[value for value, _ in option_defs if option_checks[value].isChecked()],
+            visible_rows=list(getattr(state, 'visible_rows', []) or ['换气', '换声区', '滑音', '颤音', '气声']),
+            last_summary=dict(getattr(state, 'last_summary', {}) or {}),
+            analysis_ready=False,
+            last_analysis_event_count=0,
+            last_analyzed_duration=0.0,
+            last_source_frame_count=int(getattr(state, 'last_source_frame_count', 0) or 0),
+            last_analysis_mode='configured',
+        )
+        self._sync_technique_panel_state_to_visualizer()
+        analysis_result = None
+        if bool(getattr(new_cfg, 'enabled', False)):
+            analysis_result = self._run_offline_technique_analysis(show_feedback=True)
+        try:
+            if analysis_result and bool(analysis_result.get('ok', False)):
+                pass
+            elif bool(getattr(new_cfg, 'enabled', False)) and not self._technique_analysis_source_ready():
+                self.system_status_label.setText('状态: 技巧识别配置已更新，录音完成后可分析当前普通模式曲线')
+            else:
+                self.system_status_label.setText('状态: 技巧识别配置已更新')
+        except Exception:
+            pass
+
+    def _build_frame_features(self, pitch_data: dict, *, resolved_frequency: float, has_pitch: bool, note_info: Optional[dict]) -> FrameFeatures:
+        try:
+            now_wall = float(time.time())
+        except Exception:
+            now_wall = 0.0
+        try:
+            timeline_time = float(pitch_data.get('global_time', pitch_data.get('timestamp', now_wall)) or now_wall)
+        except Exception:
+            timeline_time = now_wall
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            detected_frequency = float(pitch_data.get('detected_frequency', resolved_frequency) or 0.0)
+        except Exception:
+            detected_frequency = float(resolved_frequency or 0.0)
+        try:
+            display_frequency = float(pitch_data.get('display_frequency', resolved_frequency) or 0.0)
+        except Exception:
+            display_frequency = float(resolved_frequency or 0.0)
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            mode_name = self.visualizer.display_mode.currentText() if hasattr(self, 'visualizer') and hasattr(self.visualizer, 'display_mode') else '普通模式'
+        except Exception:
+            mode_name = '普通模式'
+        try:
+            prev_t = float(getattr(self, '_technique_last_feature_time', 0.0) or 0.0)
+            prev_f = float(getattr(self, '_technique_last_feature_frequency', 0.0) or 0.0)
+            prev_rate = float(getattr(self, '_technique_last_feature_rate', 0.0) or 0.0)
+        except Exception:
+            prev_t, prev_f, prev_rate = 0.0, 0.0, 0.0
+        semi_delta = None
+        semi_rate = None
+        semi_accel = None
+        continuity_score = None
+        try:
+            if prev_t > 0.0 and prev_f > 0.0 and detected_frequency > 0.0:
+                dt = max(1e-6, float(timeline_time) - prev_t)
+                semi_delta = abs(12.0 * math.log2(max(detected_frequency, 1e-9) / max(prev_f, 1e-9)))
+                semi_rate = semi_delta / dt
+                semi_accel = (semi_rate - prev_rate) / dt
+                continuity_score = max(0.0, min(1.0, 1.0 - semi_delta / 6.0))
+                self._technique_last_feature_rate = float(semi_rate)
+        except Exception:
+            pass
+        self._technique_last_feature_time = float(timeline_time)
+        if detected_frequency > 0.0:
+            self._technique_last_feature_frequency = float(detected_frequency)
+        ni = dict(note_info or pitch_data.get('note_info') or {})
+        features = FrameFeatures(
+            timeline_time=float(timeline_time),
+            wall_time=float(now_wall),
+            raw_frequency_hz=float(raw_frequency),
+            detected_frequency_hz=float(detected_frequency),
+            display_frequency_hz=float(display_frequency if display_frequency > 0.0 else resolved_frequency),
+            has_pitch=bool(has_pitch),
+            confidence=float(confidence),
+            audio_rms=float(audio_rms),
+            note_name=ni.get('note_name'),
+            octave=ni.get('octave'),
+            midi_number=ni.get('midi_number'),
+            cents=ni.get('cents'),
+            zcr=pitch_data.get('zcr'),
+            fast_change=bool(pitch_data.get('_fast_change', False)),
+            semitone_delta_prev=semi_delta,
+            semitone_rate=semi_rate,
+            semitone_accel=semi_accel,
+            continuity_score=continuity_score,
+            stable_anchor_frequency_hz=float(prev_f or 0.0) if prev_f > 0.0 else None,
+            harmonic_candidates=list(pitch_data.get('harmonic_candidates', []) or []),
+            mid_high_ratio=pitch_data.get('mid_high_ratio'),
+            hm_over_hh=pitch_data.get('hm_over_hh'),
+            spectral_tilt=pitch_data.get('spectral_tilt'),
+            tonal_hum=pitch_data.get('tonal_hum'),
+            breath_detect_hint=bool(pitch_data.get('breath_detect_hint', False)),
+            vibrato_info=dict(pitch_data.get('vibrato_info', {}) or {}),
+            mode_name=str(mode_name),
+            preview_only=bool(pitch_data.get('_preview_only', False)),
+            source_flags={},
+        )
+        try:
+            self._capture_technique_frame(features)
+        except Exception:
+            pass
+        return features
+
     def _reset_normal_mode_display_ui_warmup(self):
         for attr in (
             '_normal_mode_display_ui_last_voiced_wall',
@@ -50558,6 +52424,68 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             return 999.0
 
+    def _accept_normal_mode_display_candidate(self, pitch_data, candidate_frequency: float, *, last_plot_freq: float = 0.0, warmup_mode: bool = False) -> bool:
+        try:
+            current_frequency = float(candidate_frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0:
+            return False
+
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            fast_turn = bool(pitch_data.get('_fast_change', False))
+        except Exception:
+            fast_turn = False
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+        try:
+            harmonic_candidates = list(pitch_data.get('harmonic_candidates', []) or [])
+        except Exception:
+            harmonic_candidates = []
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
+        except Exception:
+            min_voice_rms = 0.0005
+
+        raw_supports_candidate = bool(raw_frequency > 0.0 and self._normal_mode_ui_semitone_distance(raw_frequency, current_frequency) <= 1.05)
+        low_energy = bool(audio_rms <= max(min_voice_rms * 2.3, 0.0011))
+        very_low_energy = bool(audio_rms <= max(min_voice_rms * 1.55, 0.00082))
+        weak_confidence = bool(confidence <= 0.74)
+        sparse_harmonics = bool(len(harmonic_candidates) <= 1)
+
+        if very_low_energy and weak_confidence and (not raw_supports_candidate):
+            return False
+        if breath_hint and low_energy and (not raw_supports_candidate):
+            return False
+
+        if last_plot_freq > 0.0 and (not fast_turn):
+            jump_semi = self._normal_mode_ui_semitone_distance(current_frequency, last_plot_freq)
+            if low_energy and jump_semi >= 3.2 and (not raw_supports_candidate):
+                return False
+            if very_low_energy and jump_semi >= 2.4 and confidence < 0.82:
+                return False
+            if sparse_harmonics and low_energy and jump_semi >= 4.2 and confidence < 0.88:
+                return False
+        elif warmup_mode:
+            if low_energy and confidence < 0.70 and (not raw_supports_candidate):
+                return False
+
+        return True
+
     def _refine_normal_mode_display_value_for_ui(self, pitch_data, frequency: float) -> float:
         try:
             if not self._use_normal_mode_display_value():
@@ -50572,6 +52500,18 @@ class IntegratedRecordingInterface(QMainWindow):
             current_frequency = 0.0
         if current_frequency <= 0.0:
             self._reset_normal_mode_display_ui_warmup()
+            return 0.0
+
+        try:
+            last_plot_freq_seed = float(getattr(self, '_normal_mode_display_ui_last_plot_freq', 0.0) or 0.0)
+        except Exception:
+            last_plot_freq_seed = 0.0
+        if not self._accept_normal_mode_display_candidate(
+            pitch_data,
+            current_frequency,
+            last_plot_freq=last_plot_freq_seed,
+            warmup_mode=(last_plot_freq_seed <= 0.0),
+        ):
             return 0.0
 
         now_wall = time.time()
@@ -50651,7 +52591,15 @@ class IntegratedRecordingInterface(QMainWindow):
                 return 0.0
 
             stabilized = 0.72 * float(latest_freq) + 0.28 * float(stable_center)
+            if not self._accept_normal_mode_display_candidate(
+                pitch_data,
+                stabilized,
+                last_plot_freq=float(stable_center or 0.0),
+                warmup_mode=True,
+            ):
+                return 0.0
             self._normal_mode_display_ui_warmup_done = True
+            self._normal_mode_display_ui_last_voiced_wall = now_wall
             self._normal_mode_display_ui_last_plot_freq = float(stabilized)
             return float(stabilized)
 
@@ -50693,6 +52641,15 @@ class IntegratedRecordingInterface(QMainWindow):
                 refined_frequency = min(float(refined_frequency), float(last_plot_freq) * max_step_ratio)
                 refined_frequency = 0.88 * float(refined_frequency) + 0.12 * float(last_plot_freq)
 
+        if not self._accept_normal_mode_display_candidate(
+            pitch_data,
+            refined_frequency,
+            last_plot_freq=float(last_plot_freq),
+            warmup_mode=False,
+        ):
+            return 0.0
+
+        self._normal_mode_display_ui_last_voiced_wall = now_wall
         self._normal_mode_display_ui_last_plot_freq = float(refined_frequency)
         return float(refined_frequency)
 
@@ -50716,6 +52673,7 @@ class IntegratedRecordingInterface(QMainWindow):
             hold_s = float(getattr(self, '_normal_mode_display_ui_bridge_hold_s', 0.18) or 0.18)
         except Exception:
             hold_s = 0.18
+        hold_s = min(hold_s, 0.12)
         if (now_wall - last_real_wall) > hold_s:
             return 0.0
 
@@ -50736,9 +52694,24 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             release_mul = 0.82
 
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+
         if audio_rms < max(min_voice_rms * bridge_rms_mul, min_voice_rms + 1e-5):
             if audio_rms <= max(min_voice_rms * release_mul, min_voice_rms * 0.95):
                 return 0.0
+        if audio_rms <= max(min_voice_rms * 1.35, 0.00075):
+            return 0.0
+        if confidence < 0.52:
+            return 0.0
+        if breath_hint:
+            return 0.0
 
         try:
             raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
@@ -50747,8 +52720,17 @@ class IntegratedRecordingInterface(QMainWindow):
         bridged = float(last_real_freq)
         if raw_frequency > 0.0:
             semi_gap = self._normal_mode_ui_semitone_distance(raw_frequency, last_real_freq)
-            if semi_gap <= 2.6:
-                bridged = 0.72 * float(last_real_freq) + 0.28 * float(raw_frequency)
+            if semi_gap <= 2.2:
+                bridged = 0.58 * float(last_real_freq) + 0.42 * float(raw_frequency)
+            else:
+                return 0.0
+        if not self._accept_normal_mode_display_candidate(
+            pitch_data,
+            bridged,
+            last_plot_freq=float(last_real_freq),
+            warmup_mode=False,
+        ):
+            return 0.0
         return float(bridged)
 
     def _confirm_normal_mode_pitch_value_selection(self) -> bool:
@@ -51639,7 +53621,7 @@ class IntegratedRecordingInterface(QMainWindow):
         presets = {
             'quiet': {
                 'label': '安静',
-                'min_voice_rms': 0.00030,
+                'min_voice_rms': 0.00018,
                 'breath_rms_threshold': 0.0028,
                 'spurious_low_energy_thr': 0.016,
                 'spurious_low_energy_thr_bt': 0.021,
@@ -51647,7 +53629,7 @@ class IntegratedRecordingInterface(QMainWindow):
             },
             'normal': {
                 'label': '标准',
-                'min_voice_rms': 0.00042,
+                'min_voice_rms': 0.00024,
                 'breath_rms_threshold': 0.0025,
                 'spurious_low_energy_thr': 0.015,
                 'spurious_low_energy_thr_bt': 0.020,
@@ -51655,7 +53637,7 @@ class IntegratedRecordingInterface(QMainWindow):
             },
             'noisy': {
                 'label': '嘈杂',
-                'min_voice_rms': 0.00072,
+                'min_voice_rms': 0.00042,
                 'breath_rms_threshold': 0.0036,
                 'spurious_low_energy_thr': 0.022,
                 'spurious_low_energy_thr_bt': 0.028,
@@ -52803,6 +54785,7 @@ class IntegratedRecordingInterface(QMainWindow):
             if self.audio_processor.start_recording(filename, should_save):
                 self.is_recording = True
                 self.is_analyzing = True  # 录音时也是分析状态
+                self._reset_technique_analysis_state(clear_visualizer=False)
                 
                 print(f"✅ 录音已启动: 文件={filename}, 保存={should_save}")
                 
@@ -52848,6 +54831,17 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception:
                     pass
                 self.visualizer.clear_data()
+                try:
+                    self.visualizer.auto_follow = True
+                    self.visualizer.auto_scroll_enabled = True
+                    self.visualizer.time_offset = 0.0
+                    self.visualizer.current_global_time = 0.0
+                    if hasattr(self.visualizer, 'auto_follow_btn') and self.visualizer.auto_follow_btn is not None:
+                        self.visualizer.auto_follow_btn.setChecked(True)
+                    if hasattr(self.visualizer, 'on_auto_follow_toggled'):
+                        self.visualizer.on_auto_follow_toggled(True)
+                except Exception:
+                    pass
                 try:
                     pin_axis = getattr(self.visualizer, 'pin_backing_axis_to_origin', None)
                     if callable(pin_axis) and getattr(self, 'backing_mode', 'off') in ('accompaniment','both'):
@@ -53591,18 +55585,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._head_points_update_interval = 0.020
                 self._head_points_update_interval_normal = 0.036
                 self._window_points_downsample_target = 1200
-            try:
-                self._plot_freq_history = []
-                if hasattr(self, '_plot_freq_prev'):
-                    delattr(self, '_plot_freq_prev')
-                if hasattr(self, '_normal_mode_plot_prev_wall'):
-                    delattr(self, '_normal_mode_plot_prev_wall')
-                if hasattr(self, '_normal_mode_plot_prev_raw'):
-                    delattr(self, '_normal_mode_plot_prev_raw')
-                if hasattr(self, '_last_head_points_update_wall'):
-                    delattr(self, '_last_head_points_update_wall')
-            except Exception:
-                pass
+            self._reset_plot_freq_history()
             if config is not None:
                 try:
                     self._analysis_target_hz = float(getattr(config, 'detection_frequency', getattr(self, '_analysis_target_hz', 60.0)) or 60.0)
@@ -53620,9 +55603,7 @@ class IntegratedRecordingInterface(QMainWindow):
             self._refresh_adaptive_performance_baseline()
             self._sync_performance_mode_state(new_mode)
             self._refresh_performance_status_label()
-            # 可选：清理绘图缓存，避免窗口参数巨变导致瞬时抖动
-            if isinstance(getattr(self, '_plot_freq_history', None), list) and len(self._plot_freq_history) > self._plot_freq_history_maxlen:
-                self._plot_freq_history = self._plot_freq_history[-self._plot_freq_history_maxlen:]
+            self._reset_plot_freq_history()
         except Exception:
             pass
 
@@ -53766,28 +55747,43 @@ class IntegratedRecordingInterface(QMainWindow):
             self._refresh_adaptive_performance_baseline()
         base = getattr(self, '_adaptive_perf_base', None) or {}
 
+        processor = getattr(self, 'audio_processor', None)
+        runtime_snapshot = {}
         try:
-            queue_size = int(self.audio_buffer_queue.qsize()) if hasattr(self, 'audio_buffer_queue') else 0
-            queue_cap = int(getattr(self.audio_buffer_queue, 'maxsize', 0) or 0) if hasattr(self, 'audio_buffer_queue') else 0
+            if processor is not None and hasattr(processor, 'get_runtime_perf_snapshot'):
+                runtime_snapshot = processor.get_runtime_perf_snapshot() or {}
+        except Exception:
+            runtime_snapshot = {}
+        try:
+            queue_size = int(runtime_snapshot.get('queue_backlog', 0) or 0)
+            queue_cap = int(getattr(getattr(processor, 'audio_buffer_queue', None), 'maxsize', 0) or 0)
             queue_ratio = min(1.0, queue_size / max(1, queue_cap)) if queue_cap > 0 else 0.0
         except Exception:
             queue_ratio = 0.0
         try:
-            frame_len = int(len(getattr(self, '_frame_buffer', []) or []))
-            frame_window = int(getattr(self, '_frame_window', 2048) or 2048)
+            frame_len = int(runtime_snapshot.get('frame_buffer_len', 0) or 0)
+            frame_window = int(getattr(processor, '_frame_window', getattr(self, '_frame_window', 2048)) or 2048)
             frame_ratio = min(1.0, frame_len / max(1, frame_window))
         except Exception:
             frame_ratio = 0.0
-        pending_ratio = 1.0 if getattr(self, '_ui_pending', None) is not None else 0.0
-        backlog_pressure = min(1.0, 0.50 * queue_ratio + 0.35 * frame_ratio + 0.15 * pending_ratio)
-
         try:
-            draw_recent = list(self._draw_timing_samples)[-24:] if getattr(self, '_draw_timing_samples', None) else []
+            packet_count = int(runtime_snapshot.get('packet_count', 0) or 0)
+            packet_ratio = min(1.0, packet_count / 12.0)
+        except Exception:
+            packet_ratio = 0.0
+        pending_ratio = 1.0 if getattr(self, '_ui_pending', None) is not None else 0.0
+        backlog_pressure = min(1.0, 0.40 * queue_ratio + 0.28 * frame_ratio + 0.20 * packet_ratio + 0.12 * pending_ratio)
+
+        viz = getattr(self, 'visualizer', None)
+        try:
+            draw_samples = getattr(viz, '_draw_timing_samples', None) if viz is not None else getattr(self, '_draw_timing_samples', None)
+            draw_recent = list(draw_samples)[-24:] if draw_samples else []
             draw_avg_ms = float(np.mean(draw_recent)) if draw_recent else 0.0
         except Exception:
             draw_avg_ms = 0.0
         try:
-            seg_recent = list(self._seg_timing_samples)[-24:] if getattr(self, '_seg_timing_samples', None) else []
+            seg_samples = getattr(viz, '_seg_timing_samples', None) if viz is not None else getattr(self, '_seg_timing_samples', None)
+            seg_recent = list(seg_samples)[-24:] if seg_samples else []
             seg_avg_ms = float(np.mean(seg_recent)) if seg_recent else 0.0
         except Exception:
             seg_avg_ms = 0.0
@@ -53905,9 +55901,16 @@ class IntegratedRecordingInterface(QMainWindow):
                     """ % chunk_color
                 )
 
-            self.audio_level_bar.setValue(max(0, min(100, int(mixed_value))))
-            self.audio_level_label.setText(label_text)
-            self.audio_level_bar.setToolTip(tooltip)
+            bar_value = max(0, min(100, int(mixed_value)))
+            if getattr(self, '_last_audio_level_bar_value', None) != bar_value:
+                self._last_audio_level_bar_value = bar_value
+                self.audio_level_bar.setValue(bar_value)
+            if getattr(self, '_last_audio_level_label_text', None) != label_text:
+                self._last_audio_level_label_text = label_text
+                self.audio_level_label.setText(label_text)
+            if getattr(self, '_last_audio_level_tooltip', None) != tooltip:
+                self._last_audio_level_tooltip = tooltip
+                self.audio_level_bar.setToolTip(tooltip)
         except Exception:
             pass
 
@@ -53919,11 +55922,202 @@ class IntegratedRecordingInterface(QMainWindow):
             mode_text = str(state.get('base_mode_text', None) or getattr(getattr(self, 'current_performance_mode', None), 'value', '平衡模式'))
             if bool(state.get('active', False)):
                 pressure_pct = int(round(float(state.get('pressure', 0.0) or 0.0) * 100.0))
-                self.performance_label.setText(f"性能: {mode_text} + 自适应·{state.get('tier', '均衡')} ({pressure_pct}%)")
+                text = f"性能: {mode_text} + 自适应·{state.get('tier', '均衡')} ({pressure_pct}%)"
             else:
-                self.performance_label.setText(f"性能: {mode_text}")
+                text = f"性能: {mode_text}"
+            if getattr(self, '_last_performance_text', None) != text:
+                self._last_performance_text = text
+                self.performance_label.setText(text)
         except Exception:
             pass
+
+    def _refresh_runtime_perf_summary(self):
+        """将轻量运行时统计写入现有性能标签 tooltip，避免新增 UI 组件。"""
+        try:
+            now = time.time()
+            if (now - float(getattr(self, '_runtime_perf_ui_last_wall', 0.0) or 0.0)) < 0.45:
+                return
+            self._runtime_perf_ui_last_wall = now
+            processor = getattr(self, 'audio_processor', None)
+            if processor is None or not hasattr(processor, 'get_runtime_perf_snapshot'):
+                return
+            snapshot = processor.get_runtime_perf_snapshot()
+            if not isinstance(snapshot, dict) or not snapshot:
+                return
+            tooltip = (
+                f"运行队列: {int(snapshot.get('queue_backlog', 0) or 0)}\n"
+                f"本轮音频包: {int(snapshot.get('packet_count', 0) or 0)}\n"
+                f"本轮产出帧: {int(snapshot.get('produced_frames', 0) or 0)}\n"
+                f"帧缓冲长度: {int(snapshot.get('frame_buffer_len', 0) or 0)}\n"
+                f"循环耗时: {float(snapshot.get('loop_ms', 0.0) or 0.0):.1f} ms\n"
+                f"目标分析频率: {float(snapshot.get('analysis_hz', 0.0) or 0.0):.1f} Hz"
+            )
+            if getattr(self, '_last_performance_tooltip', None) != tooltip:
+                self._last_performance_tooltip = tooltip
+                self.performance_label.setToolTip(tooltip)
+        except Exception:
+            pass
+
+    def _reset_plot_freq_history(self):
+        """重置显示层频率平滑历史，避免频繁列表切片。"""
+        try:
+            maxlen = max(5, int(getattr(self, '_plot_freq_history_maxlen', 33) or 33))
+        except Exception:
+            maxlen = 33
+        self._plot_freq_history = deque(maxlen=maxlen)
+        try:
+            if hasattr(self, '_plot_freq_prev'):
+                delattr(self, '_plot_freq_prev')
+            if hasattr(self, '_normal_mode_plot_prev_wall'):
+                delattr(self, '_normal_mode_plot_prev_wall')
+            if hasattr(self, '_normal_mode_plot_prev_raw'):
+                delattr(self, '_normal_mode_plot_prev_raw')
+            if hasattr(self, '_normal_mode_sparse_peak_candidate'):
+                delattr(self, '_normal_mode_sparse_peak_candidate')
+            if hasattr(self, '_normal_mode_sparse_peak_last_block_wall'):
+                delattr(self, '_normal_mode_sparse_peak_last_block_wall')
+            if hasattr(self, '_last_head_points_update_wall'):
+                delattr(self, '_last_head_points_update_wall')
+        except Exception:
+            pass
+
+    def _guard_normal_mode_sparse_peak(self, pitch_data, candidate_frequency: float, prev_display: float, dt: float, fast_turn: bool) -> float:
+        try:
+            current_frequency = float(candidate_frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0 or prev_display <= 0.0 or fast_turn:
+            try:
+                self._normal_mode_sparse_peak_candidate = None
+            except Exception:
+                pass
+            return current_frequency
+
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.00024) or 0.00024)
+        except Exception:
+            min_voice_rms = 0.00024
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+
+        jump_semi = self._normal_mode_ui_semitone_distance(current_frequency, prev_display)
+        upward_jump = bool(current_frequency > prev_display)
+        low_energy = bool(audio_rms <= max(min_voice_rms * 6.2, 0.0048))
+        very_sparse_jump = bool(jump_semi >= float(getattr(self, '_normal_mode_sparse_peak_hard_semi', 6.0) or 6.0))
+        suspicious = bool(
+            upward_jump
+            and dt > 0.0
+            and dt <= float(getattr(self, '_normal_mode_sparse_peak_dt', 0.14) or 0.14)
+            and jump_semi >= float(getattr(self, '_normal_mode_sparse_peak_semi', 3.8) or 3.8)
+            and (low_energy or confidence <= 0.78)
+            and confidence <= float(getattr(self, '_normal_mode_sparse_peak_conf', 0.96) or 0.96)
+            and not breath_hint
+        )
+
+        if not suspicious:
+            try:
+                self._normal_mode_sparse_peak_candidate = None
+            except Exception:
+                pass
+            return current_frequency
+
+        now_wall = time.time()
+        state = getattr(self, '_normal_mode_sparse_peak_candidate', None)
+        if not isinstance(state, dict):
+            state = None
+
+        candidate_jump_raw = self._normal_mode_ui_semitone_distance(raw_frequency, prev_display) if raw_frequency > 0.0 else 999.0
+        if raw_frequency > 0.0 and candidate_jump_raw <= 1.6 and confidence >= 0.86:
+            try:
+                self._normal_mode_sparse_peak_candidate = None
+            except Exception:
+                pass
+            return current_frequency
+
+        try:
+            confirm_frames = int(getattr(self, '_normal_mode_sparse_peak_confirm_frames', 3) or 3)
+        except Exception:
+            confirm_frames = 3
+        if audio_rms <= max(min_voice_rms * 2.5, 0.00135) or very_sparse_jump:
+            confirm_frames = max(confirm_frames, 3)
+
+        same_cluster = False
+        if state is not None:
+            try:
+                prev_candidate_freq = float(state.get('frequency', 0.0) or 0.0)
+                prev_candidate_wall = float(state.get('wall_time', 0.0) or 0.0)
+                same_cluster = bool(
+                    prev_candidate_freq > 0.0
+                    and (now_wall - prev_candidate_wall) <= 0.18
+                    and self._normal_mode_ui_semitone_distance(current_frequency, prev_candidate_freq) <= 1.6
+                )
+            except Exception:
+                same_cluster = False
+
+        if same_cluster:
+            state['count'] = int(state.get('count', 1) or 1) + 1
+            state['wall_time'] = now_wall
+            state['frequency'] = 0.68 * float(state.get('frequency', current_frequency) or current_frequency) + 0.32 * current_frequency
+            state['peak_confidence'] = max(float(state.get('peak_confidence', 0.0) or 0.0), confidence)
+            state['peak_rms'] = max(float(state.get('peak_rms', 0.0) or 0.0), audio_rms)
+        else:
+            state = {
+                'count': 1,
+                'wall_time': now_wall,
+                'frequency': current_frequency,
+                'base_frequency': prev_display,
+                'peak_confidence': confidence,
+                'peak_rms': audio_rms,
+            }
+        self._normal_mode_sparse_peak_candidate = state
+
+        try:
+            count = int(state.get('count', 1) or 1)
+        except Exception:
+            count = 1
+        if count < confirm_frames:
+            if very_sparse_jump and confidence < 0.90 and candidate_jump_raw > 2.2:
+                try:
+                    self._normal_mode_sparse_peak_last_block_wall = now_wall
+                except Exception:
+                    pass
+                return float(prev_display)
+            try:
+                max_step_semi = float(getattr(self, '_normal_mode_sparse_peak_step_semi', 1.1) or 1.1)
+            except Exception:
+                max_step_semi = 1.1
+            if count >= 2:
+                max_step_semi = max(max_step_semi, 1.6)
+            limited_frequency = float(prev_display) * (2.0 ** (max_step_semi / 12.0))
+            hold_frequency = min(float(current_frequency), limited_frequency)
+            try:
+                self._normal_mode_sparse_peak_last_block_wall = now_wall
+            except Exception:
+                pass
+            return float(0.78 * hold_frequency + 0.22 * float(prev_display))
+
+        # 连续多帧仍维持相近高位时，视为真实起音/高音，逐步放行但保留一个温和斜率限制。
+        try:
+            release_semi = float(getattr(self, '_normal_mode_sparse_peak_release_semi', 2.2) or 2.2)
+        except Exception:
+            release_semi = 2.2
+        released_limit = float(prev_display) * (2.0 ** (release_semi / 12.0))
+        released_frequency = min(float(current_frequency), released_limit)
+        return float(0.88 * released_frequency + 0.12 * float(prev_display))
 
     def _smooth_normal_mode_display_frequency(self, pitch_data, display_frequency: float) -> float:
         """普通模式实时绘制专用近直出策略，仅在极小抖动时做轻微抑抖。"""
@@ -53938,6 +56132,14 @@ class IntegratedRecordingInterface(QMainWindow):
             raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
         except Exception:
             raw_frequency = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.00024) or 0.00024)
+        except Exception:
+            min_voice_rms = 0.00024
 
         now_t = time.time()
         prev_display = float(getattr(self, '_plot_freq_prev', target_frequency) or target_frequency)
@@ -53963,19 +56165,38 @@ class IntegratedRecordingInterface(QMainWindow):
         if raw_frequency > 0.0:
             raw_gap = abs(raw_frequency - target_frequency)
             if fast_turn:
-                smoothed_frequency = 0.88 * raw_frequency + 0.12 * target_frequency
+                smoothed_frequency = 0.94 * target_frequency + 0.06 * raw_frequency
             elif raw_gap <= 1.0:
                 smoothed_frequency = target_frequency
             elif raw_gap <= 4.0:
-                smoothed_frequency = 0.22 * raw_frequency + 0.78 * target_frequency
+                smoothed_frequency = 0.12 * raw_frequency + 0.88 * target_frequency
             else:
-                smoothed_frequency = 0.40 * raw_frequency + 0.60 * target_frequency
+                smoothed_frequency = 0.25 * raw_frequency + 0.75 * target_frequency
         else:
             smoothed_frequency = target_frequency
 
+        if (not fast_turn) and raw_frequency > 0.0 and prev_display > 0.0 and audio_rms <= max(min_voice_rms * 2.0, 0.0012):
+            try:
+                low_rms_gap = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(prev_display, 1e-9)))
+            except Exception:
+                low_rms_gap = 0.0
+            if raw_frequency > prev_display and low_rms_gap >= 3.2:
+                smoothed_frequency = min(float(smoothed_frequency), 0.72 * float(target_frequency) + 0.28 * float(prev_display))
+
+        try:
+            smoothed_frequency = self._guard_normal_mode_sparse_peak(
+                pitch_data,
+                float(smoothed_frequency),
+                float(prev_display),
+                float(dt),
+                bool(fast_turn),
+            )
+        except Exception:
+            pass
+
         # 仅对极小振幅做轻微抑抖，不再引入可感知的时间滞后。
-        if (not fast_turn) and abs(smoothed_frequency - prev_display) <= 0.75:
-            smoothed_frequency = 0.92 * smoothed_frequency + 0.08 * prev_display
+        if (not fast_turn) and abs(smoothed_frequency - prev_display) <= 0.55:
+            smoothed_frequency = 0.96 * smoothed_frequency + 0.04 * prev_display
 
         self._normal_mode_plot_prev_wall = now_t
         self._normal_mode_plot_prev_raw = ref_frequency
@@ -54321,54 +56542,44 @@ class IntegratedRecordingInterface(QMainWindow):
                         f = float(base_payload.get('frequency', 0.0))
                     except Exception:
                         f = 0.0
-                    if f > 0:
+                    try:
+                        normal_realtime_display = bool(getattr(self, 'is_recording', False) and self._is_normal_mode_active())
+                    except Exception:
+                        normal_realtime_display = False
+                    if f > 0.0:
                         try:
-                            try:
-                                viz = getattr(self, 'visualizer', None)
-                            except Exception:
-                                viz = None
-                            try:
-                                onepass_active = bool(getattr(self, '_in_onepass_mode', False))
-                            except Exception:
-                                onepass_active = False
-                            try:
-                                retake_preview_active = bool(viz is not None and getattr(viz, '_retake_overlay_preview_active', False))
-                            except Exception:
-                                retake_preview_active = False
-                            normal_realtime_display = bool((not local_realtime_active) and (not onepass_active) and (not retake_preview_active))
-                            allow_heavy_display_smoothing = bool(local_realtime_active or onepass_active or retake_preview_active)
-                            # 维护少量历史
-                            self._plot_freq_history.append(f)
-                            maxlen = int(getattr(self, '_plot_freq_history_maxlen', 33))
-                            if len(self._plot_freq_history) > maxlen:
-                                # 限制长度，避免不必要内存与计算
-                                self._plot_freq_history = self._plot_freq_history[-maxlen:]
+                            history = getattr(self, '_plot_freq_history', None)
+                            expected_maxlen = max(5, int(getattr(self, '_plot_freq_history_maxlen', 33) or 33))
+                            if history is None or getattr(history, 'maxlen', None) != expected_maxlen:
+                                self._reset_plot_freq_history()
+                                history = getattr(self, '_plot_freq_history', None)
+                            if history is not None:
+                                history.append(float(f))
                             f_smooth = None
-                            # SciPy Savitzky-Golay（7~11点小窗，二次多项式）
-                            base_win = int(getattr(self, '_plot_savgol_win', 9))
-                            base_poly = int(getattr(self, '_plot_savgol_poly', 2))
-                            if allow_heavy_display_smoothing and len(self._plot_freq_history) >= 5:
+                            allow_heavy_display_smoothing = not normal_realtime_display
+                            base_win = int(getattr(self, '_plot_savgol_win', 9) or 9)
+                            base_poly = int(getattr(self, '_plot_savgol_poly', 2) or 2)
+                            history_len = len(history) if history is not None else 0
+                            if allow_heavy_display_smoothing and history_len >= 5:
                                 try:
                                     savgol_filter = getattr(self, '_cached_savgol_filter', None)
                                     if savgol_filter is None:
                                         from scipy.signal import savgol_filter as _savgol_filter
                                         savgol_filter = _savgol_filter
                                         self._cached_savgol_filter = savgol_filter
-                                    # 窗口长度须为奇数且<=长度；以base_win为目标
+                                    history_values = np.asarray(history, dtype=np.float64)
                                     win_target = base_win if base_win > 0 else 9
-                                    # 不能超过现有长度，且需要奇数
-                                    max_allowed = len(self._plot_freq_history)
+                                    max_allowed = history_len
                                     if max_allowed % 2 == 0:
                                         max_allowed -= 1
                                     win = max(5, min(win_target, max_allowed))
                                     if win % 2 == 0:
                                         win = max(5, win - 1)
                                     poly = max(2, min(base_poly, 4))
-                                    sm = savgol_filter(self._plot_freq_history, window_length=win, polyorder=poly, mode='interp')
+                                    sm = savgol_filter(history_values, window_length=win, polyorder=poly, mode='interp')
                                     f_smooth = float(sm[-1])
                                 except Exception:
                                     f_smooth = None
-                            # 回退：EMA
                             if f_smooth is None:
                                 if normal_realtime_display:
                                     f_smooth = self._smooth_normal_mode_display_frequency(base_payload, f)
@@ -54379,12 +56590,32 @@ class IntegratedRecordingInterface(QMainWindow):
                             self._plot_freq_prev = float(f_smooth)
                             base_payload['frequency'] = float(f_smooth)
                         except Exception:
-                            # 平滑失败时直接使用原值
                             base_payload = dict(pitch_data)
                     # 录音分析模式：显示音调线
                     try:
                         if base_payload.get('_epoch') is None:
                             base_payload['_epoch'] = int(getattr(self, '_record_epoch', 0))
+                    except Exception:
+                        pass
+                    try:
+                        final_frequency = float(base_payload.get('frequency', frequency) or 0.0)
+                    except Exception:
+                        final_frequency = float(frequency or 0.0)
+                    try:
+                        final_has_pitch = bool(base_payload.get('has_pitch', has_pitch) and final_frequency > 0.0)
+                    except Exception:
+                        final_has_pitch = bool(has_pitch and final_frequency > 0.0)
+                    try:
+                        final_note_info = base_payload.get('note_info') or note_info or {}
+                    except Exception:
+                        final_note_info = note_info or {}
+                    try:
+                        base_payload['_frame_features'] = self._build_frame_features(
+                            base_payload,
+                            resolved_frequency=float(final_frequency),
+                            has_pitch=bool(final_has_pitch),
+                            note_info=final_note_info,
+                        )
                     except Exception:
                         pass
                     self.visualizer.add_pitch_data(base_payload)
@@ -54422,35 +56653,30 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             if getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False):
                 return  # 暂停状态不刷新电平，保持视觉静止
-            # 转换为百分比
-            level_percent = min(100, int(level * 1000))
-            self._refresh_shared_status_progress(level_percent=level_percent)
-            
-        except Exception as e:
-            print(f"更新音频电平错误: {e}")
-    
+            level_percent = int(max(0.0, min(1.0, float(level or 0.0))) * 100.0)
+            adaptive_state = self._update_adaptive_performance_state()
+            self._refresh_shared_status_progress(level_percent=level_percent, adaptive_state=adaptive_state)
+            self._refresh_performance_status_label(adaptive_state)
+        except Exception:
+            pass
+
     def on_recording_progress(self, duration):
-        """录音进度更新"""
-        retake_range = getattr(self, '_retake_active_range', None)
-        overlay_active = self._retake_overlay_active()
-        retake_clock_needed = bool(retake_range or overlay_active)
-        paused = bool(getattr(self, 'is_paused', False))
-        backing_paused = bool(getattr(self, '_backing_paused', False))
-        if paused:
-            return  # 全局暂停照旧冻结
-        if backing_paused and not retake_clock_needed:
-            return
+        """录音进度更新。"""
         try:
-            raw_duration = float(duration)
+            raw_duration = max(0.0, float(duration or 0.0))
         except Exception:
             raw_duration = 0.0
+
         try:
-            if backing_paused and retake_clock_needed:
-                eff = raw_duration
-            else:
-                eff = self.get_effective_recording_time(raw_duration)
+            retake_range = getattr(self, '_retake_active_range', None)
+        except Exception:
+            retake_range = None
+
+        try:
+            eff = self.get_effective_recording_time(raw_duration)
         except Exception:
             eff = raw_duration
+
         preserve = False
         try:
             preserve = self._retake_should_preserve_timeline()
@@ -54460,22 +56686,40 @@ class IntegratedRecordingInterface(QMainWindow):
                     baseline_val = float(baseline) if baseline is not None else float(getattr(self, 'recording_duration', 0.0))
                 except Exception:
                     baseline_val = float(getattr(self, 'recording_duration', 0.0))
-                # 选区重录期间：录音“总时长”应保持在进入重录前的末尾（baseline），
-                # 不随倒计时/预卷/伴奏时间线增长。
                 if not math.isfinite(baseline_val) or baseline_val < 0.0:
                     baseline_val = 0.0
                 self.recording_duration = float(baseline_val)
-                self.current_duration = float(self.recording_duration)
-                self.current_global_time = float(self.recording_duration)
-                current = float(self.recording_duration)
             else:
                 self.recording_duration = max(0.0, float(eff))
-                current = float(self.recording_duration)
         except Exception:
             self.recording_duration = max(0.0, raw_duration)
-            current = float(self.recording_duration)
             preserve = False
-        guard_time = float(current)
+
+        try:
+            self.current_duration = float(self.recording_duration)
+            self.current_global_time = float(self.recording_duration)
+        except Exception:
+            pass
+
+        try:
+            viz = getattr(self, 'visualizer', None)
+            if viz is not None:
+                viz.current_global_time = float(self.recording_duration)
+        except Exception:
+            pass
+
+        try:
+            current = float(self.recording_duration)
+            sec_int = int(current)
+            if getattr(self, '_last_time_label_seconds', None) != sec_int:
+                self._last_time_label_seconds = sec_int
+                minutes = sec_int // 60
+                seconds = sec_int % 60
+                self.recording_time_label.setText(f"录音时长: {minutes:02d}:{seconds:02d}")
+        except Exception:
+            pass
+
+        guard_time = float(getattr(self, 'recording_duration', raw_duration) or raw_duration)
         guard_source = "progress"
         virtual = getattr(self, '_retake_overlay_virtual_time', None)
         if virtual is None and retake_range:
@@ -54491,11 +56735,17 @@ class IntegratedRecordingInterface(QMainWindow):
                 guard_source = "progress"
         elif preserve:
             guard_source = "virtual"
-        self._enforce_active_retake_bounds(guard_time, source=guard_source)
+        try:
+            self._enforce_active_retake_bounds(guard_time, source=guard_source)
+        except Exception:
+            pass
     
     def on_status_updated(self, status):
         """状态更新"""
-        self.system_status_label.setText(f"状态: {status}")
+        text = f"状态: {status}"
+        if getattr(self, '_last_system_status_text', None) != text:
+            self._last_system_status_text = text
+            self.system_status_label.setText(text)
     
     def on_recording_finished(self, filename, analysis_results):
         """录音完成"""
@@ -54521,6 +56771,26 @@ class IntegratedRecordingInterface(QMainWindow):
             # 更新内部总数（若需要后续 UI 刷新）
             self.total_pitches_detected = max(self.total_pitches_detected, total_pitches)
             self.recording_duration = max(self.recording_duration, duration)
+            self._technique_recording_ready = bool(len(list(getattr(self, '_technique_recorded_frames', []) or [])) >= 8)
+            self._technique_last_recording_duration = float(duration)
+            try:
+                viz = getattr(self, 'visualizer', None)
+                mode_text = viz.display_mode.currentText() if viz is not None and hasattr(viz, 'display_mode') else '普通模式'
+            except Exception:
+                mode_text = '普通模式'
+            self._technique_recording_mode_name = str(mode_text)
+            state = getattr(self, '_technique_panel_state', None)
+            if isinstance(state, TechniquePanelState):
+                state.analysis_ready = False
+                state.last_analysis_event_count = 0
+                state.last_analyzed_duration = 0.0
+                state.last_source_frame_count = len(list(getattr(self, '_technique_recorded_frames', []) or []))
+                state.last_analysis_mode = 'waiting_offline_run'
+                state.last_summary = {}
+            try:
+                self._sync_technique_panel_state_to_visualizer()
+            except Exception:
+                pass
 
             # 更新按钮 / UI 状态
             try:
@@ -54537,6 +56807,11 @@ class IntegratedRecordingInterface(QMainWindow):
             # 系统状态标签
             try:
                 self.system_status_label.setText("状态: 就绪")
+            except Exception:
+                pass
+            try:
+                if self._technique_analysis_source_ready():
+                    self.system_status_label.setText("状态: 录音完成，可点击“技巧识别”对当前普通模式曲线做离线分区")
             except Exception:
                 pass
 
@@ -54642,6 +56917,10 @@ class IntegratedRecordingInterface(QMainWindow):
     def update_status_display(self):
         """更新状态显示"""
         try:
+            try:
+                self._refresh_runtime_perf_summary()
+            except Exception:
+                pass
             # 处理选区重录右界触发（必须在 UI 线程）
             try:
                 if hasattr(self, '_process_pending_retake_boundary_latch'):

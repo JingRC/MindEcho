@@ -41,6 +41,12 @@ class NoiseReductionProcessor:
         # 保护音乐频段 (基本音高范围: 80Hz - 4000Hz)
         self.music_freq_low = 80
         self.music_freq_high = 4000
+        self._analysis_window = None
+        self._freq_bins = None
+        self._music_mask = None
+        self._notch_attenuation_mask = None
+        self._frame_buffer = None
+        self._refresh_processing_cache()
         
         if VERBOSE:
             print(f"🎵 降噪处理器初始化完成")
@@ -65,6 +71,36 @@ class NoiseReductionProcessor:
         else:
             if VERBOSE:
                 print(f"❌ 无效的降噪模式: {mode}")
+
+    def _refresh_processing_cache(self):
+        """缓存固定帧长下可复用的窗函数和频域掩码。"""
+        try:
+            frame_size = max(1, int(self.frame_size))
+            self._analysis_window = np.hanning(frame_size).astype(np.float32)
+            freq_len = frame_size // 2 + 1
+            self._freq_bins = np.fft.rfftfreq(frame_size, d=1.0 / float(self.sample_rate))
+            self._music_mask = (self._freq_bins >= float(self.music_freq_low)) & (self._freq_bins <= float(self.music_freq_high))
+            self._frame_buffer = np.zeros(frame_size, dtype=np.float32)
+
+            notch_mask = np.ones(freq_len, dtype=np.float32)
+            bandwidth = max(1, int(self.sample_rate / frame_size * 2))
+            gaussian_div = 2.0 * max((bandwidth / 3.0) ** 2, 1e-12)
+            for notch_freq in self.notch_frequencies:
+                if notch_freq >= self.sample_rate / 2:
+                    continue
+                freq_idx = int(np.argmin(np.abs(self._freq_bins - notch_freq)))
+                start_idx = max(0, freq_idx - bandwidth)
+                end_idx = min(freq_len, freq_idx + bandwidth + 1)
+                idx_range = np.arange(start_idx, end_idx, dtype=np.float32)
+                attenuation = np.exp(-((idx_range - float(freq_idx)) ** 2) / gaussian_div)
+                notch_mask[start_idx:end_idx] *= (1.0 - 0.8 * attenuation).astype(np.float32)
+            self._notch_attenuation_mask = notch_mask
+        except Exception:
+            self._analysis_window = None
+            self._freq_bins = None
+            self._music_mask = None
+            self._notch_attenuation_mask = None
+            self._frame_buffer = None
     
     def process_audio(self, audio_data):
         """处理音频数据 - 主入口"""
@@ -113,18 +149,24 @@ class NoiseReductionProcessor:
     def _basic_spectral_noise_reduction(self, audio_data):
         """基础频域降噪算法"""
         try:
+            original_length = len(audio_data)
             # 确保输入数据长度合适
-            if len(audio_data) < self.frame_size:
+            if original_length < self.frame_size:
                 # 如果数据不够，零填充
-                padded_data = np.zeros(self.frame_size)
-                padded_data[:len(audio_data)] = audio_data
+                if self._frame_buffer is None or self._frame_buffer.size != self.frame_size:
+                    self._refresh_processing_cache()
+                padded_data = self._frame_buffer
+                padded_data.fill(0.0)
+                padded_data[:original_length] = audio_data
                 audio_data = padded_data
-            elif len(audio_data) > self.frame_size:
+            elif original_length > self.frame_size:
                 # 如果数据太长，截取
                 audio_data = audio_data[:self.frame_size]
             
             # 步骤1: 应用窗函数
-            windowed_data = audio_data * np.hanning(len(audio_data))
+            if self._analysis_window is None or self._analysis_window.size != len(audio_data):
+                self._refresh_processing_cache()
+            windowed_data = audio_data * self._analysis_window
             
             # 步骤2: FFT变换到频域
             fft_data = rfft(windowed_data)
@@ -149,13 +191,13 @@ class NoiseReductionProcessor:
                 clean_audio = irfft(clean_fft)
                 
                 # 步骤8: 去除窗函数效果和长度调整
-                if len(clean_audio) > len(audio_data):
-                    clean_audio = clean_audio[:len(audio_data)]
+                if len(clean_audio) > original_length:
+                    clean_audio = clean_audio[:original_length]
                 
                 return clean_audio.astype(np.float32)
             else:
                 # 噪声档案还未建立，返回原始数据
-                return audio_data
+                return np.array(audio_data[:original_length], copy=True)
                 
         except Exception as e:
             print(f"❌ 基础频域降噪处理错误: {e}")
@@ -208,32 +250,19 @@ class NoiseReductionProcessor:
     
     def _apply_notch_filtering_freq_domain(self, magnitude):
         """在频域应用陷波滤波"""
-        freqs = fftfreq(len(magnitude) * 2 - 1, 1/self.sample_rate)[:len(magnitude)]
-        
-        for notch_freq in self.notch_frequencies:
-            if notch_freq < self.sample_rate / 2:  # 确保频率在奈奎斯特频率内
-                # 找到对应的频率索引
-                freq_idx = np.argmin(np.abs(freqs - notch_freq))
-                
-                # 创建陷波效果 (在目标频率周围降低幅度)
-                bandwidth = max(1, int(self.sample_rate / self.frame_size * 2))  # 带宽
-                start_idx = max(0, freq_idx - bandwidth)
-                end_idx = min(len(magnitude), freq_idx + bandwidth + 1)
-                
-                # 应用高斯形状的陷波
-                for i in range(start_idx, end_idx):
-                    distance = abs(i - freq_idx)
-                    attenuation = np.exp(-(distance**2) / (2 * (bandwidth/3)**2))  # 高斯衰减
-                    magnitude[i] *= (1 - 0.8 * attenuation)  # 最多衰减80%
-        
-        return magnitude
+        if self._notch_attenuation_mask is None or self._notch_attenuation_mask.size != len(magnitude):
+            self._refresh_processing_cache()
+        if self._notch_attenuation_mask is None:
+            return magnitude
+        return magnitude * self._notch_attenuation_mask
     
     def _protect_music_frequencies(self, original_magnitude, processed_magnitude):
         """保护音乐频段，避免过度处理"""
-        freqs = fftfreq(len(original_magnitude) * 2 - 1, 1/self.sample_rate)[:len(original_magnitude)]
-        
-        # 找到音乐频段的索引范围
-        music_mask = (freqs >= self.music_freq_low) & (freqs <= self.music_freq_high)
+        if self._music_mask is None or self._music_mask.size != len(original_magnitude):
+            self._refresh_processing_cache()
+        music_mask = self._music_mask
+        if music_mask is None:
+            return processed_magnitude.copy()
         
         # 在音乐频段内，减少降噪强度
         protection_factor = 0.7  # 保护因子，0.7表示只应用70%的降噪效果

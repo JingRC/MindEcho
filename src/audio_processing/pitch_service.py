@@ -41,6 +41,8 @@ class PitchDetectionService:
         # 缓存汉宁窗，避免重复分配
         self._hann_len = 0
         self._hann = None
+        self._cmndf_idx_len = 0
+        self._cmndf_idx = None
 
     # -------- 配置 API --------
     def set_frequency_range(self, min_f: float, max_f: float):
@@ -92,7 +94,7 @@ class PitchDetectionService:
     # -------- 内部：YIN（FFT-CMNDF） --------
     def _yin_detect(self, audio_data: np.ndarray) -> float:
         try:
-            x_in = np.array(audio_data, dtype=np.float64, copy=False)
+            x_in = np.asarray(audio_data, dtype=np.float64)
             if x_in.ndim > 1:
                 x_in = x_in.reshape(-1)
             if x_in.size < 64:
@@ -120,7 +122,7 @@ class PitchDetectionService:
                 return 0.0
 
             # FFT自相关 -> 差分近似 d(tau) = 2*(r(0)-r(tau))
-            nfft = 1 << int(np.ceil(np.log2(2 * N)))
+            nfft = 1 << (2 * N - 1).bit_length()
             spec = np.fft.rfft(x, n=nfft)
             ac = np.fft.irfft(spec * np.conj(spec), n=nfft)[:N]
             ac0 = float(ac[0])
@@ -131,7 +133,10 @@ class PitchDetectionService:
             if np.any(d1 < 0):
                 d1 = np.maximum(d1, 0.0)
             cumsum = np.cumsum(d1)
-            idx = np.arange(1, d1.size + 1, dtype=np.float64)
+            if self._cmndf_idx_len != d1.size:
+                self._cmndf_idx = np.arange(1, d1.size + 1, dtype=np.float64)
+                self._cmndf_idx_len = d1.size
+            idx = self._cmndf_idx
             cmndf = np.ones_like(d)
             denom = cumsum / idx
             denom = np.where(denom <= 1e-12, 1e-12, denom)
