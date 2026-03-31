@@ -17,7 +17,7 @@ class OfflineVibratoConfig:
     max_rate_hz: float = 8.8
     min_depth_cents: float = 10.0
     max_depth_cents: float = 180.0
-    min_cycles: int = 2
+    min_cycles: int = 3
     merge_gap_s: float = 0.10
 
 
@@ -155,10 +155,16 @@ class OfflineTechniqueAnalysisService:
                 continue
             regularity = self._regularity_score(run_residual, sample_dt, deadband)
             stability = self._stability_score(run_conf, run_freqs)
+            symmetry = self._symmetry_score(run_residual, deadband)
+            trend_ratio = self._trend_ratio(run_times, run_residual)
+            if regularity < 0.30 or stability < 0.24:
+                continue
+            if symmetry < 0.24 or trend_ratio > 0.42:
+                continue
             base_pitch_hz = float(np.exp2(np.mean(log_freq[start_idx:end_idx])))
             depth_hz = float(base_pitch_hz * (2 ** (depth_cents / 1200.0) - 1.0))
-            confidence = self._confidence_score(rate_hz, depth_cents, regularity, stability, duration)
-            strength = self._strength_score(depth_cents, regularity, stability)
+            confidence = self._confidence_score(rate_hz, depth_cents, regularity, stability, symmetry, duration)
+            strength = self._strength_score(depth_cents, regularity, stability, symmetry)
             regions.append(OfflineVibratoRegion(
                 start_time=float(run_times[0]),
                 end_time=float(run_times[-1]),
@@ -179,6 +185,8 @@ class OfflineTechniqueAnalysisService:
                     'fps': fps,
                     'baseline_window': int(baseline_window),
                     'envelope_window': int(envelope_window),
+                    'symmetry_score': float(symmetry),
+                    'trend_ratio': float(trend_ratio),
                     'mean_confidence': float(np.mean(run_conf)) if run_conf.size else 0.0,
                     'residual_peak_cents': float(np.max(np.abs(run_residual))) if run_residual.size else 0.0,
                 },
@@ -300,7 +308,36 @@ class OfflineTechniqueAnalysisService:
         jitter_term = max(0.0, min(1.0, 1.0 - jitter / 35.0))
         return max(0.0, min(1.0, mean_conf * 0.62 + jitter_term * 0.38))
 
-    def _confidence_score(self, rate_hz: float, depth_cents: float, regularity: float, stability: float, duration: float) -> float:
+    def _symmetry_score(self, residual_cents: np.ndarray, deadband: float) -> float:
+        if residual_cents.size < 6:
+            return 0.0
+        pos = residual_cents[residual_cents >= deadband]
+        neg = -residual_cents[residual_cents <= -deadband]
+        if pos.size == 0 or neg.size == 0:
+            return 0.0
+        pos_peak = float(np.percentile(pos, 80)) if pos.size else 0.0
+        neg_peak = float(np.percentile(neg, 80)) if neg.size else 0.0
+        peak_balance = min(pos_peak, neg_peak) / max(max(pos_peak, neg_peak), 1e-6)
+        coverage_balance = min(float(pos.size), float(neg.size)) / max(float(pos.size), float(neg.size), 1.0)
+        return max(0.0, min(1.0, peak_balance * 0.62 + coverage_balance * 0.38))
+
+    def _trend_ratio(self, times: np.ndarray, residual_cents: np.ndarray) -> float:
+        if times.size < 6 or residual_cents.size < 6:
+            return 1.0
+        span = float(times[-1] - times[0]) if times.size >= 2 else 0.0
+        peak_to_peak = float(np.ptp(residual_cents)) if residual_cents.size else 0.0
+        if span <= 1e-6 or peak_to_peak <= 1e-6:
+            return 1.0
+        centered_t = times - float(np.mean(times))
+        centered_r = residual_cents - float(np.mean(residual_cents))
+        denom = float(np.dot(centered_t, centered_t))
+        if denom <= 1e-9:
+            return 1.0
+        slope = float(np.dot(centered_t, centered_r) / denom)
+        drift = abs(slope) * span
+        return max(0.0, drift / max(peak_to_peak, 1e-6))
+
+    def _confidence_score(self, rate_hz: float, depth_cents: float, regularity: float, stability: float, symmetry: float, duration: float) -> float:
         cfg = self.config
         rate_mid = 5.6
         rate_span = max(rate_mid - cfg.min_rate_hz, cfg.max_rate_hz - rate_mid, 1.0)
@@ -309,9 +346,9 @@ class OfflineTechniqueAnalysisService:
         depth_span = max(depth_mid - cfg.min_depth_cents, cfg.max_depth_cents - depth_mid, 1.0)
         depth_score = max(0.0, 1.0 - abs(depth_cents - depth_mid) / depth_span)
         duration_score = max(0.0, min(1.0, duration / 0.55))
-        score = rate_score * 0.28 + depth_score * 0.20 + regularity * 0.24 + stability * 0.18 + duration_score * 0.10
+        score = rate_score * 0.24 + depth_score * 0.18 + regularity * 0.22 + stability * 0.16 + symmetry * 0.12 + duration_score * 0.08
         return max(0.0, min(0.96, score))
 
-    def _strength_score(self, depth_cents: float, regularity: float, stability: float) -> float:
+    def _strength_score(self, depth_cents: float, regularity: float, stability: float, symmetry: float) -> float:
         depth_term = max(0.0, min(1.0, depth_cents / 80.0))
-        return max(0.0, min(0.95, depth_term * 0.50 + regularity * 0.28 + stability * 0.22))
+        return max(0.0, min(0.95, depth_term * 0.44 + regularity * 0.24 + stability * 0.18 + symmetry * 0.14))

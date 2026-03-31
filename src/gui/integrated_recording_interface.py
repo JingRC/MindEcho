@@ -14164,6 +14164,10 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 host = None
             try:
+                ap = getattr(self, 'audio_processor', None)
+            except Exception:
+                ap = None
+            try:
                 lfm_ctrl = getattr(host, '_lfm_ctrl', None) if host is not None else None
             except Exception:
                 lfm_ctrl = None
@@ -14171,14 +14175,18 @@ class ECGStylePitchVisualizer(QWidget):
                 lfm_playing = bool(lfm_ctrl is not None and getattr(lfm_ctrl, 'playing', False))
             except Exception:
                 lfm_playing = False
+            try:
+                listenback_playing = bool(ap is not None and getattr(ap, '_lb_state', '') == 'playing')
+            except Exception:
+                listenback_playing = False
             # 自动跟随逻辑（不依赖 is_recording_active）
             if getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
                 # 抑制条件：用户刚手动滚动 或 伴奏轴锁定且当前非录音浏览
                 suppress_auto = False
                 try:
-                    if getattr(self, '_manual_time_offset_override_until', 0.0) > _t.time():
+                    if (not listenback_playing) and getattr(self, '_manual_time_offset_override_until', 0.0) > _t.time():
                         suppress_auto = True
-                    if getattr(self, '_backing_axis_locked', False) and not getattr(self, 'is_recording_active', False) and (not lfm_playing):
+                    if (not listenback_playing) and getattr(self, '_backing_axis_locked', False) and not getattr(self, 'is_recording_active', False) and (not lfm_playing):
                         suppress_auto = True
                 except Exception:
                     suppress_auto = False
@@ -18969,6 +18977,53 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _ensure_listenback_range_visible(self, start: float, end: float) -> None:
+        """轻量保证回听左右边线都处于当前视窗内。"""
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            x0, x1 = self.ax.get_xlim()
+            width = max(0.1, float(x1) - float(x0))
+            start = max(0.0, float(start))
+            end = max(start + 0.01, float(end))
+            margin = max(0.06, min(0.35, width * 0.06))
+            if (x0 + margin) <= start and end <= (x1 - margin):
+                return
+            target_width = max(width, (end - start) + margin * 2.0)
+            center = 0.5 * (start + end)
+            new_x0 = max(0.0, center - target_width * 0.5)
+            new_x1 = new_x0 + target_width
+            try:
+                self.ax.set_xlim(new_x0, new_x1)
+            except Exception:
+                pass
+            try:
+                self.time_offset = max(0.0, new_x0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _event_time_from_axes_pixels(self, event) -> Optional[float]:
+        """将鼠标像素位置转换为时间坐标，允许超出当前可视范围。"""
+        try:
+            if not hasattr(self, 'ax') or self.ax is None or event is None:
+                return None
+            if getattr(event, 'xdata', None) is not None and getattr(event, 'inaxes', None) == self.ax:
+                return float(event.xdata)
+            bbox = getattr(self.ax, 'bbox', None)
+            if bbox is None:
+                return None
+            px = getattr(event, 'x', None)
+            if px is None:
+                return None
+            x0, x1 = self.ax.get_xlim()
+            width_px = max(1.0, float(bbox.width))
+            ratio = (float(px) - float(bbox.x0)) / width_px
+            return float(x0) + ratio * float(x1 - x0)
+        except Exception:
+            return None
+
     def _center_time_window_on_x(self, x: float, *, min_width: Optional[float] = None) -> None:
         """将当前时间窗口以指定时间点为中心（保持现有宽度）。"""
         try:
@@ -19131,7 +19186,12 @@ class ECGStylePitchVisualizer(QWidget):
                 xL, xR = xR, xL
                 self.sel_start, self.sel_end = xL, xR
             # 左/右纵线
-            if self._sel_line_left is None or getattr(self._sel_line_left, 'axes', None) is None:
+            if (
+                self._sel_line_left is None
+                or getattr(self._sel_line_left, 'axes', None) is None
+                or getattr(self._sel_line_left, 'axes', None) is not self.ax
+                or self._sel_line_left not in getattr(self.ax, 'lines', [])
+            ):
                 self._sel_line_left = self.ax.axvline(x=xL, color=sel_line_color, linewidth=lw, alpha=sel_line_alpha, zorder=150)
             try:
                 # 强制初始化位置与可见性（axvline 使用 y 轴为轴坐标 0..1）
@@ -19148,7 +19208,12 @@ class ECGStylePitchVisualizer(QWidget):
                     pass
             except Exception:
                 pass
-            if self._sel_line_right is None or getattr(self._sel_line_right, 'axes', None) is None:
+            if (
+                self._sel_line_right is None
+                or getattr(self._sel_line_right, 'axes', None) is None
+                or getattr(self._sel_line_right, 'axes', None) is not self.ax
+                or self._sel_line_right not in getattr(self.ax, 'lines', [])
+            ):
                 self._sel_line_right = self.ax.axvline(x=xR, color=sel_line_color, linewidth=lw, alpha=sel_line_alpha, zorder=150)
             try:
                 self._sel_line_right.set_xdata([xR, xR])
@@ -25849,7 +25914,11 @@ class ECGStylePitchVisualizer(QWidget):
         # 强制刷新画布以确保时间轴标签正确显示
         self.canvas.draw_idle()
         try:
-            self._refresh_technique_artists(force=False)
+            has_technique_events = bool(getattr(self, '_technique_events', None))
+        except Exception:
+            has_technique_events = False
+        try:
+            self._refresh_technique_artists(force=has_technique_events)
         except Exception:
             pass
         # 回听图元随坐标变化同步更新
@@ -26027,14 +26096,11 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         # 回听：拖拽选区
-        if getattr(self, '_sel_dragging_side', None) is not None and event.inaxes == self.ax:
+        if getattr(self, '_sel_dragging_side', None) is not None:
             try:
-                x = event.xdata
+                x = self._event_time_from_axes_pixels(event)
                 if x is None:
                     return
-                # 夹紧到当前可视范围
-                x0, x1 = self.ax.get_xlim()
-                x = max(x0, min(x1, x))
                 mode = self._interaction_selection_mode()
                 if self._sel_dragging_side == 'block':
                     last = getattr(self, '_sel_dragging_last_x', None)
@@ -28385,6 +28451,10 @@ class ECGStylePitchVisualizer(QWidget):
             cur_abs = min(max(cur_abs, self._lb_abs_start), self._lb_abs_end)
             x = float(cur_abs - float(self.start_time))
             try:
+                self.follow_playback_time(x)
+            except Exception:
+                pass
+            try:
                 self._lb_playhead.set_xdata([x, x])
                 self._lb_playhead.set_visible(True)
                 self._lb_playhead.set_zorder(148)
@@ -28827,6 +28897,10 @@ class ECGStylePitchVisualizer(QWidget):
         # 更新辅助线位置
         try:
             self.update_guides()
+        except Exception:
+            pass
+        try:
+            self._refresh_technique_artists(force=True)
         except Exception:
             pass
         # A+B附加：水平滚动后立即对现存图元执行cap过滤，避免暂停回看时旧点回潮
@@ -29309,9 +29383,8 @@ class ECGStylePitchVisualizer(QWidget):
             enabled = bool(cfg is not None and getattr(cfg, 'enabled', False))
             selected = list(getattr(state, 'selected_types', []) or [])
             count = len(selected) if enabled else 0
-            analysis_ready = bool(getattr(state, 'analysis_ready', False))
             if enabled and bool(getattr(state, 'last_source_frame_count', 0) or 0) > 0:
-                base_text = '重分析技巧' if analysis_ready else '分析技巧'
+                base_text = '技巧分析'
             elif enabled:
                 base_text = '技巧识别设置'
             else:
@@ -29349,7 +29422,7 @@ class ECGStylePitchVisualizer(QWidget):
             self._clear_technique_artists()
 
     def _clear_technique_artists(self) -> None:
-        for attr_name in ('_technique_region_artists', '_technique_label_artists'):
+        for attr_name in ('_technique_region_artists', '_technique_label_artists', '_technique_edge_hint_artists'):
             artists = list(getattr(self, attr_name, []) or [])
             for artist in artists:
                 try:
@@ -29391,6 +29464,12 @@ class ECGStylePitchVisualizer(QWidget):
         features = pitch_data.get('_frame_features') if isinstance(pitch_data, dict) else None
         if isinstance(features, FrameFeatures):
             return features
+        try:
+            start_wall = float(getattr(self, 'start_time', 0.0) or 0.0)
+            if float(global_time) > 1e8 and start_wall > 1e8:
+                global_time = max(0.0, float(global_time) - start_wall)
+        except Exception:
+            pass
         try:
             note_info = pitch_data.get('note_info') or {}
         except Exception:
@@ -29532,6 +29611,11 @@ class ECGStylePitchVisualizer(QWidget):
             cfg = None
         start_time = float(state.get('start_time', now_t) or now_t)
         end_time = max(float(state.get('last_time', now_t) or now_t), start_time)
+        if event_type == 'breath':
+            try:
+                end_time = max(end_time, self._extend_breath_region_from_context(end_time, backward=False, limit_s=0.24))
+            except Exception:
+                pass
         duration = max(0.0, end_time - start_time)
         if event_type == 'breath':
             min_dur = float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06) if cfg is not None else 0.06
@@ -29672,29 +29756,64 @@ class ECGStylePitchVisualizer(QWidget):
             return
 
         breath_state = self._technique_active_states.get('breath')
+        pre_pitch = None
+        has_recent_voiced_context = False
+        for item in reversed(list(self._technique_recent_frames)[:-1]):
+            try:
+                delta_t = float(features.timeline_time) - float(getattr(item, 'timeline_time', 0.0) or 0.0)
+                if delta_t > 0.52:
+                    break
+                item_pitch = float(getattr(item, 'detected_frequency_hz', 0.0) or 0.0)
+                if bool(getattr(item, 'has_pitch', False)) and item_pitch > 0.0 and float(getattr(item, 'confidence', 0.0) or 0.0) >= 0.40:
+                    pre_pitch = item_pitch
+                    has_recent_voiced_context = True
+                    break
+            except Exception:
+                continue
+        try:
+            breath_score_val = float(features.breath_score or 0.0)
+        except Exception:
+            breath_score_val = 0.0
+        try:
+            noise_score_val = float(features.noise_score or 0.0)
+        except Exception:
+            noise_score_val = 0.0
+        try:
+            voiced_score_val = float(features.voiced_score or 0.0)
+        except Exception:
+            voiced_score_val = 0.0
+        try:
+            rms_val = float(features.audio_rms or 0.0)
+        except Exception:
+            rms_val = 0.0
+        try:
+            breath_core = bool(
+                ((not features.has_pitch) and breath_score_val >= 0.50 and noise_score_val <= 0.82 and voiced_score_val <= 0.38 and 0.00024 <= rms_val <= 0.00520)
+                or (bool(features.breath_detect_hint) and (not features.has_pitch) and 0.00018 <= rms_val <= 0.00540)
+            )
+        except Exception:
+            breath_core = False
         breath_candidate = bool(
             self._technique_type_selected('breath')
-            and ((float(features.breath_score or 0.0) >= 0.48) or (not features.has_pitch and 0.00045 <= float(features.audio_rms or 0.0) <= 0.0062))
+            and breath_core
+            and (has_recent_voiced_context or bool(features.breath_detect_hint))
         )
         if breath_candidate:
             if breath_state is None:
-                pre_pitch = None
-                for item in reversed(list(self._technique_recent_frames)[:-1]):
-                    try:
-                        if item.has_pitch and float(item.detected_frequency_hz or 0.0) > 0.0:
-                            pre_pitch = float(item.detected_frequency_hz)
-                            break
-                    except Exception:
-                        continue
+                start_time = float(features.timeline_time)
+                try:
+                    start_time = self._extend_breath_region_from_context(start_time, backward=True, limit_s=0.20)
+                except Exception:
+                    start_time = float(features.timeline_time)
                 self._technique_active_states['breath'] = {
-                    'start_time': float(features.timeline_time),
+                    'start_time': start_time,
                     'last_time': float(features.timeline_time),
                     'mean_rms': float(features.audio_rms or 0.0),
                     'breath_score_peak': float(features.breath_score or 0.0),
                     'pre_pitch_hz': pre_pitch,
                     'suppressed_pitch_frames': 0,
-                    'confidence': max(0.55, float(features.breath_score or 0.55)),
-                    'strength': max(0.50, float(features.breath_score or 0.50)),
+                    'confidence': max(0.56, breath_score_val),
+                    'strength': max(0.52, breath_score_val),
                 }
             else:
                 breath_state['last_time'] = float(features.timeline_time)
@@ -29702,16 +29821,47 @@ class ECGStylePitchVisualizer(QWidget):
                 breath_state['breath_score_peak'] = max(float(breath_state.get('breath_score_peak', 0.0) or 0.0), float(features.breath_score or 0.0))
                 if not features.has_pitch:
                     breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
+        elif breath_state is not None and (not bool(getattr(features, 'has_pitch', False))) and 0.00010 <= float(features.audio_rms or 0.0) <= 0.00036:
+            try:
+                last_time = float(breath_state.get('last_time', 0.0) or 0.0)
+            except Exception:
+                last_time = 0.0
+            if float(features.timeline_time) - last_time <= 0.14:
+                breath_state['last_time'] = float(features.timeline_time)
+                breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
         elif breath_state is not None:
             self._finalize_active_event('breath', float(features.timeline_time), final_features=features)
 
         slide_state = self._technique_active_states.get('slide')
+        try:
+            voiced_score = float(features.voiced_score or 0.0)
+        except Exception:
+            voiced_score = 0.0
+        try:
+            semitone_delta_prev = float(features.semitone_delta_prev or 0.0)
+        except Exception:
+            semitone_delta_prev = 0.0
+        try:
+            semitone_rate = float(features.semitone_rate or 0.0)
+        except Exception:
+            semitone_rate = 0.0
+        try:
+            semitone_accel = abs(float(features.semitone_accel or 0.0))
+        except Exception:
+            semitone_accel = 0.0
         slide_candidate = bool(
             self._technique_type_selected('slide')
             and features.has_pitch
             and bool(features.fast_change)
-            and float(features.semitone_delta_prev or 0.0) >= 0.45
-            and float(features.semitone_rate or 0.0) >= 2.8
+            and (breath_state is None)
+            and voiced_score >= 0.66
+            and float(features.confidence or 0.0) >= 0.56
+            and float(features.audio_rms or 0.0) >= 0.00075
+            and 0.55 <= semitone_delta_prev <= 3.20
+            and 3.2 <= semitone_rate <= 18.0
+            and semitone_accel <= 22.0
+            and float(features.continuity_score or 0.0) >= 0.28
+            and float(features.breath_score or 0.0) <= 0.30
         )
         if slide_candidate:
             direction = 'up'
@@ -30057,6 +30207,52 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         return target
 
+    def _extend_breath_region_from_context(self, anchor_time: float, *, backward: bool, limit_s: float = 0.20) -> float:
+        try:
+            frames = list(getattr(self, '_technique_recent_frames', []) or [])
+        except Exception:
+            frames = []
+        if not frames:
+            return float(anchor_time)
+        boundary = float(anchor_time)
+        silent_gap_limit = 0.070
+        scanned = 0
+        iterable = reversed(frames) if backward else frames
+        for item in iterable:
+            try:
+                t_val = float(getattr(item, 'timeline_time', 0.0) or 0.0)
+                has_pitch = bool(getattr(item, 'has_pitch', False))
+                rms = float(getattr(item, 'audio_rms', 0.0) or 0.0)
+                breath_score = float(getattr(item, 'breath_score', 0.0) or 0.0)
+            except Exception:
+                continue
+            if backward and t_val > anchor_time:
+                continue
+            if (not backward) and t_val < anchor_time:
+                continue
+            if abs(t_val - anchor_time) > float(limit_s):
+                if backward and t_val < anchor_time:
+                    break
+                if (not backward) and t_val > anchor_time:
+                    break
+            if has_pitch:
+                break
+            if rms > 0.0068:
+                break
+            if rms < 0.00012 and breath_score < 0.18:
+                scanned += 1
+                if scanned > 4:
+                    break
+            if backward:
+                if (boundary - t_val) > float(limit_s) + silent_gap_limit:
+                    break
+                boundary = min(boundary, t_val)
+            else:
+                if (t_val - boundary) > float(limit_s) + silent_gap_limit:
+                    break
+                boundary = max(boundary, t_val)
+        return float(boundary)
+
     def _technique_event_meaningful(self, event: BaseTechniqueEvent, cfg: Optional[TechniqueRecognitionConfig]) -> bool:
         try:
             duration = max(0.0, float(getattr(event, 'duration', 0.0) or 0.0))
@@ -30068,19 +30264,26 @@ class ECGStylePitchVisualizer(QWidget):
         if event_type == 'breath':
             min_d = max(0.08, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.08
             suppressed = int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
-            return duration >= min_d and (suppressed >= 1 or confidence >= 0.62 or strength >= 0.60)
+            breath_peak = float(getattr(event, 'breath_score_peak', 0.0) or 0.0)
+            mean_rms = float(getattr(event, 'mean_rms', 0.0) or 0.0)
+            pre_pitch = float(getattr(event, 'pre_pitch_hz', 0.0) or 0.0)
+            post_pitch = float(getattr(event, 'post_pitch_hz', 0.0) or 0.0)
+            contextual = (pre_pitch > 0.0) or (post_pitch > 0.0)
+            return duration >= min_d and contextual and 0.00014 <= mean_rms <= 0.0068 and breath_peak >= 0.30 and (suppressed >= 1 or confidence >= 0.62 or strength >= 0.60)
         if event_type == 'slide':
-            min_d = max(0.12, float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08)) if cfg is not None else 0.12
+            min_d = max(0.16, float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08)) if cfg is not None else 0.16
             span = float(getattr(event, 'pitch_span_semitones', 0.0) or 0.0)
             peak_rate = float(getattr(event, 'peak_semitone_rate', 0.0) or 0.0)
             continuity = float(getattr(event, 'continuity_score', 0.0) or 0.0)
-            return duration >= min_d and span >= 1.25 and peak_rate >= 3.1 and continuity >= 0.22
+            smoothness = float(getattr(event, 'smoothness_score', 0.0) or 0.0)
+            return duration >= min_d and span >= 1.55 and 3.4 <= peak_rate <= 18.0 and continuity >= 0.34 and smoothness >= 0.24 and confidence >= 0.60 and strength >= 0.58
         if event_type == 'vibrato':
             min_d = max(0.26, float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18)) if cfg is not None else 0.26
             rate_hz = float(getattr(event, 'rate_hz', 0.0) or 0.0)
             depth_cents = abs(float(getattr(event, 'depth_cents', 0.0) or 0.0))
+            regularity = float(getattr(event, 'regularity_score', 0.0) or 0.0)
             stability = float(getattr(event, 'stability_score', 0.0) or 0.0)
-            return duration >= min_d and 3.0 <= rate_hz <= 8.8 and 10.0 <= depth_cents <= 180.0 and stability >= 0.18
+            return duration >= min_d and 3.2 <= rate_hz <= 8.6 and 12.0 <= depth_cents <= 180.0 and regularity >= 0.30 and stability >= 0.24 and confidence >= 0.58
         if event_type == 'register_transition':
             min_d = max(0.14, float(getattr(cfg, 'min_register_transition_s', 0.10) or 0.10)) if cfg is not None else 0.14
             span = float(getattr(event, 'span_semitones', 0.0) or 0.0)
@@ -30147,7 +30350,29 @@ class ECGStylePitchVisualizer(QWidget):
             filtered.append(event)
             recent_by_type[event_type] = event
 
-        return filtered
+        resolved = []
+        breaths = [item for item in filtered if str(getattr(item, 'event_type', '') or '') == 'breath']
+        for event in filtered:
+            event_type = str(getattr(event, 'event_type', '') or '')
+            if event_type == 'slide':
+                suppress_slide = False
+                slide_start = float(getattr(event, 'start_time', 0.0) or 0.0)
+                slide_end = float(getattr(event, 'end_time', 0.0) or 0.0)
+                for breath in breaths:
+                    breath_start = float(getattr(breath, 'start_time', 0.0) or 0.0)
+                    breath_end = float(getattr(breath, 'end_time', 0.0) or 0.0)
+                    overlap = min(slide_end, breath_end) - max(slide_start, breath_start)
+                    if overlap > 0.0:
+                        suppress_slide = True
+                        break
+                    if 0.0 <= (slide_start - breath_end) <= 0.08:
+                        suppress_slide = True
+                        break
+                if suppress_slide:
+                    continue
+            resolved.append(event)
+
+        return resolved
 
     def _technique_fill_alpha(self, event_type: str) -> float:
         alpha_map = {
@@ -30169,9 +30394,103 @@ class ECGStylePitchVisualizer(QWidget):
             return len(lane_end_times) - 1
         return -1
 
+    def _technique_rendered_region_geometry(self, start_time: float, end_time: float, x0: float, x1: float, y_min: float, y_max: float, event_type: str = '') -> Optional[Tuple[float, float, float, float, float, float, int]]:
+        left = max(float(start_time), float(x0))
+        right = min(float(end_time), float(x1))
+        if right <= left:
+            return None
+        event_type = str(event_type or '')
+        try:
+            segments = list(getattr(self, '_segments', []) or [])
+        except Exception:
+            segments = []
+        region_points: List[Tuple[float, float]] = []
+        if segments:
+            for seg in segments:
+                try:
+                    seg_times = list(seg[0] or [])
+                    seg_pitches = list(seg[1] or [])
+                except Exception:
+                    continue
+                if not seg_times or not seg_pitches or len(seg_times) != len(seg_pitches):
+                    continue
+                try:
+                    if float(seg_times[-1]) < left or float(seg_times[0]) > right:
+                        continue
+                except Exception:
+                    continue
+                for tx, py in zip(seg_times, seg_pitches):
+                    try:
+                        t_val = float(tx)
+                        p_val = float(py)
+                    except Exception:
+                        continue
+                    if t_val < left or t_val > right:
+                        continue
+                    if p_val <= 0.0:
+                        continue
+                    region_points.append((t_val, p_val))
+        y_span = max(0.12, float(y_max) - float(y_min))
+        if not region_points:
+            if event_type != 'breath':
+                return None
+            rendered_start = left
+            rendered_end = right
+            line_y0 = float(y_min) + y_span * 0.18
+            line_y1 = float(y_min) + y_span * 0.76
+            label_x = 0.5 * (rendered_start + rendered_end)
+            label_y = min(float(y_max) - 0.02, line_y1 + max(0.08, y_span * 0.05))
+            return rendered_start, rendered_end, line_y0, line_y1, label_x, label_y, 0
+        if event_type == 'breath':
+            rendered_start = left
+            rendered_end = right
+        else:
+            xs = [item[0] for item in region_points]
+            rendered_start = max(left, min(xs))
+            rendered_end = min(right, max(xs))
+            if rendered_end <= rendered_start:
+                pad_x = max(0.012, min(0.045, (float(x1) - float(x0)) * 0.012))
+                rendered_start = max(left, rendered_start - pad_x)
+                rendered_end = min(right, rendered_end + pad_x)
+        xs = [item[0] for item in region_points]
+        ys = [item[1] for item in region_points]
+        if event_type == 'breath':
+            pitch_min = max(float(y_min) + y_span * 0.14, min(ys) - max(0.10, y_span * 0.10))
+            pitch_max = min(float(y_max) - y_span * 0.12, max(ys) + max(0.12, y_span * 0.12))
+            if pitch_max <= pitch_min:
+                pitch_min = float(y_min) + y_span * 0.18
+                pitch_max = float(y_min) + y_span * 0.76
+        else:
+            pitch_min = max(float(y_min), min(ys))
+            pitch_max = min(float(y_max), max(ys))
+        local_span = max(0.12, pitch_max - pitch_min)
+        if event_type == 'breath':
+            pad_y = max(0.10, min(0.34, local_span * 0.42))
+        else:
+            pad_y = max(0.08, min(0.24, local_span * 0.30))
+        line_y0 = max(float(y_min) + 0.02, pitch_min - pad_y)
+        line_y1 = min(float(y_max) - 0.04, pitch_max + pad_y)
+        label_x = 0.5 * (rendered_start + rendered_end)
+        label_y = min(float(y_max) - 0.02, line_y1 + max(0.06, min(0.16, local_span * 0.18)))
+        if event_type == 'breath':
+            line_y0 = max(line_y0, float(y_min) + y_span * 0.12)
+            line_y1 = min(line_y1, float(y_min) + y_span * 0.84)
+        return rendered_start, rendered_end, line_y0, line_y1, label_x, label_y, len(region_points)
+
     def _refresh_technique_artists(self, *, force: bool = False) -> None:
         if not hasattr(self, 'ax'):
             return
+        try:
+            self._technique_overlay_debug = {
+                'selected': 0,
+                'visible': 0,
+                'regions': 0,
+                'labels': 0,
+                'left': 0,
+                'right': 0,
+            }
+        except Exception:
+            pass
         if not self._technique_enabled_for_current_mode():
             self._clear_technique_artists()
             return
@@ -30196,28 +30515,87 @@ class ECGStylePitchVisualizer(QWidget):
         y_min = min(float(y0), float(y1))
         y_max = max(float(y0), float(y1))
         y_span = max(1e-6, y_max - y_min)
+        all_events = list(self._selected_technique_events() or [])
+        try:
+            self._technique_overlay_debug['selected'] = len(all_events)
+        except Exception:
+            pass
+        left_offscreen = []
+        right_offscreen = []
         visible_events = []
-        for event in self._selected_technique_events():
+        for event in all_events:
             try:
-                if float(event.end_time) < float(x0) or float(event.start_time) > float(x1):
+                event_start = float(getattr(event, 'start_time', 0.0) or 0.0)
+                event_end = float(getattr(event, 'end_time', 0.0) or 0.0)
+                if event_end < float(x0):
+                    left_offscreen.append(event)
+                    continue
+                if event_start > float(x1):
+                    right_offscreen.append(event)
                     continue
             except Exception:
                 continue
             visible_events.append(event)
+        try:
+            self._technique_overlay_debug['visible'] = len(visible_events)
+            self._technique_overlay_debug['left'] = len(left_offscreen)
+            self._technique_overlay_debug['right'] = len(right_offscreen)
+        except Exception:
+            pass
+        try:
+            self._technique_edge_hint_artists = []
+        except Exception:
+            pass
+        try:
+            hint_y = 0.965
+            if left_offscreen:
+                left_hint = self.ax.text(
+                    0.015,
+                    hint_y,
+                    f"< 左侧 {len(left_offscreen)} 段",
+                    transform=self.ax.transAxes,
+                    ha='left',
+                    va='top',
+                    fontsize=8.0,
+                    color='#CFE6FF',
+                    alpha=0.88,
+                    zorder=26,
+                )
+                self._technique_edge_hint_artists.append(left_hint)
+            if right_offscreen:
+                right_hint = self.ax.text(
+                    0.985,
+                    hint_y,
+                    f"右侧 {len(right_offscreen)} 段 >",
+                    transform=self.ax.transAxes,
+                    ha='right',
+                    va='top',
+                    fontsize=8.0,
+                    color='#CFE6FF',
+                    alpha=0.88,
+                    zorder=26,
+                )
+                self._technique_edge_hint_artists.append(right_hint)
+        except Exception:
+            pass
         if not visible_events:
             return
         visible_events = sorted(visible_events, key=lambda item: (float(getattr(item, 'start_time', 0.0) or 0.0), float(getattr(item, 'end_time', 0.0) or 0.0)))
         lane_end_times: List[float] = []
         label_count = 0
+        try:
+            from matplotlib import patheffects as _technique_path_effects
+        except Exception:
+            _technique_path_effects = None
         for event in visible_events[-20:]:
             label_text, color = self._get_technique_event_style(getattr(event, 'event_type', ''))
             start_time = float(getattr(event, 'start_time', 0.0) or 0.0)
             end_time = float(getattr(event, 'end_time', 0.0) or 0.0)
             center_time = 0.5 * (start_time + end_time)
-            clipped_start = min(max(start_time, float(x0)), float(x1))
-            clipped_end = min(max(end_time, float(x0)), float(x1))
-            if clipped_end <= clipped_start:
+            region_geometry = self._technique_rendered_region_geometry(start_time, end_time, float(x0), float(x1), y_min, y_max, getattr(event, 'event_type', ''))
+            if region_geometry is None:
                 continue
+            clipped_start, clipped_end, line_y0, line_y1, label_x, label_anchor_y, point_count = region_geometry
             try:
                 if cfg is None or bool(getattr(cfg, 'show_fill_overlay', True)):
                     patch = self.ax.axvspan(
@@ -30235,11 +30613,27 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             try:
                 if cfg is None or bool(getattr(cfg, 'show_regions', True)):
-                    line_y0 = y_min + y_span * 0.04
-                    line_y1 = y_max - y_span * 0.06
-                    left_line = self.ax.plot([clipped_start, clipped_start], [line_y0, line_y1], color=color, linewidth=0.68, alpha=0.96, zorder=23, solid_capstyle='butt', clip_on=True)[0]
-                    right_line = self.ax.plot([clipped_end, clipped_end], [line_y0, line_y1], color=color, linewidth=0.68, alpha=0.96, zorder=23, solid_capstyle='butt', clip_on=True)[0]
-                    self._technique_region_artists.extend([left_line, right_line])
+                    left_glow = self.ax.plot([clipped_start, clipped_start], [line_y0, line_y1], color='#F7FBFF', linewidth=2.3, alpha=0.72, zorder=23, solid_capstyle='butt', clip_on=False)[0]
+                    right_glow = self.ax.plot([clipped_end, clipped_end], [line_y0, line_y1], color='#F7FBFF', linewidth=2.3, alpha=0.72, zorder=23, solid_capstyle='butt', clip_on=False)[0]
+                    left_line = self.ax.plot([clipped_start, clipped_start], [line_y0, line_y1], color=color, linewidth=1.1, alpha=0.98, zorder=24, solid_capstyle='butt', clip_on=False)[0]
+                    right_line = self.ax.plot([clipped_end, clipped_end], [line_y0, line_y1], color=color, linewidth=1.1, alpha=0.98, zorder=24, solid_capstyle='butt', clip_on=False)[0]
+                    cap_half_width = min(0.06, max(0.018, (clipped_end - clipped_start) * 0.14))
+                    top_bridge = self.ax.plot([clipped_start, clipped_end], [line_y1, line_y1], color=(0.97, 0.99, 1.0, 0.88), linewidth=1.25, alpha=0.88, zorder=24, solid_capstyle='round', clip_on=False)[0]
+                    left_cap = self.ax.plot([clipped_start - cap_half_width, clipped_start + cap_half_width], [line_y1, line_y1], color='#F7FBFF', linewidth=1.5, alpha=0.88, zorder=24, solid_capstyle='round', clip_on=False)[0]
+                    right_cap = self.ax.plot([clipped_end - cap_half_width, clipped_end + cap_half_width], [line_y1, line_y1], color='#F7FBFF', linewidth=1.5, alpha=0.88, zorder=24, solid_capstyle='round', clip_on=False)[0]
+                    if _technique_path_effects is not None:
+                        try:
+                            stroke = [_technique_path_effects.Stroke(linewidth=3.0, foreground=(0.04, 0.06, 0.09, 0.72)), _technique_path_effects.Normal()]
+                            left_line.set_path_effects(stroke)
+                            right_line.set_path_effects(stroke)
+                            top_bridge.set_path_effects(stroke)
+                        except Exception:
+                            pass
+                    self._technique_region_artists.extend([left_glow, right_glow, left_line, right_line, top_bridge, left_cap, right_cap])
+                    try:
+                        self._technique_overlay_debug['regions'] = len(self._technique_region_artists)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -30247,23 +30641,33 @@ class ECGStylePitchVisualizer(QWidget):
                     lane = self._technique_label_lane(lane_end_times, clipped_start, spacing=0.45, max_lanes=3)
                     if lane < 0:
                         continue
-                    label_y = y_max - y_span * (0.035 + lane * 0.075)
-                    label_x = min(max(center_time, float(x0) + 0.18), float(x1) - 0.18)
+                    label_y = min(float(y_max) - 0.02, label_anchor_y + lane * max(0.10, y_span * 0.035))
+                    label_x = min(max(label_x, float(x0) + 0.18), float(x1) - 0.18)
                     txt = self.ax.text(
                         label_x,
                         label_y,
                         label_text,
                         ha='center',
                         va='bottom',
-                        fontsize=7.9,
+                        fontsize=8.2,
                         fontweight='semibold',
                         color='#EAF4FF',
-                        alpha=0.92,
-                        zorder=24,
-                        clip_on=True,
+                        alpha=0.98,
+                        zorder=25,
+                        clip_on=False,
+                        bbox=dict(facecolor=(0.02, 0.03, 0.05, 0.68), edgecolor='none', boxstyle='round,pad=0.14'),
                     )
+                    if _technique_path_effects is not None:
+                        try:
+                            txt.set_path_effects([_technique_path_effects.Stroke(linewidth=1.8, foreground=(0.01, 0.02, 0.03, 0.88)), _technique_path_effects.Normal()])
+                        except Exception:
+                            pass
                     self._technique_label_artists.append(txt)
                     label_count += 1
+                    try:
+                        self._technique_overlay_debug['labels'] = len(self._technique_label_artists)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         try:
@@ -30291,6 +30695,63 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def get_technique_visibility_snapshot(self) -> Dict[str, int]:
+        snapshot = {
+            'total': 0,
+            'visible': 0,
+            'offscreen': 0,
+            'left': 0,
+            'right': 0,
+            'nearest_start': None,
+            'nearest_end': None,
+        }
+        if not hasattr(self, 'ax'):
+            return snapshot
+        events = list(self._selected_technique_events() or [])
+        snapshot['total'] = len(events)
+        if not events:
+            return snapshot
+        try:
+            x0, x1 = self.ax.get_xlim()
+        except Exception:
+            snapshot['offscreen'] = len(events)
+            return snapshot
+        visible = 0
+        left = 0
+        right = 0
+        nearest_event = None
+        nearest_distance = None
+        center = 0.5 * (float(x0) + float(x1))
+        for event in events:
+            try:
+                event_start = float(getattr(event, 'start_time', 0.0) or 0.0)
+                event_end = float(getattr(event, 'end_time', 0.0) or 0.0)
+                event_center = 0.5 * (event_start + event_end)
+                distance = abs(event_center - center)
+                if nearest_distance is None or distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest_event = event
+                if event_end < float(x0):
+                    left += 1
+                    continue
+                if event_start > float(x1):
+                    right += 1
+                    continue
+                visible += 1
+            except Exception:
+                continue
+        snapshot['visible'] = int(visible)
+        snapshot['left'] = int(left)
+        snapshot['right'] = int(right)
+        snapshot['offscreen'] = max(0, int(snapshot['total']) - int(visible))
+        if nearest_event is not None:
+            try:
+                snapshot['nearest_start'] = float(getattr(nearest_event, 'start_time', 0.0) or 0.0)
+                snapshot['nearest_end'] = float(getattr(nearest_event, 'end_time', snapshot['nearest_start']) or snapshot['nearest_start'])
+            except Exception:
+                pass
+        return snapshot
+
     def focus_on_technique_region(self, *, prefer_first: bool = True, padding_ratio: float = 0.18) -> bool:
         if not hasattr(self, 'ax'):
             return False
@@ -30316,7 +30777,22 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             return True
-        target = events[0] if prefer_first else events[-1]
+        target = None
+        try:
+            current_center = 0.5 * (float(x0) + float(x1))
+            target = min(
+                events,
+                key=lambda item: abs(
+                    0.5 * (
+                        float(getattr(item, 'start_time', 0.0) or 0.0)
+                        + float(getattr(item, 'end_time', 0.0) or 0.0)
+                    ) - current_center
+                ),
+            )
+        except Exception:
+            target = None
+        if target is None:
+            target = events[0] if prefer_first else events[-1]
         try:
             start_time = float(getattr(target, 'start_time', 0.0) or 0.0)
             end_time = float(getattr(target, 'end_time', start_time) or start_time)
@@ -30516,6 +30992,16 @@ class ECGStylePitchVisualizer(QWidget):
                     global_time = float(timestamp)
                 except Exception:
                     global_time = 0.0
+            try:
+                start_wall = float(getattr(self, 'start_time', 0.0) or 0.0)
+                if global_time > 1e8 and start_wall > 1e8:
+                    global_time = max(0.0, global_time - start_wall)
+            except Exception:
+                pass
+            try:
+                pitch_data['global_time'] = float(global_time)
+            except Exception:
+                pass
             try:
                 pitch_data['_professional_time'] = float(global_time)
             except Exception:
@@ -51988,10 +52474,9 @@ class IntegratedRecordingInterface(QMainWindow):
             enabled = bool(cfg is not None and getattr(cfg, 'enabled', False))
             selected = list(getattr(state, 'selected_types', []) or [])
             count = len(selected) if enabled else 0
-            analysis_ready = bool(getattr(state, 'analysis_ready', False))
             source_ready = bool(self._technique_analysis_source_ready())
             if enabled and source_ready:
-                base_text = '重分析技巧' if analysis_ready else '分析技巧'
+                base_text = '技巧分析'
             elif enabled:
                 base_text = '技巧识别设置'
             else:
@@ -52118,12 +52603,27 @@ class IntegratedRecordingInterface(QMainWindow):
             state.last_source_frame_count = len(frames)
             state.last_analysis_mode = 'offline_normal_recording'
         self._sync_technique_panel_state_to_visualizer()
+        visibility = {'total': event_count, 'visible': 0, 'offscreen': event_count}
         try:
+            if hasattr(viz, 'update_axis_ranges'):
+                try:
+                    viz.update_axis_ranges()
+                except Exception:
+                    pass
             if hasattr(viz, '_refresh_technique_artists'):
                 viz._refresh_technique_artists(force=True)
-                if event_count > 0 and bool(getattr(cfg, 'auto_focus_after_analysis', False)) and hasattr(viz, 'focus_on_technique_region'):
+                try:
+                    if hasattr(viz, 'update_display'):
+                        try:
+                            setattr(viz, '_force_redraw_on_next_update', True)
+                        except Exception:
+                            pass
+                        viz.update_display()
+                except Exception:
+                    pass
+                if hasattr(viz, 'get_technique_visibility_snapshot'):
                     try:
-                        viz.focus_on_technique_region(prefer_first=True, padding_ratio=0.22)
+                        visibility = dict(viz.get_technique_visibility_snapshot() or visibility)
                     except Exception:
                         pass
                 if hasattr(viz, 'canvas') and viz.canvas is not None:
@@ -52133,7 +52633,41 @@ class IntegratedRecordingInterface(QMainWindow):
         try:
             if event_count > 0:
                 joined = '，'.join(f"{viz._technique_visible_types.get(k, k)} {v}" for k, v in counts.items() if v)
-                self.system_status_label.setText(f"状态: 技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}")
+                visible_count = int(visibility.get('visible', 0) or 0)
+                offscreen_count = int(visibility.get('offscreen', 0) or 0)
+                left_count = int(visibility.get('left', 0) or 0)
+                right_count = int(visibility.get('right', 0) or 0)
+                if visible_count > 0:
+                    suffix = f"，当前视窗可见 {visible_count} 段"
+                elif offscreen_count > 0:
+                    parts = []
+                    if left_count > 0:
+                        parts.append(f"左侧 {left_count} 段")
+                    if right_count > 0:
+                        parts.append(f"右侧 {right_count} 段")
+                    nearest_start = visibility.get('nearest_start')
+                    nearest_end = visibility.get('nearest_end')
+                    nearest_text = ''
+                    if nearest_start is not None and nearest_end is not None:
+                        try:
+                            nearest_text = f"，最近区间 {float(nearest_start):.1f}s-{float(nearest_end):.1f}s"
+                        except Exception:
+                            nearest_text = ''
+                    suffix = f"，当前视窗外还有 {offscreen_count} 段" + (f"（{'，'.join(parts)}）" if parts else '') + nearest_text
+                else:
+                    suffix = ''
+                debug_info = {}
+                try:
+                    debug_info = dict(getattr(viz, '_technique_overlay_debug', {}) or {})
+                except Exception:
+                    debug_info = {}
+                debug_suffix = ''
+                if debug_info:
+                    debug_suffix = (
+                        f"，已绘制线 {int(debug_info.get('regions', 0) or 0)}"
+                        f"，标签 {int(debug_info.get('labels', 0) or 0)}"
+                    )
+                self.system_status_label.setText(f"状态: 技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}{suffix}{debug_suffix}")
             else:
                 self.system_status_label.setText('状态: 技巧识别完成，当前录音未检测到需要标注的技巧区间')
         except Exception:
@@ -52144,6 +52678,28 @@ class IntegratedRecordingInterface(QMainWindow):
                     msg = f"已完成离线技巧识别，共标注 {event_count} 段。\n录音时长: {duration:.1f}秒"
                     if counts:
                         msg += '\n' + ' / '.join(f"{viz._technique_visible_types.get(k, k)} {v}" for k, v in counts.items() if v)
+                    visible_count = int(visibility.get('visible', 0) or 0)
+                    offscreen_count = int(visibility.get('offscreen', 0) or 0)
+                    left_count = int(visibility.get('left', 0) or 0)
+                    right_count = int(visibility.get('right', 0) or 0)
+                    if visible_count > 0:
+                        msg += f"\n当前视窗可见: {visible_count} 段"
+                    elif offscreen_count > 0:
+                        msg += f"\n当前视窗内暂不可见，视窗外还有: {offscreen_count} 段"
+                        if left_count > 0 or right_count > 0:
+                            parts = []
+                            if left_count > 0:
+                                parts.append(f"左侧 {left_count} 段")
+                            if right_count > 0:
+                                parts.append(f"右侧 {right_count} 段")
+                            msg += f"\n方向提示: {' / '.join(parts)}"
+                        nearest_start = visibility.get('nearest_start')
+                        nearest_end = visibility.get('nearest_end')
+                        if nearest_start is not None and nearest_end is not None:
+                            try:
+                                msg += f"\n最近区间: {float(nearest_start):.1f}s - {float(nearest_end):.1f}s"
+                            except Exception:
+                                pass
                 else:
                     msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
                 QMessageBox.information(self, '技巧识别', msg)
@@ -52239,10 +52795,12 @@ class IntegratedRecordingInterface(QMainWindow):
         fill_chk.setChecked(bool(getattr(cfg, 'show_fill_overlay', False)))
         summary_chk = QCheckBox('显示右上角摘要')
         summary_chk.setChecked(bool(getattr(cfg, 'show_summary_panel', True)))
-        auto_focus_chk = QCheckBox('识别后自动定位到技巧区间')
-        auto_focus_chk.setChecked(bool(getattr(cfg, 'auto_focus_after_analysis', False)))
-        for chk in (normal_chk, pro_chk, label_chk, region_chk, fill_chk, summary_chk, auto_focus_chk):
+        auto_focus_note = QLabel('技巧分析完成后不会自动跳转到技巧位置，需要时请手动滚动查看。')
+        auto_focus_note.setWordWrap(True)
+        auto_focus_note.setStyleSheet('color: #9FB5C9; font-size: 12px;')
+        for chk in (normal_chk, pro_chk, label_chk, region_chk, fill_chk, summary_chk):
             display_layout.addWidget(chk)
+        display_layout.addWidget(auto_focus_note)
         layout.addWidget(display_group)
 
         btn_row = QHBoxLayout()
@@ -52278,7 +52836,7 @@ class IntegratedRecordingInterface(QMainWindow):
             show_regions=bool(region_chk.isChecked()),
             show_fill_overlay=bool(fill_chk.isChecked()),
             show_summary_panel=bool(summary_chk.isChecked()),
-            auto_focus_after_analysis=bool(auto_focus_chk.isChecked()),
+            auto_focus_after_analysis=False,
         )
         self._technique_panel_state = TechniquePanelState(
             config=new_cfg,
@@ -52314,6 +52872,16 @@ class IntegratedRecordingInterface(QMainWindow):
             timeline_time = float(pitch_data.get('global_time', pitch_data.get('timestamp', now_wall)) or now_wall)
         except Exception:
             timeline_time = now_wall
+        try:
+            start_wall = float(getattr(self, 'start_time', 0.0) or 0.0)
+            if timeline_time > 1e8 and start_wall > 1e8:
+                timeline_time = max(0.0, timeline_time - start_wall)
+        except Exception:
+            pass
+        try:
+            pitch_data['global_time'] = float(timeline_time)
+        except Exception:
+            pass
         try:
             raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
         except Exception:
