@@ -724,14 +724,129 @@ class RetakeSessionContext:
         self.phase = RetakePhase.IDLE
 
 
+_TECHNIQUE_SECTION_DEFS = (
+    {
+        'title': '呼吸与发声基础',
+        'items': (
+            {'key': 'breath', 'label': '换气', 'implemented': True, 'default_selected': True},
+        ),
+    },
+    {
+        'title': '混声技术（Mix Voice）',
+        'items': (
+            {'key': 'strong_mix', 'label': '强混声', 'implemented': False},
+            {'key': 'weak_mix', 'label': '弱混声', 'implemented': False},
+            {'key': 'balanced_mix', 'label': '平衡混声', 'implemented': False},
+        ),
+    },
+    {
+        'title': '装饰性技巧（Ornamentation）',
+        'items': (
+            {'key': 'runs', 'label': '转音', 'implemented': False},
+            {'key': 'slide', 'label': '滑音', 'implemented': False},
+            {'key': 'vibrato', 'label': '颤音', 'implemented': True, 'default_selected': True},
+            {'key': 'distortion', 'label': '怒音/撕裂音', 'implemented': False},
+            {'key': 'vocal_fry', 'label': '气泡音', 'implemented': False},
+        ),
+    },
+    {
+        'title': '音色与动态控制技巧',
+        'items': (
+            {'key': 'breathy_phonation', 'label': '气声', 'implemented': False},
+            {'key': 'falsetto', 'label': '假声', 'implemented': False},
+            {'key': 'chest_voice', 'label': '真声', 'implemented': False},
+            {'key': 'twang', 'label': '咽音', 'implemented': False},
+            {'key': 'cry', 'label': '哭腔', 'implemented': False},
+        ),
+    },
+)
+
+
+def _iter_technique_catalog_items() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for section in _TECHNIQUE_SECTION_DEFS:
+        for item in section.get('items', ()):
+            items.append(dict(item))
+    return items
+
+
+def _implemented_technique_types() -> List[str]:
+    result: List[str] = []
+    for item in _iter_technique_catalog_items():
+        key = str(item.get('key', '') or '')
+        if key and bool(item.get('implemented', False)):
+            result.append(key)
+    return result
+
+
+def _default_enabled_technique_types() -> List[str]:
+    result: List[str] = []
+    for item in _iter_technique_catalog_items():
+        key = str(item.get('key', '') or '')
+        if key and bool(item.get('implemented', False)) and bool(item.get('default_selected', False)):
+            result.append(key)
+    return result
+
+
+def _default_visible_technique_rows() -> List[str]:
+    visible_keys = set(_default_enabled_technique_types())
+    result: List[str] = []
+    for item in _iter_technique_catalog_items():
+        key = str(item.get('key', '') or '')
+        label = str(item.get('label', '') or key)
+        if key in visible_keys and label:
+            result.append(label)
+    return result
+
+
+def _technique_label_map() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for item in _iter_technique_catalog_items():
+        key = str(item.get('key', '') or '')
+        label = str(item.get('label', '') or key)
+        if key:
+            mapping[key] = label
+    mapping.setdefault('register_transition', '换声区')
+    return mapping
+
+
+def _normalize_technique_selection(values: Optional[List[str]]) -> List[str]:
+    allowed = set(_implemented_technique_types())
+    result: List[str] = []
+    for raw in list(values or []):
+        key = str(raw or '')
+        if key in allowed and key not in result:
+            result.append(key)
+    return result
+
+
+def _normalize_technique_panel_state(state: Optional['TechniquePanelState']) -> 'TechniquePanelState':
+    normalized = state if isinstance(state, TechniquePanelState) else TechniquePanelState()
+    selected = _normalize_technique_selection(getattr(normalized, 'selected_types', []) or [])
+    normalized.selected_types = selected
+    label_map = _technique_label_map()
+    rows = [label_map[key] for key in selected if key in label_map]
+    normalized.visible_rows = rows or list(_default_visible_technique_rows())
+    cfg = getattr(normalized, 'config', None)
+    if not isinstance(cfg, TechniqueRecognitionConfig):
+        cfg = TechniqueRecognitionConfig()
+    cfg.detect_breath = bool('breath' in selected)
+    cfg.detect_vibrato = bool('vibrato' in selected)
+    cfg.detect_register_transition = False
+    cfg.detect_slide = False
+    cfg.detect_breathy_phonation = False
+    normalized.config = cfg
+    return normalized
+
+
 @dataclass
 class TechniqueRecognitionConfig:
     enabled: bool = False
     detect_breath: bool = True
-    detect_register_transition: bool = True
-    detect_slide: bool = True
+    detect_register_transition: bool = False
+    detect_slide: bool = False
     detect_vibrato: bool = True
-    detect_breathy_phonation: bool = True
+    detect_breathy_phonation: bool = False
     min_event_confidence: float = 0.55
     merge_gap_s: float = 0.12
     min_breath_duration_s: float = 0.06
@@ -751,14 +866,8 @@ class TechniqueRecognitionConfig:
 @dataclass
 class TechniquePanelState:
     config: TechniqueRecognitionConfig = field(default_factory=TechniqueRecognitionConfig)
-    selected_types: List[str] = field(default_factory=lambda: [
-        'breath',
-        'register_transition',
-        'slide',
-        'vibrato',
-        'breathy_phonation',
-    ])
-    visible_rows: List[str] = field(default_factory=lambda: ['换气', '换声区', '滑音', '颤音', '气声'])
+    selected_types: List[str] = field(default_factory=_default_enabled_technique_types)
+    visible_rows: List[str] = field(default_factory=_default_visible_technique_rows)
     last_summary: Dict[str, Any] = field(default_factory=dict)
     analysis_ready: bool = False
     last_analysis_event_count: int = 0
@@ -9051,7 +9160,10 @@ class IntegratedAudioProcessor(QThread):
                                 vibrato_info={'has_vibrato': False}
                             )
                             try:
-                                self._emit_pitch_data_throttled(frame.to_dict())
+                                payload = frame.to_dict()
+                                payload['zcr'] = float(zcr_once)
+                                payload['breath_detect_hint'] = True
+                                self._emit_pitch_data_throttled(payload)
                             except Exception:
                                 pass
                             self._last_no_pitch_emit_t = now_t
@@ -9081,7 +9193,10 @@ class IntegratedAudioProcessor(QThread):
                                 vibrato_info={'has_vibrato': False}
                             )
                             try:
-                                self._emit_pitch_data_throttled(frame.to_dict())
+                                payload = frame.to_dict()
+                                payload['zcr'] = float(zcr_once)
+                                payload['breath_detect_hint'] = bool(audio_rms <= float(getattr(self, '_breath_rms_upper', _breath_upper_default)) and zcr_once >= 0.18)
+                                self._emit_pitch_data_throttled(payload)
                             except Exception:
                                 pass
                             self._last_no_pitch_emit_t = now_t
@@ -9133,7 +9248,10 @@ class IntegratedAudioProcessor(QThread):
                                     vibrato_info={'has_vibrato': False}
                                 )
                                 try:
-                                    self._emit_pitch_data_throttled(frame.to_dict())
+                                    payload = frame.to_dict()
+                                    payload['zcr'] = float(zcr_once)
+                                    payload['breath_detect_hint'] = True
+                                    self._emit_pitch_data_throttled(payload)
                                 except Exception:
                                     pass
                                 self._last_no_pitch_emit_t = now_t
@@ -9183,6 +9301,15 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 pass
 
+            try:
+                breath_like_payload_hint = bool(
+                    (min_voice_rms <= audio_rms <= float(getattr(self, '_breath_rms_upper', 0.004) or 0.004))
+                    and float(zcr_once) >= max(0.18, float(getattr(self, '_breath_zcr_mid', 0.26) or 0.26) - 0.06)
+                    and not bool(stable_pitch_guard)
+                )
+            except Exception:
+                breath_like_payload_hint = False
+
             # 🔥 关键修复：大幅降低有效音高的最低要求
             if smooth_frequency > 10:  # 🔥 极低有效音高阈值 (20Hz → 10Hz)
                 note_info = self.frequency_to_note_info(smooth_frequency)
@@ -9226,6 +9353,8 @@ class IntegratedAudioProcessor(QThread):
                     pitch_data['detected_frequency'] = float(smooth_frequency)
                     pitch_data['display_frequency'] = float(display_frequency if display_frequency > 0 else smooth_frequency)
                     pitch_data['display_note_info'] = self.frequency_to_note_info(float(pitch_data['display_frequency'])) if pitch_data['display_frequency'] > 0 else note_info
+                    pitch_data['zcr'] = float(zcr_once)
+                    pitch_data['breath_detect_hint'] = False
                 except Exception:
                     pass
                 
@@ -9294,6 +9423,11 @@ class IntegratedAudioProcessor(QThread):
                             timestamp_data['global_time'] = float(forced_global_time)
                         except Exception:
                             pass
+                    try:
+                        timestamp_data['zcr'] = float(zcr_once)
+                        timestamp_data['breath_detect_hint'] = bool(breath_like_payload_hint)
+                    except Exception:
+                        pass
                     # 无音高帧也需要在重录覆盖时走同一套时间轴，否则 UI 仍可能推进到“末尾幽灵区”。
                     try:
                         overlay_handled = False
@@ -13671,13 +13805,7 @@ class ECGStylePitchVisualizer(QWidget):
         self._technique_last_frame_rate = 0.0
         self._offline_technique_service = None
         self._disable_realtime_vibrato_detection = False
-        self._technique_visible_types = {
-            'breath': '换气',
-            'register_transition': '换声区',
-            'slide': '滑音',
-            'vibrato': '颤音',
-            'breathy_phonation': '气声',
-        }
+        self._technique_visible_types = _technique_label_map()
 
         # 自定义“蓝色羽毛”鼠标指针
         self._cursor_feather_blue = None
@@ -29361,7 +29489,7 @@ class ECGStylePitchVisualizer(QWidget):
 
     def set_technique_panel_state(self, state: Optional[TechniquePanelState]) -> None:
         try:
-            self._technique_panel_state = state if isinstance(state, TechniquePanelState) else TechniquePanelState()
+            self._technique_panel_state = _normalize_technique_panel_state(state)
         except Exception:
             self._technique_panel_state = TechniquePanelState()
         try:
@@ -29381,7 +29509,7 @@ class ECGStylePitchVisualizer(QWidget):
             state = getattr(self, '_technique_panel_state', None)
             cfg = getattr(state, 'config', None)
             enabled = bool(cfg is not None and getattr(cfg, 'enabled', False))
-            selected = list(getattr(state, 'selected_types', []) or [])
+            selected = _normalize_technique_selection(getattr(state, 'selected_types', []) or [])
             count = len(selected) if enabled else 0
             if enabled and bool(getattr(state, 'last_source_frame_count', 0) or 0) > 0:
                 base_text = '技巧分析'
@@ -29455,7 +29583,7 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _technique_type_selected(self, event_type: str) -> bool:
         try:
-            selected = list(getattr(getattr(self, '_technique_panel_state', None), 'selected_types', []) or [])
+            selected = _normalize_technique_selection(getattr(getattr(self, '_technique_panel_state', None), 'selected_types', []) or [])
             return str(event_type or '') in selected
         except Exception:
             return False
@@ -29495,6 +29623,10 @@ class ECGStylePitchVisualizer(QWidget):
                 zcr=pitch_data.get('zcr'),
                 fast_change=bool(pitch_data.get('_fast_change', False)),
                 harmonic_candidates=list(pitch_data.get('harmonic_candidates', []) or []),
+                mid_high_ratio=pitch_data.get('mid_high_ratio'),
+                hm_over_hh=pitch_data.get('hm_over_hh'),
+                spectral_tilt=pitch_data.get('spectral_tilt'),
+                tonal_hum=pitch_data.get('tonal_hum'),
                 breath_detect_hint=bool(pitch_data.get('breath_detect_hint', False)),
                 vibrato_info=dict(pitch_data.get('vibrato_info', {}) or {}),
                 mode_name=str(mode_name),
@@ -29503,6 +29635,294 @@ class ECGStylePitchVisualizer(QWidget):
             )
         except Exception:
             return None
+
+    def _technique_context_pitch(self, features: Optional[FrameFeatures], *, min_conf: float = 0.40) -> Optional[float]:
+        if features is None:
+            return None
+        try:
+            if (not bool(getattr(features, 'has_pitch', False))) or float(getattr(features, 'confidence', 0.0) or 0.0) < float(min_conf):
+                return None
+            pitch_val = float(getattr(features, 'detected_frequency_hz', 0.0) or 0.0)
+            return pitch_val if pitch_val > 0.0 else None
+        except Exception:
+            return None
+
+    def _breath_airflow_evidence(self, features: Optional[FrameFeatures]) -> float:
+        if features is None:
+            return 0.0
+        try:
+            rms = float(getattr(features, 'audio_rms', 0.0) or 0.0)
+        except Exception:
+            rms = 0.0
+        try:
+            zcr = float(getattr(features, 'zcr', 0.0) or 0.0)
+        except Exception:
+            zcr = 0.0
+        try:
+            hm_over_hh = float(getattr(features, 'hm_over_hh', 1.0) or 1.0)
+        except Exception:
+            hm_over_hh = 1.0
+        try:
+            mid_high_ratio = float(getattr(features, 'mid_high_ratio', 1.0) or 1.0)
+        except Exception:
+            mid_high_ratio = 1.0
+        try:
+            tonal_hum = bool(getattr(features, 'tonal_hum', False))
+        except Exception:
+            tonal_hum = False
+        try:
+            confidence = float(getattr(features, 'confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        evidence = 0.0
+        if bool(getattr(features, 'breath_detect_hint', False)):
+            evidence += 0.42
+        if 0.00018 <= rms <= 0.0058:
+            evidence += 0.10
+        if zcr >= 0.16:
+            evidence += min(0.22, ((zcr - 0.16) / 0.18) * 0.22)
+        if hm_over_hh >= 1.12:
+            evidence += min(0.14, ((hm_over_hh - 1.12) / 0.60) * 0.14)
+        if tonal_hum:
+            evidence -= 0.28
+        if bool(getattr(features, 'has_pitch', False)) and confidence >= 0.40:
+            evidence -= 0.24
+        if mid_high_ratio >= 2.05 and zcr <= 0.12:
+            evidence -= 0.14
+        return max(0.0, min(1.0, evidence))
+
+    def _breath_has_voiced_continuity(self, features: Optional[FrameFeatures]) -> bool:
+        if features is None:
+            return False
+        try:
+            if bool(getattr(features, 'has_pitch', False)):
+                freq_val = float(getattr(features, 'detected_frequency_hz', 0.0) or 0.0)
+                conf_val = float(getattr(features, 'confidence', 0.0) or 0.0)
+                if freq_val > 0.0 and conf_val >= 0.34:
+                    return True
+        except Exception:
+            pass
+        try:
+            voiced_score = float(getattr(features, 'voiced_score', 0.0) or 0.0)
+        except Exception:
+            voiced_score = 0.0
+        try:
+            zcr = float(getattr(features, 'zcr', 0.0) or 0.0)
+        except Exception:
+            zcr = 0.0
+        try:
+            mid_high_ratio = float(getattr(features, 'mid_high_ratio', 1.0) or 1.0)
+        except Exception:
+            mid_high_ratio = 1.0
+        try:
+            tonal_hum = bool(getattr(features, 'tonal_hum', False))
+        except Exception:
+            tonal_hum = False
+        return (not tonal_hum) and voiced_score >= 0.52 and zcr <= 0.13 and mid_high_ratio >= 1.45
+
+    def _breath_pitch_intrusion_bridge(self, features: Optional[FrameFeatures], breath_state: Optional[Dict[str, Any]] = None) -> bool:
+        if features is None:
+            return False
+        try:
+            if not bool(getattr(features, 'has_pitch', False)):
+                return False
+        except Exception:
+            return False
+        try:
+            confidence = float(getattr(features, 'confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            rms = float(getattr(features, 'audio_rms', 0.0) or 0.0)
+        except Exception:
+            rms = 0.0
+        try:
+            zcr = float(getattr(features, 'zcr', 0.0) or 0.0)
+        except Exception:
+            zcr = 0.0
+        try:
+            tonal_hum = bool(getattr(features, 'tonal_hum', False))
+        except Exception:
+            tonal_hum = False
+        airflow_evidence = self._breath_airflow_evidence(features)
+        if tonal_hum:
+            return False
+        if confidence >= 0.68 and not (rms <= 0.0038 and airflow_evidence >= 0.34):
+            return False
+        if rms > 0.0048:
+            return False
+        if airflow_evidence < 0.24 and zcr < 0.14:
+            return False
+        if breath_state:
+            try:
+                last_time = float(breath_state.get('last_time', 0.0) or 0.0)
+                now_t = float(getattr(features, 'timeline_time', 0.0) or 0.0)
+                if last_time > 0.0 and (now_t - last_time) > 0.12:
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def _breath_pitch_like_candidate(self, features: Optional[FrameFeatures]) -> bool:
+        if features is None:
+            return False
+        try:
+            if not bool(getattr(features, 'has_pitch', False)):
+                return False
+        except Exception:
+            return False
+        try:
+            confidence = float(getattr(features, 'confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            rms = float(getattr(features, 'audio_rms', 0.0) or 0.0)
+        except Exception:
+            rms = 0.0
+        try:
+            semi_delta = float(getattr(features, 'semitone_delta_prev', 0.0) or 0.0)
+        except Exception:
+            semi_delta = 0.0
+        try:
+            continuity = float(getattr(features, 'continuity_score', 0.0) or 0.0)
+        except Exception:
+            continuity = 0.0
+        airflow_evidence = self._breath_airflow_evidence(features)
+        voiced_continuity = self._breath_has_voiced_continuity(features)
+        if voiced_continuity:
+            return False
+        if not self._breath_pitch_intrusion_bridge(features, None):
+            return False
+        if confidence > 0.64 and airflow_evidence < 0.46:
+            return False
+        unstable_pitch = bool(semi_delta >= 2.2 or continuity <= 0.40 or bool(getattr(features, 'fast_change', False)))
+        return airflow_evidence >= 0.34 and rms <= 0.0048 and unstable_pitch
+
+    def _breath_can_extend_silence(self, features: Optional[FrameFeatures], breath_state: Optional[Dict[str, Any]]) -> bool:
+        if features is None or not breath_state:
+            return False
+        try:
+            if bool(getattr(features, 'has_pitch', False)):
+                return False
+        except Exception:
+            return False
+        try:
+            tonal_hum = bool(getattr(features, 'tonal_hum', False))
+        except Exception:
+            tonal_hum = False
+        if tonal_hum:
+            return False
+        try:
+            rms = float(getattr(features, 'audio_rms', 0.0) or 0.0)
+        except Exception:
+            rms = 0.0
+        try:
+            zcr = float(getattr(features, 'zcr', 0.0) or 0.0)
+        except Exception:
+            zcr = 0.0
+        try:
+            now_t = float(getattr(features, 'timeline_time', 0.0) or 0.0)
+            last_t = float(breath_state.get('last_time', 0.0) or 0.0)
+        except Exception:
+            now_t, last_t = 0.0, 0.0
+        if last_t > 0.0 and (now_t - last_t) > 0.22:
+            return False
+        try:
+            breath_peak = float(breath_state.get('breath_score_peak', 0.0) or 0.0)
+        except Exception:
+            breath_peak = 0.0
+        try:
+            suppressed = int(breath_state.get('suppressed_pitch_frames', 0) or 0)
+        except Exception:
+            suppressed = 0
+        try:
+            pre_pitch = float(breath_state.get('pre_pitch_hz', 0.0) or 0.0)
+        except Exception:
+            pre_pitch = 0.0
+        return rms <= 0.00160 and (zcr >= 0.05 or rms <= 0.00042) and (breath_peak >= 0.40 or suppressed >= 1) and pre_pitch > 0.0
+
+    def _breath_gap_bridgeable(self, left_event: Optional[BaseTechniqueEvent], right_event: Optional[BaseTechniqueEvent]) -> bool:
+        if left_event is None or right_event is None:
+            return False
+        try:
+            gap_start = float(getattr(left_event, 'end_time', 0.0) or 0.0)
+            gap_end = float(getattr(right_event, 'start_time', 0.0) or 0.0)
+        except Exception:
+            return False
+        gap = gap_end - gap_start
+        if gap <= 0.0:
+            return True
+        if gap > 0.62:
+            return False
+        try:
+            frames = list(getattr(self, '_technique_recent_frames', []) or [])
+        except Exception:
+            frames = []
+        if not frames:
+            return gap <= 0.28
+        sparse_pitch = 0
+        silence_like = 0
+        solid_voiced = 0
+        tonal_count = 0
+        considered = 0
+        breath_seed = {
+            'last_time': gap_start,
+            'breath_score_peak': max(
+                float(getattr(left_event, 'breath_score_peak', 0.0) or 0.0),
+                float(getattr(right_event, 'breath_score_peak', 0.0) or 0.0),
+                0.52,
+            ),
+            'suppressed_pitch_frames': max(
+                int(getattr(left_event, 'suppressed_pitch_frames', 0) or 0),
+                int(getattr(right_event, 'suppressed_pitch_frames', 0) or 0),
+                2,
+            ),
+            'pre_pitch_hz': float(getattr(left_event, 'pre_pitch_hz', 0.0) or 0.0),
+        }
+        for item in frames:
+            try:
+                t_val = float(getattr(item, 'timeline_time', 0.0) or 0.0)
+            except Exception:
+                continue
+            if t_val <= gap_start or t_val >= gap_end:
+                continue
+            considered += 1
+            try:
+                tonal_hum = bool(getattr(item, 'tonal_hum', False))
+            except Exception:
+                tonal_hum = False
+            if tonal_hum:
+                tonal_count += 1
+                continue
+            if self._breath_has_voiced_continuity(item):
+                try:
+                    conf = float(getattr(item, 'confidence', 0.0) or 0.0)
+                    rms = float(getattr(item, 'audio_rms', 0.0) or 0.0)
+                except Exception:
+                    conf, rms = 0.0, 0.0
+                if conf >= 0.46 and rms >= 0.0028:
+                    solid_voiced += 1
+                    continue
+            if self._breath_pitch_like_candidate(item) or self._breath_pitch_intrusion_bridge(item, None):
+                sparse_pitch += 1
+                continue
+            if self._breath_can_extend_silence(item, breath_seed):
+                silence_like += 1
+                continue
+            try:
+                rms = float(getattr(item, 'audio_rms', 0.0) or 0.0)
+            except Exception:
+                rms = 0.0
+            if rms <= 0.00055 and self._breath_airflow_evidence(item) >= 0.18:
+                silence_like += 1
+        if considered <= 0:
+            return gap <= 0.28
+        if solid_voiced >= 2:
+            return False
+        if tonal_count >= max(2, considered // 2):
+            return False
+        bridge_units = sparse_pitch + silence_like
+        return bridge_units >= max(1, int(round(considered * 0.55)))
 
     def _estimate_feature_scores(self, features: FrameFeatures) -> None:
         try:
@@ -29517,14 +29937,14 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         try:
             if features.breath_score is None:
-                breath = 0.0
+                breath = self._breath_airflow_evidence(features) * 0.72
                 if not features.has_pitch:
-                    breath += 0.38
-                if features.breath_detect_hint:
-                    breath += 0.40
+                    breath += 0.24
                 rms = max(0.0, float(features.audio_rms or 0.0))
-                if 0.00045 <= rms <= 0.0062:
-                    breath += 0.16
+                if 0.00030 <= rms <= 0.0062:
+                    breath += 0.10
+                if self._breath_has_voiced_continuity(features):
+                    breath -= 0.20
                 features.breath_score = max(0.0, min(1.0, breath))
         except Exception:
             pass
@@ -29622,6 +30042,7 @@ class ECGStylePitchVisualizer(QWidget):
             if duration < min_dur:
                 self._technique_active_states.pop(event_type, None)
                 return
+            post_pitch = self._technique_context_pitch(final_features, min_conf=0.40)
             event = BreathEvent(
                 event_type='breath',
                 start_time=start_time,
@@ -29638,7 +30059,7 @@ class ECGStylePitchVisualizer(QWidget):
                 mean_zcr=state.get('mean_zcr'),
                 breath_score_peak=state.get('breath_score_peak'),
                 pre_pitch_hz=state.get('pre_pitch_hz'),
-                post_pitch_hz=float(getattr(final_features, 'detected_frequency_hz', 0.0) or 0.0) if final_features is not None else None,
+                post_pitch_hz=post_pitch,
                 suppressed_pitch_frames=int(state.get('suppressed_pitch_frames', 0) or 0),
             )
             self._append_technique_event(event)
@@ -29763,8 +30184,8 @@ class ECGStylePitchVisualizer(QWidget):
                 delta_t = float(features.timeline_time) - float(getattr(item, 'timeline_time', 0.0) or 0.0)
                 if delta_t > 0.52:
                     break
-                item_pitch = float(getattr(item, 'detected_frequency_hz', 0.0) or 0.0)
-                if bool(getattr(item, 'has_pitch', False)) and item_pitch > 0.0 and float(getattr(item, 'confidence', 0.0) or 0.0) >= 0.40:
+                item_pitch = self._technique_context_pitch(item, min_conf=0.40)
+                if item_pitch is not None:
                     pre_pitch = item_pitch
                     has_recent_voiced_context = True
                     break
@@ -29786,17 +30207,40 @@ class ECGStylePitchVisualizer(QWidget):
             rms_val = float(features.audio_rms or 0.0)
         except Exception:
             rms_val = 0.0
+        airflow_evidence = self._breath_airflow_evidence(features)
+        voiced_continuity = self._breath_has_voiced_continuity(features)
+        breath_pitch_like = self._breath_pitch_like_candidate(features)
+        silent_gap_candidate = bool(
+            (not bool(getattr(features, 'has_pitch', False)))
+            and has_recent_voiced_context
+            and (not voiced_continuity)
+            and (not bool(getattr(features, 'tonal_hum', False)))
+            and 0.00008 <= rms_val <= 0.00160
+            and (airflow_evidence >= 0.18 or breath_score_val >= 0.18 or getattr(features, 'zcr', 0.0) >= 0.05)
+        )
         try:
             breath_core = bool(
-                ((not features.has_pitch) and breath_score_val >= 0.50 and noise_score_val <= 0.82 and voiced_score_val <= 0.38 and 0.00024 <= rms_val <= 0.00520)
-                or (bool(features.breath_detect_hint) and (not features.has_pitch) and 0.00018 <= rms_val <= 0.00540)
+                (
+                    (
+                        (not features.has_pitch)
+                        and airflow_evidence >= 0.52
+                        and breath_score_val >= 0.44
+                        and noise_score_val <= 0.78
+                        and voiced_score_val <= 0.42
+                        and (not voiced_continuity)
+                        and (not bool(getattr(features, 'tonal_hum', False)))
+                        and 0.00018 <= rms_val <= 0.00540
+                    )
+                    or breath_pitch_like
+                    or silent_gap_candidate
+                )
             )
         except Exception:
             breath_core = False
         breath_candidate = bool(
             self._technique_type_selected('breath')
             and breath_core
-            and (has_recent_voiced_context or bool(features.breath_detect_hint))
+            and has_recent_voiced_context
         )
         if breath_candidate:
             if breath_state is None:
@@ -29809,25 +30253,60 @@ class ECGStylePitchVisualizer(QWidget):
                     'start_time': start_time,
                     'last_time': float(features.timeline_time),
                     'mean_rms': float(features.audio_rms or 0.0),
+                    'mean_zcr': float(features.zcr or 0.0) if getattr(features, 'zcr', None) is not None else None,
                     'breath_score_peak': float(features.breath_score or 0.0),
                     'pre_pitch_hz': pre_pitch,
-                    'suppressed_pitch_frames': 0,
-                    'confidence': max(0.56, breath_score_val),
-                    'strength': max(0.52, breath_score_val),
+                    'suppressed_pitch_frames': 0 if breath_pitch_like else 1,
+                    'confidence': max(0.56 if silent_gap_candidate else 0.60, min(0.90, 0.44 + airflow_evidence * 0.34 + breath_score_val * 0.14)),
+                    'strength': max(0.54 if silent_gap_candidate else 0.58, min(0.90, 0.40 + max(airflow_evidence, breath_score_val) * 0.40)),
                 }
             else:
                 breath_state['last_time'] = float(features.timeline_time)
                 breath_state['mean_rms'] = 0.82 * float(breath_state.get('mean_rms', features.audio_rms) or features.audio_rms) + 0.18 * float(features.audio_rms or 0.0)
-                breath_state['breath_score_peak'] = max(float(breath_state.get('breath_score_peak', 0.0) or 0.0), float(features.breath_score or 0.0))
+                if getattr(features, 'zcr', None) is not None:
+                    prev_mean_zcr = breath_state.get('mean_zcr')
+                    if prev_mean_zcr is None:
+                        breath_state['mean_zcr'] = float(features.zcr or 0.0)
+                    else:
+                        breath_state['mean_zcr'] = 0.82 * float(prev_mean_zcr or 0.0) + 0.18 * float(features.zcr or 0.0)
+                breath_state['breath_score_peak'] = max(float(breath_state.get('breath_score_peak', 0.0) or 0.0), float(max(features.breath_score or 0.0, airflow_evidence)))
                 if not features.has_pitch:
                     breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
-        elif breath_state is not None and (not bool(getattr(features, 'has_pitch', False))) and 0.00010 <= float(features.audio_rms or 0.0) <= 0.00036:
+                elif breath_pitch_like:
+                    breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
+        elif breath_state is not None and self._breath_pitch_intrusion_bridge(features, breath_state):
+            breath_state['last_time'] = float(features.timeline_time)
+            breath_state['mean_rms'] = 0.86 * float(breath_state.get('mean_rms', features.audio_rms) or features.audio_rms) + 0.14 * float(features.audio_rms or 0.0)
+            if getattr(features, 'zcr', None) is not None:
+                prev_mean_zcr = breath_state.get('mean_zcr')
+                if prev_mean_zcr is None:
+                    breath_state['mean_zcr'] = float(features.zcr or 0.0)
+                else:
+                    breath_state['mean_zcr'] = 0.86 * float(prev_mean_zcr or 0.0) + 0.14 * float(features.zcr or 0.0)
+            breath_state['breath_score_peak'] = max(
+                float(breath_state.get('breath_score_peak', 0.0) or 0.0),
+                float(max(features.breath_score or 0.0, self._breath_airflow_evidence(features)))
+            )
+            breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
+        elif breath_state is not None and (not bool(getattr(features, 'has_pitch', False))) and (not voiced_continuity) and (not bool(getattr(features, 'tonal_hum', False))):
             try:
                 last_time = float(breath_state.get('last_time', 0.0) or 0.0)
             except Exception:
                 last_time = 0.0
-            if float(features.timeline_time) - last_time <= 0.14:
+            if float(features.timeline_time) - last_time <= 0.14 and (
+                airflow_evidence >= 0.34
+                or (0.00010 <= float(features.audio_rms or 0.0) <= 0.00036 and breath_score_val >= 0.30)
+                or self._breath_can_extend_silence(features, breath_state)
+            ):
                 breath_state['last_time'] = float(features.timeline_time)
+                breath_state['mean_rms'] = 0.86 * float(breath_state.get('mean_rms', features.audio_rms) or features.audio_rms) + 0.14 * float(features.audio_rms or 0.0)
+                if getattr(features, 'zcr', None) is not None:
+                    prev_mean_zcr = breath_state.get('mean_zcr')
+                    if prev_mean_zcr is None:
+                        breath_state['mean_zcr'] = float(features.zcr or 0.0)
+                    else:
+                        breath_state['mean_zcr'] = 0.86 * float(prev_mean_zcr or 0.0) + 0.14 * float(features.zcr or 0.0)
+                breath_state['breath_score_peak'] = max(float(breath_state.get('breath_score_peak', 0.0) or 0.0), float(max(features.breath_score or 0.0, airflow_evidence)))
                 breath_state['suppressed_pitch_frames'] = int(breath_state.get('suppressed_pitch_frames', 0) or 0) + 1
         elif breath_state is not None:
             self._finalize_active_event('breath', float(features.timeline_time), final_features=features)
@@ -30177,6 +30656,7 @@ class ECGStylePitchVisualizer(QWidget):
                 target.mean_zcr = max(float(target.mean_zcr or 0.0), float(incoming.mean_zcr or 0.0)) or target.mean_zcr or incoming.mean_zcr
                 target.breath_score_peak = max(float(target.breath_score_peak or 0.0), float(incoming.breath_score_peak or 0.0))
                 target.suppressed_pitch_frames = max(int(target.suppressed_pitch_frames or 0), int(incoming.suppressed_pitch_frames or 0))
+                target.pre_pitch_hz = target.pre_pitch_hz or incoming.pre_pitch_hz
                 target.post_pitch_hz = incoming.post_pitch_hz or target.post_pitch_hz
             elif isinstance(target, SlideEvent) and isinstance(incoming, SlideEvent):
                 target.end_pitch_hz = incoming.end_pitch_hz or target.end_pitch_hz
@@ -30224,6 +30704,9 @@ class ECGStylePitchVisualizer(QWidget):
                 has_pitch = bool(getattr(item, 'has_pitch', False))
                 rms = float(getattr(item, 'audio_rms', 0.0) or 0.0)
                 breath_score = float(getattr(item, 'breath_score', 0.0) or 0.0)
+                zcr = float(getattr(item, 'zcr', 0.0) or 0.0)
+                tonal_hum = bool(getattr(item, 'tonal_hum', False))
+                conf_val = float(getattr(item, 'confidence', 0.0) or 0.0)
             except Exception:
                 continue
             if backward and t_val > anchor_time:
@@ -30235,11 +30718,18 @@ class ECGStylePitchVisualizer(QWidget):
                     break
                 if (not backward) and t_val > anchor_time:
                     break
-            if has_pitch:
+            weak_pitch_intrusion = False
+            try:
+                weak_pitch_intrusion = bool(has_pitch and self._breath_pitch_intrusion_bridge(item, None))
+            except Exception:
+                weak_pitch_intrusion = False
+            if has_pitch and conf_val >= 0.32 and (not weak_pitch_intrusion):
                 break
             if rms > 0.0068:
                 break
-            if rms < 0.00012 and breath_score < 0.18:
+            if tonal_hum:
+                break
+            if rms < 0.00012 and breath_score < 0.22 and zcr < 0.14:
                 scanned += 1
                 if scanned > 4:
                     break
@@ -30262,14 +30752,20 @@ class ECGStylePitchVisualizer(QWidget):
         confidence = max(0.0, float(getattr(event, 'confidence', 0.0) or 0.0))
         strength = max(0.0, float(getattr(event, 'strength', 0.0) or 0.0))
         if event_type == 'breath':
-            min_d = max(0.08, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.08
+            min_d = max(0.11, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.11
             suppressed = int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
             breath_peak = float(getattr(event, 'breath_score_peak', 0.0) or 0.0)
             mean_rms = float(getattr(event, 'mean_rms', 0.0) or 0.0)
+            mean_zcr = float(getattr(event, 'mean_zcr', 0.0) or 0.0)
             pre_pitch = float(getattr(event, 'pre_pitch_hz', 0.0) or 0.0)
             post_pitch = float(getattr(event, 'post_pitch_hz', 0.0) or 0.0)
-            contextual = (pre_pitch > 0.0) or (post_pitch > 0.0)
-            return duration >= min_d and contextual and 0.00014 <= mean_rms <= 0.0068 and breath_peak >= 0.30 and (suppressed >= 1 or confidence >= 0.62 or strength >= 0.60)
+            contextual = (pre_pitch > 0.0) and (post_pitch > 0.0)
+            airflow_ok = breath_peak >= 0.52 and (mean_zcr >= 0.15 or breath_peak >= 0.68)
+            gap_ok = suppressed >= 3 or duration >= max(0.14, min_d + 0.02)
+            short_breath_ok = duration >= 0.34 or breath_peak >= 0.80 or (mean_zcr >= 0.20 and suppressed >= 5)
+            long_silent_breath_ok = duration >= 0.42 and suppressed >= 6 and mean_rms <= 0.00145 and mean_zcr >= 0.06
+            strong_airflow_breath_ok = airflow_ok and gap_ok and short_breath_ok
+            return duration >= min_d and duration <= 0.90 and contextual and 0.00008 <= mean_rms <= 0.0058 and (strong_airflow_breath_ok or long_silent_breath_ok) and (confidence >= 0.60 or strength >= 0.58)
         if event_type == 'slide':
             min_d = max(0.16, float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08)) if cfg is not None else 0.16
             span = float(getattr(event, 'pitch_span_semitones', 0.0) or 0.0)
@@ -30298,7 +30794,7 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _technique_event_spacing(self, event_type: str) -> float:
         spacing_map = {
-            'breath': 0.26,
+            'breath': 0.42,
             'register_transition': 0.58,
             'slide': 0.46,
             'vibrato': 0.90,
@@ -30321,7 +30817,16 @@ class ECGStylePitchVisualizer(QWidget):
                 prev = prepared[-1]
                 same_type = str(getattr(prev, 'event_type', '') or '') == str(getattr(event, 'event_type', '') or '')
                 gap = float(getattr(event, 'start_time', 0.0) or 0.0) - float(getattr(prev, 'end_time', 0.0) or 0.0)
-                if same_type and gap <= max(merge_gap * 1.4, self._technique_event_spacing(getattr(event, 'event_type', '')) * 0.42):
+                bridgeable_breath_gap = bool(
+                    same_type
+                    and str(getattr(event, 'event_type', '') or '') == 'breath'
+                    and gap <= max(0.56, self._technique_event_spacing('breath') * 1.35)
+                    and self._breath_gap_bridgeable(prev, event)
+                )
+                if same_type and (
+                    gap <= max(merge_gap * 1.4, self._technique_event_spacing(getattr(event, 'event_type', '')) * 0.42)
+                    or bridgeable_breath_gap
+                ):
                     self._merge_technique_events(prev, event)
                     continue
             prepared.append(event)
@@ -52472,7 +52977,7 @@ class IntegratedRecordingInterface(QMainWindow):
             state = getattr(self, '_technique_panel_state', None)
             cfg = getattr(state, 'config', None)
             enabled = bool(cfg is not None and getattr(cfg, 'enabled', False))
-            selected = list(getattr(state, 'selected_types', []) or [])
+            selected = _normalize_technique_selection(getattr(state, 'selected_types', []) or [])
             count = len(selected) if enabled else 0
             source_ready = bool(self._technique_analysis_source_ready())
             if enabled and source_ready:
@@ -52559,12 +53064,12 @@ class IntegratedRecordingInterface(QMainWindow):
             'counts': {},
             'duration': 0.0,
         }
-        state = getattr(self, '_technique_panel_state', None)
+        state = _normalize_technique_panel_state(getattr(self, '_technique_panel_state', None))
         cfg = getattr(state, 'config', None)
         if cfg is None or not bool(getattr(cfg, 'enabled', False)):
             result['reason'] = '技巧识别尚未启用'
             return result
-        if not list(getattr(state, 'selected_types', []) or []):
+        if not _normalize_technique_selection(getattr(state, 'selected_types', []) or []):
             result['reason'] = '尚未选择识别项目'
             return result
         if not self._technique_analysis_source_ready():
@@ -52721,9 +53226,9 @@ class IntegratedRecordingInterface(QMainWindow):
 
     def open_technique_recognition_dialog(self):
         try:
-            state = getattr(self, '_technique_panel_state', None) or TechniquePanelState()
+            state = _normalize_technique_panel_state(getattr(self, '_technique_panel_state', None) or TechniquePanelState())
             cfg = getattr(state, 'config', None) or TechniqueRecognitionConfig()
-            selected_types = list(getattr(state, 'selected_types', []) or [])
+            selected_types = _normalize_technique_selection(getattr(state, 'selected_types', []) or [])
         except Exception:
             state = TechniquePanelState()
             cfg = TechniqueRecognitionConfig()
@@ -52744,7 +53249,7 @@ class IntegratedRecordingInterface(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle('技巧识别')
         dlg.setModal(True)
-        dlg.resize(460, 360)
+        dlg.resize(520, 620)
         dlg.setStyleSheet("""
             QDialog { background-color: #121922; color: #E6EEF8; }
             QLabel { color: #E6EEF8; }
@@ -52756,7 +53261,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         selected_types = set(selected_types)
 
-        intro = QLabel('技巧识别改为普通模式录音完成后的离线分析。录音完成后直接点击“技巧识别”会立即做分区标注；按住 Ctrl 再点击可进入设置。')
+        intro = QLabel('技巧识别会按当前已开放的项目做普通模式录音后的离线分区标注。现在默认只开放“换气”和“颤音”，其它技巧先按分类展示为待开发。')
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -52766,19 +53271,29 @@ class IntegratedRecordingInterface(QMainWindow):
 
         group = QGroupBox('识别项目')
         group_layout = QVBoxLayout(group)
-        option_defs = [
-            ('breath', '换气'),
-            ('register_transition', '换声区'),
-            ('slide', '滑音'),
-            ('vibrato', '颤音'),
-            ('breathy_phonation', '气声'),
-        ]
         option_checks = {}
-        for value, label in option_defs:
-            chk = QCheckBox(label)
-            chk.setChecked(value in selected_types)
-            group_layout.addWidget(chk)
-            option_checks[value] = chk
+        selectable_option_defs = []
+        for section in _TECHNIQUE_SECTION_DEFS:
+            title = QLabel(str(section.get('title', '') or '未命名分类'))
+            title.setStyleSheet('font-size: 13px; font-weight: 600; color: #F4FAFF; margin-top: 6px;')
+            group_layout.addWidget(title)
+            for item in section.get('items', ()):
+                value = str(item.get('key', '') or '')
+                label = str(item.get('label', '') or value)
+                implemented = bool(item.get('implemented', False))
+                chk = QCheckBox(label if implemented else f'{label}（待开发）')
+                chk.setChecked(implemented and value in selected_types)
+                chk.setEnabled(implemented)
+                if not implemented:
+                    chk.setStyleSheet('QCheckBox:disabled { color: #6F8598; }')
+                group_layout.addWidget(chk)
+                if implemented:
+                    option_checks[value] = chk
+                    selectable_option_defs.append((value, label))
+        dev_note = QLabel('当前已开放：换气、颤音。其它项目暂不参与识别和标注，后续可逐项接入。')
+        dev_note.setWordWrap(True)
+        dev_note.setStyleSheet('color: #9FB5C9; font-size: 12px; margin-top: 4px;')
+        group_layout.addWidget(dev_note)
         layout.addWidget(group)
 
         display_group = QGroupBox('展示方式')
@@ -52819,10 +53334,10 @@ class IntegratedRecordingInterface(QMainWindow):
         new_cfg = TechniqueRecognitionConfig(
             enabled=bool(enable_chk.isChecked()),
             detect_breath=bool(option_checks['breath'].isChecked()),
-            detect_register_transition=bool(option_checks['register_transition'].isChecked()),
-            detect_slide=bool(option_checks['slide'].isChecked()),
+            detect_register_transition=False,
+            detect_slide=False,
             detect_vibrato=bool(option_checks['vibrato'].isChecked()),
-            detect_breathy_phonation=bool(option_checks['breathy_phonation'].isChecked()),
+            detect_breathy_phonation=False,
             min_event_confidence=float(getattr(cfg, 'min_event_confidence', 0.55) or 0.55),
             merge_gap_s=float(getattr(cfg, 'merge_gap_s', 0.12) or 0.12),
             min_breath_duration_s=float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06),
@@ -52838,17 +53353,17 @@ class IntegratedRecordingInterface(QMainWindow):
             show_summary_panel=bool(summary_chk.isChecked()),
             auto_focus_after_analysis=False,
         )
-        self._technique_panel_state = TechniquePanelState(
+        self._technique_panel_state = _normalize_technique_panel_state(TechniquePanelState(
             config=new_cfg,
-            selected_types=[value for value, _ in option_defs if option_checks[value].isChecked()],
-            visible_rows=list(getattr(state, 'visible_rows', []) or ['换气', '换声区', '滑音', '颤音', '气声']),
+            selected_types=[value for value, _ in selectable_option_defs if option_checks[value].isChecked()],
+            visible_rows=list(_default_visible_technique_rows()),
             last_summary=dict(getattr(state, 'last_summary', {}) or {}),
             analysis_ready=False,
             last_analysis_event_count=0,
             last_analyzed_duration=0.0,
             last_source_frame_count=int(getattr(state, 'last_source_frame_count', 0) or 0),
             last_analysis_mode='configured',
-        )
+        ))
         self._sync_technique_panel_state_to_visualizer()
         analysis_result = None
         if bool(getattr(new_cfg, 'enabled', False)):
@@ -65493,12 +66008,69 @@ class _VocalSeparationWorker(QThread):
         """
         import numpy as np
         from pathlib import Path
+        import subprocess
+        import tempfile
+
+        def _find_ffmpeg_local() -> str:
+            try:
+                import shutil
+                ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+                if ff:
+                    return str(ff)
+            except Exception:
+                pass
+            try:
+                candidates = [
+                    project_root / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg.exe',
+                    project_root / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg',
+                ]
+                for cand in candidates:
+                    if cand.exists():
+                        return str(cand)
+            except Exception:
+                pass
+            return ''
+
+        def _decode_with_ffmpeg(ffmpeg_path: str):
+            tmpdir = Path(tempfile.mkdtemp(prefix='decode_ff_'))
+            wav_path = tmpdir / 'decoded.wav'
+            try:
+                cmd = [ffmpeg_path, '-y', '-i', str(path), '-ac', '2', '-ar', '44100', '-f', 'wav', str(wav_path)]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    import soundfile as sf  # type: ignore
+                    data, sr = sf.read(str(wav_path), always_2d=True)
+                    return data.astype(np.float32), int(sr)
+                except Exception:
+                    import wave
+                    with wave.open(str(wav_path), 'rb') as wf:
+                        sr = wf.getframerate(); n = wf.getnframes(); ch = wf.getnchannels()
+                        raw = wf.readframes(n)
+                    arr = np.frombuffer(raw, dtype=np.int16)
+                    if ch > 1:
+                        arr = arr.reshape(-1, ch)
+                    else:
+                        arr = arr.reshape(-1, 1)
+                    data = arr.astype(np.float32) / 32768.0
+                    return data.astype(np.float32), int(sr)
+            finally:
+                try:
+                    for p in tmpdir.glob('*'):
+                        p.unlink(missing_ok=True)
+                    tmpdir.rmdir()
+                except Exception:
+                    pass
+
+        suffix = str(Path(path).suffix or '').lower()
+        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4'}
+        last_error = None
         # 1) 首选 soundfile（支持常见 WAV/FLAC/OGG Vorbis 等）
         try:
             import soundfile as sf  # type: ignore
             data, sr = sf.read(path, always_2d=True)
             return data.astype(np.float32), int(sr)
-        except Exception:
+        except Exception as e:
+            last_error = e
             pass
         # 2) torchaudio 回退
         try:
@@ -65509,9 +66081,18 @@ class _VocalSeparationWorker(QThread):
                 arr = arr[None, :]
             data = arr.T.astype(np.float32)
             return data, int(sr)
-        except Exception:
+        except Exception as e:
+            last_error = e
             pass
-        # 3) librosa/audioread 回退
+        # 3) 对压缩格式优先使用 ffmpeg，避免 librosa/audioread 在 Windows 上因为 ffmpeg 不在 PATH 而失败
+        try:
+            ff = _find_ffmpeg_local()
+            if ff and compressed_hint:
+                return _decode_with_ffmpeg(ff)
+        except Exception as e:
+            last_error = e
+            pass
+        # 4) librosa/audioread 回退
         try:
             import librosa  # type: ignore
             y, sr = librosa.load(path, sr=None, mono=False)  # y: [N] 或 [C,N]
@@ -65520,31 +66101,18 @@ class _VocalSeparationWorker(QThread):
             else:
                 data = y.T
             return data.astype(np.float32), int(sr)
-        except Exception:
+        except Exception as e:
+            last_error = e
             pass
-        # 4) ffmpeg 转 WAV（若可用）
+        # 5) ffmpeg 转 WAV（若可用）
         try:
-            import shutil, subprocess, tempfile
-            ff = shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+            ff = _find_ffmpeg_local()
             if ff:
-                tmpdir = Path(tempfile.mkdtemp(prefix='decode_ff_'))
-                wav_path = tmpdir / 'decoded.wav'
-                cmd = [ff, '-y', '-i', path, '-ac', '2', '-ar', '44100', '-f', 'wav', str(wav_path)]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                try:
-                    import soundfile as sf  # type: ignore
-                    data, sr = sf.read(str(wav_path), always_2d=True)
-                    return data.astype(np.float32), int(sr)
-                finally:
-                    try:
-                        for p in tmpdir.glob('*'):
-                            p.unlink(missing_ok=True)
-                        tmpdir.rmdir()
-                    except Exception:
-                        pass
-        except Exception:
+                return _decode_with_ffmpeg(ff)
+        except Exception as e:
+            last_error = e
             pass
-        # 5) 最后退：wave 只支持 PCM WAV
+        # 6) 最后退：wave 只支持 PCM WAV
         try:
             import wave
             with wave.open(path, 'rb') as wf:
@@ -65558,7 +66126,8 @@ class _VocalSeparationWorker(QThread):
             data = arr.astype(np.float32) / 32768.0
             return data.astype(np.float32), int(sr)
         except Exception as e:
-            raise RuntimeError(f"无法解码音频：{Path(path).name}。建议先转换为 WAV/FLAC，或安装 ffmpeg 后重试。\n原始错误: {e}")
+            root_error = last_error if last_error is not None else e
+            raise RuntimeError(f"无法解码音频：{Path(path).name}。建议先转换为 WAV/FLAC，或安装 ffmpeg 后重试。\n原始错误: {root_error}")
 
     def _save_wav(self, path: str, audio, sr: int):
         import numpy as np
