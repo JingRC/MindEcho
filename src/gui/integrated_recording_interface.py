@@ -3595,6 +3595,14 @@ class IntegratedAudioProcessor(QThread):
             and self._pitch_semitone_distance(display_frequency, last_display) >= 0.65
         )
         detected_frequency_hint = max(float(smooth_frequency or 0.0), float(raw_frequency or 0.0))
+        very_high_head_voice = bool(
+            head_voice_guard and max(
+                float(detected_frequency_hint),
+                float(last_display),
+                float(prev_head_anchor_hz),
+                float(display_frequency),
+            ) >= 520.0
+        )
         register_leap_guard = bool(
             head_voice_guard
             and last_display > 0.0
@@ -3651,8 +3659,8 @@ class IntegratedAudioProcessor(QThread):
                     continue
                 if cand_freq <= 0.0:
                     continue
-                conf_floor = 0.26 if head_voice_guard else 0.42
-                dist_limit = 1.35 if head_voice_guard else 0.95
+                conf_floor = 0.18 if very_high_head_voice else (0.26 if head_voice_guard else 0.42)
+                dist_limit = 2.10 if very_high_head_voice else (1.35 if head_voice_guard else 0.95)
                 if cand_conf >= conf_floor and self._pitch_semitone_distance(cand_freq, display_frequency) <= dist_limit:
                     support_high_jump = True
                     break
@@ -3685,18 +3693,18 @@ class IntegratedAudioProcessor(QThread):
             leap_gap = self._pitch_semitone_distance(detected_frequency_hint, max(float(last_display), 1e-9))
             if head_entry_active:
                 if leap_gap >= 6.0:
-                    leap_step_semi = 1.45
+                    leap_step_semi = 1.05
                 elif leap_gap >= 3.5:
-                    leap_step_semi = 1.15
+                    leap_step_semi = 0.82
                 else:
-                    leap_step_semi = 0.90
+                    leap_step_semi = 0.64
                 entry_bridge_target = min(
                     float(detected_frequency_hint),
                     float(last_display) * (2.0 ** (float(leap_step_semi) / 12.0)),
                 )
                 display_frequency = max(
                     float(display_frequency),
-                    0.42 * float(last_display) + 0.58 * float(entry_bridge_target),
+                    0.56 * float(last_display) + 0.44 * float(entry_bridge_target),
                 )
             elif leap_gap >= 6.0:
                 leap_blend = 0.82
@@ -3733,6 +3741,16 @@ class IntegratedAudioProcessor(QThread):
             and up_jump_semi >= 0.55
             and float(audio_rms) >= float(min_voice_rms) * 0.58
         )
+        high_head_rise_release = bool(
+            very_high_head_voice
+            and last_display > 0.0
+            and detected_frequency_hint > 0.0
+            and detected_frequency_hint >= float(last_display) * 1.008
+            and self._pitch_semitone_distance(detected_frequency_hint, last_display) >= 0.35
+            and self._pitch_semitone_distance(detected_frequency_hint, last_display) <= 4.4
+            and float(audio_rms) >= float(min_voice_rms) * 0.52
+        )
+        rise_release = bool(rise_release or high_head_rise_release)
 
         if last_display >= high_register_hz and up_jump_semi >= spike_guard_semi:
             target_gap = self._pitch_semitone_distance(prev_jump_target, display_frequency)
@@ -3743,9 +3761,15 @@ class IntegratedAudioProcessor(QThread):
                 jump_count = 1
             if jump_count < 2 and (weak_voice or (not support_high_jump)):
                 if rise_release:
-                    max_step = 1.65 if float(last_display) >= 420.0 else 1.30
+                    if very_high_head_voice:
+                        max_step = 2.10 if float(last_display) >= 520.0 else 1.80
+                    else:
+                        max_step = 1.65 if float(last_display) >= 420.0 else 1.30
                 else:
-                    max_step = 0.62 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 0.88
+                    if very_high_head_voice and high_head_rise_release:
+                        max_step = 1.20 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 1.45
+                    else:
+                        max_step = 0.62 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 0.88
                 display_frequency = min(float(display_frequency), float(last_display) * (2.0 ** (float(max_step) / 12.0)))
             elif (not rise_release) and jump_count == 2 and (not support_high_jump) and float(audio_rms) <= float(min_voice_rms) * 2.1:
                 display_frequency = 0.72 * float(display_frequency) + 0.28 * float(last_display)
@@ -3763,16 +3787,21 @@ class IntegratedAudioProcessor(QThread):
                         cand_conf = float(cand.get('confidence', 0.0) or 0.0)
                     except Exception:
                         continue
-                    min_cand_conf = 0.24 if head_entry_active else 0.16
+                    min_cand_conf = 0.30 if head_entry_active else 0.16
                     if cand_freq <= 0.0 or cand_conf < min_cand_conf:
                         continue
-                    near_detected_limit = 2.2 if head_entry_active else 4.8
+                    near_detected_limit = 1.55 if head_entry_active else 4.8
                     near_detected = bool(detected_frequency > 0.0 and self._pitch_semitone_distance(cand_freq, detected_frequency) <= near_detected_limit)
-                    near_history = bool(last_display > 0.0 and self._pitch_semitone_distance(cand_freq, last_display) <= 5.0)
+                    near_history_limit = 3.4 if head_entry_active else 5.0
+                    near_history = bool(last_display > 0.0 and self._pitch_semitone_distance(cand_freq, last_display) <= near_history_limit)
                     if not (near_detected or near_history):
                         continue
-                    if head_entry_active and detected_frequency > 0.0 and cand_freq > float(detected_frequency) * 1.10:
+                    if head_entry_active and detected_frequency > 0.0 and cand_freq > float(detected_frequency) * 1.06:
                         continue
+                    if head_entry_active and last_display > 0.0:
+                        entry_history_cap = float(last_display) * (2.0 ** (1.55 / 12.0))
+                        if cand_freq > entry_history_cap:
+                            continue
                     if cand_freq > supported_high_candidate:
                         supported_high_candidate = float(cand_freq)
             if supported_high_candidate > detected_frequency and supported_high_candidate <= max(2500.0, detected_frequency * 1.35 if detected_frequency > 0.0 else supported_high_candidate):
@@ -3786,11 +3815,11 @@ class IntegratedAudioProcessor(QThread):
             )
             if detected_frequency > 0.0 and detected_gap >= 0.70 and (detected_rising or rising_head_voice):
                 if detected_gap >= 3.0:
-                    detected_blend = 0.52 if head_entry_active else 0.78
+                    detected_blend = 0.32 if head_entry_active else 0.78
                 elif detected_gap >= 1.6:
-                    detected_blend = 0.40 if head_entry_active else 0.58
+                    detected_blend = 0.26 if head_entry_active else 0.58
                 else:
-                    detected_blend = 0.28 if head_entry_active else 0.38
+                    detected_blend = 0.18 if head_entry_active else 0.38
                 borrowed_display = (1.0 - detected_blend) * float(display_frequency) + detected_blend * float(detected_frequency)
                 if last_display > 0.0 and borrowed_display < last_display and detected_frequency > last_display:
                     borrowed_display = max(float(borrowed_display), 0.92 * float(last_display) + 0.08 * float(detected_frequency))
@@ -3824,34 +3853,62 @@ class IntegratedAudioProcessor(QThread):
                 if detected_frequency > 0.0:
                     if head_anchor_hz > 0.0:
                         if head_entry_active:
-                            head_anchor_hz = max(0.92 * float(head_anchor_hz) + 0.08 * float(detected_frequency), 0.90 * float(detected_frequency))
+                            head_anchor_hz = max(0.95 * float(head_anchor_hz) + 0.05 * float(detected_frequency), 0.84 * float(detected_frequency))
                         else:
                             head_anchor_hz = max(0.84 * float(head_anchor_hz) + 0.16 * float(detected_frequency), 0.96 * float(detected_frequency))
                     else:
-                        head_anchor_hz = 0.94 * float(detected_frequency) if head_entry_active else float(detected_frequency)
+                        if head_entry_active and last_display > 0.0:
+                            head_anchor_hz = min(
+                                0.90 * float(detected_frequency),
+                                float(last_display) * (2.0 ** (1.20 / 12.0)),
+                            )
+                        else:
+                            head_anchor_hz = 0.97 * float(detected_frequency) if head_entry_active else float(detected_frequency)
                     head_anchor_until = max(float(head_anchor_until), float(now_t) + 0.46)
             transition_active = bool(transition_until > float(now_t))
             if detected_frequency > 0.0 and last_display > 0.0 and detected_frequency >= float(last_display) * 0.995 and self._pitch_semitone_distance(detected_frequency, last_display) <= 4.2:
                 if head_anchor_hz > 0.0:
-                    head_anchor_hz = max(0.88 * float(head_anchor_hz) + 0.12 * float(detected_frequency), 0.94 * float(detected_frequency))
+                    if head_entry_active:
+                        head_anchor_hz = max(0.94 * float(head_anchor_hz) + 0.06 * float(detected_frequency), 0.88 * float(detected_frequency))
+                    else:
+                        head_anchor_hz = max(0.88 * float(head_anchor_hz) + 0.12 * float(detected_frequency), 0.94 * float(detected_frequency))
                 else:
                     head_anchor_hz = float(detected_frequency)
                 head_anchor_until = max(float(head_anchor_until), float(now_t) + 0.34)
+            if head_anchor_hz > 0.0 and detected_frequency > 0.0:
+                anchor_detect_gap = self._pitch_semitone_distance(head_anchor_hz, detected_frequency)
+                if anchor_detect_gap >= 1.65 and detected_frequency < head_anchor_hz:
+                    head_anchor_hz = 0.72 * float(head_anchor_hz) + 0.28 * float(detected_frequency)
+                    head_anchor_until = min(float(head_anchor_until), float(now_t) + 0.12)
             if transition_active and detected_frequency > 0.0:
                 if detected_frequency > display_frequency:
                     trans_gap = self._pitch_semitone_distance(detected_frequency, display_frequency)
-                    if trans_gap >= 2.6:
-                        attack_blend = 0.76
-                    elif trans_gap >= 1.2:
-                        attack_blend = 0.58
+                    if head_entry_active:
+                        if trans_gap >= 2.6:
+                            attack_blend = 0.32
+                        elif trans_gap >= 1.2:
+                            attack_blend = 0.24
+                        else:
+                            attack_blend = 0.16
                     else:
-                        attack_blend = 0.38
+                        if trans_gap >= 2.6:
+                            attack_blend = 0.76
+                        elif trans_gap >= 1.2:
+                            attack_blend = 0.58
+                        else:
+                            attack_blend = 0.38
                     display_frequency = (1.0 - attack_blend) * float(display_frequency) + attack_blend * float(detected_frequency)
                 if last_display > 0.0:
-                    floor_freq = max(
-                        float(last_display) * (2.0 ** (-0.85 / 12.0)),
-                        0.82 * float(last_display) + 0.18 * float(detected_frequency),
-                    )
+                    if head_entry_active:
+                        floor_freq = max(
+                            float(last_display) * (2.0 ** (-0.45 / 12.0)),
+                            0.90 * float(last_display) + 0.10 * float(detected_frequency),
+                        )
+                    else:
+                        floor_freq = max(
+                            float(last_display) * (2.0 ** (-0.85 / 12.0)),
+                            0.82 * float(last_display) + 0.18 * float(detected_frequency),
+                        )
                     display_frequency = max(float(display_frequency), float(floor_freq))
             head_anchor_active = bool(head_anchor_until > float(now_t) and head_anchor_hz > 0.0)
             if head_anchor_active:
@@ -3864,6 +3921,11 @@ class IntegratedAudioProcessor(QThread):
                 anchor_floor = float(head_anchor_hz) * (2.0 ** (-anchor_floor_semi / 12.0))
                 if detected_frequency > 0.0 and detected_frequency >= anchor_floor * 0.96:
                     display_frequency = max(float(display_frequency), float(anchor_floor))
+            if head_entry_active and last_display > 0.0 and display_frequency > last_display:
+                entry_cap = float(last_display) * (2.0 ** (1.35 / 12.0))
+                if detected_frequency > 0.0:
+                    entry_cap = min(float(entry_cap), 0.94 * float(detected_frequency) + 0.06 * float(last_display))
+                display_frequency = min(float(display_frequency), float(entry_cap))
             if detected_frequency > 0.0 and head_voice_like:
                 steady_head_rise = bool(
                     last_display > 0.0
@@ -3871,17 +3933,17 @@ class IntegratedAudioProcessor(QThread):
                     and self._pitch_semitone_distance(detected_frequency, last_display) <= 4.4
                 )
                 if register_leap_guard and head_entry_active:
-                    max_display_lag_semi = 1.10
+                    max_display_lag_semi = 1.55
                 elif register_leap_guard:
-                    max_display_lag_semi = 0.45
+                    max_display_lag_semi = 0.36 if very_high_head_voice else 0.45
                 elif transition_active or head_anchor_active:
-                    max_display_lag_semi = 0.65
+                    max_display_lag_semi = 0.42 if very_high_head_voice else 0.65
                 elif steady_head_rise:
-                    max_display_lag_semi = 0.82
+                    max_display_lag_semi = 0.52 if very_high_head_voice else 0.82
                 elif detected_rising or rising_head_voice:
-                    max_display_lag_semi = 1.05
+                    max_display_lag_semi = 0.76 if very_high_head_voice else 1.05
                 else:
-                    max_display_lag_semi = 1.35
+                    max_display_lag_semi = 1.00 if very_high_head_voice else 1.35
                 min_display_from_detected = float(detected_frequency) * (2.0 ** (-float(max_display_lag_semi) / 12.0))
                 if last_display > 0.0 and detected_frequency > last_display:
                     min_display_from_detected = max(
@@ -3899,6 +3961,18 @@ class IntegratedAudioProcessor(QThread):
                         float(display_frequency),
                         0.70 * float(display_frequency) + 0.30 * float(detected_frequency),
                     )
+                if very_high_head_voice and detected_frequency > display_frequency and (steady_head_rise or detected_rising or transition_active or head_anchor_active):
+                    if detected_frequency >= 620.0:
+                        high_follow_blend = 0.58
+                    elif detected_frequency >= 520.0:
+                        high_follow_blend = 0.48
+                    else:
+                        high_follow_blend = 0.0
+                    if high_follow_blend > 0.0:
+                        display_frequency = max(
+                            float(display_frequency),
+                            (1.0 - high_follow_blend) * float(display_frequency) + high_follow_blend * float(detected_frequency),
+                        )
             try:
                 setattr(self, transition_until_name, float(transition_until if transition_active else 0.0))
             except Exception:
@@ -20236,6 +20310,10 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if ap is not None:
                 ap.stop_listenback_playback()
+            try:
+                self._stop_playhead_timer()
+            except Exception:
+                pass
             # 重置播放头到左边线
             try:
                 if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
@@ -20245,13 +20323,39 @@ class ECGStylePitchVisualizer(QWidget):
                     self._lb_playhead.set_visible(True)
             except Exception:
                 pass
+            try:
+                xL = float(getattr(self, 'sel_start', 0.0) or 0.0)
+                self.current_global_time = max(0.0, xL)
+            except Exception:
+                pass
+            try:
+                self._lb_wall_start = None
+                self._lb_play_abs_start = None
+                self._lb_abs_start = None
+                self._lb_abs_end = None
+            except Exception:
+                pass
             # 停止后清空恢复点，允许贴边策略重新生效
             try:
                 self._lb_resume_abs_start = None
                 self._lb_user_moved_playhead = False
+                self._lb_user_paused = False
             except Exception:
                 pass
             self.selection_active = True
+            try:
+                host = getattr(self, 'main', None)
+                if host is not None:
+                    if hasattr(host, '_listenback_manual_offset'):
+                        host._listenback_manual_offset = 0.0
+                    set_slider = getattr(host, '_set_listenback_slider_position', None)
+                    if callable(set_slider):
+                        set_slider(0.0)
+                    refresh_status = getattr(host, '_refresh_listenback_status', None)
+                    if callable(refresh_status):
+                        refresh_status()
+            except Exception:
+                pass
             # 恢复播放按钮，隐藏暂停/结束
             for art in (self._sel_pause_icon_left, self._sel_pause_icon_right, self._sel_stop_icon):
                 try:
@@ -29055,8 +29159,18 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _on_playhead_tick(self):
         try:
+            try:
+                ap = getattr(self, 'audio_processor', None)
+                if ap is not None and str(getattr(ap, '_lb_state', 'stopped')) != 'playing':
+                    self._stop_playhead_timer()
+                    return
+            except Exception:
+                pass
             # 根据墙钟相对增量推进（与回放绝对时间对齐）
             if not hasattr(self, '_lb_abs_start') or not hasattr(self, '_lb_wall_start'):
+                return
+            if self._lb_abs_start is None or self._lb_wall_start is None or getattr(self, '_lb_abs_end', None) is None:
+                self._stop_playhead_timer()
                 return
             # 将绝对时间映射到可视坐标（start_time参考）
             if not hasattr(self, 'start_time') or self.start_time is None:
@@ -31384,6 +31498,89 @@ class ECGStylePitchVisualizer(QWidget):
             return confidence >= 0.51 and probability_margin >= 0.025
         return confidence >= 0.58 and probability_margin >= 0.08
 
+    def _voice_prediction_record_accepted(self, record: Dict[str, Any], *, relaxed: bool = False) -> bool:
+        event_type = str(record.get('event_type', '') or '')
+        mean_pitch_hz = float(record.get('mean_pitch_hz', 0.0) or 0.0)
+        voiced_ratio = float(record.get('voiced_ratio', 0.0) or 0.0)
+        stable_ratio = float(record.get('stable_ratio', 0.0) or 0.0)
+        confidence = float(record.get('confidence', 0.0) or 0.0)
+        probability_margin = float(record.get('probability_margin', 0.0) or 0.0)
+        if event_type == 'chest_voice':
+            if mean_pitch_hz > 0.0 and mean_pitch_hz < 240.0:
+                if relaxed:
+                    return confidence >= 0.49 and probability_margin >= 0.010 and voiced_ratio >= 0.16
+                return confidence >= 0.50 and probability_margin >= 0.015 and voiced_ratio >= 0.18
+            if mean_pitch_hz > 0.0 and mean_pitch_hz < 320.0:
+                if relaxed:
+                    return confidence >= 0.50 and probability_margin >= 0.018 and voiced_ratio >= 0.17
+                return confidence >= 0.53 and probability_margin >= 0.030 and voiced_ratio >= 0.20 and stable_ratio >= 0.04
+        return self._voice_prediction_accepted(confidence, probability_margin, relaxed=relaxed)
+
+    def _apply_voice_type_context_priors(
+        self,
+        chest_prob: float,
+        falsetto_prob: float,
+        *,
+        mean_pitch_hz: float,
+        voiced_ratio: float,
+        stable_ratio: float,
+        mean_rms: float,
+    ) -> Dict[str, Any]:
+        chest_prob = max(0.0, float(chest_prob or 0.0))
+        falsetto_prob = max(0.0, float(falsetto_prob or 0.0))
+        mean_pitch_hz = max(0.0, float(mean_pitch_hz or 0.0))
+        voiced_ratio = max(0.0, float(voiced_ratio or 0.0))
+        stable_ratio = max(0.0, float(stable_ratio or 0.0))
+        mean_rms = max(0.0, float(mean_rms or 0.0))
+
+        chest_bias = 0.0
+        falsetto_bias = 0.0
+        force_chest = False
+
+        # 低音区默认更应保守地判为真声，避免把轻薄真声误判为假声。
+        if mean_pitch_hz > 0.0:
+            if mean_pitch_hz < 240.0:
+                chest_bias += 0.42
+                if falsetto_prob < 0.88:
+                    force_chest = True
+            elif mean_pitch_hz < 290.0:
+                chest_bias += 0.22
+            elif mean_pitch_hz < 340.0:
+                chest_bias += 0.10
+            elif mean_pitch_hz >= 520.0:
+                falsetto_bias += 0.04
+            elif mean_pitch_hz >= 420.0:
+                falsetto_bias += 0.02
+
+        if mean_pitch_hz < 320.0 and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
+            chest_bias += 0.08
+        if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18:
+            falsetto_bias += 0.03
+
+        adjusted_chest = chest_prob + chest_bias
+        adjusted_falsetto = falsetto_prob + falsetto_bias
+        total = max(1e-9, adjusted_chest + adjusted_falsetto)
+        adjusted_chest /= total
+        adjusted_falsetto /= total
+
+        if force_chest:
+            adjusted_chest = max(adjusted_chest, adjusted_falsetto + 0.06)
+            total = max(1e-9, adjusted_chest + adjusted_falsetto)
+            adjusted_chest /= total
+            adjusted_falsetto /= total
+
+        event_type = 'chest_voice' if adjusted_chest >= adjusted_falsetto else 'falsetto'
+        return {
+            'event_type': event_type,
+            'voice_type': 'chest' if event_type == 'chest_voice' else 'falsetto',
+            'chest_prob': float(adjusted_chest),
+            'falsetto_prob': float(adjusted_falsetto),
+            'confidence': float(max(adjusted_chest, adjusted_falsetto)),
+            'probability_margin': float(abs(adjusted_chest - adjusted_falsetto)),
+            'context_forced_chest': bool(force_chest),
+            'context_pitch_hz': float(mean_pitch_hz),
+        }
+
     def _build_offline_chest_falsetto_events(
         self,
         frames: List[FrameFeatures],
@@ -31395,6 +31592,7 @@ class ECGStylePitchVisualizer(QWidget):
             'candidate_windows': 0,
             'predicted_windows': 0,
             'accepted_windows': 0,
+            'context_adjusted_windows': 0,
             'relaxed_used': False,
             'reason': '',
         }
@@ -31530,24 +31728,31 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         continue
                     for offset, prob in enumerate(probs):
-                        chest_prob = float(prob[0])
-                        falsetto_prob = float(prob[1])
-                        confidence = max(chest_prob, falsetto_prob)
-                        probability_margin = abs(chest_prob - falsetto_prob)
-                        event_type = 'chest_voice' if chest_prob >= falsetto_prob else 'falsetto'
                         record = dict(candidate_windows[start_idx + offset])
+                        adjusted = self._apply_voice_type_context_priors(
+                            float(prob[0]),
+                            float(prob[1]),
+                            mean_pitch_hz=float(record.get('mean_pitch_hz', 0.0) or 0.0),
+                            voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
+                            stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
+                            mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
+                        )
                         record.update({
-                            'event_type': event_type,
-                            'voice_type': 'chest' if event_type == 'chest_voice' else 'falsetto',
-                            'chest_prob': chest_prob,
-                            'falsetto_prob': falsetto_prob,
-                            'confidence': confidence,
-                            'probability_margin': probability_margin,
+                            'event_type': adjusted['event_type'],
+                            'voice_type': adjusted['voice_type'],
+                            'chest_prob': adjusted['chest_prob'],
+                            'falsetto_prob': adjusted['falsetto_prob'],
+                            'confidence': adjusted['confidence'],
+                            'probability_margin': adjusted['probability_margin'],
+                            'context_forced_chest': adjusted['context_forced_chest'],
                         })
+                        if bool(adjusted.get('context_forced_chest', False)):
+                            self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
                         all_predictions.append(record)
+                        event_type = str(record.get('event_type', '') or '')
                         if not self._technique_type_selected(event_type):
                             continue
-                        if not self._voice_prediction_accepted(confidence, probability_margin, relaxed=False):
+                        if not self._voice_prediction_record_accepted(record, relaxed=False):
                             continue
                         predictions.append(record)
         else:
@@ -31565,22 +31770,31 @@ class ECGStylePitchVisualizer(QWidget):
                     falsetto_prob = float(prob.get('falsetto_prob', 0.0) or 0.0)
                 except Exception:
                     continue
-                confidence = max(chest_prob, falsetto_prob)
-                probability_margin = abs(chest_prob - falsetto_prob)
-                event_type = 'chest_voice' if chest_prob >= falsetto_prob else 'falsetto'
                 record = dict(candidate_windows[idx])
+                adjusted = self._apply_voice_type_context_priors(
+                    chest_prob,
+                    falsetto_prob,
+                    mean_pitch_hz=float(record.get('mean_pitch_hz', 0.0) or 0.0),
+                    voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
+                    stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
+                    mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
+                )
                 record.update({
-                    'event_type': event_type,
-                    'voice_type': 'chest' if event_type == 'chest_voice' else 'falsetto',
-                    'chest_prob': chest_prob,
-                    'falsetto_prob': falsetto_prob,
-                    'confidence': confidence,
-                    'probability_margin': probability_margin,
+                    'event_type': adjusted['event_type'],
+                    'voice_type': adjusted['voice_type'],
+                    'chest_prob': adjusted['chest_prob'],
+                    'falsetto_prob': adjusted['falsetto_prob'],
+                    'confidence': adjusted['confidence'],
+                    'probability_margin': adjusted['probability_margin'],
+                    'context_forced_chest': adjusted['context_forced_chest'],
                 })
+                if bool(adjusted.get('context_forced_chest', False)):
+                    self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
                 all_predictions.append(record)
+                event_type = str(record.get('event_type', '') or '')
                 if not self._technique_type_selected(event_type):
                     continue
-                if not self._voice_prediction_accepted(confidence, probability_margin, relaxed=False):
+                if not self._voice_prediction_record_accepted(record, relaxed=False):
                     continue
                 predictions.append(record)
 
@@ -31592,11 +31806,7 @@ class ECGStylePitchVisualizer(QWidget):
                 event_type = str(record.get('event_type', '') or '')
                 if not self._technique_type_selected(event_type):
                     continue
-                if not self._voice_prediction_accepted(
-                    float(record.get('confidence', 0.0) or 0.0),
-                    float(record.get('probability_margin', 0.0) or 0.0),
-                    relaxed=True,
-                ):
+                if not self._voice_prediction_record_accepted(record, relaxed=True):
                     continue
                 relaxed_predictions.append(record)
             if relaxed_predictions:
@@ -31988,6 +32198,17 @@ class ECGStylePitchVisualizer(QWidget):
             prob_margin = float(getattr(event, 'probability_margin', 0.0) or 0.0)
             window_count = int(getattr(event, 'window_count', 0) or 0)
             strong_single = duration >= 0.18 and confidence >= 0.68 and prob_margin >= 0.12
+            mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
+            if event_type == 'chest_voice':
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 240.0:
+                    return duration >= 0.14 and voiced_ratio >= 0.18 and confidence >= 0.48 and strength >= 0.42 and (window_count >= 1 or duration >= 0.18)
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 320.0:
+                    return duration >= 0.16 and voiced_ratio >= 0.20 and confidence >= 0.50 and strength >= 0.44 and (window_count >= 1 or duration >= 0.20)
+            if event_type == 'falsetto':
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 240.0:
+                    return False
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 300.0:
+                    return duration >= 0.24 and voiced_ratio >= 0.30 and confidence >= 0.64 and strength >= 0.56 and prob_margin >= 0.16 and window_count >= 3
             return duration >= 0.18 and voiced_ratio >= 0.24 and confidence >= 0.54 and strength >= 0.50 and (window_count >= 2 or strong_single)
         return duration >= 0.10 and confidence >= 0.58
 
