@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, 
 from collections import deque
 import bisect
 import time, threading, queue, json, os, sys, wave, math
+import importlib
 from pathlib import Path
 
 try:
@@ -33,6 +34,67 @@ try:
     project_root = Path(__file__).resolve().parent.parent.parent
 except NameError:
     project_root = Path.cwd()
+
+_CHEST_FALSETTO_CHECKPOINT_CANDIDATES = (
+    project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts_mel_safe_v2' / 'best_squeezenet_binary.pt',
+    project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts' / 'best_squeezenet_binary.pt',
+)
+_CHEST_FALSETTO_TARGET_SR = 22050
+_CHEST_FALSETTO_WINDOW_S = 0.64
+_CHEST_FALSETTO_HOP_S = 0.16
+_CHEST_FALSETTO_IMAGE_SIZE = 224
+_CHEST_FALSETTO_BATCH_SIZE = 24
+_CHEST_FALSETTO_MEAN = (0.485, 0.456, 0.406)
+_CHEST_FALSETTO_STD = (0.229, 0.224, 0.225)
+
+
+def _ensure_windows_torch_dll_paths() -> None:
+    if os.name != 'nt' or not hasattr(os, 'add_dll_directory'):
+        return
+    candidates: List[Path] = []
+    seen: set[str] = set()
+    try:
+        import site
+        for base in list(site.getsitepackages()) + [site.getusersitepackages()]:
+            try:
+                root = Path(base)
+            except Exception:
+                continue
+            candidates.append(root / 'torch' / 'lib')
+            candidates.append(root / 'Library' / 'bin')
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(sys.base_prefix) / 'Library' / 'bin')
+        candidates.append(Path(sys.prefix) / 'Library' / 'bin')
+    except Exception:
+        pass
+    for path in candidates:
+        try:
+            path_str = str(path.resolve())
+        except Exception:
+            path_str = str(path)
+        if not path_str or path_str in seen:
+            continue
+        seen.add(path_str)
+        try:
+            if Path(path_str).exists():
+                os.add_dll_directory(path_str)
+        except Exception:
+            continue
+
+
+def _import_torch_safely():
+    try:
+        return importlib.import_module('torch'), ''
+    except OSError as exc:
+        try:
+            _ensure_windows_torch_dll_paths()
+            return importlib.import_module('torch'), ''
+        except Exception as retry_exc:
+            return None, f'torch_import_failed:{type(retry_exc).__name__}'
+    except Exception as exc:
+        return None, f'torch_import_failed:{type(exc).__name__}'
 
 # 确保项目根目录与 src 包在Python路径中，解决作为脚本直接运行时的导入问题
 try:
@@ -99,6 +161,7 @@ class SegmentedPitchBuffer:
 
     class _Segment:
         __slots__ = ("times", "pitches", "confidences", "notes", "start", "end")
+
         def __init__(self, time_val: float, pitch_val: float, conf_val: float, note_val):
             self.times = [float(time_val)]
             self.pitches = [float(pitch_val)]
@@ -753,8 +816,8 @@ _TECHNIQUE_SECTION_DEFS = (
         'title': '音色与动态控制技巧',
         'items': (
             {'key': 'breathy_phonation', 'label': '气声', 'implemented': False},
-            {'key': 'falsetto', 'label': '假声', 'implemented': False},
-            {'key': 'chest_voice', 'label': '真声', 'implemented': False},
+            {'key': 'falsetto', 'label': '假声', 'implemented': True},
+            {'key': 'chest_voice', 'label': '真声', 'implemented': True},
             {'key': 'twang', 'label': '咽音', 'implemented': False},
             {'key': 'cry', 'label': '哭腔', 'implemented': False},
         ),
@@ -990,6 +1053,17 @@ class BreathyPhonationEvent(BaseTechniqueEvent):
     mean_rms: Optional[float] = None
     voiced_soft_score: Optional[float] = None
     breathy_score: Optional[float] = None
+
+
+@dataclass
+class VoiceTypeEvent(BaseTechniqueEvent):
+    voice_type: str = 'chest'
+    mean_pitch_hz: Optional[float] = None
+    voiced_ratio: Optional[float] = None
+    chest_prob: Optional[float] = None
+    falsetto_prob: Optional[float] = None
+    probability_margin: Optional[float] = None
+    window_count: int = 0
 
 
 # 通用：延迟显示格式化（避免出现 "Nonems" 等）
@@ -3244,6 +3318,9 @@ class IntegratedAudioProcessor(QThread):
             "_last_stable_frequency", "_freq_smooth", "_pitch_analysis_counter", "_audio_accumulator_buffer", "_last_raw_frequency",
             "_last_frame_rms", "_yin_miss_streak",
             "_display_pitch_prev", "_display_pitch_prev_t", "_display_pitch_jump_candidate", "_display_pitch_jump_count",
+            "_display_register_transition_until",
+            "_display_head_voice_anchor_hz", "_display_head_voice_anchor_until",
+            "_display_head_voice_entry_until",
             # 换气/边界/绘制参考
             "_bj_streak", "_bj_last_f0", "_bj_last_t", "_breath_suppress_until", "_prevoice_wait_frames",
             "_last_drawn_t", "_last_drawn_f0",
@@ -3253,6 +3330,8 @@ class IntegratedAudioProcessor(QThread):
             "_lead_high_hist", "_lead_high_final_hz",
             "_lead_high_stab_strength", "_lead_high_last_anchor_hz",
             "_lead_high_interf_ema", "_lead_high_interf_hold",
+            # 录音起始高音确认窗
+            "_startup_high_candidate", "_startup_high_count",
             # 门控/缓存状态
             "_voice_gate_state", "_gate_consec_voiced", "_gate_consec_silent",
             "_vg_onset_buf", "_vg_tail_buf",
@@ -3266,6 +3345,9 @@ class IntegratedAudioProcessor(QThread):
             # 监听态专用（防止残留影响录音）
             "_mon_last_stable_frequency", "_mon_freq_smooth", "_mon_last_frame_rms",
             "_mon_display_pitch_prev", "_mon_display_pitch_prev_t", "_mon_display_pitch_jump_candidate", "_mon_display_pitch_jump_count",
+            "_mon_display_register_transition_until",
+            "_mon_display_head_voice_anchor_hz", "_mon_display_head_voice_anchor_until",
+            "_mon_display_head_voice_entry_until",
             "_mon_bj_streak", "_mon_bj_last_f0", "_mon_bj_last_t", "_mon_breath_suppress_until", "_mon_prevoice_wait_frames",
             "_mon_last_drawn_t", "_mon_last_drawn_f0",
             "_mon_lead_high_anchor_hz", "_mon_lead_high_stable_count", "_mon_lead_rap_jitter_streak",
@@ -3273,6 +3355,7 @@ class IntegratedAudioProcessor(QThread):
             "_mon_lead_high_hist", "_mon_lead_high_final_hz",
             "_mon_lead_high_stab_strength", "_mon_lead_high_last_anchor_hz",
             "_mon_lead_high_interf_ema", "_mon_lead_high_interf_hold",
+            "_mon_startup_high_candidate", "_mon_startup_high_count",
         ]:
             if hasattr(self, attr):
                 try:
@@ -3446,6 +3529,7 @@ class IntegratedAudioProcessor(QThread):
         *,
         audio_rms: float,
         min_voice_rms: float,
+        head_voice_like: bool = False,
         preview_only: bool = False,
     ) -> float:
         try:
@@ -3469,6 +3553,10 @@ class IntegratedAudioProcessor(QThread):
         prev_t_name = '_mon_display_pitch_prev_t' if preview_only else '_display_pitch_prev_t'
         jump_name = '_mon_display_pitch_jump_candidate' if preview_only else '_display_pitch_jump_candidate'
         jump_count_name = '_mon_display_pitch_jump_count' if preview_only else '_display_pitch_jump_count'
+        transition_until_name = '_mon_display_register_transition_until' if preview_only else '_display_register_transition_until'
+        head_anchor_name = '_mon_display_head_voice_anchor_hz' if preview_only else '_display_head_voice_anchor_hz'
+        head_anchor_until_name = '_mon_display_head_voice_anchor_until' if preview_only else '_display_head_voice_anchor_until'
+        head_entry_until_name = '_mon_display_head_voice_entry_until' if preview_only else '_display_head_voice_entry_until'
 
         now_t = time.time()
         try:
@@ -3479,13 +3567,49 @@ class IntegratedAudioProcessor(QThread):
             last_display_t = float(getattr(self, prev_t_name, 0.0) or 0.0)
         except Exception:
             last_display_t = 0.0
+        try:
+            prev_head_anchor_hz = float(getattr(head_anchor_name, 0.0) or 0.0)
+        except Exception:
+            prev_head_anchor_hz = 0.0
 
         onset_gap = float(getattr(self, '_normal_display_onset_gap_s', 0.15) or 0.15)
         weak_voice_mul = float(getattr(self, '_normal_display_weak_voice_mul', 1.55) or 1.55)
         high_register_hz = float(getattr(self, '_normal_display_high_register_hz', 460.0) or 460.0)
         spike_guard_semi = float(getattr(self, '_normal_display_spike_guard_semi', 1.45) or 1.45)
         onset_like = bool(last_display <= 0.0 or ((now_t - last_display_t) >= onset_gap))
-        weak_voice = bool(float(audio_rms) <= float(min_voice_rms) * weak_voice_mul)
+        head_voice_guard = bool(
+            head_voice_like and max(
+                float(raw_frequency or 0.0),
+                float(display_frequency),
+                float(smooth_frequency or 0.0),
+                float(last_display),
+                float(prev_head_anchor_hz),
+            ) >= max(270.0, high_register_hz * 0.58)
+        )
+        effective_weak_voice_mul = float(0.92 if head_voice_guard else weak_voice_mul)
+        weak_voice = bool(float(audio_rms) <= float(min_voice_rms) * effective_weak_voice_mul)
+        rising_head_voice = bool(
+            head_voice_guard
+            and last_display > 0.0
+            and display_frequency > last_display
+            and self._pitch_semitone_distance(display_frequency, last_display) >= 0.65
+        )
+        detected_frequency_hint = max(float(smooth_frequency or 0.0), float(raw_frequency or 0.0))
+        register_leap_guard = bool(
+            head_voice_guard
+            and last_display > 0.0
+            and detected_frequency_hint > 0.0
+            and detected_frequency_hint >= float(last_display) * 1.16
+            and self._pitch_semitone_distance(detected_frequency_hint, last_display) >= 2.4
+            and self._pitch_semitone_distance(detected_frequency_hint, last_display) <= 9.5
+        )
+        try:
+            head_entry_until = float(getattr(self, head_entry_until_name, 0.0) or 0.0)
+        except Exception:
+            head_entry_until = 0.0
+        if register_leap_guard:
+            head_entry_until = max(float(head_entry_until), float(now_t) + 0.22)
+        head_entry_active = bool(head_entry_until > float(now_t))
 
         lower_candidate = self._pick_display_fundamental_candidate(
             max(float(raw_frequency or 0.0), float(display_frequency)),
@@ -3502,16 +3626,20 @@ class IntegratedAudioProcessor(QThread):
                 self._pitch_semitone_distance(lower_candidate, last_display) + 0.35 < self._pitch_semitone_distance(display_frequency, last_display)
             )
             lower_matches_history = bool(last_display > 0.0 and self._pitch_semitone_distance(lower_candidate, last_display) <= 2.4)
-            if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
-                display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
-            elif weak_voice and lower_gap >= 5.6:
-                display_frequency = 0.50 * float(display_frequency) + 0.50 * float(lower_candidate)
-            elif harmonic_like and lower_gap >= 5.2 and (not raw_supports_display):
-                display_frequency = 0.36 * float(display_frequency) + 0.64 * float(lower_candidate)
-            elif lower_matches_history and lower_gap >= 5.2 and (not raw_supports_display):
-                display_frequency = 0.28 * float(display_frequency) + 0.72 * float(lower_candidate)
-            elif better_than_current and lower_gap >= 6.0:
-                display_frequency = 0.56 * float(display_frequency) + 0.44 * float(lower_candidate)
+            if head_voice_guard:
+                if (not rising_head_voice) and (not register_leap_guard) and weak_voice and harmonic_like and lower_matches_history and lower_gap >= 9.5 and (not raw_supports_display):
+                    display_frequency = 0.86 * float(display_frequency) + 0.14 * float(lower_candidate)
+            else:
+                if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
+                    display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
+                elif weak_voice and lower_gap >= 5.6:
+                    display_frequency = 0.50 * float(display_frequency) + 0.50 * float(lower_candidate)
+                elif harmonic_like and lower_gap >= 5.2 and (not raw_supports_display):
+                    display_frequency = 0.36 * float(display_frequency) + 0.64 * float(lower_candidate)
+                elif lower_matches_history and lower_gap >= 5.2 and (not raw_supports_display):
+                    display_frequency = 0.28 * float(display_frequency) + 0.72 * float(lower_candidate)
+                elif better_than_current and lower_gap >= 6.0:
+                    display_frequency = 0.56 * float(display_frequency) + 0.44 * float(lower_candidate)
 
         support_high_jump = False
         if true_candidates:
@@ -3523,9 +3651,64 @@ class IntegratedAudioProcessor(QThread):
                     continue
                 if cand_freq <= 0.0:
                     continue
-                if cand_conf >= 0.42 and self._pitch_semitone_distance(cand_freq, display_frequency) <= 0.95:
+                conf_floor = 0.26 if head_voice_guard else 0.42
+                dist_limit = 1.35 if head_voice_guard else 0.95
+                if cand_conf >= conf_floor and self._pitch_semitone_distance(cand_freq, display_frequency) <= dist_limit:
                     support_high_jump = True
                     break
+
+        if lower_candidate > 0.0 and last_display > 0.0:
+            lower_history_gap = self._pitch_semitone_distance(lower_candidate, last_display)
+            current_history_gap = self._pitch_semitone_distance(display_frequency, last_display)
+            likely_harmonic_jump = bool(
+                current_history_gap >= 2.6
+                and lower_history_gap + 0.35 < current_history_gap
+                and (1.76 <= (max(float(raw_frequency or 0.0), float(display_frequency)) / max(float(lower_candidate), 1e-9)) <= 2.60)
+            )
+            if (not head_voice_guard) and likely_harmonic_jump and (weak_voice or onset_like or (not support_high_jump)):
+                lower_weight = 0.76 if (weak_voice or (not support_high_jump)) else 0.66
+                display_frequency = lower_weight * float(lower_candidate) + (1.0 - lower_weight) * float(display_frequency)
+
+        if head_voice_guard and last_display >= 340.0 and display_frequency < last_display and (not onset_like):
+            if float(audio_rms) >= float(min_voice_rms) * 0.58:
+                if last_display >= 520.0:
+                    head_down_limit = 1.10
+                elif last_display >= 420.0:
+                    head_down_limit = 1.35
+                else:
+                    head_down_limit = 1.70
+                min_allowed = float(last_display) * (2.0 ** (-head_down_limit / 12.0))
+                if float(raw_frequency or 0.0) >= min_allowed * 0.88 and display_frequency < min_allowed:
+                    display_frequency = float(min_allowed)
+
+        if register_leap_guard and detected_frequency_hint > 0.0:
+            leap_gap = self._pitch_semitone_distance(detected_frequency_hint, max(float(last_display), 1e-9))
+            if head_entry_active:
+                if leap_gap >= 6.0:
+                    leap_step_semi = 1.45
+                elif leap_gap >= 3.5:
+                    leap_step_semi = 1.15
+                else:
+                    leap_step_semi = 0.90
+                entry_bridge_target = min(
+                    float(detected_frequency_hint),
+                    float(last_display) * (2.0 ** (float(leap_step_semi) / 12.0)),
+                )
+                display_frequency = max(
+                    float(display_frequency),
+                    0.42 * float(last_display) + 0.58 * float(entry_bridge_target),
+                )
+            elif leap_gap >= 6.0:
+                leap_blend = 0.82
+            elif leap_gap >= 3.5:
+                leap_blend = 0.68
+            else:
+                leap_blend = 0.54
+            if not head_entry_active:
+                display_frequency = max(
+                    float(display_frequency),
+                    (1.0 - leap_blend) * float(last_display) + leap_blend * float(detected_frequency_hint),
+                )
 
         up_jump_semi = 0.0
         if last_display > 0.0 and display_frequency > last_display:
@@ -3543,6 +3726,14 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             jump_count = 0
 
+        rise_release = bool(
+            head_voice_guard
+            and last_display > 0.0
+            and float(raw_frequency or 0.0) >= float(last_display) * 1.02
+            and up_jump_semi >= 0.55
+            and float(audio_rms) >= float(min_voice_rms) * 0.58
+        )
+
         if last_display >= high_register_hz and up_jump_semi >= spike_guard_semi:
             target_gap = self._pitch_semitone_distance(prev_jump_target, display_frequency)
             if prev_jump_target > 0.0 and target_gap <= 0.85:
@@ -3551,13 +3742,176 @@ class IntegratedAudioProcessor(QThread):
                 prev_jump_target = float(display_frequency)
                 jump_count = 1
             if jump_count < 2 and (weak_voice or (not support_high_jump)):
-                max_step = 0.62 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 0.88
+                if rise_release:
+                    max_step = 1.65 if float(last_display) >= 420.0 else 1.30
+                else:
+                    max_step = 0.62 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 0.88
                 display_frequency = min(float(display_frequency), float(last_display) * (2.0 ** (float(max_step) / 12.0)))
-            elif jump_count == 2 and (not support_high_jump) and float(audio_rms) <= float(min_voice_rms) * 2.1:
+            elif (not rise_release) and jump_count == 2 and (not support_high_jump) and float(audio_rms) <= float(min_voice_rms) * 2.1:
                 display_frequency = 0.72 * float(display_frequency) + 0.28 * float(last_display)
         else:
             prev_jump_target = 0.0
             jump_count = 0
+
+        if head_voice_guard:
+            detected_frequency = max(float(smooth_frequency or 0.0), float(raw_frequency or 0.0))
+            supported_high_candidate = 0.0
+            if true_candidates:
+                for cand in true_candidates:
+                    try:
+                        cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                        cand_conf = float(cand.get('confidence', 0.0) or 0.0)
+                    except Exception:
+                        continue
+                    min_cand_conf = 0.24 if head_entry_active else 0.16
+                    if cand_freq <= 0.0 or cand_conf < min_cand_conf:
+                        continue
+                    near_detected_limit = 2.2 if head_entry_active else 4.8
+                    near_detected = bool(detected_frequency > 0.0 and self._pitch_semitone_distance(cand_freq, detected_frequency) <= near_detected_limit)
+                    near_history = bool(last_display > 0.0 and self._pitch_semitone_distance(cand_freq, last_display) <= 5.0)
+                    if not (near_detected or near_history):
+                        continue
+                    if head_entry_active and detected_frequency > 0.0 and cand_freq > float(detected_frequency) * 1.10:
+                        continue
+                    if cand_freq > supported_high_candidate:
+                        supported_high_candidate = float(cand_freq)
+            if supported_high_candidate > detected_frequency and supported_high_candidate <= max(2500.0, detected_frequency * 1.35 if detected_frequency > 0.0 else supported_high_candidate):
+                detected_frequency = max(detected_frequency, supported_high_candidate)
+            detected_gap = self._pitch_semitone_distance(detected_frequency, display_frequency) if detected_frequency > 0.0 and display_frequency > 0.0 else 0.0
+            detected_rising = bool(
+                detected_frequency > 0.0
+                and last_display > 0.0
+                and detected_frequency >= float(last_display) * 1.01
+                and self._pitch_semitone_distance(detected_frequency, last_display) <= 4.6
+            )
+            if detected_frequency > 0.0 and detected_gap >= 0.70 and (detected_rising or rising_head_voice):
+                if detected_gap >= 3.0:
+                    detected_blend = 0.52 if head_entry_active else 0.78
+                elif detected_gap >= 1.6:
+                    detected_blend = 0.40 if head_entry_active else 0.58
+                else:
+                    detected_blend = 0.28 if head_entry_active else 0.38
+                borrowed_display = (1.0 - detected_blend) * float(display_frequency) + detected_blend * float(detected_frequency)
+                if last_display > 0.0 and borrowed_display < last_display and detected_frequency > last_display:
+                    borrowed_display = max(float(borrowed_display), 0.92 * float(last_display) + 0.08 * float(detected_frequency))
+                display_frequency = max(float(display_frequency), float(borrowed_display))
+
+            if detected_frequency > 0.0 and last_display > 0.0 and detected_frequency > last_display and display_frequency < last_display:
+                if self._pitch_semitone_distance(detected_frequency, last_display) <= 3.8:
+                    display_frequency = max(float(display_frequency), 0.76 * float(last_display) + 0.24 * float(detected_frequency))
+
+            try:
+                transition_until = float(getattr(self, transition_until_name, 0.0) or 0.0)
+            except Exception:
+                transition_until = 0.0
+            try:
+                head_anchor_hz = float(getattr(self, head_anchor_name, 0.0) or 0.0)
+            except Exception:
+                head_anchor_hz = 0.0
+            try:
+                head_anchor_until = float(getattr(self, head_anchor_until_name, 0.0) or 0.0)
+            except Exception:
+                head_anchor_until = 0.0
+            transition_trigger = bool(
+                detected_frequency > 0.0
+                and last_display > 0.0
+                and detected_frequency >= float(last_display) * 1.008
+                and self._pitch_semitone_distance(detected_frequency, last_display) <= 5.2
+                and (detected_rising or rising_head_voice)
+            )
+            if transition_trigger:
+                transition_until = max(float(transition_until), float(now_t) + 0.30)
+                if detected_frequency > 0.0:
+                    if head_anchor_hz > 0.0:
+                        if head_entry_active:
+                            head_anchor_hz = max(0.92 * float(head_anchor_hz) + 0.08 * float(detected_frequency), 0.90 * float(detected_frequency))
+                        else:
+                            head_anchor_hz = max(0.84 * float(head_anchor_hz) + 0.16 * float(detected_frequency), 0.96 * float(detected_frequency))
+                    else:
+                        head_anchor_hz = 0.94 * float(detected_frequency) if head_entry_active else float(detected_frequency)
+                    head_anchor_until = max(float(head_anchor_until), float(now_t) + 0.46)
+            transition_active = bool(transition_until > float(now_t))
+            if detected_frequency > 0.0 and last_display > 0.0 and detected_frequency >= float(last_display) * 0.995 and self._pitch_semitone_distance(detected_frequency, last_display) <= 4.2:
+                if head_anchor_hz > 0.0:
+                    head_anchor_hz = max(0.88 * float(head_anchor_hz) + 0.12 * float(detected_frequency), 0.94 * float(detected_frequency))
+                else:
+                    head_anchor_hz = float(detected_frequency)
+                head_anchor_until = max(float(head_anchor_until), float(now_t) + 0.34)
+            if transition_active and detected_frequency > 0.0:
+                if detected_frequency > display_frequency:
+                    trans_gap = self._pitch_semitone_distance(detected_frequency, display_frequency)
+                    if trans_gap >= 2.6:
+                        attack_blend = 0.76
+                    elif trans_gap >= 1.2:
+                        attack_blend = 0.58
+                    else:
+                        attack_blend = 0.38
+                    display_frequency = (1.0 - attack_blend) * float(display_frequency) + attack_blend * float(detected_frequency)
+                if last_display > 0.0:
+                    floor_freq = max(
+                        float(last_display) * (2.0 ** (-0.85 / 12.0)),
+                        0.82 * float(last_display) + 0.18 * float(detected_frequency),
+                    )
+                    display_frequency = max(float(display_frequency), float(floor_freq))
+            head_anchor_active = bool(head_anchor_until > float(now_t) and head_anchor_hz > 0.0)
+            if head_anchor_active:
+                if head_anchor_hz >= 520.0:
+                    anchor_floor_semi = 0.85
+                elif head_anchor_hz >= 420.0:
+                    anchor_floor_semi = 1.05
+                else:
+                    anchor_floor_semi = 1.25
+                anchor_floor = float(head_anchor_hz) * (2.0 ** (-anchor_floor_semi / 12.0))
+                if detected_frequency > 0.0 and detected_frequency >= anchor_floor * 0.96:
+                    display_frequency = max(float(display_frequency), float(anchor_floor))
+            if detected_frequency > 0.0 and head_voice_like:
+                steady_head_rise = bool(
+                    last_display > 0.0
+                    and detected_frequency >= float(last_display) * 1.01
+                    and self._pitch_semitone_distance(detected_frequency, last_display) <= 4.4
+                )
+                if register_leap_guard and head_entry_active:
+                    max_display_lag_semi = 1.10
+                elif register_leap_guard:
+                    max_display_lag_semi = 0.45
+                elif transition_active or head_anchor_active:
+                    max_display_lag_semi = 0.65
+                elif steady_head_rise:
+                    max_display_lag_semi = 0.82
+                elif detected_rising or rising_head_voice:
+                    max_display_lag_semi = 1.05
+                else:
+                    max_display_lag_semi = 1.35
+                min_display_from_detected = float(detected_frequency) * (2.0 ** (-float(max_display_lag_semi) / 12.0))
+                if last_display > 0.0 and detected_frequency > last_display:
+                    min_display_from_detected = max(
+                        float(min_display_from_detected),
+                        0.72 * float(last_display) + 0.28 * float(detected_frequency),
+                    )
+                display_frequency = max(float(display_frequency), float(min_display_from_detected))
+                if steady_head_rise and display_frequency < detected_frequency:
+                    display_frequency = max(
+                        float(display_frequency),
+                        0.58 * float(display_frequency) + 0.42 * float(detected_frequency),
+                    )
+                if (not head_entry_active) and (head_anchor_active or transition_active) and detected_frequency > display_frequency:
+                    display_frequency = max(
+                        float(display_frequency),
+                        0.70 * float(display_frequency) + 0.30 * float(detected_frequency),
+                    )
+            try:
+                setattr(self, transition_until_name, float(transition_until if transition_active else 0.0))
+            except Exception:
+                pass
+            try:
+                setattr(self, head_anchor_name, float(head_anchor_hz if head_anchor_active else 0.0))
+                setattr(self, head_anchor_until_name, float(head_anchor_until if head_anchor_active else 0.0))
+            except Exception:
+                pass
+        try:
+            setattr(self, head_entry_until_name, float(head_entry_until if head_entry_active else 0.0))
+        except Exception:
+            pass
 
         try:
             setattr(self, jump_name, float(prev_jump_target))
@@ -4193,10 +4547,9 @@ class IntegratedAudioProcessor(QThread):
                 self.is_paused = False
                 self._pause_started_at = None
                 self._total_paused_time = 0.0
-                if self.should_save:
-                    self.audio_buffer = []  # 只有需要保存时才清空缓冲区
-                    # 进入录音时重置录音计时，确保时长准确
-                    self.recording_start_time = time.time()
+                self.audio_buffer = []
+                # 进入录音时重置录音计时，确保时长准确
+                self.recording_start_time = time.time()
                 
                 # 🔁 统一：在监听基础上转入录音必须重置音高相关状态，保证与“直接录音”一致
                 self._reset_pitch_analysis_state(reason="monitor->record switch")
@@ -8463,7 +8816,7 @@ class IntegratedAudioProcessor(QThread):
                         handled = False
                         if packet['should_save'] or overlay_capture:
                             handled = self._delegate_overlay_audio_chunk(packet['data'])
-                        if packet['should_save'] and not handled:
+                        if bool(getattr(self, 'is_recording', False)) and not handled:
                             self.audio_buffer.extend(packet['data'])
                     # 回听缓冲：总是记录（仅暂存，不等同保存）
                     try:
@@ -8849,6 +9202,62 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     pass
 
+            startup_phase = False
+            startup_elapsed = 999.0
+            try:
+                if bool(getattr(self, 'is_recording', False)) and (not preview_only):
+                    record_started_at = float(getattr(self, 'recording_start_time', 0.0) or 0.0)
+                    if record_started_at > 0.0:
+                        startup_elapsed = max(0.0, float(current_time) - record_started_at)
+                        startup_phase = bool(startup_elapsed <= float(getattr(self, '_startup_pitch_guard_s', 0.90) or 0.90))
+            except Exception:
+                startup_phase = False
+                startup_elapsed = 999.0
+
+            if raw_frequency > 0.0 and startup_phase:
+                startup_candidate_name = '_mon_startup_high_candidate' if preview_only else '_startup_high_candidate'
+                startup_count_name = '_mon_startup_high_count' if preview_only else '_startup_high_count'
+                try:
+                    startup_candidate = float(getattr(self, startup_candidate_name, 0.0) or 0.0)
+                except Exception:
+                    startup_candidate = 0.0
+                try:
+                    startup_count = int(getattr(self, startup_count_name, 0) or 0)
+                except Exception:
+                    startup_count = 0
+                try:
+                    startup_guard_hz = float(getattr(self, '_startup_pitch_guard_high_hz', 320.0) or 320.0)
+                except Exception:
+                    startup_guard_hz = 320.0
+                try:
+                    startup_guard_rms_mul = float(getattr(self, '_startup_pitch_guard_rms_mul', 8.5) or 8.5)
+                except Exception:
+                    startup_guard_rms_mul = 8.5
+                try:
+                    last_stable = float(getattr(self, ('_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'), 0.0) or 0.0)
+                except Exception:
+                    last_stable = 0.0
+                need_confirm = bool(
+                    last_stable <= 0.0
+                    and float(raw_frequency) >= startup_guard_hz
+                    and float(audio_rms) <= float(min_voice_rms) * startup_guard_rms_mul
+                    and startup_elapsed <= 0.75
+                )
+                if need_confirm:
+                    same_track = bool(startup_candidate > 0.0 and abs(12.0 * np.log2(max(float(raw_frequency), 1e-9) / max(float(startup_candidate), 1e-9))) <= 2.4)
+                    if same_track:
+                        startup_count = min(4, startup_count + 1)
+                    else:
+                        startup_candidate = float(raw_frequency)
+                        startup_count = 1
+                    setattr(self, startup_candidate_name, float(startup_candidate))
+                    setattr(self, startup_count_name, int(startup_count))
+                    if startup_count < 2:
+                        raw_frequency = 0.0
+                else:
+                    setattr(self, startup_candidate_name, 0.0)
+                    setattr(self, startup_count_name, 0)
+
             # ========= 人声存在门控（迟滞 + 风扇嗡声抑制） ========= #
             # 目标：在嘈杂环境中优先拦截非人声稳态噪音，避免出现细碎误点。
             if raw_frequency > 0:
@@ -8885,7 +9294,8 @@ class IntegratedAudioProcessor(QThread):
                         except Exception:
                             semi = 999.0
                         try:
-                            soft_rms_ok = float(audio_rms) >= float(min_voice_rms) * 0.72
+                            soft_rms_mul = 0.56 if float(raw_frequency) >= 320.0 else 0.72
+                            soft_rms_ok = float(audio_rms) >= float(min_voice_rms) * soft_rms_mul
                         except Exception:
                             soft_rms_ok = False
                         if soft_rms_ok and (semi <= 2.2 or float(raw_frequency) >= 320.0):
@@ -9073,6 +9483,12 @@ class IntegratedAudioProcessor(QThread):
                         down_limit = float(getattr(self, '_lfm_high_register_down_limit_semi', 2.2) or 2.2)
                     except Exception:
                         down_limit = 2.8
+                    if last_stable >= 520.0 and semi <= 5.2 and float(raw_frequency) >= float(last_stable) * 0.68 and float(audio_rms) >= float(min_voice_rms) * 0.74:
+                        down_limit = min(down_limit, 1.10)
+                    elif last_stable >= 420.0 and semi <= 4.8 and float(raw_frequency) >= float(last_stable) * 0.66 and float(audio_rms) >= float(min_voice_rms) * 0.74:
+                        down_limit = min(down_limit, 1.35)
+                    elif last_stable >= 340.0 and semi <= 4.2 and float(raw_frequency) >= float(last_stable) * 0.64 and float(audio_rms) >= float(min_voice_rms) * 0.72:
+                        down_limit = min(down_limit, 1.65)
                     min_allowed = float(last_stable) * (2.0 ** (-max(0.8, down_limit) / 12.0))
                     if float(raw_frequency) < min_allowed:
                         raw_frequency = min_allowed
@@ -9092,6 +9508,28 @@ class IntegratedAudioProcessor(QThread):
                         true_candidates,
                         audio_rms=float(audio_rms),
                         min_voice_rms=float(min_voice_rms),
+                        head_voice_like=bool(
+                            ('voiced_bright' in locals() and voiced_bright)
+                            or (
+                                float(raw_frequency or 0.0) >= 280.0
+                                and float(hf_to_mid_est or 0.0) >= 0.28
+                                and float(zcr_once or 0.0) <= 0.22
+                                and float(audio_rms) >= float(min_voice_rms) * 0.58
+                            )
+                            or (
+                                float(raw_frequency or 0.0) >= 250.0
+                                and float(hf_to_mid_est or 0.0) >= 0.22
+                                and float(mid_high_ratio or 0.0) <= 2.8
+                                and float(zcr_once or 0.0) <= 0.24
+                                and float(audio_rms) >= float(min_voice_rms) * 0.50
+                            )
+                            or (
+                                float(smooth_frequency or 0.0) >= 270.0
+                                and float(raw_frequency or 0.0) >= 240.0
+                                and float(zcr_once or 0.0) <= 0.24
+                                and float(audio_rms) >= float(min_voice_rms) * 0.46
+                            )
+                        ),
                         preview_only=preview_only,
                     )
                 except Exception:
@@ -9208,7 +9646,20 @@ class IntegratedAudioProcessor(QThread):
                     # 蓝牙语音模式下放宽低能量上限，避免一直被判为低能量
                     _breath_upper_default = 0.005 if _bt_voice else 0.004
                     breath_rms_upper = float(getattr(self, '_breath_rms_upper', _breath_upper_default))  # 更保守：仅更低能量才启用换气检测
-                    if (min_voice_rms <= audio_rms <= breath_rms_upper) and last_f0 > 0 and (now_t - last_t) <= 0.14 and not (recent_voiced_guard and audio_rms >= 0.0040) and not stable_pitch_guard:
+                    melodic_high_guard = False
+                    try:
+                        melodic_high_guard = bool(
+                            max(float(smooth_frequency or 0.0), float(raw_frequency or 0.0), float(last_f0 or 0.0)) >= 280.0
+                            and float(zcr_once) <= 0.22
+                            and (
+                                ('voiced_bright' in locals() and voiced_bright)
+                                or float(hf_to_mid_est or 0.0) >= 0.30
+                                or float(mid_high_ratio or 0.0) <= 2.4
+                            )
+                        )
+                    except Exception:
+                        melodic_high_guard = False
+                    if (not melodic_high_guard) and (min_voice_rms <= audio_rms <= breath_rms_upper) and last_f0 > 0 and (now_t - last_t) <= 0.14 and not (recent_voiced_guard and audio_rms >= 0.0040) and not stable_pitch_guard:
                         # 半音跨幅（避免除零）
                         semitone_jump = abs(12.0 * np.log2(max(1e-9, smooth_frequency / max(last_f0, 1e-9))))
                         # 半个八度阈值放宽(≥7半音)视为一次显著跳变，且需伴随较高ZCR才累计为换气迹象
@@ -9259,7 +9710,7 @@ class IntegratedAudioProcessor(QThread):
                             return
 
                     # 附加：低能量噪声的ZCR判定（双阈值，柔性）
-                    if min_voice_rms <= audio_rms <= breath_rms_upper:
+                    if (not melodic_high_guard) and min_voice_rms <= audio_rms <= breath_rms_upper:
                         try:
                             zcr = zcr_once
                             # 强阈值：明显噪声，直接较长抑制（阈值更高且仅在更低能量下触发）
@@ -9355,6 +9806,9 @@ class IntegratedAudioProcessor(QThread):
                     pitch_data['display_note_info'] = self.frequency_to_note_info(float(pitch_data['display_frequency'])) if pitch_data['display_frequency'] > 0 else note_info
                     pitch_data['zcr'] = float(zcr_once)
                     pitch_data['breath_detect_hint'] = False
+                    pitch_data['mid_high_ratio'] = float(mid_high_ratio)
+                    pitch_data['hm_over_hh'] = float(hm_over_hh)
+                    pitch_data['tonal_hum'] = bool(tonal_hum)
                 except Exception:
                     pass
                 
@@ -10540,16 +10994,24 @@ class IntegratedAudioProcessor(QThread):
                 high_register_hz = float(getattr(self, '_lead_vocal_high_register_hz', 300.0) or 300.0)
             except Exception:
                 high_register_hz = 300.0
-            high_ref = max(float(raw_frequency), float(last_stable))
-            high_register = bool(high_ref >= max(220.0, high_register_hz))
-            if high_register:
-                max_down_semi = min(max_down_semi, 7.0)
 
             def _semi(a: float, b: float) -> float:
                 try:
                     return abs(12.0 * np.log2(max(a, 1e-9) / max(b, 1e-9)))
                 except Exception:
                     return 999.0
+
+            high_ref = max(float(raw_frequency), float(last_stable))
+            high_register = bool(high_ref >= max(220.0, high_register_hz))
+            if high_register:
+                max_down_semi = min(max_down_semi, 7.0)
+            rising_transition = bool(
+                last_stable > 0.0
+                and high_register
+                and float(raw_frequency) > float(last_stable) * 1.025
+                and _semi(float(raw_frequency), float(last_stable)) >= 0.45
+                and _semi(float(raw_frequency), float(last_stable)) <= 6.2
+            )
 
             # 高音稳态锚点：用于“主唱平稳高音 + 伴唱说唱波动大”场景下的抗扰。
             anchor_name = '_mon_lead_high_anchor_hz' if preview_only else '_lead_high_anchor_hz'
@@ -10619,12 +11081,16 @@ class IntegratedAudioProcessor(QThread):
                 if f > raw_frequency:
                     rise = max(0.0, min(1.0, (f / max(raw_frequency, 1e-9) - 1.0) / 0.9))
                     score += (0.80 * near_boost) * rise
+                    if rising_transition:
+                        score += 0.34 * max(0.0, min(1.0, (f / max(last_stable, 1e-9) - 1.0) / 0.45))
                 else:
                     # 低于raw过多且近讲时，抑制“伴唱低音抢主线”
                     drop = max(0.0, min(1.0, 1.0 - f / max(raw_frequency, 1e-9)))
                     score -= (0.55 * near_boost) * drop
                     if high_register:
                         score -= 0.32 * drop
+                    if rising_transition and f < float(last_stable) * 0.97:
+                        score -= 0.58 * max(0.0, min(1.0, 1.0 - f / max(float(last_stable), 1e-9)))
 
                 # 跃迁守卫：防止单帧跳到离谱候选
                 if last_stable > 0:
@@ -10659,6 +11125,26 @@ class IntegratedAudioProcessor(QThread):
             top_f = float(scored_candidates[0][0]) if scored_candidates else float(chosen_f)
             second_f = float(scored_candidates[1][0]) if len(scored_candidates) > 1 else float(top_f)
             sep_ratio = float(max(top_f, second_f) / max(min(top_f, second_f), 1e-9)) if len(scored_candidates) > 1 else 1.0
+            if high_register and len(scored_candidates) >= 2:
+                base_ref = max(float(last_stable or 0.0), float(raw_frequency or 0.0))
+                upper_candidates = [
+                    item for item in scored_candidates
+                    if float(item[0]) > max(base_ref, 1e-9) * 1.06
+                    and _semi(float(item[0]), max(base_ref, 1e-9)) <= 7.2
+                    and float(item[2]) >= 0.16
+                ]
+                if upper_candidates:
+                    upper_f, upper_score, upper_conf = max(upper_candidates, key=lambda item: float(item[1]) + 0.25 * float(item[2]))
+                    chosen_is_low = bool(float(chosen_f) < max(base_ref, 1e-9) * 0.98)
+                    upper_competitive = bool(float(upper_score) >= float(top_score) - (0.20 if rising_transition else 0.10))
+                    if upper_competitive and (rising_transition or chosen_is_low):
+                        chosen_f = 0.82 * float(upper_f) + 0.18 * float(chosen_f) if float(chosen_f) < float(upper_f) else float(upper_f)
+                        chosen_conf = max(float(chosen_conf), float(upper_conf))
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_upper_rescue_pick'] = int(self._lfm_parse_diag.get('sep_upper_rescue_pick', 0)) + 1
+                        except Exception:
+                            pass
             pressure = max(0.0, min(1.0, (0.30 - score_margin) / 0.30)) if len(scored_candidates) > 1 else 0.0
             pressure_name = '_mon_lead_competition_pressure_ema' if preview_only else '_lead_competition_pressure_ema'
             try:
@@ -10769,7 +11255,7 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     blue_guard = 1.9
                 top_anchor_dev = _semi(float(top_f), float(anchor_hz))
-                if score_margin < blue_margin and top_anchor_dev > blue_guard:
+                if (not rising_transition) and score_margin < blue_margin and top_anchor_dev > blue_guard:
                     anchor_near_f, _, anchor_near_conf = min(scored_candidates, key=lambda it: _semi(float(it[0]), float(anchor_hz)))
                     chosen_f = float(anchor_near_f)
                     chosen_conf = float(anchor_near_conf)
@@ -10798,7 +11284,7 @@ class IntegratedAudioProcessor(QThread):
                     key=lambda it: min(_semi(float(it[0]), float(last_stable)), _semi(float(it[0]) * 2.0, float(last_stable)))
                 )
                 near_cont = min(_semi(float(near_f), float(last_stable)), _semi(float(near_f) * 2.0, float(last_stable)))
-                if (margin < hyst_margin) and (top_cont > hyst_hold_semi) and (near_cont + 0.35 < top_cont):
+                if (not (rising_transition and float(top_f) > float(last_stable) * 1.03)) and (margin < hyst_margin) and (top_cont > hyst_hold_semi) and (near_cont + 0.35 < top_cont):
                     chosen_f = float(near_f)
                     chosen_conf = float(near_conf)
                     try:
@@ -10824,7 +11310,7 @@ class IntegratedAudioProcessor(QThread):
                         pass
 
                 # 抗说唱扰动：主唱高音稳态时，若候选竞争优势弱且偏离锚点过大，则保持高音主线。
-                if anchor_hz > 0 and stable_count >= 3 and high_register:
+                if anchor_hz > 0 and stable_count >= 3 and high_register and (not rising_transition):
                     try:
                         weak_margin = float(getattr(self, '_lead_sep_rap_weak_margin', 0.40) or 0.40)
                     except Exception:
@@ -10852,7 +11338,7 @@ class IntegratedAudioProcessor(QThread):
 
                 # 高音锚点带宽锁定：主唱已形成稳定高音锚点时，将候选限制在可唱连续带宽内，
                 # 减少伴唱说唱造成的上下抖动（尤其是弱优势双候选拉扯场景）。
-                if anchor_hz > 0 and stable_count >= 4 and high_register:
+                if anchor_hz > 0 and stable_count >= 4 and high_register and (not rising_transition):
                     try:
                         band_down = float(getattr(self, '_lead_sep_anchor_band_down_semi', 1.8) or 1.8)
                     except Exception:
@@ -10881,7 +11367,7 @@ class IntegratedAudioProcessor(QThread):
                             pass
 
                 # 高音锚点下限保护：主唱稳定高音时限制单帧向下漂移，抑制说唱波动带偏。
-                if anchor_hz > 0 and stable_count >= 4 and high_register:
+                if anchor_hz > 0 and stable_count >= 4 and high_register and (not rising_transition):
                     try:
                         floor_down_semi = float(getattr(self, '_lead_sep_anchor_floor_down_semi', 1.1) or 1.1)
                     except Exception:
@@ -13804,6 +14290,9 @@ class ECGStylePitchVisualizer(QWidget):
         self._technique_last_frame_pitch = 0.0
         self._technique_last_frame_rate = 0.0
         self._offline_technique_service = None
+        self._chest_falsetto_model_bundle = None
+        self._last_chest_falsetto_model_error = ''
+        self._last_voice_type_debug = {}
         self._disable_realtime_vibrato_detection = False
         self._technique_visible_types = _technique_label_map()
 
@@ -30525,7 +31014,701 @@ class ECGStylePitchVisualizer(QWidget):
             events.append(event)
         return events
 
-    def analyze_technique_frames(self, frames: List[FrameFeatures]) -> Dict[str, Any]:
+    def _resolve_chest_falsetto_checkpoint_path(self) -> Optional[Path]:
+        for candidate in _CHEST_FALSETTO_CHECKPOINT_CANDIDATES:
+            try:
+                if Path(candidate).exists():
+                    return Path(candidate)
+            except Exception:
+                continue
+        return None
+
+    def _resolve_chest_falsetto_batch_infer_script_path(self) -> Optional[Path]:
+        candidate = project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'batch_infer_squeezenet_binary.py'
+        try:
+            return candidate if candidate.exists() else None
+        except Exception:
+            return None
+
+    def _resample_chest_falsetto_audio(self, audio: np.ndarray, sample_rate: int, target_sample_rate: int) -> np.ndarray:
+        y = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if y.size <= 0 or int(sample_rate) <= 0 or int(target_sample_rate) <= 0 or int(sample_rate) == int(target_sample_rate):
+            return y.astype(np.float32, copy=False)
+        try:
+            from scipy.signal import resample_poly  # type: ignore
+            g = math.gcd(int(sample_rate), int(target_sample_rate))
+            up = int(target_sample_rate) // max(1, g)
+            down = int(sample_rate) // max(1, g)
+            return np.asarray(resample_poly(y, up, down), dtype=np.float32)
+        except Exception:
+            pass
+        old_n = int(y.size)
+        new_n = max(1, int(round(old_n * float(target_sample_rate) / float(sample_rate))))
+        if old_n <= 1 or new_n <= 1:
+            return y.astype(np.float32, copy=False)
+        t_old = np.linspace(0.0, 1.0, old_n, endpoint=False, dtype=np.float32)
+        t_new = np.linspace(0.0, 1.0, new_n, endpoint=False, dtype=np.float32)
+        return np.asarray(np.interp(t_new, t_old, y), dtype=np.float32)
+
+    def _build_chest_falsetto_mel_image(self, audio_window: np.ndarray, torch_module: Any) -> Optional[np.ndarray]:
+        y = np.asarray(audio_window, dtype=np.float32).reshape(-1)
+        if y.size < 32:
+            return None
+        try:
+            n_fft = 1024
+            hop_length = 256
+            win_length = 1024
+            n_mels = 128
+            waveform = torch_module.as_tensor(y)
+            if int(waveform.numel()) < win_length:
+                waveform = torch_module.nn.functional.pad(waveform, (0, win_length - int(waveform.numel())))
+            window = torch_module.hann_window(win_length, dtype=torch_module.float32)
+            stft = torch_module.stft(
+                waveform,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                window=window,
+                center=True,
+                return_complex=True,
+            )
+            power = stft.abs().pow(2.0)
+            hz_to_mel = lambda value_hz: 2595.0 * math.log10(1.0 + float(value_hz) / 700.0)
+            mel_to_hz = lambda value_mel: 700.0 * (10.0 ** (float(value_mel) / 2595.0) - 1.0)
+            upper_hz = float(_CHEST_FALSETTO_TARGET_SR) * 0.5
+            mel_points = np.linspace(hz_to_mel(30.0), hz_to_mel(upper_hz), n_mels + 2, dtype=np.float32)
+            hz_points = np.asarray([mel_to_hz(float(item)) for item in mel_points], dtype=np.float32)
+            bins = np.floor((n_fft + 1) * hz_points / float(_CHEST_FALSETTO_TARGET_SR)).astype(np.int32)
+            bins = np.clip(bins, 0, n_fft // 2)
+            filterbank = np.zeros((n_mels, n_fft // 2 + 1), dtype=np.float32)
+            for mel_idx in range(1, n_mels + 1):
+                left = int(bins[mel_idx - 1])
+                center = int(bins[mel_idx])
+                right = int(bins[mel_idx + 1])
+                if center <= left:
+                    center = min(left + 1, n_fft // 2)
+                if right <= center:
+                    right = min(center + 1, n_fft // 2)
+                if center > left:
+                    filterbank[mel_idx - 1, left:center] = np.linspace(0.0, 1.0, max(center - left, 1), endpoint=False, dtype=np.float32)
+                if right > center:
+                    filterbank[mel_idx - 1, center:right] = np.linspace(1.0, 0.0, max(right - center, 1), endpoint=False, dtype=np.float32)
+            mel_filter = torch_module.from_numpy(filterbank)
+            mel_spec = torch_module.matmul(mel_filter, power)
+            mel_spec = torch_module.log10(torch_module.clamp(mel_spec, min=1e-10))
+            mel_spec = mel_spec - mel_spec.amin()
+            peak = float(mel_spec.amax()) if int(mel_spec.numel()) > 0 else 0.0
+            if peak > 0.0:
+                mel_spec = mel_spec / peak
+            mel_np = np.asarray(mel_spec.cpu().numpy(), dtype=np.float32)
+            return np.stack((mel_np, mel_np, mel_np), axis=0).astype(np.float32)
+        except Exception:
+            return None
+
+    def _run_chest_falsetto_external_inference(self, audio_windows: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
+        script_path = self._resolve_chest_falsetto_batch_infer_script_path()
+        checkpoint_path = self._resolve_chest_falsetto_checkpoint_path()
+        if script_path is None or checkpoint_path is None:
+            self._last_chest_falsetto_model_error = 'external_infer_missing_assets'
+            return None
+        if not audio_windows:
+            self._last_chest_falsetto_model_error = 'external_infer_no_windows'
+            return None
+        python_candidates: List[str] = []
+        env_python = str(os.environ.get('MIND_ECHO_TORCH_PYTHON', '') or '').strip()
+        if env_python:
+            python_candidates.append(env_python)
+        python_candidates.append('python')
+        try:
+            current_python = str(sys.executable or '').strip()
+            if current_python:
+                python_candidates.append(current_python)
+        except Exception:
+            pass
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for item in python_candidates:
+            key = str(item or '').strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(str(item))
+
+        import tempfile
+        import subprocess
+
+        windows = []
+        for item in audio_windows:
+            try:
+                windows.append(np.asarray(item, dtype=np.float32).reshape(-1))
+            except Exception:
+                continue
+        if not windows:
+            self._last_chest_falsetto_model_error = 'external_infer_no_valid_windows'
+            return None
+
+        with tempfile.TemporaryDirectory(prefix='mindecho_cf_') as temp_dir:
+            temp_root = Path(temp_dir)
+            input_npz = temp_root / 'windows.npz'
+            output_json = temp_root / 'result.json'
+            try:
+                np.savez_compressed(
+                    str(input_npz),
+                    windows=np.stack(windows, axis=0).astype(np.float32),
+                    sample_rate=np.asarray([_CHEST_FALSETTO_TARGET_SR], dtype=np.int32),
+                )
+            except Exception as exc:
+                self._last_chest_falsetto_model_error = f'external_infer_pack_failed:{type(exc).__name__}'
+                return None
+
+            last_error = 'external_infer_launch_failed'
+            for python_cmd in deduped:
+                try:
+                    completed = subprocess.run(
+                        [
+                            python_cmd,
+                            str(script_path),
+                            '--input-npz',
+                            str(input_npz),
+                            '--output-json',
+                            str(output_json),
+                            '--checkpoint',
+                            str(checkpoint_path),
+                            '--image-size',
+                            str(_CHEST_FALSETTO_IMAGE_SIZE),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                        check=False,
+                    )
+                except Exception as exc:
+                    last_error = f'external_infer_exec_failed:{type(exc).__name__}'
+                    continue
+                if completed.returncode != 0:
+                    stderr_text = str(completed.stderr or '').strip()
+                    last_error = f'external_infer_failed:{completed.returncode}'
+                    if stderr_text:
+                        last_error += f':{stderr_text.splitlines()[-1][:96]}'
+                    continue
+                try:
+                    payload = json.loads(output_json.read_text(encoding='utf-8'))
+                except Exception as exc:
+                    last_error = f'external_infer_parse_failed:{type(exc).__name__}'
+                    continue
+                if isinstance(payload, list):
+                    self._last_chest_falsetto_model_error = ''
+                    return payload
+                last_error = 'external_infer_bad_payload'
+            self._last_chest_falsetto_model_error = last_error
+            return None
+
+    def _get_chest_falsetto_model_bundle(self) -> Optional[Dict[str, Any]]:
+        checkpoint_path = self._resolve_chest_falsetto_checkpoint_path()
+        if checkpoint_path is None:
+            self._last_chest_falsetto_model_error = 'checkpoint_missing'
+            return None
+        try:
+            mtime = float(checkpoint_path.stat().st_mtime)
+        except Exception:
+            mtime = 0.0
+        cached = getattr(self, '_chest_falsetto_model_bundle', None)
+        if isinstance(cached, dict):
+            try:
+                if str(cached.get('path', '')) == str(checkpoint_path) and float(cached.get('mtime', -1.0)) == mtime:
+                    self._last_chest_falsetto_model_error = ''
+                    return cached
+            except Exception:
+                pass
+        torch, torch_error = _import_torch_safely()
+        if torch is None:
+            self._last_chest_falsetto_model_error = str(torch_error or 'torch_import_failed')
+            return None
+        device = torch.device('cpu')
+
+        def _build_torchvision_model():
+            from torchvision import models  # type: ignore
+            model_obj = models.squeezenet1_1(weights=None)
+            model_obj.classifier[1] = torch.nn.Conv2d(512, 2, kernel_size=1)
+            model_obj.num_classes = 2
+            return model_obj, 'torchvision'
+
+        def _build_torch_only_model():
+            nn = torch.nn
+
+            class _Fire(nn.Module):
+                def __init__(self, inplanes: int, squeeze_planes: int, expand1x1_planes: int, expand3x3_planes: int):
+                    super().__init__()
+                    self.squeeze = nn.Conv2d(inplanes, squeeze_planes, kernel_size=1)
+                    self.squeeze_activation = nn.ReLU(inplace=True)
+                    self.expand1x1 = nn.Conv2d(squeeze_planes, expand1x1_planes, kernel_size=1)
+                    self.expand1x1_activation = nn.ReLU(inplace=True)
+                    self.expand3x3 = nn.Conv2d(squeeze_planes, expand3x3_planes, kernel_size=3, padding=1)
+                    self.expand3x3_activation = nn.ReLU(inplace=True)
+
+                def forward(self, x):
+                    x = self.squeeze_activation(self.squeeze(x))
+                    return torch.cat([
+                        self.expand1x1_activation(self.expand1x1(x)),
+                        self.expand3x3_activation(self.expand3x3(x)),
+                    ], 1)
+
+            class _SqueezeNet(nn.Module):
+                def __init__(self, num_classes: int = 2):
+                    super().__init__()
+                    self.num_classes = num_classes
+                    self.features = nn.Sequential(
+                        nn.Conv2d(3, 64, kernel_size=3, stride=2),
+                        nn.ReLU(inplace=True),
+                        nn.MaxPool2d(kernel_size=3, stride=2, ceil_mode=True),
+                        _Fire(64, 16, 64, 64),
+                        _Fire(128, 16, 64, 64),
+                        nn.MaxPool2d(kernel_size=3, stride=2, ceil_mode=True),
+                        _Fire(128, 32, 128, 128),
+                        _Fire(256, 32, 128, 128),
+                        nn.MaxPool2d(kernel_size=3, stride=2, ceil_mode=True),
+                        _Fire(256, 48, 192, 192),
+                        _Fire(384, 48, 192, 192),
+                        _Fire(384, 64, 256, 256),
+                        _Fire(512, 64, 256, 256),
+                    )
+                    self.classifier = nn.Sequential(
+                        nn.Dropout(p=0.5),
+                        nn.Conv2d(512, num_classes, kernel_size=1),
+                        nn.ReLU(inplace=True),
+                        nn.AdaptiveAvgPool2d((1, 1)),
+                    )
+
+                def forward(self, x):
+                    x = self.features(x)
+                    x = self.classifier(x)
+                    return torch.flatten(x, 1)
+
+            return _SqueezeNet(num_classes=2), 'torch_only_fallback'
+
+        model_backend = 'unknown'
+        try:
+            model, model_backend = _build_torchvision_model()
+        except Exception as exc:
+            try:
+                model, model_backend = _build_torch_only_model()
+            except Exception as fallback_exc:
+                self._last_chest_falsetto_model_error = f'model_build_failed:{type(exc).__name__}:{type(fallback_exc).__name__}'
+                return None
+        try:
+            checkpoint = torch.load(str(checkpoint_path), map_location=device)
+        except Exception as exc:
+            self._last_chest_falsetto_model_error = f'checkpoint_load_failed:{type(exc).__name__}'
+            return None
+        state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        try:
+            model.load_state_dict(state_dict)
+        except Exception as exc:
+            self._last_chest_falsetto_model_error = f'state_dict_load_failed:{type(exc).__name__}'
+            return None
+        model.to(device)
+        model.eval()
+        bundle = {
+            'path': str(checkpoint_path),
+            'mtime': mtime,
+            'torch': torch,
+            'device': device,
+            'model': model,
+            'backend': model_backend,
+            'mean': torch.tensor(_CHEST_FALSETTO_MEAN, dtype=torch.float32).view(3, 1, 1),
+            'std': torch.tensor(_CHEST_FALSETTO_STD, dtype=torch.float32).view(3, 1, 1),
+        }
+        self._last_chest_falsetto_model_error = ''
+        self._chest_falsetto_model_bundle = bundle
+        return bundle
+
+    def _build_chest_falsetto_window_tensor(self, audio_window: np.ndarray, bundle: Dict[str, Any]) -> Optional[Any]:
+        try:
+            import torch.nn.functional as torch_F  # type: ignore
+        except Exception:
+            return None
+        torch = bundle.get('torch')
+        if torch is None:
+            return None
+        rgb = self._build_chest_falsetto_mel_image(audio_window, torch)
+        if rgb is None:
+            return None
+        tensor = torch.from_numpy(rgb).unsqueeze(0)
+        tensor = torch_F.interpolate(
+            tensor,
+            size=(_CHEST_FALSETTO_IMAGE_SIZE, _CHEST_FALSETTO_IMAGE_SIZE),
+            mode='bilinear',
+            align_corners=False,
+        ).squeeze(0)
+        mean = bundle.get('mean')
+        std = bundle.get('std')
+        if mean is None or std is None:
+            return tensor
+        return (tensor - mean) / std
+
+    def _smooth_chest_falsetto_predictions(self, predictions: List[Dict[str, Any]], hop_s: float) -> List[Dict[str, Any]]:
+        if len(predictions) < 3:
+            return predictions
+        smoothed = [dict(item) for item in predictions]
+        for idx in range(1, len(smoothed) - 1):
+            prev_item = smoothed[idx - 1]
+            cur_item = smoothed[idx]
+            next_item = smoothed[idx + 1]
+            prev_type = str(prev_item.get('event_type', '') or '')
+            cur_type = str(cur_item.get('event_type', '') or '')
+            next_type = str(next_item.get('event_type', '') or '')
+            if prev_type != next_type or prev_type == cur_type:
+                continue
+            try:
+                gap_left = float(cur_item.get('center_time', 0.0) or 0.0) - float(prev_item.get('center_time', 0.0) or 0.0)
+                gap_right = float(next_item.get('center_time', 0.0) or 0.0) - float(cur_item.get('center_time', 0.0) or 0.0)
+            except Exception:
+                continue
+            if gap_left > hop_s * 1.8 or gap_right > hop_s * 1.8:
+                continue
+            prev_margin = float(prev_item.get('probability_margin', 0.0) or 0.0)
+            next_margin = float(next_item.get('probability_margin', 0.0) or 0.0)
+            cur_margin = float(cur_item.get('probability_margin', 0.0) or 0.0)
+            if cur_margin > max(prev_margin, next_margin) * 1.12:
+                continue
+            cur_item['event_type'] = prev_type
+            cur_item['voice_type'] = prev_item.get('voice_type', prev_type)
+            cur_item['chest_prob'] = 0.5 * (float(prev_item.get('chest_prob', 0.0) or 0.0) + float(next_item.get('chest_prob', 0.0) or 0.0))
+            cur_item['falsetto_prob'] = 0.5 * (float(prev_item.get('falsetto_prob', 0.0) or 0.0) + float(next_item.get('falsetto_prob', 0.0) or 0.0))
+            cur_item['confidence'] = max(float(cur_item.get('confidence', 0.0) or 0.0), 0.5 * (float(prev_item.get('confidence', 0.0) or 0.0) + float(next_item.get('confidence', 0.0) or 0.0)))
+            cur_item['probability_margin'] = abs(float(cur_item.get('chest_prob', 0.0) or 0.0) - float(cur_item.get('falsetto_prob', 0.0) or 0.0))
+        return smoothed
+
+    def _voice_prediction_accepted(self, confidence: float, probability_margin: float, *, relaxed: bool = False) -> bool:
+        if relaxed:
+            return confidence >= 0.51 and probability_margin >= 0.025
+        return confidence >= 0.58 and probability_margin >= 0.08
+
+    def _build_offline_chest_falsetto_events(
+        self,
+        frames: List[FrameFeatures],
+        audio_samples: Optional[np.ndarray] = None,
+        sample_rate: Optional[int] = None,
+    ) -> List[VoiceTypeEvent]:
+        self._last_voice_type_debug = {
+            'model_ready': False,
+            'candidate_windows': 0,
+            'predicted_windows': 0,
+            'accepted_windows': 0,
+            'relaxed_used': False,
+            'reason': '',
+        }
+        if not (self._technique_type_selected('chest_voice') or self._technique_type_selected('falsetto')):
+            self._last_voice_type_debug['reason'] = 'not_selected'
+            return []
+        if audio_samples is None or sample_rate is None:
+            self._last_voice_type_debug['reason'] = 'missing_audio'
+            return []
+        bundle = self._get_chest_falsetto_model_bundle()
+        if bundle:
+            self._last_voice_type_debug['model_ready'] = True
+            try:
+                self._last_voice_type_debug['backend'] = str(bundle.get('backend', '') or '')
+            except Exception:
+                pass
+        torch = bundle.get('torch') if isinstance(bundle, dict) else None
+        model = bundle.get('model') if isinstance(bundle, dict) else None
+        device = bundle.get('device') if isinstance(bundle, dict) else None
+        if bundle is not None and (torch is None or model is None or device is None):
+            self._last_voice_type_debug['reason'] = 'model_bundle_incomplete'
+            return []
+
+        audio = np.asarray(audio_samples, dtype=np.float32).reshape(-1)
+        if audio.size < 64:
+            self._last_voice_type_debug['reason'] = 'audio_too_short'
+            return []
+        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+        try:
+            if int(sample_rate) != _CHEST_FALSETTO_TARGET_SR:
+                audio = self._resample_chest_falsetto_audio(audio, int(sample_rate), _CHEST_FALSETTO_TARGET_SR)
+        except Exception:
+            self._last_voice_type_debug['reason'] = 'resample_failed'
+            return []
+        if audio.size < 64:
+            self._last_voice_type_debug['reason'] = 'audio_too_short_after_resample'
+            return []
+
+        valid_frames: List[FrameFeatures] = []
+        for item in list(frames or []):
+            if not isinstance(item, FrameFeatures):
+                continue
+            if bool(getattr(item, 'preview_only', False)):
+                continue
+            valid_frames.append(item)
+        if not valid_frames:
+            self._last_voice_type_debug['reason'] = 'no_valid_frames'
+            return []
+        valid_frames = sorted(valid_frames, key=lambda item: float(getattr(item, 'timeline_time', 0.0) or 0.0))
+
+        times = np.asarray([float(getattr(item, 'timeline_time', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        confidences = np.asarray([float(getattr(item, 'confidence', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        has_pitch = np.asarray([bool(getattr(item, 'has_pitch', False)) for item in valid_frames], dtype=bool)
+        rms_values = np.asarray([float(getattr(item, 'audio_rms', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        pitches = np.asarray([float(getattr(item, 'display_frequency_hz', 0.0) or getattr(item, 'detected_frequency_hz', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        voiced_mask = np.logical_and(has_pitch, confidences >= 0.34)
+        stable_mask = np.logical_and(has_pitch, confidences >= 0.50)
+
+        total_duration = max(float(audio.size) / float(_CHEST_FALSETTO_TARGET_SR), float(times[-1] if times.size else 0.0))
+        window_s = float(_CHEST_FALSETTO_WINDOW_S)
+        hop_s = float(_CHEST_FALSETTO_HOP_S)
+        window_samples = max(1, int(round(window_s * _CHEST_FALSETTO_TARGET_SR)))
+        hop_samples = max(1, int(round(hop_s * _CHEST_FALSETTO_TARGET_SR)))
+
+        candidate_windows: List[Dict[str, Any]] = []
+        tensors = []
+        audio_windows: List[np.ndarray] = []
+        max_start = max(0, int(audio.size) - window_samples)
+        if max_start <= 0:
+            candidate_starts = [0]
+        else:
+            candidate_starts = list(range(0, max_start + 1, hop_samples))
+            if candidate_starts[-1] != max_start:
+                candidate_starts.append(max_start)
+
+        for sample_start in candidate_starts:
+            sample_end = min(int(audio.size), int(sample_start + window_samples))
+            window = np.asarray(audio[sample_start:sample_end], dtype=np.float32)
+            if window.size < window_samples:
+                padded = np.zeros(window_samples, dtype=np.float32)
+                padded[:window.size] = window
+                window = padded
+            start_time = float(sample_start) / float(_CHEST_FALSETTO_TARGET_SR)
+            end_time = start_time + window_s
+            frame_mask = np.logical_and(times >= start_time, times < end_time)
+            frame_count = int(np.count_nonzero(frame_mask))
+            if frame_count < 2:
+                continue
+            voiced_ratio = float(np.mean(voiced_mask[frame_mask])) if frame_count > 0 else 0.0
+            stable_ratio = float(np.mean(stable_mask[frame_mask])) if frame_count > 0 else 0.0
+            mean_rms = float(np.mean(rms_values[frame_mask])) if frame_count > 0 else 0.0
+            if voiced_ratio < 0.17 or stable_ratio < 0.03 or mean_rms < 0.00008:
+                continue
+            pitch_slice = pitches[frame_mask]
+            positive_pitch = pitch_slice[pitch_slice > 0.0]
+            mean_pitch_hz = float(np.mean(positive_pitch)) if positive_pitch.size else 0.0
+            candidate_meta = {
+                'start_time': start_time,
+                'end_time': min(total_duration, end_time),
+                'center_time': start_time + 0.5 * window_s,
+                'voiced_ratio': voiced_ratio,
+                'stable_ratio': stable_ratio,
+                'mean_rms': mean_rms,
+                'mean_pitch_hz': mean_pitch_hz,
+            }
+            if bundle is not None:
+                tensor = self._build_chest_falsetto_window_tensor(window, bundle)
+                if tensor is None:
+                    continue
+                candidate_windows.append(candidate_meta)
+                tensors.append(tensor)
+            else:
+                candidate_windows.append(candidate_meta)
+                audio_windows.append(np.asarray(window, dtype=np.float32))
+
+        self._last_voice_type_debug['candidate_windows'] = len(candidate_windows)
+
+        if not candidate_windows or ((bundle is not None and not tensors) or (bundle is None and not audio_windows)):
+            self._last_voice_type_debug['reason'] = 'no_candidate_windows'
+            return []
+
+        all_predictions: List[Dict[str, Any]] = []
+        predictions: List[Dict[str, Any]] = []
+        if bundle is not None:
+            batch_size = int(_CHEST_FALSETTO_BATCH_SIZE)
+            with torch.no_grad():
+                for start_idx in range(0, len(tensors), batch_size):
+                    batch_tensors = tensors[start_idx:start_idx + batch_size]
+                    try:
+                        batch = torch.stack(batch_tensors).to(device)
+                        logits = model(batch)
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    except Exception:
+                        continue
+                    for offset, prob in enumerate(probs):
+                        chest_prob = float(prob[0])
+                        falsetto_prob = float(prob[1])
+                        confidence = max(chest_prob, falsetto_prob)
+                        probability_margin = abs(chest_prob - falsetto_prob)
+                        event_type = 'chest_voice' if chest_prob >= falsetto_prob else 'falsetto'
+                        record = dict(candidate_windows[start_idx + offset])
+                        record.update({
+                            'event_type': event_type,
+                            'voice_type': 'chest' if event_type == 'chest_voice' else 'falsetto',
+                            'chest_prob': chest_prob,
+                            'falsetto_prob': falsetto_prob,
+                            'confidence': confidence,
+                            'probability_margin': probability_margin,
+                        })
+                        all_predictions.append(record)
+                        if not self._technique_type_selected(event_type):
+                            continue
+                        if not self._voice_prediction_accepted(confidence, probability_margin, relaxed=False):
+                            continue
+                        predictions.append(record)
+        else:
+            external_results = self._run_chest_falsetto_external_inference(audio_windows)
+            if external_results is None:
+                self._last_voice_type_debug['reason'] = str(getattr(self, '_last_chest_falsetto_model_error', '') or 'model_unavailable')
+                return []
+            self._last_voice_type_debug['model_ready'] = True
+            self._last_voice_type_debug['backend'] = 'external_python'
+            for idx, prob in enumerate(list(external_results or [])):
+                if idx >= len(candidate_windows):
+                    break
+                try:
+                    chest_prob = float(prob.get('chest_prob', 0.0) or 0.0)
+                    falsetto_prob = float(prob.get('falsetto_prob', 0.0) or 0.0)
+                except Exception:
+                    continue
+                confidence = max(chest_prob, falsetto_prob)
+                probability_margin = abs(chest_prob - falsetto_prob)
+                event_type = 'chest_voice' if chest_prob >= falsetto_prob else 'falsetto'
+                record = dict(candidate_windows[idx])
+                record.update({
+                    'event_type': event_type,
+                    'voice_type': 'chest' if event_type == 'chest_voice' else 'falsetto',
+                    'chest_prob': chest_prob,
+                    'falsetto_prob': falsetto_prob,
+                    'confidence': confidence,
+                    'probability_margin': probability_margin,
+                })
+                all_predictions.append(record)
+                if not self._technique_type_selected(event_type):
+                    continue
+                if not self._voice_prediction_accepted(confidence, probability_margin, relaxed=False):
+                    continue
+                predictions.append(record)
+
+        self._last_voice_type_debug['predicted_windows'] = len(all_predictions)
+
+        if (not predictions) and all_predictions:
+            relaxed_predictions = []
+            for record in all_predictions:
+                event_type = str(record.get('event_type', '') or '')
+                if not self._technique_type_selected(event_type):
+                    continue
+                if not self._voice_prediction_accepted(
+                    float(record.get('confidence', 0.0) or 0.0),
+                    float(record.get('probability_margin', 0.0) or 0.0),
+                    relaxed=True,
+                ):
+                    continue
+                relaxed_predictions.append(record)
+            if relaxed_predictions:
+                predictions = relaxed_predictions
+                self._last_voice_type_debug['relaxed_used'] = True
+
+        if not predictions:
+            self._last_voice_type_debug['reason'] = 'no_prediction_passed'
+            return []
+
+        self._last_voice_type_debug['accepted_windows'] = len(predictions)
+
+        predictions = sorted(predictions, key=lambda item: float(item.get('center_time', 0.0) or 0.0))
+        predictions = self._smooth_chest_falsetto_predictions(predictions, hop_s)
+        checkpoint_label = ''
+        try:
+            if isinstance(bundle, dict):
+                checkpoint_label = str(bundle.get('path', '') or '')
+            else:
+                checkpoint_label = str(self._resolve_chest_falsetto_checkpoint_path() or '')
+        except Exception:
+            checkpoint_label = ''
+
+        runs: List[List[Dict[str, Any]]] = []
+        current_run: List[Dict[str, Any]] = []
+        for item in predictions:
+            if not current_run:
+                current_run = [item]
+                continue
+            prev_item = current_run[-1]
+            same_type = str(prev_item.get('event_type', '') or '') == str(item.get('event_type', '') or '')
+            gap = float(item.get('center_time', 0.0) or 0.0) - float(prev_item.get('center_time', 0.0) or 0.0)
+            if same_type and gap <= hop_s * 1.8:
+                current_run.append(item)
+                continue
+            runs.append(current_run)
+            current_run = [item]
+        if current_run:
+            runs.append(current_run)
+
+        events: List[VoiceTypeEvent] = []
+        for idx, run in enumerate(runs):
+            if not run:
+                continue
+            event_type = str(run[0].get('event_type', '') or '')
+            first_center = float(run[0].get('center_time', 0.0) or 0.0)
+            last_center = float(run[-1].get('center_time', 0.0) or 0.0)
+            start_time = max(0.0, first_center - window_s * 0.5)
+            end_time = min(total_duration, last_center + window_s * 0.5)
+            if idx > 0 and runs[idx - 1]:
+                prev_center = float(runs[idx - 1][-1].get('center_time', 0.0) or 0.0)
+                start_time = max(start_time, 0.5 * (prev_center + first_center))
+            if idx + 1 < len(runs) and runs[idx + 1]:
+                next_center = float(runs[idx + 1][0].get('center_time', 0.0) or 0.0)
+                end_time = min(end_time, 0.5 * (last_center + next_center))
+            if end_time <= start_time:
+                continue
+            frame_mask = np.logical_and(times >= start_time, times <= end_time)
+            frame_count = int(np.count_nonzero(frame_mask))
+            if frame_count <= 0:
+                continue
+            voiced_ratio = float(np.mean(voiced_mask[frame_mask])) if frame_count > 0 else 0.0
+            pitch_slice = pitches[frame_mask]
+            positive_pitch = pitch_slice[pitch_slice > 0.0]
+            mean_pitch_hz = float(np.mean(positive_pitch)) if positive_pitch.size else float(np.mean([float(item.get('mean_pitch_hz', 0.0) or 0.0) for item in run]))
+            chest_prob = float(np.mean([float(item.get('chest_prob', 0.0) or 0.0) for item in run]))
+            falsetto_prob = float(np.mean([float(item.get('falsetto_prob', 0.0) or 0.0) for item in run]))
+            confidence = float(np.mean([float(item.get('confidence', 0.0) or 0.0) for item in run]))
+            probability_margin = float(np.mean([float(item.get('probability_margin', 0.0) or 0.0) for item in run]))
+            margin_strength = max(0.0, min(1.0, probability_margin / 0.35))
+            strength = max(0.0, min(1.0, confidence * 0.62 + margin_strength * 0.38))
+            label_text, color = self._get_technique_event_style(event_type)
+            event = VoiceTypeEvent(
+                event_type=event_type,
+                start_time=float(start_time),
+                end_time=float(end_time),
+                confidence=confidence,
+                strength=strength,
+                center_time=0.5 * (float(start_time) + float(end_time)),
+                duration=max(0.0, float(end_time) - float(start_time)),
+                source_layer='offline_squeezenet',
+                display_label=label_text,
+                display_color=color,
+                feature_snapshot={
+                    'mean_pitch_hz': mean_pitch_hz,
+                    'voiced_ratio': voiced_ratio,
+                    'chest_prob': chest_prob,
+                    'falsetto_prob': falsetto_prob,
+                },
+                display_payload={
+                    'model': 'squeezenet_binary_mel_safe_v2',
+                    'window_s': window_s,
+                    'hop_s': hop_s,
+                    'checkpoint': checkpoint_label,
+                },
+                voice_type='chest' if event_type == 'chest_voice' else 'falsetto',
+                mean_pitch_hz=mean_pitch_hz,
+                voiced_ratio=voiced_ratio,
+                chest_prob=chest_prob,
+                falsetto_prob=falsetto_prob,
+                probability_margin=probability_margin,
+                window_count=len(run),
+            )
+            events.append(event)
+        return events
+
+    def analyze_technique_frames(
+        self,
+        frames: List[FrameFeatures],
+        audio_samples: Optional[np.ndarray] = None,
+        sample_rate: Optional[int] = None,
+    ) -> Dict[str, Any]:
         self._reset_technique_tracking(clear_events=True)
         summary = {
             'event_count': 0,
@@ -30536,6 +31719,7 @@ class ECGStylePitchVisualizer(QWidget):
             self._refresh_technique_artists(force=True)
             return summary
         offline_vibrato_events = self._build_offline_vibrato_events(frames)
+        offline_voice_events = self._build_offline_chest_falsetto_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
         last_feature = None
         prev_vibrato_guard = bool(getattr(self, '_disable_realtime_vibrato_detection', False))
         self._disable_realtime_vibrato_detection = bool(offline_vibrato_events)
@@ -30561,7 +31745,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             min_conf = 0.55
         filtered_events = []
-        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_vibrato_events or [])
+        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_vibrato_events or []) + list(offline_voice_events or [])
         for event in all_events:
             try:
                 if float(getattr(event, 'confidence', 0.0) or 0.0) < min_conf:
@@ -30602,6 +31786,8 @@ class ECGStylePitchVisualizer(QWidget):
             'slide': ('滑音', '#FFB74D'),
             'vibrato': ('颤音', '#BA68C8'),
             'breathy_phonation': ('气声', '#80CBC4'),
+            'chest_voice': ('真声', '#FF8A65'),
+            'falsetto': ('假声', '#4DB6AC'),
         }
         return mapping.get(str(event_type or ''), (str(event_type or '技巧'), '#90CAF9'))
 
@@ -30683,6 +31869,13 @@ class ECGStylePitchVisualizer(QWidget):
                 target.mean_rms = max(float(target.mean_rms or 0.0), float(incoming.mean_rms or 0.0)) or target.mean_rms or incoming.mean_rms
                 target.voiced_soft_score = max(float(target.voiced_soft_score or 0.0), float(incoming.voiced_soft_score or 0.0))
                 target.breathy_score = max(float(target.breathy_score or 0.0), float(incoming.breathy_score or 0.0))
+            elif isinstance(target, VoiceTypeEvent) and isinstance(incoming, VoiceTypeEvent):
+                target.mean_pitch_hz = incoming.mean_pitch_hz or target.mean_pitch_hz
+                target.voiced_ratio = max(float(target.voiced_ratio or 0.0), float(incoming.voiced_ratio or 0.0))
+                target.chest_prob = max(float(target.chest_prob or 0.0), float(incoming.chest_prob or 0.0))
+                target.falsetto_prob = max(float(target.falsetto_prob or 0.0), float(incoming.falsetto_prob or 0.0))
+                target.probability_margin = max(float(target.probability_margin or 0.0), float(incoming.probability_margin or 0.0))
+                target.window_count = max(int(target.window_count or 0), int(incoming.window_count or 0))
         except Exception:
             pass
         return target
@@ -30790,6 +31983,12 @@ class ECGStylePitchVisualizer(QWidget):
             min_d = max(0.18, float(getattr(cfg, 'min_breathy_duration_s', 0.10) or 0.10)) if cfg is not None else 0.18
             breathy = float(getattr(event, 'breathy_score', 0.0) or 0.0)
             return duration >= min_d and breathy >= 0.34 and strength >= 0.50
+        if event_type in ('chest_voice', 'falsetto'):
+            voiced_ratio = float(getattr(event, 'voiced_ratio', 0.0) or 0.0)
+            prob_margin = float(getattr(event, 'probability_margin', 0.0) or 0.0)
+            window_count = int(getattr(event, 'window_count', 0) or 0)
+            strong_single = duration >= 0.18 and confidence >= 0.68 and prob_margin >= 0.12
+            return duration >= 0.18 and voiced_ratio >= 0.24 and confidence >= 0.54 and strength >= 0.50 and (window_count >= 2 or strong_single)
         return duration >= 0.10 and confidence >= 0.58
 
     def _technique_event_spacing(self, event_type: str) -> float:
@@ -30799,6 +31998,8 @@ class ECGStylePitchVisualizer(QWidget):
             'slide': 0.46,
             'vibrato': 0.90,
             'breathy_phonation': 0.65,
+            'chest_voice': 0.26,
+            'falsetto': 0.26,
         }
         return float(spacing_map.get(str(event_type or ''), 0.35))
 
@@ -30886,6 +32087,8 @@ class ECGStylePitchVisualizer(QWidget):
             'slide': 0.08,
             'vibrato': 0.06,
             'breathy_phonation': 0.07,
+            'chest_voice': 0.06,
+            'falsetto': 0.06,
         }
         return float(alpha_map.get(str(event_type or ''), 0.07))
 
@@ -53090,7 +54293,32 @@ class IntegratedRecordingInterface(QMainWindow):
             result['reason'] = '技巧识别当前仅支持普通模式录音后的离线分析'
             return result
         frames = list(getattr(self, '_technique_recorded_frames', []) or [])
-        summary = viz.analyze_technique_frames(frames)
+        audio_samples = None
+        sample_rate = None
+        voice_debug = {}
+        try:
+            selected_types = set(_normalize_technique_selection(getattr(state, 'selected_types', []) or []))
+        except Exception:
+            selected_types = set()
+        if selected_types.intersection({'chest_voice', 'falsetto'}):
+            try:
+                raw_audio = getattr(self, 'audio_buffer', None)
+                if raw_audio is None or (hasattr(raw_audio, '__len__') and len(raw_audio) <= 0):
+                    processor = getattr(self, 'audio_processor', None)
+                    if processor is not None:
+                        raw_audio = getattr(processor, 'audio_buffer', raw_audio)
+                sr_value = int(self._effective_sample_rate())
+                if raw_audio is not None and sr_value > 0 and (not hasattr(raw_audio, '__len__') or len(raw_audio) > 0):
+                    audio_samples = np.asarray(raw_audio, dtype=np.float32)
+                    sample_rate = sr_value
+            except Exception:
+                audio_samples = None
+                sample_rate = None
+        summary = viz.analyze_technique_frames(frames, audio_samples=audio_samples, sample_rate=sample_rate)
+        try:
+            voice_debug = dict(getattr(viz, '_last_voice_type_debug', {}) or {})
+        except Exception:
+            voice_debug = {}
         counts = dict(summary.get('counts', {}) or {}) if isinstance(summary, dict) else {}
         event_count = int(summary.get('event_count', 0) or 0) if isinstance(summary, dict) else 0
         duration = float(summary.get('duration', 0.0) or 0.0) if isinstance(summary, dict) else 0.0
@@ -53136,6 +54364,22 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
         try:
+            voice_status_suffix = ''
+            if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
+                reason = str(voice_debug.get('reason', '') or '')
+                try:
+                    candidate_windows = int(voice_debug.get('candidate_windows', 0) or 0)
+                    predicted_windows = int(voice_debug.get('predicted_windows', 0) or 0)
+                    accepted_windows = int(voice_debug.get('accepted_windows', 0) or 0)
+                except Exception:
+                    candidate_windows = 0
+                    predicted_windows = 0
+                    accepted_windows = 0
+                voice_status_suffix = (
+                    f"，真假声候选 {candidate_windows} / 模型 {predicted_windows} / 通过 {accepted_windows}"
+                )
+                if reason:
+                    voice_status_suffix += f"，原因 {reason}"
             if event_count > 0:
                 joined = '，'.join(f"{viz._technique_visible_types.get(k, k)} {v}" for k, v in counts.items() if v)
                 visible_count = int(visibility.get('visible', 0) or 0)
@@ -53172,9 +54416,9 @@ class IntegratedRecordingInterface(QMainWindow):
                         f"，已绘制线 {int(debug_info.get('regions', 0) or 0)}"
                         f"，标签 {int(debug_info.get('labels', 0) or 0)}"
                     )
-                self.system_status_label.setText(f"状态: 技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}{suffix}{debug_suffix}")
+                self.system_status_label.setText(f"状态: 技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}{suffix}{debug_suffix}{voice_status_suffix}")
             else:
-                self.system_status_label.setText('状态: 技巧识别完成，当前录音未检测到需要标注的技巧区间')
+                self.system_status_label.setText(f'状态: 技巧识别完成，当前录音未检测到需要标注的技巧区间{voice_status_suffix}')
         except Exception:
             pass
         if show_feedback:
@@ -53207,6 +54451,18 @@ class IntegratedRecordingInterface(QMainWindow):
                                 pass
                 else:
                     msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
+                    if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
+                        reason = str(voice_debug.get('reason', '') or '')
+                        if reason:
+                            msg += f'\n真假声调试: {reason}'
+                        try:
+                            msg += (
+                                f"\n候选窗口: {int(voice_debug.get('candidate_windows', 0) or 0)}"
+                                f" / 模型窗口: {int(voice_debug.get('predicted_windows', 0) or 0)}"
+                                f" / 通过窗口: {int(voice_debug.get('accepted_windows', 0) or 0)}"
+                            )
+                        except Exception:
+                            pass
                 QMessageBox.information(self, '技巧识别', msg)
             except Exception:
                 pass
@@ -53261,7 +54517,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         selected_types = set(selected_types)
 
-        intro = QLabel('技巧识别会按当前已开放的项目做普通模式录音后的离线分区标注。现在默认只开放“换气”和“颤音”，其它技巧先按分类展示为待开发。')
+        intro = QLabel('技巧识别会按当前已开放的项目做普通模式录音后的离线分区标注。当前可用项目为“换气”“颤音”和“真假声区间”，其它技巧先按分类展示为待开发。')
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -53290,7 +54546,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 if implemented:
                     option_checks[value] = chk
                     selectable_option_defs.append((value, label))
-        dev_note = QLabel('当前已开放：换气、颤音。其它项目暂不参与识别和标注，后续可逐项接入。')
+        dev_note = QLabel('当前已开放：换气、颤音、真声、假声。其它项目暂不参与识别和标注，后续可逐项接入。')
         dev_note.setWordWrap(True)
         dev_note.setStyleSheet('color: #9FB5C9; font-size: 12px; margin-top: 4px;')
         group_layout.addWidget(dev_note)
@@ -57854,6 +59110,15 @@ class IntegratedRecordingInterface(QMainWindow):
             # 更新内部总数（若需要后续 UI 刷新）
             self.total_pitches_detected = max(self.total_pitches_detected, total_pitches)
             self.recording_duration = max(self.recording_duration, duration)
+            try:
+                local_audio_buf = getattr(self, 'audio_buffer', None)
+                if local_audio_buf is None or (hasattr(local_audio_buf, '__len__') and len(local_audio_buf) <= 0):
+                    processor = getattr(self, 'audio_processor', None)
+                    processor_audio_buf = getattr(processor, 'audio_buffer', None) if processor is not None else None
+                    if processor_audio_buf is not None and (not hasattr(processor_audio_buf, '__len__') or len(processor_audio_buf) > 0):
+                        self.audio_buffer = list(processor_audio_buf)
+            except Exception:
+                pass
             self._technique_recording_ready = bool(len(list(getattr(self, '_technique_recorded_frames', []) or [])) >= 8)
             self._technique_last_recording_duration = float(duration)
             try:

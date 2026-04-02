@@ -1,0 +1,10 @@
+rename.sh
+test.*
+*.wav
+*.jpg
+data/audio/*
+data/chestfalsetto_data/*
+data/failist.txt
+*__pycache__*
+*.pdf
+test *.py
