@@ -14518,12 +14518,29 @@ class ECGStylePitchVisualizer(QWidget):
         self._draw_timing_samples = deque(maxlen=120)
         self._diag_last_perf_report = 0
         self._head_points_scatter = None
+        self._front_realtime_line = None
+        self._front_realtime_line_enabled = bool(getattr(self, '_front_realtime_line_enabled', False))
         self._head_points_window_s = 0.48
         self._head_points_capacity = 144
         self._head_points_window_s_normal = 0.34
         self._head_points_capacity_normal = 84
+        self._front_realtime_window_s = 0.62
+        self._front_realtime_window_s_normal = 0.42
+        self._front_realtime_max_points = 144
+        self._front_realtime_max_points_normal = 84
+        self._normal_mode_front_guides_interval = getattr(self, '_normal_mode_front_guides_interval', 0.032)
         self._head_points_update_interval = 0.016
         self._head_points_update_interval_normal = 0.028
+        self._head_points_realtime_interval = getattr(self, '_head_points_realtime_interval', 0.012)
+        self._head_points_realtime_interval_normal = getattr(self, '_head_points_realtime_interval_normal', 0.010)
+        self._head_points_draw_min_interval = getattr(self, '_head_points_draw_min_interval', 0.012)
+        self._head_points_draw_min_interval_normal = getattr(self, '_head_points_draw_min_interval_normal', 0.010)
+        self._head_points_visual_bucket = getattr(self, '_head_points_visual_bucket', 0.018)
+        self._head_points_visual_bucket_normal = getattr(self, '_head_points_visual_bucket_normal', 0.012)
+        self._head_points_dirty = False
+        self._front_realtime_dirty = False
+        self._last_head_points_refresh_wall = 0.0
+        self._last_head_points_visual_key = None
         self._normal_mode_light_draw_min_interval = getattr(self, '_normal_mode_light_draw_min_interval', 0.018)
         self._normal_mode_light_ui_interval = getattr(self, '_normal_mode_light_ui_interval', 0.045)
         self._head_points_dense_threshold = 42
@@ -35722,6 +35739,8 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     if hasattr(self, '_head_points'):
                         self._head_points.append((global_time, y_pos))
+                        self._head_points_dirty = True
+                        self._front_realtime_dirty = True
                         # 清理窗口外数据，并控制普通模式头部细点预算，避免 scatter 高频刷新压主线程。
                         cutoff = global_time - float(getattr(self, '_head_points_window_s', 0.48))
                         cap = int(getattr(self, '_head_points_capacity', 144) or 144)
@@ -35736,14 +35755,20 @@ class ECGStylePitchVisualizer(QWidget):
                             mode_text = self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式'
                         except Exception:
                             mode_text = '普通模式'
+                        normal_realtime_mode = bool(
+                            mode_text == '普通模式'
+                            and getattr(self, 'is_recording_active', False)
+                            and getattr(self, '_lfm_ctrl', None) is None
+                            and (not bool(getattr(self, '_in_onepass_mode', False)))
+                        )
                         try:
                             head_update_interval = float(getattr(self, '_head_points_update_interval', 0.016) or 0.016)
-                            if mode_text == '普通模式' and getattr(self, '_lfm_ctrl', None) is None and not bool(getattr(self, '_in_onepass_mode', False)):
+                            if normal_realtime_mode:
                                 head_update_interval = float(getattr(self, '_head_points_update_interval_normal', head_update_interval) or head_update_interval)
                             last_head_update = float(getattr(self, '_last_head_points_update_wall', 0.0) or 0.0)
                             if (add_receive_time - last_head_update) >= head_update_interval:
                                 self._last_head_points_update_wall = add_receive_time
-                                self._update_head_points_scatter()
+                                self._refresh_head_points_overlay_realtime(force=False, request_draw=True)
                         except Exception:
                             pass
                 except Exception:
@@ -35782,11 +35807,22 @@ class ECGStylePitchVisualizer(QWidget):
             gap = now_push - getattr(self, '_last_heavy_redraw_time', 0.0)
             # 按模式自适应：高性能模式更积极触发有新点时的重绘
             try:
+                normal_realtime_mode = bool(
+                    mode_text == '普通模式'
+                    and getattr(self, 'is_recording_active', False)
+                    and getattr(self, '_lfm_ctrl', None) is None
+                    and (not bool(getattr(self, '_in_onepass_mode', False)))
+                )
+            except Exception:
+                normal_realtime_mode = False
+            try:
                 from src.audio_processing.performance_manager import PerformanceMode
                 mode = getattr(self, 'current_performance_mode', None)
                 push_factor = float(getattr(self, '_push_heavy_factor', 0.92))
+                if normal_realtime_mode:
+                    push_factor = min(push_factor, float(getattr(self, '_normal_mode_front_push_factor', 0.72) or 0.72))
             except Exception:
-                push_factor = 0.95
+                push_factor = 0.72 if normal_realtime_mode else 0.95
             if gap >= self._min_heavy_interval * push_factor:
                 self._pending_instant_update = False
                 try:
@@ -36141,6 +36177,23 @@ class ECGStylePitchVisualizer(QWidget):
         if not getattr(self, 'is_recording_active', False):
             return
         now_t = time.time()
+        try:
+            mode_text = self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式'
+        except Exception:
+            mode_text = '普通模式'
+        normal_realtime_mode = bool(
+            mode_text == '普通模式'
+            and getattr(self, 'is_recording_active', False)
+            and getattr(self, '_lfm_ctrl', None) is None
+            and (not bool(getattr(self, '_in_onepass_mode', False)))
+            and (not bool(getattr(self, '_retake_overlay_preview_active', False)))
+            and (not bool(getattr(self, '_retake_countdown_active', False)))
+        )
+        head_overlay_changed = False
+        try:
+            head_overlay_changed = bool(self._refresh_head_points_overlay_realtime(force=False, request_draw=False))
+        except Exception:
+            head_overlay_changed = False
         # 简单去抖：避免在极短间隔内重复触发
         if hasattr(self, '_last_fast_tick') and (now_t - self._last_fast_tick) < (self.fast_update_interval_ms/1000.0 * 0.6):
             return
@@ -36149,17 +36202,26 @@ class ECGStylePitchVisualizer(QWidget):
             # 如果刚做过重绘且在抑制窗口内，则仅做轻量xlim平滑，不触发完整 update_display
             if hasattr(self, '_last_heavy_redraw_time') and (now_t - self._last_heavy_redraw_time) < self._min_heavy_redraw_time_threshold():
                 try:
-                    # 轻量滚动：对当前目标窗口做平滑逼近
-                    x_min = float(getattr(self, 'time_offset', 0.0))
-                    x_max = x_min + float(getattr(self, 'time_window', 16.0))
-                    self._smooth_set_xlim(x_min, x_max, 
-                        strength=float(getattr(self, '_smooth_strength', 0.9)), 
-                        max_step=float(getattr(self, '_smooth_max_step', 0.06)))
-                    # 同步刷新批量细节点，避免仅xlim移动时细节点短暂缺席
-                    try:
-                        self._refresh_batched_points_for_current_xlim()
-                    except Exception:
-                        pass
+                    if not normal_realtime_mode:
+                        # 非普通模式实时链仍沿用原有轻量滚动
+                        x_min = float(getattr(self, 'time_offset', 0.0))
+                        x_max = x_min + float(getattr(self, 'time_window', 16.0))
+                        self._smooth_set_xlim(x_min, x_max, 
+                            strength=float(getattr(self, '_smooth_strength', 0.9)), 
+                            max_step=float(getattr(self, '_smooth_max_step', 0.06)))
+                        try:
+                            self._refresh_batched_points_for_current_xlim()
+                        except Exception:
+                            pass
+                    if head_overlay_changed:
+                        try:
+                            draw_iv = float(getattr(self, '_head_points_draw_min_interval_normal', getattr(self, '_head_points_draw_min_interval', 0.012)) or 0.012)
+                        except Exception:
+                            draw_iv = 0.012
+                        try:
+                            self._request_canvas_draw_idle(min_interval=draw_iv, stamp_attr='_last_head_points_draw_t')
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 self._last_fast_tick = now_t
@@ -36173,6 +36235,209 @@ class ECGStylePitchVisualizer(QWidget):
             if hasattr(self, 'debug_flags') and self.debug_flags.get('perf_verbose'):
                 print(f"⚠️ fast tick 异常: {e}")
         self._last_fast_tick = now_t
+
+    def _hide_normal_mode_front_overlay(self):
+        try:
+            line = getattr(self, '_front_realtime_line', None)
+            if line is not None:
+                try:
+                    line.set_data([], [])
+                except Exception:
+                    pass
+                try:
+                    line.set_alpha(0.0)
+                    line.set_visible(False)
+                except Exception:
+                    pass
+            scatter = getattr(self, '_head_points_scatter', None)
+            if scatter is not None:
+                try:
+                    import numpy as _np
+                    scatter.set_offsets(_np.empty((0, 2)))
+                except Exception:
+                    pass
+                try:
+                    scatter.set_alpha(0.0)
+                    scatter.set_visible(False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _ensure_front_realtime_line(self):
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return None
+            line = getattr(self, '_front_realtime_line', None)
+            line_axes = getattr(line, 'axes', None) if line is not None else None
+            line_fig = getattr(line, 'figure', None) if line is not None else None
+            if line is not None and (line_axes is not self.ax or line_fig is None):
+                try:
+                    if hasattr(line, 'remove'):
+                        line.remove()
+                except Exception:
+                    pass
+                line = None
+                self._front_realtime_line = None
+            if line is None:
+                curve_rgb = tuple(c/255.0 for c in (0, 191, 255))
+                try:
+                    line, = self.ax.plot(
+                        [], [],
+                        color=curve_rgb,
+                        linewidth=max(1.0, float(getattr(self, 'current_linewidth', 0.6)) * 1.08),
+                        alpha=0.0,
+                        solid_capstyle='round',
+                        solid_joinstyle='round',
+                        zorder=13.6,
+                    )
+                except Exception:
+                    line = None
+                self._front_realtime_line = line
+            elif line not in getattr(self.ax, 'lines', []):
+                try:
+                    self.ax.add_line(line)
+                except Exception:
+                    pass
+            return self._front_realtime_line
+        except Exception:
+            return None
+
+    def _update_front_realtime_line(self) -> bool:
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return False
+            line = self._ensure_front_realtime_line()
+            if line is None:
+                return False
+            import numpy as _np
+            pts = _np.asarray(list(getattr(self, '_head_points', []) or []), dtype=float)
+            if pts.size == 0 or pts.ndim != 2 or pts.shape[1] < 2:
+                line.set_data([], [])
+                line.set_alpha(0.0)
+                line.set_visible(False)
+                return False
+            try:
+                now_ref = float(getattr(self, 'current_global_time', pts[-1, 0]))
+            except Exception:
+                now_ref = float(pts[-1, 0])
+            line_window = float(getattr(self, '_front_realtime_window_s_normal', getattr(self, '_front_realtime_window_s', 0.42)) or 0.42)
+            max_points = int(getattr(self, '_front_realtime_max_points_normal', getattr(self, '_front_realtime_max_points', 84)) or 84)
+            keep_mask = (now_ref - pts[:, 0]) <= line_window
+            pts = pts[keep_mask]
+            if pts.shape[0] > max_points:
+                pts = pts[-max_points:]
+            try:
+                if getattr(self, '_cap_visible_time_enabled', False) and pts.size > 0:
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    pts = pts[pts[:, 0] <= cap + 1e-9]
+            except Exception:
+                pass
+            if pts.shape[0] < 2:
+                line.set_data([], [])
+                line.set_alpha(0.0)
+                line.set_visible(False)
+                return False
+            gap_thr = float(getattr(self, '_breath_gap_threshold', 0.14) or 0.14)
+            xs = []
+            ys = []
+            for idx, (tx, py) in enumerate(pts):
+                xs.append(float(tx))
+                ys.append(float(py))
+                if idx + 1 < pts.shape[0]:
+                    dt_gap = float(pts[idx + 1, 0]) - float(tx)
+                    if dt_gap > gap_thr:
+                        xs.append(float('nan'))
+                        ys.append(float('nan'))
+            try:
+                last_t = float(pts[-1, 0])
+                age = max(0.0, now_ref - last_t)
+                if age <= 0.055:
+                    xs.append(now_ref)
+                    ys.append(float(pts[-1, 1]))
+            except Exception:
+                pass
+            line.set_data(xs, ys)
+            line.set_linewidth(max(1.0, float(getattr(self, 'current_linewidth', 0.6)) * 1.08))
+            line.set_alpha(float(getattr(self, '_front_realtime_line_alpha', 0.94) or 0.94))
+            line.set_visible(True)
+            try:
+                line.set_zorder(13.6)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    def _refresh_head_points_overlay_realtime(self, force: bool = False, request_draw: bool = False) -> bool:
+        """独立驱动普通模式头部雪花层，避免完全依赖主绘制链。"""
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return False
+            try:
+                mode_text = self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式'
+            except Exception:
+                mode_text = '普通模式'
+            normal_realtime_mode = bool(
+                mode_text == '普通模式'
+                and getattr(self, 'is_recording_active', False)
+                and (not bool(getattr(self, '_in_onepass_mode', False)))
+                and getattr(self, '_lfm_ctrl', None) is None
+                and (not bool(getattr(self, '_retake_overlay_preview_active', False)))
+                and (not bool(getattr(self, '_retake_countdown_active', False)))
+            )
+            if not normal_realtime_mode:
+                self._hide_normal_mode_front_overlay()
+                return False
+            now_wall = time.time()
+            refresh_interval = float(getattr(self, '_head_points_realtime_interval_normal', getattr(self, '_head_points_realtime_interval', 0.012)) or 0.012)
+            visual_bucket = float(getattr(self, '_head_points_visual_bucket_normal', getattr(self, '_head_points_visual_bucket', 0.018)) or 0.012)
+            current_t = float(getattr(self, 'current_global_time', 0.0) or 0.0)
+            try:
+                point_count = len(getattr(self, '_head_points', []) or [])
+            except Exception:
+                point_count = 0
+            time_bucket = int(current_t / max(0.004, visual_bucket))
+            visual_key = (point_count, time_bucket)
+            dirty = bool(getattr(self, '_head_points_dirty', False) or getattr(self, '_front_realtime_dirty', False))
+            if (not force) and (not dirty) and visual_key == getattr(self, '_last_head_points_visual_key', None):
+                return False
+            if (not force) and (now_wall - float(getattr(self, '_last_head_points_refresh_wall', 0.0) or 0.0)) < refresh_interval:
+                return False
+            self._update_head_points_scatter()
+            try:
+                if bool(getattr(self, '_front_realtime_line_enabled', False)):
+                    self._update_front_realtime_line()
+                else:
+                    line = getattr(self, '_front_realtime_line', None)
+                    if line is not None:
+                        try:
+                            line.set_data([], [])
+                        except Exception:
+                            pass
+                        try:
+                            line.set_alpha(0.0)
+                            line.set_visible(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            self._head_points_dirty = False
+            self._front_realtime_dirty = False
+            self._last_head_points_refresh_wall = now_wall
+            self._last_head_points_visual_key = visual_key
+            if request_draw:
+                try:
+                    draw_iv = float(getattr(self, '_head_points_draw_min_interval_normal', getattr(self, '_head_points_draw_min_interval', 0.012)) or 0.012)
+                except Exception:
+                    draw_iv = 0.012
+                try:
+                    self._request_canvas_draw_idle(min_interval=draw_iv, stamp_attr='_last_head_points_draw_t')
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            return False
 
     def _update_head_points_scatter(self):
         """统一刷新头部即时点散点集合：
@@ -36190,6 +36455,7 @@ class ECGStylePitchVisualizer(QWidget):
                             self._head_points_scatter.set_offsets(_np.empty((0, 2)))
                             self._head_points_scatter.set_alpha(0.0)
                             self._head_points_scatter.set_visible(False)
+                            self._head_points_dirty = False
                         except Exception:
                             pass
                     return
@@ -36226,6 +36492,7 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     self._head_points_scatter.set_offsets(_np.empty((0, 2)))
                     self._head_points_scatter.set_alpha(0.0)
+                    self._head_points_scatter.set_visible(False)
                 except Exception:
                     pass
                 return
@@ -36282,6 +36549,10 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 # 降级到统一尺寸
                 self._head_points_scatter.set_sizes([large_s])
+            try:
+                self._head_points_scatter.set_visible(True)
+            except Exception:
+                pass
             self._head_points_scatter.set_alpha(0.98)
             self._head_points_scatter.set_zorder(14)
         except Exception:
@@ -37301,6 +37572,35 @@ class ECGStylePitchVisualizer(QWidget):
                             self.time_offset = max(0.0, target_t - self.center_display_time)
                             max_offset = max(0, self.max_history_time - self.time_window)
                             self.time_offset = min(self.time_offset, max_offset)
+                    if normal_realtime_visual_fastpath:
+                        try:
+                            time_start = float(getattr(self, 'time_offset', 0.0))
+                            time_end = time_start + float(getattr(self, 'time_window', 16.0))
+                            s = float(getattr(self, '_smooth_follow_strength', getattr(self, '_smooth_strength', 0.9)) or 0.9)
+                            m = float(getattr(self, '_smooth_follow_max_step', getattr(self, '_smooth_max_step', 0.06)) or 0.06)
+                            if getattr(self, 'current_global_time', 0.0) > getattr(self, 'center_display_time', 8.0):
+                                m = max(m, 0.095)
+                                s = max(s, 0.90)
+                            if hasattr(self, 'ax') and self.ax is not None:
+                                self._smooth_set_xlim(
+                                    time_start,
+                                    time_end,
+                                    strength=s,
+                                    max_step=m,
+                                    refresh_guides=False,
+                                    request_draw=False,
+                                )
+                                try:
+                                    self._last_render_window = self.ax.get_xlim()
+                                except Exception:
+                                    self._last_render_window = (time_start, time_end)
+                        except Exception:
+                            pass
+                        front_changed = False
+                        try:
+                            front_changed = bool(self._refresh_head_points_overlay_realtime(force=False, request_draw=False))
+                        except Exception:
+                            front_changed = False
                     try:
                         self.update_scrollbars()
                     except Exception:
@@ -37310,6 +37610,35 @@ class ECGStylePitchVisualizer(QWidget):
                             self.update_guides()
                         except Exception:
                             pass
+                    else:
+                        guides_changed = False
+                        try:
+                            guide_iv = float(getattr(self, '_normal_mode_front_guides_interval', 0.032) or 0.032)
+                        except Exception:
+                            guide_iv = 0.032
+                        try:
+                            last_guides_t = float(getattr(self, '_last_normal_mode_front_guides_t', 0.0) or 0.0)
+                        except Exception:
+                            last_guides_t = 0.0
+                        if (current_time - last_guides_t) >= max(0.016, guide_iv):
+                            try:
+                                self._last_normal_mode_front_guides_t = float(current_time)
+                            except Exception:
+                                pass
+                            try:
+                                self.update_guides()
+                                guides_changed = True
+                            except Exception:
+                                pass
+                        if front_changed and not guides_changed:
+                            try:
+                                draw_iv = float(getattr(self, '_head_points_draw_min_interval_normal', getattr(self, '_head_points_draw_min_interval', 0.012)) or 0.012)
+                            except Exception:
+                                draw_iv = 0.012
+                            try:
+                                self._request_canvas_draw_idle(min_interval=draw_iv, stamp_attr='_last_head_points_draw_t')
+                            except Exception:
+                                pass
             
             # 即使没有新音高数据，也要刷新显示（显示时间轴推进）
             if time_since_last_pitch > 0.1 and (not normal_realtime_visual_fastpath):  # 超过100ms没有音高数据
@@ -41938,6 +42267,14 @@ class ECGStylePitchVisualizer(QWidget):
                             self._provisional_line.set_visible(False)
                         except Exception:
                             pass
+                    if hasattr(self, '_front_realtime_line') and self._front_realtime_line is not None:
+                        try:
+                            if not bool(getattr(self, '_front_realtime_line_enabled', False)):
+                                self._front_realtime_line.set_data([], [])
+                                self._front_realtime_line.set_alpha(0.0)
+                                self._front_realtime_line.set_visible(False)
+                        except Exception:
+                            pass
                     
                     if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
                         try:
@@ -41966,8 +42303,8 @@ class ECGStylePitchVisualizer(QWidget):
                         if hasattr(self, 'is_recording_active') and bool(self.is_recording_active):
                             try:
                                 # 刷新并确保可见
-                                if hasattr(self, '_update_head_points_scatter'):
-                                    self._update_head_points_scatter()
+                                if hasattr(self, '_refresh_head_points_overlay_realtime'):
+                                    self._refresh_head_points_overlay_realtime(force=True, request_draw=False)
                                 if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
                                     self._head_points_scatter.set_visible(True)
                                     self._head_points_scatter.set_alpha(0.98)
@@ -41975,9 +42312,8 @@ class ECGStylePitchVisualizer(QWidget):
                             except Exception:
                                 pass
                         else:
-                            if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
-                                self._head_points_scatter.set_alpha(0.0)
-                                self._head_points_scatter.set_visible(False)
+                            if hasattr(self, '_hide_normal_mode_front_overlay'):
+                                self._hide_normal_mode_front_overlay()
                     except Exception:
                         pass
                     if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
