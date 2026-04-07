@@ -30136,13 +30136,22 @@ class ECGStylePitchVisualizer(QWidget):
                     # 固定中心，禁用滚动条
                     fc = float(prof.get('force_center', 4.0))
                     self.y_view_center = fc
-                    self.v_scrollbar.setEnabled(False)
-                    self.v_scrollbar.blockSignals(True)
-                    self.v_scrollbar.setValue(50)
-                    self.v_scrollbar.blockSignals(False)
+                    last_enabled = getattr(self, '_last_v_scrollbar_enabled', None)
+                    if last_enabled is not False:
+                        self.v_scrollbar.setEnabled(False)
+                        self._last_v_scrollbar_enabled = False
+                    last_value = getattr(self, '_last_v_scrollbar_value', None)
+                    if last_value != 50:
+                        self.v_scrollbar.blockSignals(True)
+                        self.v_scrollbar.setValue(50)
+                        self.v_scrollbar.blockSignals(False)
+                        self._last_v_scrollbar_value = 50
                 else:
                     # 允许垂直滚动：启用滚动条并在越界时夹紧中心
-                    self.v_scrollbar.setEnabled(True)
+                    last_enabled = getattr(self, '_last_v_scrollbar_enabled', None)
+                    if last_enabled is not True:
+                        self.v_scrollbar.setEnabled(True)
+                        self._last_v_scrollbar_enabled = True
                     changed = False
                     if self.y_view_center < min_center:
                         self.y_view_center = min_center; changed = True
@@ -30163,9 +30172,12 @@ class ECGStylePitchVisualizer(QWidget):
                             self._last_scroll_log_time = now_ts
                     except Exception:
                         pass
-                    self.v_scrollbar.blockSignals(True)
-                    self.v_scrollbar.setValue(scroll_value)
-                    self.v_scrollbar.blockSignals(False)
+                    last_value = getattr(self, '_last_v_scrollbar_value', None)
+                    if last_value != scroll_value:
+                        self.v_scrollbar.blockSignals(True)
+                        self.v_scrollbar.setValue(scroll_value)
+                        self.v_scrollbar.blockSignals(False)
+                        self._last_v_scrollbar_value = scroll_value
                 # 引导线可见性
                 if getattr(self, 'v_guide_glow_line', None) is not None:
                     self.v_guide_glow_line.set_visible(self.guides_enabled)
@@ -30190,9 +30202,12 @@ class ECGStylePitchVisualizer(QWidget):
             else:
                 scroll_value = 0  # 默认最左边位置
             
-            self.h_scrollbar.blockSignals(True)
-            self.h_scrollbar.setValue(scroll_value)
-            self.h_scrollbar.blockSignals(False)
+            last_h_value = getattr(self, '_last_h_scrollbar_value', None)
+            if last_h_value != scroll_value:
+                self.h_scrollbar.blockSignals(True)
+                self.h_scrollbar.setValue(scroll_value)
+                self.h_scrollbar.blockSignals(False)
+                self._last_h_scrollbar_value = scroll_value
     
     # --- 已绘制覆盖：工具 ---
     def _cov_is_covered(self, t: float) -> bool:
@@ -35807,7 +35822,8 @@ class ECGStylePitchVisualizer(QWidget):
             pass
 
     # --- 平滑时间轴工具 ---
-    def _smooth_set_xlim(self, target_start: float, target_end: float, strength: float = 0.35, max_step: float = 0.12):
+    def _smooth_set_xlim(self, target_start: float, target_end: float, strength: float = 0.35, max_step: float = 0.12,
+                         refresh_guides: bool = True, request_draw: bool = True):
         """
         平滑推进到目标xlim：
         - 按“中心位移插值”，保持窗口宽度恒定，避免宽度抖动；
@@ -35847,6 +35863,18 @@ class ECGStylePitchVisualizer(QWidget):
                     s0 = 0.0
                     e0 = e0 + shift
                 return (s0, e0)
+
+            def _post_xlim_refresh():
+                if refresh_guides:
+                    try:
+                        self.update_guides()
+                    except Exception:
+                        pass
+                if request_draw and hasattr(self, 'canvas'):
+                    try:
+                        self.canvas.draw_idle()
+                    except Exception:
+                        pass
 
             lock = getattr(self, '_retake_axis_lock', None)
             if lock is None and getattr(self, '_retake_countdown_active', False):
@@ -35892,8 +35920,7 @@ class ECGStylePitchVisualizer(QWidget):
                         self.ax.set_xlim(norm[0], norm[1])
                         if getattr(self, '_debug_axis_trace', False):
                             print(f"[SMOOTH_BYPASS|manual] ({norm[0]:.2f},{norm[1]:.2f}) paused={paused} backing_locked={backing_locked}")
-                        if hasattr(self, 'canvas'):
-                            self.canvas.draw_idle()
+                        _post_xlim_refresh()
                         self._smoothed_xlim = (norm[0], norm[1])
                     except Exception:
                         pass
@@ -35912,8 +35939,7 @@ class ECGStylePitchVisualizer(QWidget):
                         self.ax.set_xlim(start, start + tw)
                         if getattr(self, '_debug_axis_trace', False):
                             print(f"[END_HARD] smooth-bypass -> ({start:.2f},{start + tw:.2f}) total={total_len:.2f}")
-                        if hasattr(self,'canvas'):
-                            self.canvas.draw_idle()
+                        _post_xlim_refresh()
                     self._smoothed_xlim = (start, start + tw)
                 except Exception:
                     pass
@@ -35945,8 +35971,7 @@ class ECGStylePitchVisualizer(QWidget):
                             self.ax.set_xlim(0.0, tw)
                             if getattr(self, '_debug_axis_trace', False):
                                 print(f"[START_HARD] smooth-bypass -> (0.00,{tw:.2f})")
-                            if hasattr(self,'canvas'):
-                                self.canvas.draw_idle()
+                            _post_xlim_refresh()
                         self._smoothed_xlim = (0.0, tw)
                     except Exception:
                         pass
@@ -36008,12 +36033,7 @@ class ECGStylePitchVisualizer(QWidget):
                 if cur_gt > float(getattr(self, 'center_display_time', 8.0)) and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True):
                     # 第8秒后处于自动跟随：直接设定到目标窗口，保证1:1速度
                     self.ax.set_xlim(target_start, target_end)
-                    try:
-                        self.update_guides()
-                    except Exception:
-                        pass
-                    if hasattr(self, 'canvas'):
-                        self.canvas.draw_idle()
+                    _post_xlim_refresh()
                     self._smoothed_xlim = (target_start, target_end)
                     self._smooth_last_t = now_t
                     return
@@ -36065,13 +36085,7 @@ class ECGStylePitchVisualizer(QWidget):
             # 应用并缓存
             if abs(cur_start - s_new) > 1e-6 or abs(cur_end - e_new) > 1e-6:
                 self.ax.set_xlim(s_new, e_new)
-                # 轻量滚动时同步更新纵向/横向辅助线，保持视觉一致
-                try:
-                    self.update_guides()
-                except Exception:
-                    pass
-                if hasattr(self, 'canvas'):
-                    self.canvas.draw_idle()
+                _post_xlim_refresh()
             self._smoothed_xlim = (s_new, e_new)
             self._smooth_last_t = now_t
         except Exception:
@@ -36097,12 +36111,7 @@ class ECGStylePitchVisualizer(QWidget):
                         return
                 except Exception:
                     return
-                try:
-                    self.update_guides()
-                except Exception:
-                    pass
-                if hasattr(self, 'canvas'):
-                    self.canvas.draw_idle()
+                _post_xlim_refresh()
                 try:
                     self._smoothed_xlim = (float(self.ax.get_xlim()[0]), float(self.ax.get_xlim()[1]))
                 except Exception:
@@ -40328,7 +40337,14 @@ class ECGStylePitchVisualizer(QWidget):
                             if getattr(self, 'current_global_time', 0.0) > getattr(self, 'center_display_time', 8.0):
                                 m = max(m, 0.085 if normal_realtime_mode else 0.10)
                                 s = max(0.86, s)
-                            self._smooth_set_xlim(time_start, time_end, strength=s, max_step=m)
+                            self._smooth_set_xlim(
+                                time_start,
+                                time_end,
+                                strength=s,
+                                max_step=m,
+                                refresh_guides=False,
+                                request_draw=False,
+                            )
                         except Exception:
                             self.ax.set_xlim(time_start, time_end)
                         # 记录最近渲染窗口为实际 xlim，确保后续使用一致窗口
@@ -40804,6 +40820,23 @@ class ECGStylePitchVisualizer(QWidget):
                             pass
                         self.update_status_display()
                         self.update_scrollbars()
+                    try:
+                        guide_iv = float(getattr(self, '_normal_mode_light_guides_interval', 0.016) or 0.016)
+                    except Exception:
+                        guide_iv = 0.016
+                    try:
+                        last_guides_t = float(getattr(self, '_last_normal_mode_light_guides_t', 0.0) or 0.0)
+                    except Exception:
+                        last_guides_t = 0.0
+                    if force_redraw or ((now - last_guides_t) >= max(0.010, guide_iv)):
+                        try:
+                            self._last_normal_mode_light_guides_t = float(now)
+                        except Exception:
+                            pass
+                        try:
+                            self.update_guides()
+                        except Exception:
+                            pass
                     # 轻量帧只做节流后的画布重绘，减少自动跟随期间的主线程占用
                     try:
                         draw_iv = float(getattr(self, '_normal_mode_light_draw_min_interval', 0.018) or 0.018)
@@ -40988,7 +41021,7 @@ class ECGStylePitchVisualizer(QWidget):
                             if getattr(self, 'current_global_time', 0.0) > getattr(self, 'center_display_time', 8.0):
                                 m = max(m, 0.10)
                                 s = max(0.86, s)
-                            self._smooth_set_xlim(axis_start, axis_end, strength=s, max_step=m)
+                            self._smooth_set_xlim(axis_start, axis_end, strength=s, max_step=m, request_draw=False)
                         except Exception:
                             self.ax.set_xlim(axis_start, axis_end)
                     else:
