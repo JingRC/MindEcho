@@ -3571,12 +3571,19 @@ class IntegratedAudioProcessor(QThread):
             prev_head_anchor_hz = float(getattr(head_anchor_name, 0.0) or 0.0)
         except Exception:
             prev_head_anchor_hz = 0.0
+        recent_head_context_hz = max(float(last_display), float(prev_head_anchor_hz))
 
         onset_gap = float(getattr(self, '_normal_display_onset_gap_s', 0.15) or 0.15)
         weak_voice_mul = float(getattr(self, '_normal_display_weak_voice_mul', 1.55) or 1.55)
         high_register_hz = float(getattr(self, '_normal_display_high_register_hz', 460.0) or 460.0)
         spike_guard_semi = float(getattr(self, '_normal_display_spike_guard_semi', 1.45) or 1.45)
         onset_like = bool(last_display <= 0.0 or ((now_t - last_display_t) >= onset_gap))
+        if recent_head_context_hz >= 420.0:
+            head_voice_trigger_floor = max(280.0, high_register_hz * 0.60)
+        elif recent_head_context_hz >= 360.0:
+            head_voice_trigger_floor = max(300.0, high_register_hz * 0.64)
+        else:
+            head_voice_trigger_floor = max(335.0, high_register_hz * 0.72)
         head_voice_guard = bool(
             head_voice_like and max(
                 float(raw_frequency or 0.0),
@@ -3584,7 +3591,7 @@ class IntegratedAudioProcessor(QThread):
                 float(smooth_frequency or 0.0),
                 float(last_display),
                 float(prev_head_anchor_hz),
-            ) >= max(270.0, high_register_hz * 0.58)
+            ) >= head_voice_trigger_floor
         )
         effective_weak_voice_mul = float(0.92 if head_voice_guard else weak_voice_mul)
         weak_voice = bool(float(audio_rms) <= float(min_voice_rms) * effective_weak_voice_mul)
@@ -3619,6 +3626,11 @@ class IntegratedAudioProcessor(QThread):
             head_entry_until = max(float(head_entry_until), float(now_t) + 0.22)
         head_entry_active = bool(head_entry_until > float(now_t))
 
+        lower_gap = 0.0
+        harmonic_like = False
+        raw_supports_display = False
+        lower_matches_history = False
+        better_than_current = False
         lower_candidate = self._pick_display_fundamental_candidate(
             max(float(raw_frequency or 0.0), float(display_frequency)),
             true_candidates,
@@ -3637,6 +3649,8 @@ class IntegratedAudioProcessor(QThread):
             if head_voice_guard:
                 if (not rising_head_voice) and (not register_leap_guard) and weak_voice and harmonic_like and lower_matches_history and lower_gap >= 9.5 and (not raw_supports_display):
                     display_frequency = 0.86 * float(display_frequency) + 0.14 * float(lower_candidate)
+                elif recent_head_context_hz < 400.0 and lower_matches_history and lower_gap >= 6.6 and (harmonic_like or (not raw_supports_display)):
+                    display_frequency = 0.74 * float(display_frequency) + 0.26 * float(lower_candidate)
             else:
                 if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
                     display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
@@ -3665,6 +3679,23 @@ class IntegratedAudioProcessor(QThread):
                     support_high_jump = True
                     break
 
+        very_high_supported_rise = bool(
+            max(float(display_frequency), float(raw_frequency or 0.0), float(detected_frequency_hint)) >= 520.0
+            and last_display > 0.0
+            and float(audio_rms) >= float(min_voice_rms) * 0.42
+            and (
+                support_high_jump
+                or (
+                    float(raw_frequency or 0.0) > 0.0
+                    and self._pitch_semitone_distance(float(raw_frequency), float(display_frequency)) <= 1.55
+                )
+                or (
+                    float(detected_frequency_hint) > 0.0
+                    and self._pitch_semitone_distance(float(detected_frequency_hint), float(display_frequency)) <= 1.75
+                )
+            )
+        )
+
         if lower_candidate > 0.0 and last_display > 0.0:
             lower_history_gap = self._pitch_semitone_distance(lower_candidate, last_display)
             current_history_gap = self._pitch_semitone_distance(display_frequency, last_display)
@@ -3673,21 +3704,23 @@ class IntegratedAudioProcessor(QThread):
                 and lower_history_gap + 0.35 < current_history_gap
                 and (1.76 <= (max(float(raw_frequency or 0.0), float(display_frequency)) / max(float(lower_candidate), 1e-9)) <= 2.60)
             )
-            if (not head_voice_guard) and likely_harmonic_jump and (weak_voice or onset_like or (not support_high_jump)):
+            if (not head_voice_guard) and likely_harmonic_jump and (weak_voice or onset_like or (not support_high_jump)) and (not very_high_supported_rise):
                 lower_weight = 0.76 if (weak_voice or (not support_high_jump)) else 0.66
                 display_frequency = lower_weight * float(lower_candidate) + (1.0 - lower_weight) * float(display_frequency)
 
         if head_voice_guard and last_display >= 340.0 and display_frequency < last_display and (not onset_like):
             if float(audio_rms) >= float(min_voice_rms) * 0.58:
-                if last_display >= 520.0:
-                    head_down_limit = 1.10
-                elif last_display >= 420.0:
-                    head_down_limit = 1.35
-                else:
-                    head_down_limit = 1.70
-                min_allowed = float(last_display) * (2.0 ** (-head_down_limit / 12.0))
-                if float(raw_frequency or 0.0) >= min_allowed * 0.88 and display_frequency < min_allowed:
-                    display_frequency = float(min_allowed)
+                allow_head_hold = bool(recent_head_context_hz >= 400.0)
+                if allow_head_hold:
+                    if last_display >= 520.0:
+                        head_down_limit = 1.10
+                    elif last_display >= 420.0:
+                        head_down_limit = 1.35
+                    else:
+                        head_down_limit = 1.70
+                    min_allowed = float(last_display) * (2.0 ** (-head_down_limit / 12.0))
+                    if float(raw_frequency or 0.0) >= min_allowed * 0.88 and display_frequency < min_allowed:
+                        display_frequency = float(min_allowed)
 
         if register_leap_guard and detected_frequency_hint > 0.0:
             leap_gap = self._pitch_semitone_distance(detected_frequency_hint, max(float(last_display), 1e-9))
@@ -3725,6 +3758,28 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 up_jump_semi = 0.0
 
+        tentative_head_transition = bool(
+            head_voice_guard
+            and last_display > 0.0
+            and recent_head_context_hz < 405.0
+            and display_frequency > last_display
+            and up_jump_semi >= 3.0
+            and lower_candidate > 0.0
+            and lower_matches_history
+            and lower_gap >= 6.0
+            and (not support_high_jump)
+            and (not very_high_supported_rise)
+        )
+        if tentative_head_transition:
+            if up_jump_semi >= 6.0:
+                tentative_step_semi = 0.95
+            elif up_jump_semi >= 4.0:
+                tentative_step_semi = 1.18
+            else:
+                tentative_step_semi = 1.42
+            tentative_cap = float(last_display) * (2.0 ** (float(tentative_step_semi) / 12.0))
+            display_frequency = min(float(display_frequency), float(tentative_cap))
+
         try:
             prev_jump_target = float(getattr(self, jump_name, 0.0) or 0.0)
         except Exception:
@@ -3748,7 +3803,7 @@ class IntegratedAudioProcessor(QThread):
             and detected_frequency_hint >= float(last_display) * 1.008
             and self._pitch_semitone_distance(detected_frequency_hint, last_display) >= 0.35
             and self._pitch_semitone_distance(detected_frequency_hint, last_display) <= 4.4
-            and float(audio_rms) >= float(min_voice_rms) * 0.52
+            and float(audio_rms) >= float(min_voice_rms) * (0.44 if very_high_supported_rise else 0.52)
         )
         rise_release = bool(rise_release or high_head_rise_release)
 
@@ -3762,11 +3817,13 @@ class IntegratedAudioProcessor(QThread):
             if jump_count < 2 and (weak_voice or (not support_high_jump)):
                 if rise_release:
                     if very_high_head_voice:
-                        max_step = 2.10 if float(last_display) >= 520.0 else 1.80
+                        max_step = 2.55 if very_high_supported_rise else (2.10 if float(last_display) >= 520.0 else 1.80)
                     else:
                         max_step = 1.65 if float(last_display) >= 420.0 else 1.30
                 else:
-                    if very_high_head_voice and high_head_rise_release:
+                    if very_high_supported_rise:
+                        max_step = 1.75 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 2.00
+                    elif very_high_head_voice and high_head_rise_release:
                         max_step = 1.20 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 1.45
                     else:
                         max_step = 0.62 if float(audio_rms) <= float(min_voice_rms) * 1.8 else 0.88
@@ -3932,6 +3989,13 @@ class IntegratedAudioProcessor(QThread):
                     and detected_frequency >= float(last_display) * 1.01
                     and self._pitch_semitone_distance(detected_frequency, last_display) <= 4.4
                 )
+                strong_high_rise = bool(
+                    detected_frequency >= 500.0
+                    and last_display > 0.0
+                    and detected_frequency >= float(last_display) * 1.008
+                    and self._pitch_semitone_distance(detected_frequency, last_display) <= 3.6
+                    and float(audio_rms) >= float(min_voice_rms) * 0.54
+                )
                 if register_leap_guard and head_entry_active:
                     max_display_lag_semi = 1.55
                 elif register_leap_guard:
@@ -3944,22 +4008,28 @@ class IntegratedAudioProcessor(QThread):
                     max_display_lag_semi = 0.76 if very_high_head_voice else 1.05
                 else:
                     max_display_lag_semi = 1.00 if very_high_head_voice else 1.35
+                if tentative_head_transition:
+                    max_display_lag_semi = min(float(max_display_lag_semi), 1.10)
+                if strong_high_rise:
+                    max_display_lag_semi = min(float(max_display_lag_semi), 0.58 if very_high_head_voice else 0.78)
+                if very_high_supported_rise:
+                    max_display_lag_semi = min(float(max_display_lag_semi), 0.42 if very_high_head_voice else 0.68)
                 min_display_from_detected = float(detected_frequency) * (2.0 ** (-float(max_display_lag_semi) / 12.0))
                 if last_display > 0.0 and detected_frequency > last_display:
                     min_display_from_detected = max(
                         float(min_display_from_detected),
-                        0.72 * float(last_display) + 0.28 * float(detected_frequency),
+                        (0.60 * float(last_display) + 0.40 * float(detected_frequency)) if strong_high_rise else (0.72 * float(last_display) + 0.28 * float(detected_frequency)),
                     )
                 display_frequency = max(float(display_frequency), float(min_display_from_detected))
                 if steady_head_rise and display_frequency < detected_frequency:
                     display_frequency = max(
                         float(display_frequency),
-                        0.58 * float(display_frequency) + 0.42 * float(detected_frequency),
+                        (0.46 * float(display_frequency) + 0.54 * float(detected_frequency)) if strong_high_rise else (0.58 * float(display_frequency) + 0.42 * float(detected_frequency)),
                     )
                 if (not head_entry_active) and (head_anchor_active or transition_active) and detected_frequency > display_frequency:
                     display_frequency = max(
                         float(display_frequency),
-                        0.70 * float(display_frequency) + 0.30 * float(detected_frequency),
+                        (0.56 * float(display_frequency) + 0.44 * float(detected_frequency)) if strong_high_rise else (0.70 * float(display_frequency) + 0.30 * float(detected_frequency)),
                     )
                 if very_high_head_voice and detected_frequency > display_frequency and (steady_head_rise or detected_rising or transition_active or head_anchor_active):
                     if detected_frequency >= 620.0:
@@ -5303,8 +5373,24 @@ class IntegratedAudioProcessor(QThread):
     
     def frequency_to_note_info(self, frequency):
         """将频率转换为音符信息"""
+        try:
+            frequency = float(frequency)
+        except Exception:
+            return {}
         if frequency <= 0:
             return {}
+        try:
+            cache = getattr(self, '_frequency_to_note_info_cache', None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._frequency_to_note_info_cache = cache
+            cache_key = int(round(frequency * 10.0))
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return dict(cached)
+        except Exception:
+            cache = None
+            cache_key = None
         
         # 基准音A4 = 440Hz
         A4 = 440.0
@@ -5321,12 +5407,21 @@ class IntegratedAudioProcessor(QThread):
         closest_freq = A4 * (2 ** ((note_index - 9 + (octave - 4) * 12) / 12))
         cents = 1200 * np.log2(frequency / closest_freq)
         
-        return {
+        result = {
             'note_name': notes[note_index],
             'octave': octave,
             'cents': cents,
             'midi_number': 69 + (note_index - 9) + (octave - 4) * 12
         }
+        try:
+            if cache is not None and cache_key is not None:
+                cache[cache_key] = result
+                if len(cache) > 512:
+                    keep_keys = set(list(cache.keys())[-256:])
+                    self._frequency_to_note_info_cache = {k: cache[k] for k in keep_keys if k in cache}
+        except Exception:
+            pass
+        return result
     
     def stop_recording(self):
         """停止录音"""
@@ -9583,25 +9678,30 @@ class IntegratedAudioProcessor(QThread):
                         audio_rms=float(audio_rms),
                         min_voice_rms=float(min_voice_rms),
                         head_voice_like=bool(
-                            ('voiced_bright' in locals() and voiced_bright)
-                            or (
-                                float(raw_frequency or 0.0) >= 280.0
-                                and float(hf_to_mid_est or 0.0) >= 0.28
-                                and float(zcr_once or 0.0) <= 0.22
-                                and float(audio_rms) >= float(min_voice_rms) * 0.58
+                            (
+                                ('voiced_bright' in locals() and voiced_bright)
+                                and float(raw_frequency or 0.0) >= 295.0
+                                and float(zcr_once or 0.0) <= 0.18
+                                and float(audio_rms) >= float(min_voice_rms) * 0.64
                             )
                             or (
-                                float(raw_frequency or 0.0) >= 250.0
-                                and float(hf_to_mid_est or 0.0) >= 0.22
-                                and float(mid_high_ratio or 0.0) <= 2.8
-                                and float(zcr_once or 0.0) <= 0.24
-                                and float(audio_rms) >= float(min_voice_rms) * 0.50
+                                float(raw_frequency or 0.0) >= 315.0
+                                and float(hf_to_mid_est or 0.0) >= 0.32
+                                and float(zcr_once or 0.0) <= 0.18
+                                and float(audio_rms) >= float(min_voice_rms) * 0.68
                             )
                             or (
-                                float(smooth_frequency or 0.0) >= 270.0
-                                and float(raw_frequency or 0.0) >= 240.0
-                                and float(zcr_once or 0.0) <= 0.24
-                                and float(audio_rms) >= float(min_voice_rms) * 0.46
+                                float(raw_frequency or 0.0) >= 300.0
+                                and float(hf_to_mid_est or 0.0) >= 0.26
+                                and float(mid_high_ratio or 0.0) <= 2.25
+                                and float(zcr_once or 0.0) <= 0.18
+                                and float(audio_rms) >= float(min_voice_rms) * 0.64
+                            )
+                            or (
+                                float(smooth_frequency or 0.0) >= 320.0
+                                and float(raw_frequency or 0.0) >= 285.0
+                                and float(zcr_once or 0.0) <= 0.17
+                                and float(audio_rms) >= float(min_voice_rms) * 0.60
                             )
                         ),
                         preview_only=preview_only,
@@ -10538,13 +10638,22 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             low_rms = False
 
+        harmonic_ratio = float(s2 / max(s1, 1e-9)) if s1 > 0 or s2 > 0 else 0.0
+        allow_upward_refine = self._should_allow_upward_octave_refine(
+            cand,
+            last_stable=last_stable,
+            rms=rms,
+            harmonic_ratio=harmonic_ratio,
+            cep_hint=cep_hint_up,
+        )
+
         # 仅在候选较低、且 2f 在范围内时考虑上修
-        if (cand <= 480.0) and (f2 >= min_f) and (f2 <= max_f * 1.02):
-            cond_spec_strong = (s2 > s1 * 1.35 and s2 > s3 * 0.85)
-            cond_spec_moderate = (s2 > s1 * 1.20 and s2 > 0.0)
+        if allow_upward_refine and (cand <= 480.0) and (f2 >= min_f) and (f2 <= max_f * 1.02):
+            cond_spec_strong = (s2 > s1 * (1.30 if cand >= 170.0 else 1.40) and s2 > s3 * 0.85)
+            cond_spec_moderate = (s2 > s1 * (1.16 if low_rms else 1.22) and s2 > 0.0)
             if allow_up_by_temporal:
                 # 有时间一致性时，倒谱提示或轻度谱域优势即可上修
-                if cep_hint_up or (s2 > s1 * (1.05 if low_rms else 1.10)):
+                if cep_hint_up or (s2 > s1 * (1.08 if low_rms else 1.14)):
                     prev = cand
                     cand = f2
                     try:
@@ -10554,7 +10663,7 @@ class IntegratedAudioProcessor(QThread):
                         pass
             else:
                 # 无时间一致性，要求更强证据；很小声时略放宽
-                if (cond_spec_strong and cep_hint_up) or (s2 > s1 * (1.45 if not low_rms else 1.30)) or (cep_hint_up and cond_spec_moderate):
+                if (cond_spec_strong and cep_hint_up) or (s2 > s1 * (1.48 if not low_rms else 1.34)) or (cep_hint_up and cond_spec_moderate):
                     prev = cand
                     cand = f2
                     try:
@@ -10564,6 +10673,54 @@ class IntegratedAudioProcessor(QThread):
                         pass
 
         return float(max(min_f, min(max_f, cand)))
+
+    def _should_allow_upward_octave_refine(self, base_frequency: float, last_stable: float = 0.0,
+                                           rms: float = None, harmonic_ratio: float = 0.0,
+                                           cep_hint: bool = False) -> bool:
+        """仅在高音/时间连续/低电平强证据场景下允许向上八度修正，避免普通模式过度虚高。"""
+        try:
+            cand = float(base_frequency)
+        except Exception:
+            return False
+        if cand <= 0.0:
+            return False
+        try:
+            last_stable = float(last_stable or 0.0)
+        except Exception:
+            last_stable = 0.0
+        try:
+            harmonic_ratio = float(harmonic_ratio or 0.0)
+        except Exception:
+            harmonic_ratio = 0.0
+        low_rms = False
+        try:
+            low_rms = rms is not None and float(rms) < 0.0105
+        except Exception:
+            low_rms = False
+
+        if cand >= 185.0:
+            return True
+        if last_stable >= 205.0:
+            return True
+
+        if last_stable > 0.0:
+            try:
+                semi_to_prev = abs(np.log2(max(cand, 1e-6) / max(last_stable, 1e-6))) * 12.0
+                semi_to_prev_octave = abs(np.log2(max(cand * 2.0, 1e-6) / max(last_stable, 1e-6))) * 12.0
+                if semi_to_prev_octave <= 1.35 and last_stable >= 145.0:
+                    return True
+                if semi_to_prev <= 1.0 and cand >= 170.0 and last_stable >= 170.0:
+                    return True
+            except Exception:
+                pass
+
+        if cand < 135.0:
+            return False
+        if harmonic_ratio >= 1.60 and (cep_hint or low_rms):
+            return True
+        if cand >= 155.0 and harmonic_ratio >= (1.38 if low_rms else 1.48) and cep_hint:
+            return True
+        return False
 
     def _yin_cmndf_at_period(self, x: np.ndarray, period: int) -> float:
         """计算给定周期的YIN CMNDF值（越小越像周期信号）。仅用于候选对比，性能开销小。"""
@@ -10608,17 +10765,32 @@ class IntegratedAudioProcessor(QThread):
                 freqs, mag = self._get_fft_for_refine(audio_data)
             last_stable = float(getattr(self, '_last_stable_frequency', 0.0) or 0.0)
             refined = self._refine_f0_with_harmonics(float(freq), freqs, mag, float(min_f), float(max_f), last_stable=last_stable, rms=rms)
+            upward_ratio = 0.0
+            if freqs is not None and mag is not None and refined > 0:
+                try:
+                    hs_refined = self._harmonic_support(refined, freqs, mag)
+                    hs_refined_2 = self._harmonic_support(refined * 2.0, freqs, mag) if (refined * 2.0) <= max_f * 1.02 else 0.0
+                    upward_ratio = float(hs_refined_2 / max(hs_refined, 1e-9)) if (hs_refined > 0 or hs_refined_2 > 0) else 0.0
+                except Exception:
+                    upward_ratio = 0.0
+            allow_iterative_up = self._should_allow_upward_octave_refine(
+                refined,
+                last_stable=last_stable,
+                rms=rms,
+                harmonic_ratio=upward_ratio,
+                cep_hint=bool(upward_ratio >= 1.32),
+            )
 
             # 在非常可能低八度的场景中，允许迭代x2上修（最多到4f），以覆盖 C3->C5 这类误判
             try:
-                if refined > 0 and refined <= 520.0:
+                if allow_iterative_up and refined > 0 and refined <= 520.0:
                     # 依据谱域支持与时间连续性，做至多一次额外上修
                     f2 = refined * 2.0
                     f4 = refined * 4.0
                     candidates = [refined]
                     if f2 <= max_f * 1.02:
                         candidates.append(f2)
-                    if f4 <= max_f * 1.02:
+                    if f4 <= max_f * 1.02 and (refined >= 165.0 or last_stable >= 190.0 or upward_ratio >= 1.48):
                         candidates.append(f4)
                     if freqs is None or mag is None:
                         freqs, mag = self._get_fft_for_refine(audio_data)
@@ -10639,6 +10811,8 @@ class IntegratedAudioProcessor(QThread):
                             semitone = abs(np.log2(max(fc,1e-6) / max(last_stable,1e-6))) * 12.0
                             temporal = max(0.0, 1.0 - (semitone / 2.0))  # 2半音内较大加分
                         score = (0.65 * s_h) + (0.25 * y_score) + (0.10 * temporal)
+                        if fc > refined:
+                            score -= (0.08 if fc >= refined * 3.5 else 0.05)
                         if score > best_score:
                             best_score = score
                             best = fc
@@ -10652,10 +10826,10 @@ class IntegratedAudioProcessor(QThread):
                 if rms is None:
                     rms = float(np.sqrt(np.mean(x * x))) if len(x) > 0 else 0.0
                 low_level = rms < 0.012
-                if low_level and refined > 0 and refined <= 520.0:
+                if allow_iterative_up and low_level and refined > 0 and refined <= 520.0:
                     sr = float(getattr(self, 'sample_rate', 48000.0))
                     f2 = refined * 2.0
-                    f4 = refined * 4.0 if refined * 4.0 <= max_f * 1.02 else None
+                    f4 = refined * 4.0 if (refined * 4.0 <= max_f * 1.02 and (refined >= 165.0 or last_stable >= 190.0 or upward_ratio >= 1.48)) else None
                     # 计算候选的 CMNDF
                     T1 = int(round(sr / max(refined, 1e-6)))
                     c1 = self._yin_cmndf_at_period(x, T1)
@@ -10916,8 +11090,18 @@ class IntegratedAudioProcessor(QThread):
                         f2 = f_cand * 2.0
                         if ui_min_f <= f2 <= ui_max_f:
                             hs2 = self._harmonic_support(f2, fft_freqs, fft_magnitude)
-                            if hs2 > hs * 1.25:
-                                score -= 0.12
+                            octave_bias_ok = self._should_allow_upward_octave_refine(
+                                f_cand,
+                                last_stable=last_stable,
+                                rms=original_rms,
+                                harmonic_ratio=(hs2 / max(hs, 1e-9)) if (hs > 0 or hs2 > 0) else 0.0,
+                                cep_hint=False,
+                            )
+                            if octave_bias_ok:
+                                if hs2 > hs * 1.22:
+                                    score -= 0.12
+                            elif f_cand >= 150.0 and last_stable >= 180.0 and hs2 > hs * 1.55:
+                                score -= 0.04
                     # 时间连续性（与上一稳定频率接近有利；允许八度就近）
                     if last_stable > 0:
                         semitone = abs(np.log2(max(f_cand,1e-6) / max(last_stable,1e-6))) * 12.0
@@ -10927,7 +11111,17 @@ class IntegratedAudioProcessor(QThread):
                     # 低八度惩罚：当存在明显更高的SHS候选时（如4f更合理），对过低频率施加轻惩罚
                     for n2, f2cand, s2, _ in candidates:
                         if n2 == "shs" and f2cand > f_cand * 1.9 and f2cand < f_cand * 4.2:
-                            score -= 0.10
+                            strong_upper_ctx = self._should_allow_upward_octave_refine(
+                                f_cand,
+                                last_stable=last_stable,
+                                rms=original_rms,
+                                harmonic_ratio=(float(s2) / max(float(s_val), 1e-9)) if (float(s_val) > 0 or float(s2) > 0) else 0.0,
+                                cep_hint=False,
+                            )
+                            if strong_upper_ctx:
+                                score -= 0.10
+                            elif f_cand >= 155.0 and last_stable >= 185.0 and float(s2) > float(s_val) * 1.60:
+                                score -= 0.04
                             break
                     if score > best_total:
                         best_total = score
@@ -11199,6 +11393,48 @@ class IntegratedAudioProcessor(QThread):
             top_f = float(scored_candidates[0][0]) if scored_candidates else float(chosen_f)
             second_f = float(scored_candidates[1][0]) if len(scored_candidates) > 1 else float(top_f)
             sep_ratio = float(max(top_f, second_f) / max(min(top_f, second_f), 1e-9)) if len(scored_candidates) > 1 else 1.0
+            if len(scored_candidates) >= 2:
+                base_ref = max(float(last_stable or 0.0), float(raw_frequency or 0.0))
+                octave_lower_candidates = []
+                for cand_f, cand_score, cand_conf in scored_candidates[1:]:
+                    ratio_top_to_cand = float(top_f / max(float(cand_f), 1e-9)) if float(cand_f) > 0.0 else 0.0
+                    if ratio_top_to_cand < 1.72 or ratio_top_to_cand > 2.35:
+                        continue
+                    lower_hist_gap = _semi(float(cand_f), max(float(base_ref), 1e-9)) if base_ref > 0.0 else 999.0
+                    top_hist_gap = _semi(float(top_f), max(float(base_ref), 1e-9)) if base_ref > 0.0 else 999.0
+                    if lower_hist_gap > 3.2:
+                        continue
+                    if top_hist_gap + 0.45 < lower_hist_gap:
+                        continue
+                    octave_lower_candidates.append((float(cand_f), float(cand_score), float(cand_conf), float(lower_hist_gap), float(top_hist_gap)))
+                if octave_lower_candidates:
+                    lower_f, lower_score, lower_conf, lower_hist_gap, top_hist_gap = max(
+                        octave_lower_candidates,
+                        key=lambda item: float(item[1]) - 0.12 * float(item[3]) + 0.08 * float(item[2]),
+                    )
+                    likely_upper_harmonic = bool(
+                        base_ref >= 240.0
+                        and top_f >= max(320.0, base_ref * 1.16)
+                        and lower_f >= max(120.0, base_ref * 0.78)
+                        and lower_hist_gap <= 2.4
+                        and top_hist_gap >= 2.2
+                        and (
+                            float(top_score) <= float(lower_score) + 0.28
+                            or float(score_margin) <= 0.26
+                        )
+                    )
+                    if likely_upper_harmonic:
+                        if top_hist_gap >= 4.8 or float(top_f) >= float(lower_f) * 1.92:
+                            chosen_f = 0.84 * float(lower_f) + 0.16 * float(chosen_f)
+                        else:
+                            chosen_f = 0.68 * float(lower_f) + 0.32 * float(chosen_f)
+                        chosen_conf = max(float(chosen_conf), float(lower_conf))
+                        top_f = float(chosen_f)
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_lower_octave_rescue'] = int(self._lfm_parse_diag.get('sep_lower_octave_rescue', 0)) + 1
+                        except Exception:
+                            pass
             if high_register and len(scored_candidates) >= 2:
                 base_ref = max(float(last_stable or 0.0), float(raw_frequency or 0.0))
                 upper_candidates = [
@@ -11211,7 +11447,8 @@ class IntegratedAudioProcessor(QThread):
                     upper_f, upper_score, upper_conf = max(upper_candidates, key=lambda item: float(item[1]) + 0.25 * float(item[2]))
                     chosen_is_low = bool(float(chosen_f) < max(base_ref, 1e-9) * 0.98)
                     upper_competitive = bool(float(upper_score) >= float(top_score) - (0.20 if rising_transition else 0.10))
-                    if upper_competitive and (rising_transition or chosen_is_low):
+                    upper_rescue_ok = bool(base_ref >= 300.0 or anchor_hz >= 320.0)
+                    if upper_competitive and upper_rescue_ok and (rising_transition or chosen_is_low):
                         chosen_f = 0.82 * float(upper_f) + 0.18 * float(chosen_f) if float(chosen_f) < float(upper_f) else float(upper_f)
                         chosen_conf = max(float(chosen_conf), float(upper_conf))
                         try:
@@ -11560,24 +11797,33 @@ class IntegratedAudioProcessor(QThread):
                     except Exception:
                         prev_out = 0.0
                     if prev_out > 0:
+                        output_rise_guard = bool(
+                            max(float(raw_frequency), float(chosen_f), float(anchor_hz), float(fused)) >= 500.0
+                            and max(float(raw_frequency), float(chosen_f), float(fused)) >= float(prev_out) * 1.008
+                            and _semi(max(float(raw_frequency), float(chosen_f), float(fused)), float(prev_out)) <= 3.6
+                        )
                         try:
                             max_step = float(getattr(self, '_lead_sep_output_lock_max_step_semi', 0.42) or 0.42)
                         except Exception:
                             max_step = 0.42
                         max_step = max(0.20, min(1.20, max_step))
+                        if output_rise_guard:
+                            max_step = max(float(max_step), 0.82)
                         try:
                             delta = 12.0 * np.log2(max(float(fused), 1e-9) / max(float(prev_out), 1e-9))
                         except Exception:
                             delta = 0.0
                         if delta > max_step:
                             fused = float(prev_out) * (2.0 ** (float(max_step) / 12.0))
-                        elif delta < -max_step:
+                        elif delta < -max_step and (not output_rise_guard):
                             fused = float(prev_out) * (2.0 ** (-float(max_step) / 12.0))
                         try:
                             pull_prev = float(getattr(self, '_lead_sep_output_lock_prev_mix', 0.72) or 0.72)
                         except Exception:
                             pull_prev = 0.72
                         pull_prev = max(0.40, min(0.92, pull_prev))
+                        if output_rise_guard:
+                            pull_prev = min(float(pull_prev), 0.38)
                         fused = float(pull_prev) * float(prev_out) + (1.0 - float(pull_prev)) * float(fused)
 
                     try:
@@ -11632,6 +11878,11 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     prev_final = 0.0
                 if prev_final > 0.0:
+                    final_rise_guard = bool(
+                        max(float(raw_frequency), float(chosen_f), float(fused), float(anchor_hz)) >= 500.0
+                        and max(float(raw_frequency), float(chosen_f), float(fused)) >= float(prev_final) * 1.008
+                        and _semi(max(float(raw_frequency), float(chosen_f), float(fused)), float(prev_final)) <= 3.8
+                    )
                     try:
                         max_step_hi = float(getattr(self, '_lead_sep_high_final_max_step_semi', 0.28) or 0.28)
                     except Exception:
@@ -11639,6 +11890,8 @@ class IntegratedAudioProcessor(QThread):
                     # 压力高时进一步收紧单帧步长
                     max_step_hi = max(0.16, min(0.80, float(max_step_hi) - (0.08 * min(1.0, float(pressure_ema)))))
                     max_step_hi = max(0.14, max_step_hi - (0.06 * float(stab_strength)))
+                    if final_rise_guard:
+                        max_step_hi = max(float(max_step_hi), 0.62)
                     up_step = float(max_step_hi)
                     down_ratio = (0.72 - 0.20 * float(interf_boost))
                     if lfm_rt:
@@ -11650,10 +11903,10 @@ class IntegratedAudioProcessor(QThread):
                         d_hi = 0.0
                     if d_hi > up_step:
                         fused = float(prev_final) * (2.0 ** (float(up_step) / 12.0))
-                    elif d_hi < -down_step:
+                    elif d_hi < -down_step and (not final_rise_guard):
                         fused = float(prev_final) * (2.0 ** (-float(down_step) / 12.0))
                     prev_lock_thr = 0.55 if lfm_rt else 0.62
-                    if float(interf_boost) >= prev_lock_thr and d_hi < 0.0:
+                    if float(interf_boost) >= prev_lock_thr and d_hi < 0.0 and (not final_rise_guard):
                         prev_lock_hi = 0.88 if lfm_rt else 0.82
                         prev_lock = max(0.35, min(prev_lock_hi, 0.42 + 0.30 * float(interf_boost)))
                         fused = float(prev_lock) * float(prev_final) + (1.0 - float(prev_lock)) * float(fused)
@@ -14271,6 +14524,8 @@ class ECGStylePitchVisualizer(QWidget):
         self._head_points_capacity_normal = 84
         self._head_points_update_interval = 0.016
         self._head_points_update_interval_normal = 0.028
+        self._normal_mode_light_draw_min_interval = getattr(self, '_normal_mode_light_draw_min_interval', 0.018)
+        self._normal_mode_light_ui_interval = getattr(self, '_normal_mode_light_ui_interval', 0.045)
         self._head_points_dense_threshold = 42
         self._head_points_dense_stride_normal = 2
         try:
@@ -17091,45 +17346,63 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
 
         # 主绘制的可视化平滑/抽样
-        def _prepare_segment_for_render(seg_times, seg_pitches):
+        if not hasattr(self, '_segment_render_prep_cache') or not isinstance(getattr(self, '_segment_render_prep_cache', None), dict):
+            self._segment_render_prep_cache = {}
+        prep_high_thr = float(getattr(self, '_high_pitch_threshold', 5.5))
+        prep_beta_base = float(getattr(self, '_vis_ema_beta_base', 0.45))
+        prep_beta_high_scale = float(getattr(self, '_vis_ema_beta_high_scale', 0.72))
+        prep_dense_dt_thr = float(getattr(self, '_vis_dense_dt_thr', 0.006))
+        prep_jitter_semi_thr = float(getattr(self, '_vis_jitter_semi_thr', 5.5))
+        prep_min_step_base = float(getattr(self, '_vis_min_spacing_base', 0.0035))
+        prep_min_step_high = float(getattr(self, '_vis_min_spacing_high', 0.0065))
+        prep_slope_keep_semi = float(getattr(self, '_vis_keep_slope_semi', 10.0))
+        prep_seg_cap = int(getattr(self, '_vis_segment_points_cap', 2400))
+        prep_params = (
+            prep_high_thr,
+            prep_beta_base,
+            prep_beta_high_scale,
+            prep_dense_dt_thr,
+            prep_jitter_semi_thr,
+            prep_min_step_base,
+            prep_min_step_high,
+            prep_slope_keep_semi,
+            prep_seg_cap,
+        )
+
+        def _prepare_segment_for_render(seg_times, seg_pitches, sig_key=None):
             try:
                 import numpy as _np
                 n = len(seg_times)
                 if n <= 2:
                     return seg_times, seg_pitches
+                cache_key = (sig_key, prep_params) if sig_key is not None else None
+                if cache_key is not None:
+                    cached = self._segment_render_prep_cache.get(cache_key)
+                    if cached is not None:
+                        return cached
                 t = _np.asarray(seg_times, dtype=_np.float32)
                 y = _np.asarray(seg_pitches, dtype=_np.float32)
                 dt = _np.diff(t, prepend=t[0])
-                dy = _np.diff(y, prepend=y[0])
-                high_thr = float(getattr(self, '_high_pitch_threshold', 5.5))
-                beta_base = float(getattr(self, '_vis_ema_beta_base', 0.45))
-                beta_high_scale = float(getattr(self, '_vis_ema_beta_high_scale', 0.72))
-                dense_dt_thr = float(getattr(self, '_vis_dense_dt_thr', 0.006))
-                jitter_semi_thr = float(getattr(self, '_vis_jitter_semi_thr', 5.5))
-                min_step_base = float(getattr(self, '_vis_min_spacing_base', 0.0035))
-                min_step_high = float(getattr(self, '_vis_min_spacing_high', 0.0065))
-                slope_keep_semi = float(getattr(self, '_vis_keep_slope_semi', 10.0))
-                seg_cap = int(getattr(self, '_vis_segment_points_cap', 2400))
                 y_med = float(_np.median(y))
-                is_high = y_med >= high_thr
+                is_high = y_med >= prep_high_thr
                 y_s = _np.empty_like(y)
                 y_s[0] = y[0]
                 for k in range(1, n):
-                    beta = beta_base
+                    beta = prep_beta_base
                     if is_high:
-                        beta *= beta_high_scale
-                    if dt[k] < dense_dt_thr:
+                        beta *= prep_beta_high_scale
+                    if dt[k] < prep_dense_dt_thr:
                         beta *= 0.80
-                    if abs((y[k] - y[k-1]) * 12.0) > jitter_semi_thr and dt[k] < 0.020:
+                    if abs((y[k] - y[k-1]) * 12.0) > prep_jitter_semi_thr and dt[k] < 0.020:
                         beta *= 0.70
                     beta = max(0.08, min(0.85, beta))
                     y_s[k] = y_s[k-1] + beta * (y[k] - y_s[k-1])
-                min_step = min_step_high if is_high else min_step_base
+                min_step = prep_min_step_high if is_high else prep_min_step_base
                 keep_idx = [0]
                 last_keep_t = t[0]
                 for k in range(1, n-1):
                     slope_semi = abs((y_s[k] - y_s[k-1]) * 12.0)
-                    if slope_semi >= slope_keep_semi:
+                    if slope_semi >= prep_slope_keep_semi:
                         keep_idx.append(k)
                         last_keep_t = t[k]
                         continue
@@ -17140,19 +17413,32 @@ class ECGStylePitchVisualizer(QWidget):
                     keep_idx.append(n-1)
                 rt = t[keep_idx].tolist()
                 rp = y_s[keep_idx].tolist()
-                if len(rt) > seg_cap:
-                    step = int(_np.ceil(len(rt) / seg_cap))
+                if len(rt) > prep_seg_cap:
+                    step = int(_np.ceil(len(rt) / prep_seg_cap))
                     rt = rt[::step]
                     rp = rp[::step]
+                if cache_key is not None:
+                    self._segment_render_prep_cache[cache_key] = (rt, rp)
                 return rt, rp
             except Exception:
                 return seg_times, seg_pitches
 
         render_segments = []
+        current_prep_cache_keys = []
         for _seg_times, _seg_pitches in segments_orig:
-            r_t, r_p = _prepare_segment_for_render(_seg_times, _seg_pitches)
+            sig_key = (_seg_times[0], _seg_times[-1], len(_seg_times)) if _seg_times else (None, None, 0)
+            current_prep_cache_keys.append((sig_key, prep_params))
+            r_t, r_p = _prepare_segment_for_render(_seg_times, _seg_pitches, sig_key=sig_key)
             if r_t:
                 render_segments.append((r_t, r_p))
+        try:
+            if isinstance(self._segment_render_prep_cache, dict):
+                keep_keys = set(current_prep_cache_keys)
+                self._segment_render_prep_cache = {
+                    key: value for key, value in self._segment_render_prep_cache.items() if key in keep_keys
+                }
+        except Exception:
+            pass
 
         # 将渲染段展平成一条线（用 NaN 断开），并应用换气断开逻辑
         times = []
@@ -17395,6 +17681,25 @@ class ECGStylePitchVisualizer(QWidget):
         try:
             if hasattr(self, 'canvas') and self.canvas is not None:
                 self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _request_canvas_draw_idle(self, *, min_interval: float = 0.0, stamp_attr: str = '_last_canvas_draw_idle_t'):
+        try:
+            canvas = getattr(self, 'canvas', None)
+            if canvas is None:
+                return
+            min_interval = max(0.0, float(min_interval or 0.0))
+            now_t = time.time()
+            if min_interval > 0.0:
+                try:
+                    last_t = float(getattr(self, stamp_attr, 0.0) or 0.0)
+                except Exception:
+                    last_t = 0.0
+                if (now_t - last_t) < min_interval:
+                    return
+            setattr(self, stamp_attr, float(now_t))
+            canvas.draw_idle()
         except Exception:
             pass
 
@@ -20015,6 +20320,12 @@ class ECGStylePitchVisualizer(QWidget):
     def update_listenback_artists(self):
         """根据当前状态与轴范围更新选区图元位置/可见性。"""
         try:
+            onepass_active = False
+            try:
+                host = getattr(self, '_host_interface', None)
+                onepass_active = bool(host is not None and getattr(host, '_in_onepass_mode', False))
+            except Exception:
+                onepass_active = False
             overlay_active = bool(
                 getattr(self, 'selection_active', False)
                 or self.listenback_enabled
@@ -20043,6 +20354,19 @@ class ECGStylePitchVisualizer(QWidget):
                     if _time_hold.time() < hold_until:
                         overlay_active = True
             if not overlay_active:
+                if onepass_active:
+                    try:
+                        if hasattr(self, '_ensure_playhead'):
+                            self._ensure_playhead()
+                        if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                            play_t = float(max(0.0, float(getattr(self, 'current_global_time', 0.0) or 0.0)))
+                            self._lb_playhead.set_xdata([play_t, play_t])
+                            self._lb_playhead.set_ydata([0.0, 1.0])
+                            self._lb_playhead.set_visible(True)
+                            self._lb_playhead.set_zorder(148)
+                    except Exception:
+                        pass
+                    return
                 # 隐藏所有图元
                 for art in [self._sel_line_left, self._sel_line_right,
                             self._sel_tri_top_left, self._sel_tri_bot_left,
@@ -25856,6 +26180,8 @@ class ECGStylePitchVisualizer(QWidget):
             self.h_guide_line = None
             self.v_guide_glow_line = None
             self.h_guide_glow_line = None
+            self._onepass_time_cursor = None
+            self._stable_segment_points_cache = {}
         except Exception:
             pass
 
@@ -27234,6 +27560,55 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _ensure_onepass_time_cursor(self):
+        try:
+            if not hasattr(self, 'ax') or self.ax is None:
+                return
+            line_color = str(getattr(self, 'guide_v_color', '#C0C0C0') or '#C0C0C0')
+            line_alpha = float(getattr(self, 'guide_alpha_main', 0.90) or 0.90)
+            line_width = float(getattr(self, 'guide_linewidth_main', 0.8) or 0.8)
+            dash_pattern = tuple(getattr(self, 'guide_dash_pattern', (6, 4)) or (6, 4))
+            cursor = getattr(self, '_onepass_time_cursor', None)
+            if cursor is None or getattr(cursor, 'axes', None) is None or cursor not in getattr(self.ax, 'lines', []):
+                self._onepass_time_cursor = self.ax.axvline(
+                    x=float(getattr(self, 'current_global_time', 0.0) or 0.0),
+                    color=line_color,
+                    linewidth=line_width,
+                    alpha=line_alpha,
+                    linestyle='--',
+                    zorder=148,
+                )
+                cursor = self._onepass_time_cursor
+            if cursor is not None:
+                try:
+                    cursor.set_color(line_color)
+                    cursor.set_alpha(line_alpha)
+                    cursor.set_linewidth(line_width)
+                    cursor.set_linestyle((0, dash_pattern))
+                    cursor.set_ydata([0.0, 1.0])
+                    cursor.set_zorder(148)
+                except Exception:
+                    try:
+                        cursor.set_linestyle('--')
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _set_onepass_time_cursor(self, sec: float, *, visible: bool = True):
+        try:
+            self._ensure_onepass_time_cursor()
+            cursor = getattr(self, '_onepass_time_cursor', None)
+            if cursor is None:
+                return
+            x_val = float(max(0.0, sec))
+            cursor.set_xdata([x_val, x_val])
+            cursor.set_ydata([0.0, 1.0])
+            cursor.set_visible(bool(visible))
+            cursor.set_zorder(148)
+        except Exception:
+            pass
+
     # ================= 悬停提示实现 =================
     def _hover_gating_allowed(self) -> bool:
         try:
@@ -27570,6 +27945,95 @@ class ECGStylePitchVisualizer(QWidget):
                 self.canvas.draw_idle()
         except Exception:
             pass
+
+    def _set_onepass_playback_point_mode(self, enabled: bool):
+        try:
+            self._onepass_playback_fixed_points_enabled = bool(enabled)
+        except Exception:
+            pass
+
+    def _get_stable_segment_points_mode(self):
+        try:
+            if bool(getattr(self, '_onepass_playback_fixed_points_enabled', False)):
+                return 'onepass_playback'
+            mode_text = self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式'
+        except Exception:
+            mode_text = '普通模式'
+        if mode_text != '普通模式':
+            return ''
+        try:
+            import time as _t
+            host = getattr(self, '_host_interface', None)
+            lfm_ctrl = getattr(host, '_lfm_ctrl', None) if host is not None else None
+            lfm_playing = bool(lfm_ctrl is not None and getattr(lfm_ctrl, 'playing', False))
+            recording_live = bool(getattr(self, 'is_recording_active', False)) or lfm_playing
+            if not recording_live:
+                return ''
+            if not bool(getattr(self, 'auto_follow', True)) or not bool(getattr(self, 'auto_scroll_enabled', True)):
+                return ''
+            if bool(getattr(self, '_retake_overlay_preview_active', False)) or bool(getattr(self, '_retake_countdown_active', False)):
+                return ''
+            if float(getattr(self, 'current_global_time', 0.0) or 0.0) <= float(getattr(self, 'center_display_time', 8.0) or 8.0):
+                return ''
+            if (not lfm_playing) and float(getattr(self, '_manual_time_offset_override_until', 0.0) or 0.0) > _t.time():
+                return ''
+            return 'realtime_follow_scroll_lfm' if lfm_playing else 'realtime_follow_scroll'
+        except Exception:
+            return ''
+
+    def _get_stable_segment_offsets(self, seg_times, seg_pitches, mode_key: str):
+        try:
+            import numpy as _np
+            import math as _math
+            if not seg_times or not seg_pitches:
+                return _np.empty((0, 2), dtype=_np.float32)
+            count = min(len(seg_times), len(seg_pitches))
+            if count <= 0:
+                return _np.empty((0, 2), dtype=_np.float32)
+            cache = getattr(self, '_stable_segment_points_cache', None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._stable_segment_points_cache = cache
+            sig = (str(mode_key or ''), float(seg_times[0]), float(seg_times[count - 1]), int(count))
+            cached = cache.get(sig)
+            if cached is not None:
+                return cached
+            if str(mode_key or '') == 'onepass_playback':
+                target_cap = int(getattr(self, '_onepass_playback_segment_points_cap', 900) or 900)
+                target_floor = int(getattr(self, '_onepass_playback_segment_points_floor', 260) or 260)
+            else:
+                target_cap = int(getattr(self, '_realtime_scroll_segment_points_cap', 720) or 720)
+                target_floor = int(getattr(self, '_realtime_scroll_segment_points_floor', 220) or 220)
+            target_cap = max(80, target_cap)
+            target_floor = max(80, min(target_floor, target_cap))
+            if count <= target_cap:
+                offs = _np.column_stack((
+                    _np.asarray(seg_times[:count], dtype=_np.float32),
+                    _np.asarray(seg_pitches[:count], dtype=_np.float32),
+                ))
+            else:
+                sample_count = min(count, max(target_floor, target_cap))
+                idx = _np.linspace(0, count - 1, num=sample_count, dtype=_np.float64)
+                idx = _np.unique(_np.clip(_np.round(idx).astype(_np.int32), 0, count - 1))
+                if idx.size <= 1 and count > 1:
+                    step = max(1, int(_math.ceil(float(count) / float(sample_count))))
+                    idx = _np.arange(0, count, step, dtype=_np.int32)
+                    if idx[-1] != count - 1:
+                        idx = _np.append(idx, count - 1)
+                t_arr = _np.asarray(seg_times[:count], dtype=_np.float32)[idx]
+                y_arr = _np.asarray(seg_pitches[:count], dtype=_np.float32)[idx]
+                offs = _np.column_stack((t_arr, y_arr)) if t_arr.size > 0 else _np.empty((0, 2), dtype=_np.float32)
+            cache[sig] = offs
+            return offs
+        except Exception:
+            try:
+                import numpy as _np
+                return _np.column_stack((seg_times, seg_pitches)) if seg_times and seg_pitches else _np.empty((0, 2), dtype=_np.float32)
+            except Exception:
+                return []
+
+    def _get_onepass_fixed_segment_offsets(self, seg_times, seg_pitches):
+        return self._get_stable_segment_offsets(seg_times, seg_pitches, 'onepass_playback')
 
     # ================= 放大镜（局部放大） =================
     def _ensure_magnifier(self):
@@ -30122,7 +30586,7 @@ class ECGStylePitchVisualizer(QWidget):
                 base_text = '技巧识别'
             btn.setText(f"{base_text} ({count})" if count > 0 else base_text)
             if enabled and bool(getattr(state, 'last_source_frame_count', 0) or 0) > 0:
-                btn.setToolTip('点击后对当前普通模式录音做离线技巧分区与标注；按住 Ctrl 再点击可打开设置')
+                btn.setToolTip('点击后可对当前普通模式数据做技巧分区与标注；录音完成后分析整段，暂停时分析当前已播放片段；按住 Ctrl 再点击可打开设置')
             else:
                 btn.setToolTip('配置录音完成后的技巧识别项目与展示方式')
         except Exception:
@@ -31128,6 +31592,133 @@ class ECGStylePitchVisualizer(QWidget):
             events.append(event)
         return events
 
+    def _offline_local_file_source_kind(self, frames: List[FrameFeatures]) -> str:
+        for item in list(frames or []):
+            if not isinstance(item, FrameFeatures):
+                continue
+            try:
+                flags = dict(getattr(item, 'source_flags', {}) or {})
+            except Exception:
+                flags = {}
+            if bool(flags.get('onepass_full_audio', False)):
+                return 'local_file_onepass'
+            if bool(flags.get('offline_local_file', False)):
+                return 'local_file_partial'
+        return ''
+
+    def _build_offline_gap_breath_events(
+        self,
+        frames: List[FrameFeatures],
+        *,
+        audio_samples: Optional[np.ndarray] = None,
+        sample_rate: Optional[int] = None,
+    ) -> List[BreathEvent]:
+        if not self._technique_type_selected('breath'):
+            return []
+        source_kind = self._offline_local_file_source_kind(frames)
+        if source_kind != 'local_file_onepass':
+            return []
+        valid_frames: List[FrameFeatures] = []
+        for item in list(frames or []):
+            if not isinstance(item, FrameFeatures):
+                continue
+            if bool(getattr(item, 'preview_only', False)):
+                continue
+            if not bool(getattr(item, 'has_pitch', False)):
+                continue
+            valid_frames.append(item)
+        if len(valid_frames) < 3:
+            return []
+        valid_frames.sort(key=lambda item: float(getattr(item, 'timeline_time', 0.0) or 0.0))
+        diffs = []
+        for idx in range(1, len(valid_frames)):
+            try:
+                gap = float(valid_frames[idx].timeline_time) - float(valid_frames[idx - 1].timeline_time)
+            except Exception:
+                gap = 0.0
+            if gap > 0.0:
+                diffs.append(gap)
+        if not diffs:
+            return []
+        try:
+            base_dt = float(np.median(np.asarray(diffs, dtype=np.float32)))
+        except Exception:
+            base_dt = min(diffs)
+        base_dt = max(0.008, min(0.080, base_dt))
+        try:
+            audio_np = np.asarray(audio_samples, dtype=np.float32).reshape(-1) if audio_samples is not None and sample_rate is not None else None
+            sr_value = int(sample_rate or 0)
+        except Exception:
+            audio_np = None
+            sr_value = 0
+        events: List[BreathEvent] = []
+        for idx in range(1, len(valid_frames)):
+            prev_item = valid_frames[idx - 1]
+            cur_item = valid_frames[idx]
+            try:
+                prev_t = float(prev_item.timeline_time)
+                cur_t = float(cur_item.timeline_time)
+            except Exception:
+                continue
+            raw_gap = cur_t - prev_t
+            if raw_gap < max(0.11, base_dt * 2.4):
+                continue
+            start_time = max(0.0, prev_t + base_dt * 0.45)
+            end_time = max(start_time, cur_t - base_dt * 0.45)
+            duration = max(0.0, end_time - start_time)
+            if duration < 0.09 or duration > 0.95:
+                continue
+            mean_rms = 0.0
+            mean_zcr = 0.0
+            if audio_np is not None and sr_value > 0:
+                try:
+                    start_idx = max(0, int(round(start_time * sr_value)))
+                    end_idx = min(len(audio_np), int(round(end_time * sr_value)))
+                    if end_idx > start_idx:
+                        chunk = audio_np[start_idx:end_idx]
+                        mean_rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64), dtype=np.float64)))
+                        if chunk.size >= 8:
+                            sign = np.sign(chunk)
+                            mean_zcr = float(np.mean(np.abs(np.diff(sign))) * 0.5)
+                except Exception:
+                    mean_rms = 0.0
+                    mean_zcr = 0.0
+            pre_pitch = float(getattr(prev_item, 'display_frequency_hz', 0.0) or getattr(prev_item, 'detected_frequency_hz', 0.0) or 0.0)
+            post_pitch = float(getattr(cur_item, 'display_frequency_hz', 0.0) or getattr(cur_item, 'detected_frequency_hz', 0.0) or 0.0)
+            breath_peak = max(0.58, min(0.92, 0.54 + duration * 0.75 + mean_zcr * 0.45))
+            confidence = max(0.56, min(0.90, 0.50 + duration * 0.68 + mean_zcr * 0.40))
+            strength = max(0.54, min(0.88, 0.48 + duration * 0.72 + max(0.0, 0.0022 - mean_rms) * 120.0))
+            suppressed_pitch_frames = max(2, int(round(duration / max(base_dt, 1e-3))))
+            event = BreathEvent(
+                event_type='breath',
+                start_time=float(start_time),
+                end_time=float(end_time),
+                confidence=float(confidence),
+                strength=float(strength),
+                center_time=0.5 * (float(start_time) + float(end_time)),
+                duration=float(duration),
+                source_layer='offline_gap_breath',
+                display_label='换气',
+                display_color='#6EC6FF',
+                subtype='offline_gap',
+                mean_rms=float(mean_rms),
+                mean_zcr=float(mean_zcr),
+                breath_score_peak=float(breath_peak),
+                pre_pitch_hz=float(pre_pitch),
+                post_pitch_hz=float(post_pitch),
+                suppressed_pitch_frames=int(suppressed_pitch_frames),
+                feature_snapshot={
+                    'gap_duration_s': float(duration),
+                    'base_dt_s': float(base_dt),
+                },
+                display_payload={
+                    'detector': 'offline_gap_breath',
+                    'source_kind': source_kind,
+                },
+            )
+            events.append(event)
+        return events
+
     def _resolve_chest_falsetto_checkpoint_path(self) -> Optional[Path]:
         for candidate in _CHEST_FALSETTO_CHECKPOINT_CANDIDATES:
             try:
@@ -31525,6 +32116,9 @@ class ECGStylePitchVisualizer(QWidget):
         voiced_ratio: float,
         stable_ratio: float,
         mean_rms: float,
+        mean_zcr: float = 0.0,
+        mean_breath_score: float = 0.0,
+        breath_hint_ratio: float = 0.0,
     ) -> Dict[str, Any]:
         chest_prob = max(0.0, float(chest_prob or 0.0))
         falsetto_prob = max(0.0, float(falsetto_prob or 0.0))
@@ -31532,10 +32126,19 @@ class ECGStylePitchVisualizer(QWidget):
         voiced_ratio = max(0.0, float(voiced_ratio or 0.0))
         stable_ratio = max(0.0, float(stable_ratio or 0.0))
         mean_rms = max(0.0, float(mean_rms or 0.0))
+        mean_zcr = max(0.0, float(mean_zcr or 0.0))
+        mean_breath_score = max(0.0, float(mean_breath_score or 0.0))
+        breath_hint_ratio = max(0.0, float(breath_hint_ratio or 0.0))
 
         chest_bias = 0.0
         falsetto_bias = 0.0
         force_chest = False
+        breath_like = bool(
+            0.00008 <= mean_rms <= 0.0026
+            and (mean_zcr >= 0.09 or mean_breath_score >= 0.22 or breath_hint_ratio >= 0.14)
+            and voiced_ratio <= 0.46
+            and stable_ratio <= 0.20
+        )
 
         # 低音区默认更应保守地判为真声，避免把轻薄真声误判为假声。
         if mean_pitch_hz > 0.0:
@@ -31552,13 +32155,23 @@ class ECGStylePitchVisualizer(QWidget):
             elif mean_pitch_hz >= 420.0:
                 falsetto_bias += 0.02
 
+        if mean_pitch_hz < 300.0:
+            if voiced_ratio >= 0.56 and stable_ratio >= 0.14:
+                chest_bias += 0.09
+            if mean_rms >= 0.00055 and mean_zcr <= 0.13:
+                chest_bias += 0.05
         if mean_pitch_hz < 320.0 and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
             chest_bias += 0.08
         if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18:
             falsetto_bias += 0.03
+        if breath_like:
+            chest_bias += 0.06
+            falsetto_bias -= 0.10
+        if mean_pitch_hz < 340.0 and mean_zcr >= 0.12 and stable_ratio < 0.12:
+            falsetto_bias -= 0.05
 
         adjusted_chest = chest_prob + chest_bias
-        adjusted_falsetto = falsetto_prob + falsetto_bias
+        adjusted_falsetto = max(0.0, falsetto_prob + falsetto_bias)
         total = max(1e-9, adjusted_chest + adjusted_falsetto)
         adjusted_chest /= total
         adjusted_falsetto /= total
@@ -31647,6 +32260,9 @@ class ECGStylePitchVisualizer(QWidget):
         confidences = np.asarray([float(getattr(item, 'confidence', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
         has_pitch = np.asarray([bool(getattr(item, 'has_pitch', False)) for item in valid_frames], dtype=bool)
         rms_values = np.asarray([float(getattr(item, 'audio_rms', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        zcr_values = np.asarray([float(getattr(item, 'zcr', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        breath_scores = np.asarray([float(getattr(item, 'breath_score', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        breath_hints = np.asarray([1.0 if bool(getattr(item, 'breath_detect_hint', False)) else 0.0 for item in valid_frames], dtype=np.float32)
         pitches = np.asarray([float(getattr(item, 'display_frequency_hz', 0.0) or getattr(item, 'detected_frequency_hz', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
         voiced_mask = np.logical_and(has_pitch, confidences >= 0.34)
         stable_mask = np.logical_and(has_pitch, confidences >= 0.50)
@@ -31684,6 +32300,9 @@ class ECGStylePitchVisualizer(QWidget):
             voiced_ratio = float(np.mean(voiced_mask[frame_mask])) if frame_count > 0 else 0.0
             stable_ratio = float(np.mean(stable_mask[frame_mask])) if frame_count > 0 else 0.0
             mean_rms = float(np.mean(rms_values[frame_mask])) if frame_count > 0 else 0.0
+            mean_zcr = float(np.mean(zcr_values[frame_mask])) if frame_count > 0 else 0.0
+            mean_breath_score = float(np.mean(breath_scores[frame_mask])) if frame_count > 0 else 0.0
+            breath_hint_ratio = float(np.mean(breath_hints[frame_mask])) if frame_count > 0 else 0.0
             if voiced_ratio < 0.17 or stable_ratio < 0.03 or mean_rms < 0.00008:
                 continue
             pitch_slice = pitches[frame_mask]
@@ -31696,6 +32315,9 @@ class ECGStylePitchVisualizer(QWidget):
                 'voiced_ratio': voiced_ratio,
                 'stable_ratio': stable_ratio,
                 'mean_rms': mean_rms,
+                'mean_zcr': mean_zcr,
+                'mean_breath_score': mean_breath_score,
+                'breath_hint_ratio': breath_hint_ratio,
                 'mean_pitch_hz': mean_pitch_hz,
             }
             if bundle is not None:
@@ -31736,6 +32358,9 @@ class ECGStylePitchVisualizer(QWidget):
                             voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
                             stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
                             mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
+                            mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
+                            mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
+                            breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
                         )
                         record.update({
                             'event_type': adjusted['event_type'],
@@ -31778,6 +32403,9 @@ class ECGStylePitchVisualizer(QWidget):
                     voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
                     stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
                     mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
+                    mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
+                    mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
+                    breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
                 )
                 record.update({
                     'event_type': adjusted['event_type'],
@@ -31822,6 +32450,7 @@ class ECGStylePitchVisualizer(QWidget):
         predictions = sorted(predictions, key=lambda item: float(item.get('center_time', 0.0) or 0.0))
         predictions = self._smooth_chest_falsetto_predictions(predictions, hop_s)
         checkpoint_label = ''
+        source_kind = self._offline_local_file_source_kind(valid_frames)
         try:
             if isinstance(bundle, dict):
                 checkpoint_label = str(bundle.get('path', '') or '')
@@ -31869,6 +32498,11 @@ class ECGStylePitchVisualizer(QWidget):
             if frame_count <= 0:
                 continue
             voiced_ratio = float(np.mean(voiced_mask[frame_mask])) if frame_count > 0 else 0.0
+            stable_ratio = float(np.mean(stable_mask[frame_mask])) if frame_count > 0 else 0.0
+            mean_rms = float(np.mean(rms_values[frame_mask])) if frame_count > 0 else 0.0
+            mean_zcr = float(np.mean(zcr_values[frame_mask])) if frame_count > 0 else 0.0
+            mean_breath_score = float(np.mean(breath_scores[frame_mask])) if frame_count > 0 else 0.0
+            breath_hint_ratio = float(np.mean(breath_hints[frame_mask])) if frame_count > 0 else 0.0
             pitch_slice = pitches[frame_mask]
             positive_pitch = pitch_slice[pitch_slice > 0.0]
             mean_pitch_hz = float(np.mean(positive_pitch)) if positive_pitch.size else float(np.mean([float(item.get('mean_pitch_hz', 0.0) or 0.0) for item in run]))
@@ -31893,6 +32527,11 @@ class ECGStylePitchVisualizer(QWidget):
                 feature_snapshot={
                     'mean_pitch_hz': mean_pitch_hz,
                     'voiced_ratio': voiced_ratio,
+                    'stable_ratio': stable_ratio,
+                    'mean_rms': mean_rms,
+                    'mean_zcr': mean_zcr,
+                    'mean_breath_score': mean_breath_score,
+                    'breath_hint_ratio': breath_hint_ratio,
                     'chest_prob': chest_prob,
                     'falsetto_prob': falsetto_prob,
                 },
@@ -31901,6 +32540,12 @@ class ECGStylePitchVisualizer(QWidget):
                     'window_s': window_s,
                     'hop_s': hop_s,
                     'checkpoint': checkpoint_label,
+                    'source_kind': source_kind,
+                    'stable_ratio': stable_ratio,
+                    'mean_rms': mean_rms,
+                    'mean_zcr': mean_zcr,
+                    'mean_breath_score': mean_breath_score,
+                    'breath_hint_ratio': breath_hint_ratio,
                 },
                 voice_type='chest' if event_type == 'chest_voice' else 'falsetto',
                 mean_pitch_hz=mean_pitch_hz,
@@ -31928,8 +32573,10 @@ class ECGStylePitchVisualizer(QWidget):
         if not self._technique_enabled_for_current_mode():
             self._refresh_technique_artists(force=True)
             return summary
+        offline_breath_events = self._build_offline_gap_breath_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
         offline_vibrato_events = self._build_offline_vibrato_events(frames)
         offline_voice_events = self._build_offline_chest_falsetto_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
+        offline_breath_events = list(offline_breath_events or []) + list(self._fallback_breath_events_from_voice_events(offline_voice_events) or [])
         last_feature = None
         prev_vibrato_guard = bool(getattr(self, '_disable_realtime_vibrato_detection', False))
         self._disable_realtime_vibrato_detection = bool(offline_vibrato_events)
@@ -31955,15 +32602,21 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             min_conf = 0.55
         filtered_events = []
-        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_vibrato_events or []) + list(offline_voice_events or [])
+        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events or [])
         for event in all_events:
             try:
-                if float(getattr(event, 'confidence', 0.0) or 0.0) < min_conf:
+                event_min_conf = self._technique_event_min_confidence_threshold(event, min_conf)
+                if float(getattr(event, 'confidence', 0.0) or 0.0) < event_min_conf:
                     continue
             except Exception:
                 continue
             filtered_events.append(event)
         filtered_events = self._postprocess_technique_events(filtered_events)
+        if not filtered_events:
+            if self._offline_local_file_source_kind(frames) == 'local_file_onepass':
+                filtered_events = self._fallback_local_file_onepass_events(all_events)
+            elif offline_voice_events:
+                filtered_events = self._fallback_normal_voice_events(offline_voice_events)
         self._technique_events = deque(filtered_events, maxlen=240)
         counts = {}
         duration = 0.0
@@ -32155,6 +32808,23 @@ class ECGStylePitchVisualizer(QWidget):
         confidence = max(0.0, float(getattr(event, 'confidence', 0.0) or 0.0))
         strength = max(0.0, float(getattr(event, 'strength', 0.0) or 0.0))
         if event_type == 'breath':
+            source_kind = ''
+            try:
+                source_kind = str(getattr(event, 'display_payload', {}).get('source_kind', '') or '')
+            except Exception:
+                source_kind = ''
+            if source_kind == 'local_file_onepass':
+                suppressed = int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
+                breath_peak = float(getattr(event, 'breath_score_peak', 0.0) or 0.0)
+                mean_rms = float(getattr(event, 'mean_rms', 0.0) or 0.0)
+                mean_zcr = float(getattr(event, 'mean_zcr', 0.0) or 0.0)
+                pre_pitch = float(getattr(event, 'pre_pitch_hz', 0.0) or 0.0)
+                post_pitch = float(getattr(event, 'post_pitch_hz', 0.0) or 0.0)
+                contextual = (pre_pitch > 0.0) and (post_pitch > 0.0)
+                long_gap = duration >= 0.14 and suppressed >= 2
+                airflow_ok = breath_peak >= 0.56 or mean_zcr >= 0.06
+                quiet_gap = mean_rms <= 0.0042
+                return duration >= 0.09 and duration <= 1.05 and contextual and long_gap and (airflow_ok or quiet_gap) and (confidence >= 0.54 or strength >= 0.52)
             min_d = max(0.11, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.11
             suppressed = int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
             breath_peak = float(getattr(event, 'breath_score_peak', 0.0) or 0.0)
@@ -32194,11 +32864,22 @@ class ECGStylePitchVisualizer(QWidget):
             breathy = float(getattr(event, 'breathy_score', 0.0) or 0.0)
             return duration >= min_d and breathy >= 0.34 and strength >= 0.50
         if event_type in ('chest_voice', 'falsetto'):
+            source_kind = ''
+            try:
+                source_kind = str(getattr(event, 'display_payload', {}).get('source_kind', '') or '')
+            except Exception:
+                source_kind = ''
+            if self._voice_event_breath_like(event):
+                return False
             voiced_ratio = float(getattr(event, 'voiced_ratio', 0.0) or 0.0)
             prob_margin = float(getattr(event, 'probability_margin', 0.0) or 0.0)
             window_count = int(getattr(event, 'window_count', 0) or 0)
             strong_single = duration >= 0.18 and confidence >= 0.68 and prob_margin >= 0.12
             mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
+            if source_kind == 'local_file_onepass':
+                if event_type == 'falsetto' and mean_pitch_hz > 0.0 and mean_pitch_hz < 220.0:
+                    return False
+                return duration >= 0.12 and voiced_ratio >= 0.16 and confidence >= 0.48 and strength >= 0.42 and (window_count >= 1 or prob_margin >= 0.04)
             if event_type == 'chest_voice':
                 if mean_pitch_hz > 0.0 and mean_pitch_hz < 240.0:
                     return duration >= 0.14 and voiced_ratio >= 0.18 and confidence >= 0.48 and strength >= 0.42 and (window_count >= 1 or duration >= 0.18)
@@ -32223,6 +32904,217 @@ class ECGStylePitchVisualizer(QWidget):
             'falsetto': 0.26,
         }
         return float(spacing_map.get(str(event_type or ''), 0.35))
+
+    def _technique_event_source_kind(self, event: BaseTechniqueEvent) -> str:
+        try:
+            payload = getattr(event, 'display_payload', {}) or {}
+            if isinstance(payload, dict):
+                return str(payload.get('source_kind', '') or '')
+        except Exception:
+            pass
+        return ''
+
+    def _fallback_local_file_onepass_events(self, events: List[BaseTechniqueEvent]) -> List[BaseTechniqueEvent]:
+        fallback: List[BaseTechniqueEvent] = []
+        candidates: List[BaseTechniqueEvent] = []
+        for event in list(events or []):
+            if self._technique_event_source_kind(event) != 'local_file_onepass':
+                continue
+            event_type = str(getattr(event, 'event_type', '') or '')
+            try:
+                duration = float(getattr(event, 'duration', 0.0) or 0.0)
+                confidence = float(getattr(event, 'confidence', 0.0) or 0.0)
+                strength = float(getattr(event, 'strength', 0.0) or 0.0)
+            except Exception:
+                continue
+            if event_type == 'breath':
+                if duration < 0.07 or confidence < 0.48:
+                    continue
+            elif event_type in ('chest_voice', 'falsetto'):
+                if duration < 0.10 or max(confidence, strength) < 0.44:
+                    continue
+            else:
+                continue
+            candidates.append(event)
+        candidates.sort(key=lambda item: (float(getattr(item, 'start_time', 0.0) or 0.0), float(getattr(item, 'end_time', 0.0) or 0.0)))
+        for event in candidates:
+            if fallback:
+                prev = fallback[-1]
+                same_type = str(getattr(prev, 'event_type', '') or '') == str(getattr(event, 'event_type', '') or '')
+                try:
+                    gap = float(getattr(event, 'start_time', 0.0) or 0.0) - float(getattr(prev, 'end_time', 0.0) or 0.0)
+                except Exception:
+                    gap = 999.0
+                if same_type and gap <= max(0.22, self._technique_event_spacing(getattr(event, 'event_type', '')) * 0.9):
+                    self._merge_technique_events(prev, event)
+                    continue
+            fallback.append(event)
+        return fallback
+
+    def _fallback_normal_voice_events(self, events: List[BaseTechniqueEvent]) -> List[BaseTechniqueEvent]:
+        fallback: List[BaseTechniqueEvent] = []
+        candidates: List[BaseTechniqueEvent] = []
+        for event in list(events or []):
+            event_type = str(getattr(event, 'event_type', '') or '')
+            if event_type not in ('chest_voice', 'falsetto'):
+                continue
+            if self._technique_event_source_kind(event) == 'local_file_onepass':
+                continue
+            try:
+                duration = float(getattr(event, 'duration', 0.0) or 0.0)
+                confidence = float(getattr(event, 'confidence', 0.0) or 0.0)
+                strength = float(getattr(event, 'strength', 0.0) or 0.0)
+                voiced_ratio = float(getattr(event, 'voiced_ratio', 0.0) or 0.0)
+                mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
+                prob_margin = float(getattr(event, 'probability_margin', 0.0) or 0.0)
+                window_count = int(getattr(event, 'window_count', 0) or 0)
+            except Exception:
+                continue
+            if duration < 0.12 or voiced_ratio < 0.16:
+                continue
+            if max(confidence, strength) < 0.42:
+                continue
+            if event_type == 'falsetto':
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 220.0:
+                    continue
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 300.0:
+                    if not (duration >= 0.18 and voiced_ratio >= 0.20 and confidence >= 0.54 and strength >= 0.45 and prob_margin >= 0.07 and window_count >= 1):
+                        continue
+                elif not (duration >= 0.16 and voiced_ratio >= 0.18 and confidence >= 0.50 and strength >= 0.44 and (window_count >= 1 or prob_margin >= 0.05)):
+                    continue
+            else:
+                if mean_pitch_hz > 0.0 and mean_pitch_hz < 240.0:
+                    if not (duration >= 0.12 and voiced_ratio >= 0.16 and confidence >= 0.46 and strength >= 0.40 and (window_count >= 1 or duration >= 0.16)):
+                        continue
+                elif mean_pitch_hz > 0.0 and mean_pitch_hz < 320.0:
+                    if not (duration >= 0.14 and voiced_ratio >= 0.18 and confidence >= 0.48 and strength >= 0.42 and (window_count >= 1 or duration >= 0.18)):
+                        continue
+                elif not (duration >= 0.16 and voiced_ratio >= 0.18 and confidence >= 0.50 and strength >= 0.44 and (window_count >= 1 or prob_margin >= 0.05)):
+                    continue
+            candidates.append(event)
+        candidates.sort(key=lambda item: (float(getattr(item, 'start_time', 0.0) or 0.0), float(getattr(item, 'end_time', 0.0) or 0.0)))
+        for event in candidates:
+            if fallback:
+                prev = fallback[-1]
+                same_type = str(getattr(prev, 'event_type', '') or '') == str(getattr(event, 'event_type', '') or '')
+                try:
+                    gap = float(getattr(event, 'start_time', 0.0) or 0.0) - float(getattr(prev, 'end_time', 0.0) or 0.0)
+                except Exception:
+                    gap = 999.0
+                if same_type and gap <= max(0.20, self._technique_event_spacing(getattr(event, 'event_type', '')) * 0.9):
+                    self._merge_technique_events(prev, event)
+                    continue
+            fallback.append(event)
+        return fallback
+
+    def _voice_event_breath_like(self, event: Optional[BaseTechniqueEvent]) -> bool:
+        if event is None:
+            return False
+        try:
+            event_type = str(getattr(event, 'event_type', '') or '')
+        except Exception:
+            event_type = ''
+        if event_type != 'falsetto':
+            return False
+        try:
+            payload = dict(getattr(event, 'display_payload', {}) or {})
+        except Exception:
+            payload = {}
+        try:
+            snapshot = dict(getattr(event, 'feature_snapshot', {}) or {})
+        except Exception:
+            snapshot = {}
+        def _pick(name: str, default: float = 0.0) -> float:
+            try:
+                if name in payload:
+                    return float(payload.get(name, default) or default)
+            except Exception:
+                pass
+            try:
+                return float(snapshot.get(name, default) or default)
+            except Exception:
+                return float(default)
+        try:
+            duration = float(getattr(event, 'duration', 0.0) or 0.0)
+            confidence = float(getattr(event, 'confidence', 0.0) or 0.0)
+            strength = float(getattr(event, 'strength', 0.0) or 0.0)
+            voiced_ratio = float(getattr(event, 'voiced_ratio', 0.0) or 0.0)
+            prob_margin = float(getattr(event, 'probability_margin', 0.0) or 0.0)
+        except Exception:
+            return False
+        mean_rms = _pick('mean_rms')
+        mean_zcr = _pick('mean_zcr')
+        stable_ratio = _pick('stable_ratio')
+        mean_breath_score = _pick('mean_breath_score')
+        breath_hint_ratio = _pick('breath_hint_ratio')
+        low_energy = 0.00008 <= mean_rms <= 0.0024
+        airy_noise = mean_zcr >= 0.09 or mean_breath_score >= 0.24 or breath_hint_ratio >= 0.16
+        weak_voicing = voiced_ratio <= 0.42 and stable_ratio <= 0.18
+        weak_separation = prob_margin <= 0.16 and confidence <= 0.76 and strength <= 0.70
+        return duration >= 0.08 and duration <= 0.90 and low_energy and airy_noise and weak_voicing and weak_separation
+
+    def _fallback_breath_events_from_voice_events(self, events: List[BaseTechniqueEvent]) -> List[BreathEvent]:
+        fallback: List[BreathEvent] = []
+        for event in list(events or []):
+            if not self._voice_event_breath_like(event):
+                continue
+            try:
+                payload = dict(getattr(event, 'display_payload', {}) or {})
+            except Exception:
+                payload = {}
+            try:
+                snapshot = dict(getattr(event, 'feature_snapshot', {}) or {})
+            except Exception:
+                snapshot = {}
+            def _pick(name: str, default: float = 0.0) -> float:
+                try:
+                    if name in payload:
+                        return float(payload.get(name, default) or default)
+                except Exception:
+                    pass
+                try:
+                    return float(snapshot.get(name, default) or default)
+                except Exception:
+                    return float(default)
+            try:
+                start_time = float(getattr(event, 'start_time', 0.0) or 0.0)
+                end_time = float(getattr(event, 'end_time', 0.0) or 0.0)
+                duration = float(getattr(event, 'duration', max(0.0, end_time - start_time)) or max(0.0, end_time - start_time))
+                confidence = float(getattr(event, 'confidence', 0.0) or 0.0)
+                strength = float(getattr(event, 'strength', 0.0) or 0.0)
+            except Exception:
+                continue
+            mean_rms = _pick('mean_rms')
+            mean_zcr = _pick('mean_zcr')
+            breath_score_peak = max(_pick('mean_breath_score'), _pick('breath_hint_ratio') * 0.9, 0.26)
+            breath_event = BreathEvent(
+                event_type='breath',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=max(0.56, min(0.82, 0.48 + confidence * 0.28 + breath_score_peak * 0.10)),
+                strength=max(0.54, min(0.84, 0.46 + strength * 0.24 + max(mean_zcr, breath_score_peak) * 0.14)),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='voice_breath_fallback',
+                display_label='换气',
+                display_color='#6EC6FF',
+                subtype='voice_confusion_fallback',
+                mean_rms=mean_rms,
+                mean_zcr=mean_zcr,
+                breath_score_peak=breath_score_peak,
+                suppressed_pitch_frames=max(1, int(round(duration / 0.08))),
+                feature_snapshot={
+                    'derived_from': str(getattr(event, 'event_type', '') or ''),
+                    'mean_rms': mean_rms,
+                    'mean_zcr': mean_zcr,
+                },
+                display_payload={
+                    'derived_from_voice_type': str(getattr(event, 'event_type', '') or ''),
+                    'source_kind': str(payload.get('source_kind', '') or ''),
+                },
+            )
+            fallback.append(breath_event)
+        return fallback
 
     def _postprocess_technique_events(self, events: List[BaseTechniqueEvent]) -> List[BaseTechniqueEvent]:
         try:
@@ -39286,13 +40178,13 @@ class ECGStylePitchVisualizer(QWidget):
                     from src.audio_processing.performance_manager import PerformanceMode
                     cur_mode = getattr(self, 'current_performance_mode', None)
                     if cur_mode == PerformanceMode.HIGH_PERFORMANCE:
-                        base_target = 0.022
+                        base_target = 0.026
                     elif cur_mode == PerformanceMode.BALANCED:
-                        base_target = 0.024
+                        base_target = 0.029
                     else:
-                        base_target = 0.028
+                        base_target = 0.033
                 except Exception:
-                    base_target = 0.024
+                    base_target = 0.029
             else:
                 base_target = 0.018 if self._aggressive_mode else 0.028
             # 若存在最近的自适应压缩历史则平滑过渡
@@ -39338,9 +40230,11 @@ class ECGStylePitchVisualizer(QWidget):
                 p90_lat = sl[int(0.9*len(sl))-1] if len(sl) > 5 else 0
                 p50_lat = sl[int(0.5*len(sl))-1] if len(sl) > 1 else 0
                 # 若 p90 延迟 >40ms 或 p50 >28ms 说明输出滞后，主动再收紧重帧阈值
-                if (p90_lat > 0.040 or p50_lat > 0.028):
+                lat_p90_th = 0.055 if normal_realtime_mode else 0.040
+                lat_p50_th = 0.036 if normal_realtime_mode else 0.028
+                if (p90_lat > lat_p90_th or p50_lat > lat_p50_th):
                     if not hasattr(self,'_last_latency_compress') or (now - self._last_latency_compress) > 0.4:
-                        heavy_interval_threshold *= 0.74  # 适度更积极
+                        heavy_interval_threshold *= (0.88 if normal_realtime_mode else 0.74)
                         self._last_latency_compress = now
                         if frame_trace:
                             print(f"[FRAME_ADAPT] latency compress p50={p50_lat*1000:.1f}ms p90={p90_lat*1000:.1f}ms new_thr={heavy_interval_threshold*1000:.1f}ms")
@@ -39348,12 +40242,12 @@ class ECGStylePitchVisualizer(QWidget):
             force_latency_redraw = False
             if self._diag_add_to_display_latencies:
                 last_lat = self._diag_add_to_display_latencies[-1]
-                if last_lat > 0.045:
+                if last_lat > (0.060 if normal_realtime_mode else 0.045):
                     force_latency_redraw = True
             # 轻量帧 watchdog：最近显示间隔>120ms 也强制重帧
             if not force_latency_redraw and self._diag_display_intervals:
                 try:
-                    if self._diag_display_intervals[-1] > 0.090:
+                    if self._diag_display_intervals[-1] > (0.110 if normal_realtime_mode else 0.090):
                         force_latency_redraw = True
                 except Exception:
                     pass
@@ -39895,11 +40789,27 @@ class ECGStylePitchVisualizer(QWidget):
                     self._light_frame_count += 1
                     if frame_trace:
                         print(f"[FRAME] 轻量帧 skip heavy redraw gap={(now - self._last_heavy_redraw_time)*1000:.1f}ms thr={heavy_interval_threshold*1000:.0f}ms lat_force={force_latency_redraw}")
-                    self.update_status_display()
-                    self.update_scrollbars()
-                    # 轻量帧手动触发一次重绘，避免仅改 xlim 而未刷新导致的“齿感”和细节点暂隐
-                    if hasattr(self, 'canvas'):
-                        self.canvas.draw_idle()
+                    try:
+                        ui_interval = float(getattr(self, '_normal_mode_light_ui_interval', 0.045) or 0.045)
+                    except Exception:
+                        ui_interval = 0.045
+                    try:
+                        last_ui_t = float(getattr(self, '_last_normal_mode_light_ui_t', 0.0) or 0.0)
+                    except Exception:
+                        last_ui_t = 0.0
+                    if force_redraw or ((now - last_ui_t) >= max(0.010, ui_interval)):
+                        try:
+                            self._last_normal_mode_light_ui_t = float(now)
+                        except Exception:
+                            pass
+                        self.update_status_display()
+                        self.update_scrollbars()
+                    # 轻量帧只做节流后的画布重绘，减少自动跟随期间的主线程占用
+                    try:
+                        draw_iv = float(getattr(self, '_normal_mode_light_draw_min_interval', 0.018) or 0.018)
+                    except Exception:
+                        draw_iv = 0.018
+                    self._request_canvas_draw_idle(min_interval=draw_iv, stamp_attr='_last_normal_mode_light_draw_t')
                     return
                 except Exception:
                     pass
@@ -40670,6 +41580,16 @@ class ECGStylePitchVisualizer(QWidget):
                 _recomp_age = float(getattr(self, '_segments_recompute_max_age_s', 0.10))
                 _large_shift_th = float(getattr(self, '_segments_large_shift_threshold', 0.06))
                 has_new_pts = getattr(self, '_new_points_since_last_draw', 0) > 0
+                manual_scroll_active = False
+                try:
+                    manual_scroll_active = bool(now_time < float(getattr(self, '_manual_scroll_active_until', 0.0)))
+                except Exception:
+                    manual_scroll_active = False
+                if (not manual_scroll_active) and manual_freeze:
+                    manual_scroll_active = True
+                if manual_scroll_active and (not has_new_pts):
+                    _recomp_age = max(_recomp_age, float(getattr(self, '_manual_scroll_segments_recompute_max_age_s', 0.18)))
+                    _large_shift_th = max(_large_shift_th, float(getattr(self, '_manual_scroll_segments_large_shift_threshold', 0.16)))
                 large_shift = window_shift > _large_shift_th
                 too_old = (now_time - self._last_segments_recompute) > _recomp_age
                 if has_new_pts or large_shift or too_old:
@@ -41902,6 +42822,8 @@ class ECGStylePitchVisualizer(QWidget):
                 self._segment_lines = []
             if not hasattr(self, '_segment_points'):
                 self._segment_points = []
+            if not hasattr(self, '_segment_point_render_keys') or not isinstance(getattr(self, '_segment_point_render_keys', None), list):
+                self._segment_point_render_keys = []
 
             # 隐藏原整体线（使用分段显示），但保留“专用叠加线”不受影响
             try:
@@ -41961,6 +42883,8 @@ class ECGStylePitchVisualizer(QWidget):
                     try: extra.remove()
                     except: pass
                 self._segment_points = self._segment_points[:len(segments)]
+            if len(self._segment_point_render_keys) > len(segments):
+                self._segment_point_render_keys = self._segment_point_render_keys[:len(segments)]
 
             # 尺寸计算函数：保证细节点在高缩放/低缩放下都可见
             def _calc_marker_size():
@@ -41983,6 +42907,8 @@ class ECGStylePitchVisualizer(QWidget):
                 x0, x1 = self.ax.get_xlim()
             except Exception:
                 x0, x1 = None, None
+            point_view_quant = max(0.02, float(getattr(self, '_segment_points_view_quant_s', 0.08) or 0.08))
+            stable_points_mode = str(self._get_stable_segment_points_mode() or '')
             preserve_future = bool(
                 getattr(self, '_retake_force_preserve_future', False)
                 or getattr(self, '_retake_countdown_preserve_future', False)
@@ -42003,19 +42929,31 @@ class ECGStylePitchVisualizer(QWidget):
                     cur_sigs.append((None, None, 0))
             sig_mismatch = (len(getattr(self, '_segment_sigs', [])) != len(cur_sigs))
             lazy_tail = max(0, min(getattr(self, '_lazy_points_update_n', 3), len(segments)))
+            line_gap_thr_local = float(getattr(self, '_breath_gap_threshold', 0.14))
+            line_bridge_scale = float(getattr(self, '_bridge_time_scale', 1.15))
+            line_bridge_semi_thr = float(getattr(self, '_bridge_semi_thr', 3.2))
+            line_render_params = (line_gap_thr_local, line_bridge_scale, line_bridge_semi_thr)
+            line_render_params_changed = bool(getattr(self, '_segment_line_render_params', None) != line_render_params)
+            if x0 is None or x1 is None:
+                point_view_sig = None
+            else:
+                try:
+                    point_view_sig = (int(x0 / point_view_quant), int(x1 / point_view_quant))
+                except Exception:
+                    point_view_sig = (round(float(x0), 2), round(float(x1), 2))
+            if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future):
+                try:
+                    point_cap_sig = round(float(getattr(self, '_max_visible_time', float('inf'))), 2)
+                except Exception:
+                    point_cap_sig = 'cap'
+            else:
+                point_cap_sig = None
 
             # 统一线条透明度（禁用按段跳变淡化）
             stable_alpha = float(getattr(self, '_uniform_line_alpha', getattr(self, '_stable_line_alpha', 0.85)))
 
             for i, (seg_times, seg_pitches) in enumerate(segments):
                 seg_loop_start = _tmod.time()
-                # 允许单点段（显示细节点）
-                # 为避免无声/换气大空隙跨连，对线条数据按时间间隔插入 NaN 断点；散点仍使用原点集
-                gap_thr_local = float(getattr(self, '_breath_gap_threshold', 0.14))
-                # 终端防抖2：对“短缺口且音高连续”的相邻点进行桥接，避免有声区出现细短断开
-                # 若相邻两点时间间隔略大于阈值但半音差很小，则不插入 NaN
-                bridge_scale = float(getattr(self, '_bridge_time_scale', 1.15))  # 收紧桥接倍率，降低误连
-                bridge_semi_thr = float(getattr(self, '_bridge_semi_thr', 3.2))  # 半音差<=3.2 认为连续
                 # 再次（防御性）应用 cap 到当前段，确保任何后续 set_data/lt 构造都不越界
                 try:
                     if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future) and len(seg_times):
@@ -42027,23 +42965,22 @@ class ECGStylePitchVisualizer(QWidget):
                         seg_times = ta[mcap].tolist(); seg_pitches = ya[mcap].tolist()
                 except Exception:
                     pass
-                if len(seg_times) >= 2:
-                    lt, ly = [], []
-                    for j, (tx, py) in enumerate(zip(seg_times, seg_pitches)):
-                        lt.append(tx); ly.append(py)
-                        if j + 1 < len(seg_times):
-                            dt_gap = float(seg_times[j+1]) - float(tx)
-                            if dt_gap > gap_thr_local:
-                                # 判断是否可桥接
-                                try:
-                                    semi_jump = abs((float(seg_pitches[j+1]) - float(py)) * 12.0)
-                                except Exception:
-                                    semi_jump = 999.0
-                                if not (dt_gap <= gap_thr_local * bridge_scale and semi_jump <= bridge_semi_thr):
-                                    lt.append(float('nan')); ly.append(float('nan'))
-                else:
-                    lt, ly = seg_times, seg_pitches
                 if i >= len(self._segment_lines):
+                    if len(seg_times) >= 2:
+                        lt, ly = [], []
+                        for j, (tx, py) in enumerate(zip(seg_times, seg_pitches)):
+                            lt.append(tx); ly.append(py)
+                            if j + 1 < len(seg_times):
+                                dt_gap = float(seg_times[j+1]) - float(tx)
+                                if dt_gap > line_gap_thr_local:
+                                    try:
+                                        semi_jump = abs((float(seg_pitches[j+1]) - float(py)) * 12.0)
+                                    except Exception:
+                                        semi_jump = 999.0
+                                    if not (dt_gap <= line_gap_thr_local * line_bridge_scale and semi_jump <= line_bridge_semi_thr):
+                                        lt.append(float('nan')); ly.append(float('nan'))
+                    else:
+                        lt, ly = seg_times, seg_pitches
                     # 新建 line
                     if len(seg_times) >= 2:
                         # 统一透明度
@@ -42082,7 +43019,19 @@ class ECGStylePitchVisualizer(QWidget):
                                 seg_times, seg_pitches = self._cap_filter_times_pitches(seg_times, seg_pitches)
                     except Exception:
                         pass
-                    pts = self.ax.scatter(seg_times, seg_pitches,
+                    pts_offsets = None
+                    if stable_points_mode:
+                        try:
+                            pts_offsets = self._get_stable_segment_offsets(seg_times, seg_pitches, stable_points_mode)
+                        except Exception:
+                            pts_offsets = None
+                    if pts_offsets is not None and getattr(pts_offsets, 'size', 0) > 0:
+                        pts_x = pts_offsets[:, 0]
+                        pts_y = pts_offsets[:, 1]
+                    else:
+                        pts_x = seg_times
+                        pts_y = seg_pitches
+                    pts = self.ax.scatter(pts_x, pts_y,
                                           s=s_val_global,
                                           color=detail_rgb,
                                           alpha=(0.92 if pts_boost else 0.98),
@@ -42094,6 +43043,7 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         pass
                     self._segment_points.append(pts)
+                    self._segment_point_render_keys.append(None)
                 else:
                     line = self._segment_lines[i]
                     # 若被 ax.clear() 移除，重新挂载
@@ -42104,8 +43054,23 @@ class ECGStylePitchVisualizer(QWidget):
                             pass
                     # 判断是否需要更新该段数据（签名变化或数量变化）
                     need_update = sig_mismatch or (i >= len(getattr(self, '_segment_sigs', []))) or (self._segment_sigs[i] != cur_sigs[i])
+                    if line_render_params_changed:
+                        need_update = True
                     if len(seg_times) >= 2:
-                        if need_update: line.set_data(lt, ly)
+                        if need_update:
+                            lt, ly = [], []
+                            for j, (tx, py) in enumerate(zip(seg_times, seg_pitches)):
+                                lt.append(tx); ly.append(py)
+                                if j + 1 < len(seg_times):
+                                    dt_gap = float(seg_times[j+1]) - float(tx)
+                                    if dt_gap > line_gap_thr_local:
+                                        try:
+                                            semi_jump = abs((float(seg_pitches[j+1]) - float(py)) * 12.0)
+                                        except Exception:
+                                            semi_jump = 999.0
+                                        if not (dt_gap <= line_gap_thr_local * line_bridge_scale and semi_jump <= line_bridge_semi_thr):
+                                            lt.append(float('nan')); ly.append(float('nan'))
+                            line.set_data(lt, ly)
                         # 统一透明度
                         alpha_val = stable_alpha
                         line.set_alpha(alpha_val)
@@ -42150,6 +43115,20 @@ class ECGStylePitchVisualizer(QWidget):
                             pass
                     try:
                         import numpy as np
+                        existing_point_key = self._segment_point_render_keys[i] if i < len(self._segment_point_render_keys) else None
+                        size_sig = round(float(s_val_global), 2)
+                        if stable_points_mode:
+                            point_key = ('stable', cur_sigs[i], stable_points_mode, point_cap_sig, size_sig)
+                            if need_update or existing_point_key != point_key:
+                                offs = self._get_stable_segment_offsets(seg_times, seg_pitches, stable_points_mode)
+                                old_pts.set_offsets(offs)
+                                old_pts.set_sizes([s_val_global] * (len(offs) if hasattr(offs, '__len__') else 1))
+                            else:
+                                offs = old_pts.get_offsets()
+                            old_pts.set_alpha(0.98 if getattr(offs, 'size', 0) > 0 else 0.0)
+                            old_pts.set_zorder(14)
+                            self._segment_point_render_keys[i] = point_key
+                            continue
                         # 统一判断当前段是否与视口相交
                         if x0 is None or x1 is None:
                             in_view = True if len(seg_times) else False
@@ -42161,61 +43140,68 @@ class ECGStylePitchVisualizer(QWidget):
                         # 浏览历史：总是更新；录音中：凡是与视口相交，一律更新散点（密集则抽样）
                         if high_fidelity_browse or in_view:
                             dense_seg = len(seg_times) > int(getattr(self, '_dense_segment_threshold', 400))
-                            if dense_seg and len(seg_times) >= 2 and in_view:
-                                # 视口内密集段：抽样更新
-                                t_arr = np.asarray(seg_times, dtype=np.float32)
-                                y_arr = np.asarray(seg_pitches, dtype=np.float32)
-                                if x0 is not None and x1 is not None:
-                                    mask = (t_arr >= x0) & (t_arr <= x1)
-                                    t_vis = t_arr[mask]
-                                    y_vis = y_arr[mask]
-                                else:
-                                    t_vis, y_vis = t_arr, y_arr
-                                # Cap过滤
-                                if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future):
-                                    try:
-                                        cap = float(getattr(self, '_max_visible_time', float('inf')))
-                                        mcap = (t_vis <= cap)
-                                        t_vis = t_vis[mcap]; y_vis = y_vis[mcap]
-                                        # 统一过滤
-                                        arr_tmp = np.column_stack((t_vis, y_vis)) if t_vis.size>0 else np.empty((0,2))
-                                        arr_tmp = self._cap_filter_offsets_array(arr_tmp)
-                                        if arr_tmp.size>0:
-                                            t_vis = arr_tmp[:,0]; y_vis = arr_tmp[:,1]
-                                    except Exception:
-                                        pass
-                                max_pts_seg = int(getattr(self, '_segment_points_cap_in_view', 450))
-                                if t_vis.size > 0:
-                                    if t_vis.size > max_pts_seg:
-                                        step = int(np.ceil(t_vis.size / max_pts_seg))
-                                        t_vis = t_vis[::step]; y_vis = y_vis[::step]
-                                    offs = np.column_stack((t_vis, y_vis))
-                                else:
-                                    offs = np.empty((0, 2))
-                            else:
-                                # 非密集或不在视口：直接使用原段（若启用cap则裁剪）
-                                if len(seg_times):
-                                    try:
-                                        if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future):
-                                            ta = np.asarray(seg_times, dtype=np.float32)
-                                            ya = np.asarray(seg_pitches, dtype=np.float32)
+                            max_pts_seg = int(getattr(self, '_segment_points_cap_in_view', 450))
+                            dense_in_view = bool(dense_seg and len(seg_times) >= 2 and in_view)
+                            point_key = ('normal', cur_sigs[i], bool(high_fidelity_browse), bool(in_view), bool(dense_in_view), point_view_sig if dense_in_view else None, point_cap_sig, max_pts_seg if dense_in_view else None, size_sig)
+                            if need_update or existing_point_key != point_key:
+                                if dense_in_view:
+                                    # 视口内密集段：抽样更新
+                                    t_arr = np.asarray(seg_times, dtype=np.float32)
+                                    y_arr = np.asarray(seg_pitches, dtype=np.float32)
+                                    if x0 is not None and x1 is not None:
+                                        mask = (t_arr >= x0) & (t_arr <= x1)
+                                        t_vis = t_arr[mask]
+                                        y_vis = y_arr[mask]
+                                    else:
+                                        t_vis, y_vis = t_arr, y_arr
+                                    # Cap过滤
+                                    if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future):
+                                        try:
                                             cap = float(getattr(self, '_max_visible_time', float('inf')))
-                                            mcap = (ta <= cap)
-                                            ta = ta[mcap]; ya = ya[mcap]
-                                            offs = np.column_stack((ta, ya))
-                                            offs = self._cap_filter_offsets_array(offs)
-                                        else:
-                                            offs = np.column_stack((seg_times, seg_pitches))
-                                    except Exception:
-                                        offs = np.column_stack((seg_times, seg_pitches))
+                                            mcap = (t_vis <= cap)
+                                            t_vis = t_vis[mcap]; y_vis = y_vis[mcap]
+                                            # 统一过滤
+                                            arr_tmp = np.column_stack((t_vis, y_vis)) if t_vis.size>0 else np.empty((0,2))
+                                            arr_tmp = self._cap_filter_offsets_array(arr_tmp)
+                                            if arr_tmp.size>0:
+                                                t_vis = arr_tmp[:,0]; y_vis = arr_tmp[:,1]
+                                        except Exception:
+                                            pass
+                                    if t_vis.size > 0:
+                                        if t_vis.size > max_pts_seg:
+                                            step = int(np.ceil(t_vis.size / max_pts_seg))
+                                            t_vis = t_vis[::step]; y_vis = y_vis[::step]
+                                        offs = np.column_stack((t_vis, y_vis))
+                                    else:
+                                        offs = np.empty((0, 2))
                                 else:
-                                    offs = np.empty((0, 2))
-                            old_pts.set_offsets(offs)
-                            old_pts.set_sizes([s_val_global] * (len(offs) if hasattr(offs, 'shape') else (len(seg_times) if len(seg_times) else 1)))
+                                    # 非密集或不在视口：直接使用原段（若启用cap则裁剪）
+                                    if len(seg_times):
+                                        try:
+                                            if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future):
+                                                ta = np.asarray(seg_times, dtype=np.float32)
+                                                ya = np.asarray(seg_pitches, dtype=np.float32)
+                                                cap = float(getattr(self, '_max_visible_time', float('inf')))
+                                                mcap = (ta <= cap)
+                                                ta = ta[mcap]; ya = ya[mcap]
+                                                offs = np.column_stack((ta, ya))
+                                                offs = self._cap_filter_offsets_array(offs)
+                                            else:
+                                                offs = np.column_stack((seg_times, seg_pitches))
+                                        except Exception:
+                                            offs = np.column_stack((seg_times, seg_pitches))
+                                    else:
+                                        offs = np.empty((0, 2))
+                                old_pts.set_offsets(offs)
+                                old_pts.set_sizes([s_val_global] * (len(offs) if hasattr(offs, 'shape') else (len(seg_times) if len(seg_times) else 1)))
+                            else:
+                                offs = old_pts.get_offsets()
                             old_pts.set_alpha(0.98 if (len(seg_times) and (offs is not None) and (getattr(offs, 'size', 0) > 0)) else 0.0)
+                            self._segment_point_render_keys[i] = point_key
                         else:
                             # 不在视口：保持低成本，仅确保透明度一致
                             old_pts.set_alpha(0.98 if len(seg_times) else 0.0)
+                            self._segment_point_render_keys[i] = ('hidden', cur_sigs[i], size_sig)
                         old_pts.set_zorder(14)
                     except Exception:
                         try:
@@ -42235,6 +43221,8 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                         self._segment_points[i] = new_pts
+                        if i < len(self._segment_point_render_keys):
+                            self._segment_point_render_keys[i] = None
 
                 if self.debug_flags.get('segment_log') and i % 8 == 0:
                     print(f"[SEG_DRAW] 段{i+1} 点数={len(seg_times)} 范围={seg_times[0]:.2f}-{seg_times[-1]:.2f}s")
@@ -42264,6 +43252,7 @@ class ECGStylePitchVisualizer(QWidget):
 
             # 更新签名缓存
             self._segment_sigs = cur_sigs
+            self._segment_line_render_params = line_render_params
             # 清理透明度缓存，仅保留“原始段签名”的当前窗口键，避免无限增长
             try:
                 if hasattr(self, '_segment_alpha_cache_raw') and isinstance(self._segment_alpha_cache_raw, dict):
@@ -54412,7 +55401,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 base_text = '技巧识别'
             btn.setText(f"{base_text} ({count})" if count > 0 else base_text)
             if enabled and source_ready:
-                btn.setToolTip('点击后对当前普通模式录音做离线技巧分区与标注；按住 Ctrl 再点击可打开设置')
+                btn.setToolTip('点击后可对当前普通模式数据做技巧分区与标注；录音完成后分析整段，本地实时暂停时分析已播放片段，一次性绘制模式下优先分析整段；按住 Ctrl 再点击可打开设置')
             else:
                 btn.setToolTip('配置录音完成后的技巧识别项目与展示方式')
         except Exception:
@@ -54443,6 +55432,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
 
     def _technique_analysis_source_ready(self) -> bool:
+        if self._technique_onepass_full_source_ready():
+            return True
+        if self._technique_partial_analysis_source_ready():
+            return True
         try:
             if bool(getattr(self, 'is_recording', False)):
                 return False
@@ -54454,6 +55447,643 @@ class IntegratedRecordingInterface(QMainWindow):
         if not bool(getattr(self, '_technique_recording_ready', False)):
             return False
         return str(getattr(self, '_technique_recording_mode_name', '') or '') == '普通模式'
+
+    def _get_partial_technique_analysis_cutoff(self) -> Tuple[Optional[float], str]:
+        try:
+            lfm_ctrl = getattr(self, '_lfm_ctrl', None)
+        except Exception:
+            lfm_ctrl = None
+        if lfm_ctrl is not None:
+            try:
+                if (not bool(getattr(lfm_ctrl, 'playing', False))) and callable(getattr(lfm_ctrl, 'get_pos_seconds', None)):
+                    pos_s = float(lfm_ctrl.get_pos_seconds())
+                    if pos_s > 0.0:
+                        return pos_s, 'paused_local_realtime'
+            except Exception:
+                pass
+
+        try:
+            onepass_ctrl = getattr(self, '_onepass_playback', None)
+        except Exception:
+            onepass_ctrl = None
+        if bool(getattr(self, '_in_onepass_mode', False)) and onepass_ctrl is not None:
+            try:
+                if not bool(getattr(onepass_ctrl, 'playing', False)):
+                    pos_s = float(getattr(onepass_ctrl, 'pos', 0) or 0) / float(max(1, int(getattr(onepass_ctrl, 'sr', 1) or 1)))
+                    if pos_s > 0.0:
+                        return pos_s, 'paused_onepass_playback'
+            except Exception:
+                pass
+
+        try:
+            paused = bool(getattr(self, 'is_paused', False) or getattr(self, '_backing_paused', False))
+        except Exception:
+            paused = False
+        if not paused:
+            return None, ''
+
+        candidates: List[float] = []
+
+        def _push_candidate(value: Any) -> None:
+            try:
+                if value is None:
+                    return
+                number = float(value)
+                if math.isfinite(number) and number > 0.0:
+                    candidates.append(number)
+            except Exception:
+                pass
+
+        _push_candidate(getattr(self, '_backing_pause_position_sec', None))
+        _push_candidate(getattr(self, 'current_global_time', None))
+        _push_candidate(getattr(self, 'recording_duration', None))
+        _push_candidate(getattr(self, 'current_duration', None))
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is not None:
+            _push_candidate(getattr(viz, 'current_global_time', None))
+            _push_candidate(getattr(viz, 'last_pitch_time', None))
+
+        if not candidates:
+            return None, ''
+        return max(candidates), 'paused_realtime_session'
+
+    def _technique_partial_analysis_source_ready(self) -> bool:
+        spans = self._get_partial_technique_analysis_spans()
+        total_span = sum(max(0.0, float(end) - float(start)) for start, end in spans)
+        if total_span < 0.12:
+            return False
+        try:
+            if bool(getattr(self, 'is_recording', False)) and (not bool(getattr(self, 'is_paused', False))):
+                return False
+        except Exception:
+            pass
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None or not hasattr(viz, 'collect_pitch_points_in_range'):
+            return False
+        try:
+            pitch_count = int(getattr(self, 'total_pitches_detected', 0) or 0)
+        except Exception:
+            pitch_count = 0
+        if pitch_count >= 8:
+            return True
+        try:
+            pitch_history = getattr(self, 'pitch_history', None)
+            if pitch_history is not None and len(pitch_history) >= 8:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _technique_onepass_full_source_ready(self) -> bool:
+        try:
+            if not bool(getattr(self, '_in_onepass_mode', False)):
+                return False
+        except Exception:
+            return False
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None or not hasattr(viz, 'collect_pitch_points_in_range'):
+            return False
+        records = self._collect_onepass_full_pitch_records()
+        return len(records) >= 8
+
+    def _collect_onepass_full_pitch_records(self) -> List[Tuple[float, float, float, Any]]:
+        records: List[Tuple[float, float, float, Any]] = []
+        try:
+            onepass_payload = dict(getattr(self, '_onepass_analysis_payload', {}) or {})
+        except Exception:
+            onepass_payload = {}
+        try:
+            cached_records = list(onepass_payload.get('pitch_records', []) or [])
+        except Exception:
+            cached_records = []
+        for rec in cached_records:
+            try:
+                if len(rec) >= 4:
+                    records.append((float(rec[0]), float(rec[1]), float(rec[2]), rec[3]))
+                elif len(rec) >= 2:
+                    records.append((float(rec[0]), float(rec[1]), 1.0, None))
+            except Exception:
+                continue
+        if records:
+            return records
+        try:
+            segments = list(onepass_payload.get('segments', []) or [])
+        except Exception:
+            segments = []
+        for seg in segments:
+            try:
+                seg_times = list(seg[0] or [])
+                seg_pitches = list(seg[1] or [])
+            except Exception:
+                continue
+            for t_val, p_val in zip(seg_times, seg_pitches):
+                try:
+                    records.append((float(t_val), float(p_val), 1.0, None))
+                except Exception:
+                    continue
+        if records:
+            return records
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None or not hasattr(viz, 'collect_pitch_points_in_range'):
+            return []
+        try:
+            duration = float(onepass_payload.get('duration', 0.0) or 0.0)
+        except Exception:
+            duration = 0.0
+        if duration <= 0.0:
+            try:
+                onepass_ctrl = getattr(self, '_onepass_playback', None)
+                if onepass_ctrl is not None:
+                    duration = float(getattr(onepass_ctrl, 'total_s', 0.0) or 0.0)
+            except Exception:
+                duration = 0.0
+        if duration <= 0.0:
+            return []
+        try:
+            return list(viz.collect_pitch_points_in_range(0.0, float(duration)) or [])
+        except Exception:
+            return []
+
+    def _merge_time_spans(self, spans: List[Tuple[float, float]], *, gap_s: float = 0.08) -> List[Tuple[float, float]]:
+        merged: List[Tuple[float, float]] = []
+        ordered = []
+        for start, end in list(spans or []):
+            try:
+                s_val = max(0.0, float(start))
+                e_val = max(s_val, float(end))
+            except Exception:
+                continue
+            if e_val <= s_val:
+                continue
+            ordered.append((s_val, e_val))
+        ordered.sort(key=lambda item: item[0])
+        for start, end in ordered:
+            if not merged:
+                merged.append((start, end))
+                continue
+            last_start, last_end = merged[-1]
+            if start <= last_end + max(0.0, float(gap_s)):
+                merged[-1] = (last_start, max(last_end, end))
+            else:
+                merged.append((start, end))
+        return merged
+
+    def _get_partial_technique_analysis_spans(self) -> List[Tuple[float, float]]:
+        spans: List[Tuple[float, float]] = []
+        try:
+            lfm_ctrl = getattr(self, '_lfm_ctrl', None)
+        except Exception:
+            lfm_ctrl = None
+        if lfm_ctrl is not None:
+            try:
+                sr_value = float(max(1, int(getattr(lfm_ctrl, 'sr_target', 0) or 0)))
+            except Exception:
+                sr_value = 0.0
+            if sr_value > 0.0:
+                try:
+                    for start_idx, end_idx in list(getattr(lfm_ctrl, 'coverage', []) or []):
+                        spans.append((float(start_idx) / sr_value, float(end_idx) / sr_value))
+                except Exception:
+                    pass
+
+        if spans:
+            return self._merge_time_spans(spans)
+
+        cutoff, _source_kind = self._get_partial_technique_analysis_cutoff()
+        if cutoff is None:
+            return []
+        try:
+            cutoff_val = max(0.0, float(cutoff))
+        except Exception:
+            return []
+        if cutoff_val <= 0.0:
+            return []
+        return [(0.0, cutoff_val)]
+
+    def _build_technique_frames_from_pitch_records(
+        self,
+        records: List[Tuple[float, float, float, Any]],
+        *,
+        mode_name: str = '普通模式',
+        audio_samples: Optional[np.ndarray] = None,
+        sample_rate: Optional[int] = None,
+        source_flags: Optional[Dict[str, bool]] = None,
+    ) -> List[FrameFeatures]:
+        frames: List[FrameFeatures] = []
+        prev_time = 0.0
+        prev_freq = 0.0
+        prev_rate = 0.0
+        audio_np = None
+        sr_value = 0
+        if audio_samples is not None and sample_rate is not None:
+            try:
+                sr_value = max(1, int(sample_rate))
+                audio_np = np.asarray(audio_samples, dtype=np.float32).reshape(-1)
+            except Exception:
+                audio_np = None
+                sr_value = 0
+        base_flags = dict(source_flags or {})
+        for time_val, pitch_val, conf_val, note_val in list(records or []):
+            try:
+                timeline_time = float(time_val)
+                confidence = max(0.0, float(conf_val or 0.0))
+            except Exception:
+                continue
+            note_info = note_val if isinstance(note_val, dict) else {}
+            note_name = None
+            octave = None
+            midi_number = None
+            cents = None
+            if isinstance(note_info, dict):
+                note_name = note_info.get('note_name')
+                octave = note_info.get('octave')
+                midi_number = note_info.get('midi_number')
+                cents = note_info.get('cents')
+            elif isinstance(note_val, str):
+                note_name = note_val
+            raw_pitch_value = 0.0
+            try:
+                raw_pitch_value = float(pitch_val or 0.0)
+            except Exception:
+                raw_pitch_value = 0.0
+            detected_frequency, resolved_midi, pitch_from_y = self._technique_pitch_record_to_frequency(
+                raw_pitch_value,
+                note_info=note_info,
+            )
+            has_pitch = bool(detected_frequency > 0.0 and confidence > 0.0)
+            if resolved_midi is not None:
+                try:
+                    midi_number = float(resolved_midi)
+                except Exception:
+                    midi_number = resolved_midi
+                if note_name is None:
+                    try:
+                        note_names = list(getattr(self, 'note_names', []) or ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'])
+                        note_index = int(round(float(midi_number))) % 12
+                        octave = int(math.floor(float(midi_number) / 12.0) - 1)
+                        if 0 <= note_index < len(note_names):
+                            note_name = str(note_names[note_index])
+                    except Exception:
+                        pass
+
+            semi_delta = None
+            semi_rate = None
+            semi_accel = None
+            continuity_score = None
+            if prev_time > 0.0 and prev_freq > 0.0 and detected_frequency > 0.0:
+                try:
+                    dt = max(1e-6, timeline_time - prev_time)
+                    semi_delta = abs(12.0 * math.log2(max(detected_frequency, 1e-9) / max(prev_freq, 1e-9)))
+                    semi_rate = semi_delta / dt
+                    semi_accel = (semi_rate - prev_rate) / dt
+                    continuity_score = max(0.0, min(1.0, 1.0 - semi_delta / 6.0))
+                    prev_rate = float(semi_rate)
+                except Exception:
+                    semi_delta = None
+                    semi_rate = None
+                    semi_accel = None
+                    continuity_score = None
+
+            audio_rms = 0.0
+            if audio_np is not None and sr_value > 0:
+                try:
+                    center = int(round(timeline_time * sr_value))
+                    radius = max(96, int(round(sr_value * 0.040)))
+                    start = max(0, center - radius)
+                    end = min(len(audio_np), center + radius)
+                    if end > start:
+                        frame_audio = audio_np[start:end]
+                        audio_rms = float(np.sqrt(np.mean(np.square(frame_audio, dtype=np.float64), dtype=np.float64)))
+                except Exception:
+                    audio_rms = 0.0
+            if audio_rms <= 0.0 and has_pitch:
+                # 当暂停态仅能拿到主唱细节点时，给真假声候选窗口一个保守的能量下限，
+                # 避免因为缺失瞬时 RMS 而全部被 no_candidate_windows 过滤掉。
+                audio_rms = max(0.00012, confidence * 0.00022)
+
+            frame = FrameFeatures(
+                timeline_time=timeline_time,
+                wall_time=0.0,
+                raw_frequency_hz=detected_frequency,
+                detected_frequency_hz=detected_frequency,
+                display_frequency_hz=detected_frequency,
+                has_pitch=has_pitch,
+                confidence=confidence,
+                audio_rms=float(audio_rms),
+                note_name=note_name,
+                octave=octave,
+                midi_number=midi_number,
+                cents=cents,
+                voiced_score=min(1.0, confidence * 1.1) if has_pitch else 0.0,
+                periodicity_score=confidence if has_pitch else 0.0,
+                fast_change=bool(semi_delta is not None and semi_delta >= 1.35),
+                semitone_delta_prev=semi_delta,
+                semitone_rate=semi_rate,
+                semitone_accel=semi_accel,
+                continuity_score=continuity_score,
+                stable_anchor_frequency_hz=prev_freq if prev_freq > 0.0 else None,
+                vibrato_info={'has_vibrato': False},
+                mode_name=str(mode_name or '普通模式'),
+                preview_only=False,
+                source_flags={
+                    'rebuilt_from_pitch_store': True,
+                    'pitch_value_is_y': bool(pitch_from_y),
+                    **base_flags,
+                },
+            )
+            frames.append(frame)
+            prev_time = timeline_time
+            if detected_frequency > 0.0:
+                prev_freq = detected_frequency
+        return frames
+
+    def _technique_pitch_record_to_frequency(self, pitch_value: float, *, note_info: Optional[Dict[str, Any]] = None) -> Tuple[float, Optional[float], bool]:
+        try:
+            note_dict = dict(note_info or {})
+        except Exception:
+            note_dict = {}
+        try:
+            midi_number = note_dict.get('midi_number')
+        except Exception:
+            midi_number = None
+        if midi_number is not None:
+            try:
+                midi_float = float(midi_number)
+                hz = 440.0 * (2.0 ** ((midi_float - 69.0) / 12.0))
+                return float(hz), midi_float, False
+            except Exception:
+                pass
+        try:
+            raw_value = float(pitch_value or 0.0)
+        except Exception:
+            return 0.0, None, False
+        if raw_value <= 0.0:
+            return 0.0, None, False
+        if raw_value < 20.0:
+            try:
+                midi_float = (raw_value + 1.0) * 12.0
+                hz = 440.0 * (2.0 ** ((midi_float - 69.0) / 12.0))
+                return float(hz), float(midi_float), True
+            except Exception:
+                return 0.0, None, True
+        return float(raw_value), None, False
+
+    def _format_voice_type_debug_reason(self, reason: str) -> str:
+        key = str(reason or '').strip()
+        mapping = {
+            'not_selected': '未启用真假声识别',
+            'missing_audio': '缺少用于真假声分析的音频',
+            'model_bundle_incomplete': '真假声模型加载不完整',
+            'audio_too_short': '音频片段过短',
+            'audio_too_short_after_resample': '重采样后音频片段过短',
+            'resample_failed': '真假声音频重采样失败',
+            'no_valid_frames': '没有可用主唱帧',
+            'no_candidate_windows': '未形成可用候选窗口',
+            'no_prediction_passed': '候选窗口未通过真假声筛选',
+            'checkpoint_missing': '真假声模型文件缺失',
+            'model_unavailable': '真假声模型不可用',
+        }
+        return mapping.get(key, key)
+
+    def _technique_event_min_confidence_threshold(self, event: BaseTechniqueEvent, default_min_conf: float) -> float:
+        event_type = str(getattr(event, 'event_type', '') or '')
+        base = max(0.0, float(default_min_conf or 0.0))
+        if event_type == 'chest_voice':
+            return min(base, 0.48)
+        if event_type == 'falsetto':
+            return min(base, 0.54)
+        return base
+
+    def _extract_technique_audio_samples_upto(self, cutoff_sec: float) -> Tuple[Optional[np.ndarray], Optional[int], str]:
+        try:
+            cutoff_sec = max(0.0, float(cutoff_sec))
+        except Exception:
+            return None, None, ''
+
+        try:
+            lfm_ctrl = getattr(self, '_lfm_ctrl', None)
+        except Exception:
+            lfm_ctrl = None
+        if lfm_ctrl is not None:
+            try:
+                audio = getattr(lfm_ctrl, 'audio', None)
+                sr_value = int(getattr(lfm_ctrl, 'sr_target', 0) or 0)
+                if audio is not None and sr_value > 0:
+                    end = min(len(audio), int(round(cutoff_sec * sr_value)))
+                    if end > 0:
+                        return np.asarray(audio[:end], dtype=np.float32), sr_value, 'paused_local_realtime'
+            except Exception:
+                pass
+
+        try:
+            onepass_ctrl = getattr(self, '_onepass_playback', None)
+        except Exception:
+            onepass_ctrl = None
+        if bool(getattr(self, '_in_onepass_mode', False)) and onepass_ctrl is not None:
+            try:
+                if getattr(onepass_ctrl, 'audio', None) is None and hasattr(onepass_ctrl, 'decode_if_needed'):
+                    onepass_ctrl.decode_if_needed()
+                audio = getattr(onepass_ctrl, 'audio', None)
+                sr_value = int(getattr(onepass_ctrl, 'sr', 0) or 0)
+                if audio is not None and sr_value > 0:
+                    end = min(len(audio), int(round(cutoff_sec * sr_value)))
+                    if end > 0:
+                        return np.asarray(audio[:end], dtype=np.float32), sr_value, 'paused_onepass_playback'
+            except Exception:
+                pass
+
+        try:
+            raw_audio = getattr(self, 'audio_buffer', None)
+            if raw_audio is None or (hasattr(raw_audio, '__len__') and len(raw_audio) <= 0):
+                processor = getattr(self, 'audio_processor', None)
+                if processor is not None:
+                    raw_audio = getattr(processor, 'audio_buffer', raw_audio)
+            sr_value = int(self._effective_sample_rate())
+            if raw_audio is not None and sr_value > 0 and (not hasattr(raw_audio, '__len__') or len(raw_audio) > 0):
+                audio_np = np.asarray(raw_audio, dtype=np.float32)
+                end = min(len(audio_np), int(round(cutoff_sec * sr_value)))
+                if end > 0:
+                    return audio_np[:end], sr_value, 'record_or_monitor_buffer'
+        except Exception:
+            pass
+        return None, None, ''
+
+    def _extract_onepass_full_technique_audio(self) -> Tuple[Optional[np.ndarray], Optional[int]]:
+        try:
+            if not bool(getattr(self, '_in_onepass_mode', False)):
+                return None, None
+        except Exception:
+            return None, None
+        try:
+            onepass_ctrl = getattr(self, '_onepass_playback', None)
+        except Exception:
+            onepass_ctrl = None
+        if onepass_ctrl is None:
+            return None, None
+        try:
+            if getattr(onepass_ctrl, 'audio', None) is None and hasattr(onepass_ctrl, 'decode_if_needed'):
+                onepass_ctrl.decode_if_needed()
+            audio = getattr(onepass_ctrl, 'audio', None)
+            sr_value = int(getattr(onepass_ctrl, 'sr', 0) or 0)
+            if audio is None or sr_value <= 0:
+                return None, None
+            return np.asarray(audio, dtype=np.float32).reshape(-1), sr_value
+        except Exception:
+            return None, None
+
+    def _resolve_technique_analysis_payload(self) -> Dict[str, Any]:
+        payload = {
+            'ok': False,
+            'reason': '',
+            'frames': [],
+            'audio_samples': None,
+            'sample_rate': None,
+            'analysis_mode': 'idle',
+            'duration': 0.0,
+        }
+        try:
+            viz = getattr(self, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None or not hasattr(viz, 'analyze_technique_frames'):
+            payload['reason'] = '技巧识别渲染器不可用'
+            return payload
+        try:
+            mode_text = viz.display_mode.currentText() if hasattr(viz, 'display_mode') else '普通模式'
+        except Exception:
+            mode_text = '普通模式'
+        if mode_text != '普通模式':
+            payload['reason'] = '技巧识别当前仅支持普通模式曲线分析'
+            return payload
+
+        if self._technique_onepass_full_source_ready() and hasattr(viz, 'collect_pitch_points_in_range'):
+            try:
+                onepass_payload = dict(getattr(self, '_onepass_analysis_payload', {}) or {})
+            except Exception:
+                onepass_payload = {}
+            try:
+                full_duration = float(onepass_payload.get('duration', 0.0) or 0.0)
+            except Exception:
+                full_duration = 0.0
+            if full_duration <= 0.0:
+                try:
+                    onepass_ctrl = getattr(self, '_onepass_playback', None)
+                    if onepass_ctrl is not None:
+                        full_duration = float(getattr(onepass_ctrl, 'total_s', 0.0) or 0.0)
+                except Exception:
+                    full_duration = 0.0
+            if full_duration > 0.0:
+                records = self._collect_onepass_full_pitch_records()
+                audio_samples, sample_rate = self._extract_onepass_full_technique_audio()
+                frames = self._build_technique_frames_from_pitch_records(
+                    records,
+                    mode_name=mode_text,
+                    audio_samples=audio_samples,
+                    sample_rate=sample_rate,
+                    source_flags={'offline_local_file': True, 'onepass_full_audio': True},
+                )
+                if len(frames) >= 8:
+                    payload.update({
+                        'ok': True,
+                        'frames': frames,
+                        'audio_samples': audio_samples,
+                        'sample_rate': sample_rate,
+                        'analysis_mode': 'onepass_full_audio',
+                        'duration': float(full_duration),
+                    })
+                    return payload
+                payload['reason'] = '一次性绘制结果中的主唱细节点不足，暂时无法做整段技巧分析'
+
+        cutoff_sec, partial_mode = self._get_partial_technique_analysis_cutoff()
+        if partial_mode and cutoff_sec is not None and hasattr(viz, 'collect_pitch_points_in_range'):
+            audio_samples = None
+            sample_rate = None
+            try:
+                audio_samples, sample_rate, _audio_mode = self._extract_technique_audio_samples_upto(float(cutoff_sec))
+            except Exception:
+                audio_samples = None
+                sample_rate = None
+            records = []
+            spans = self._get_partial_technique_analysis_spans()
+            if not spans:
+                spans = [(0.0, float(cutoff_sec))]
+            total_span_duration = 0.0
+            for start_sec, end_sec in spans:
+                try:
+                    seg_records = list(viz.collect_pitch_points_in_range(float(start_sec), float(end_sec)) or [])
+                except Exception:
+                    seg_records = []
+                records.extend(seg_records)
+                try:
+                    total_span_duration += max(0.0, float(end_sec) - float(start_sec))
+                except Exception:
+                    pass
+            frames = self._build_technique_frames_from_pitch_records(
+                records,
+                mode_name=mode_text,
+                audio_samples=audio_samples,
+                sample_rate=sample_rate,
+                source_flags={'offline_local_file': True, 'partial_analysis': True},
+            )
+            if len(frames) >= 8:
+                payload.update({
+                    'ok': True,
+                    'frames': frames,
+                    'audio_samples': audio_samples,
+                    'sample_rate': sample_rate,
+                    'analysis_mode': partial_mode,
+                    'duration': float(total_span_duration if total_span_duration > 0.0 else cutoff_sec),
+                })
+                return payload
+            payload['reason'] = '当前暂停片段的主唱细节点不足，暂时无法做技巧分析'
+
+        if not self._technique_analysis_source_ready() or bool(getattr(self, 'is_recording', False)):
+            if not payload['reason']:
+                payload['reason'] = '当前没有可分析的普通模式数据'
+            return payload
+
+        frames = list(getattr(self, '_technique_recorded_frames', []) or [])
+        audio_samples = None
+        sample_rate = None
+        try:
+            selected_types = set(_normalize_technique_selection(getattr(getattr(self, '_technique_panel_state', None), 'selected_types', []) or []))
+        except Exception:
+            selected_types = set()
+        if selected_types.intersection({'chest_voice', 'falsetto'}):
+            try:
+                raw_audio = getattr(self, 'audio_buffer', None)
+                if raw_audio is None or (hasattr(raw_audio, '__len__') and len(raw_audio) <= 0):
+                    processor = getattr(self, 'audio_processor', None)
+                    if processor is not None:
+                        raw_audio = getattr(processor, 'audio_buffer', raw_audio)
+                sr_value = int(self._effective_sample_rate())
+                if raw_audio is not None and sr_value > 0 and (not hasattr(raw_audio, '__len__') or len(raw_audio) > 0):
+                    audio_samples = np.asarray(raw_audio, dtype=np.float32)
+                    sample_rate = sr_value
+            except Exception:
+                audio_samples = None
+                sample_rate = None
+        payload.update({
+            'ok': True,
+            'frames': frames,
+            'audio_samples': audio_samples,
+            'sample_rate': sample_rate,
+            'analysis_mode': 'offline_normal_recording',
+            'duration': float(getattr(self, '_technique_last_recording_duration', 0.0) or 0.0),
+        })
+        return payload
 
     def _capture_technique_frame(self, features: Optional[FrameFeatures]) -> None:
         if features is None:
@@ -54496,8 +56126,9 @@ class IntegratedRecordingInterface(QMainWindow):
         if not _normalize_technique_selection(getattr(state, 'selected_types', []) or []):
             result['reason'] = '尚未选择识别项目'
             return result
-        if not self._technique_analysis_source_ready():
-            result['reason'] = '当前没有可分析的普通模式录音数据'
+        resolved = self._resolve_technique_analysis_payload()
+        if not bool(resolved.get('ok', False)):
+            result['reason'] = str(resolved.get('reason', '') or '当前没有可分析的普通模式数据')
             return result
         try:
             viz = getattr(self, 'visualizer', None)
@@ -54506,36 +56137,36 @@ class IntegratedRecordingInterface(QMainWindow):
         if viz is None or not hasattr(viz, 'analyze_technique_frames'):
             result['reason'] = '技巧识别渲染器不可用'
             return result
-        try:
-            mode_text = viz.display_mode.currentText() if hasattr(viz, 'display_mode') else '普通模式'
-        except Exception:
-            mode_text = '普通模式'
-        if mode_text != '普通模式':
-            result['reason'] = '技巧识别当前仅支持普通模式录音后的离线分析'
-            return result
-        frames = list(getattr(self, '_technique_recorded_frames', []) or [])
-        audio_samples = None
-        sample_rate = None
+        frames = list(resolved.get('frames', []) or [])
+        audio_samples = resolved.get('audio_samples')
+        sample_rate = resolved.get('sample_rate')
+        analysis_mode = str(resolved.get('analysis_mode', 'idle') or 'idle')
+        resolved_duration = float(resolved.get('duration', 0.0) or 0.0)
         voice_debug = {}
         try:
             selected_types = set(_normalize_technique_selection(getattr(state, 'selected_types', []) or []))
         except Exception:
             selected_types = set()
-        if selected_types.intersection({'chest_voice', 'falsetto'}):
+        try:
+            summary = viz.analyze_technique_frames(frames, audio_samples=audio_samples, sample_rate=sample_rate)
+        except Exception as exc:
             try:
-                raw_audio = getattr(self, 'audio_buffer', None)
-                if raw_audio is None or (hasattr(raw_audio, '__len__') and len(raw_audio) <= 0):
-                    processor = getattr(self, 'audio_processor', None)
-                    if processor is not None:
-                        raw_audio = getattr(processor, 'audio_buffer', raw_audio)
-                sr_value = int(self._effective_sample_rate())
-                if raw_audio is not None and sr_value > 0 and (not hasattr(raw_audio, '__len__') or len(raw_audio) > 0):
-                    audio_samples = np.asarray(raw_audio, dtype=np.float32)
-                    sample_rate = sr_value
+                import traceback
+                traceback.print_exc()
             except Exception:
-                audio_samples = None
-                sample_rate = None
-        summary = viz.analyze_technique_frames(frames, audio_samples=audio_samples, sample_rate=sample_rate)
+                pass
+            result['reason'] = f'技巧识别执行失败: {exc}'
+            try:
+                if hasattr(self, 'system_status_label') and self.system_status_label is not None:
+                    self.system_status_label.setText(f"错误: {result['reason']}")
+            except Exception:
+                pass
+            if show_feedback:
+                try:
+                    QMessageBox.warning(self, '技巧识别', result['reason'])
+                except Exception:
+                    pass
+            return result
         try:
             voice_debug = dict(getattr(viz, '_last_voice_type_debug', {}) or {})
         except Exception:
@@ -54553,9 +56184,9 @@ class IntegratedRecordingInterface(QMainWindow):
             state.last_summary = counts
             state.analysis_ready = True
             state.last_analysis_event_count = event_count
-            state.last_analyzed_duration = duration
+            state.last_analyzed_duration = max(duration, resolved_duration)
             state.last_source_frame_count = len(frames)
-            state.last_analysis_mode = 'offline_normal_recording'
+            state.last_analysis_mode = analysis_mode
         self._sync_technique_panel_state_to_visualizer()
         visibility = {'total': event_count, 'visible': 0, 'offscreen': event_count}
         try:
@@ -54585,9 +56216,18 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
         try:
+            source_prefix = ''
+            if analysis_mode == 'onepass_full_audio':
+                source_prefix = f'一次性绘制整段音频 {resolved_duration:.1f}s，'
+            elif analysis_mode == 'paused_local_realtime':
+                source_prefix = f'当前已播放片段 {resolved_duration:.1f}s，'
+            elif analysis_mode == 'paused_onepass_playback':
+                source_prefix = f'一次性绘制已播放片段 {resolved_duration:.1f}s，'
+            elif analysis_mode == 'paused_realtime_session':
+                source_prefix = f'暂停前片段 {resolved_duration:.1f}s，'
             voice_status_suffix = ''
             if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
-                reason = str(voice_debug.get('reason', '') or '')
+                reason = self._format_voice_type_debug_reason(str(voice_debug.get('reason', '') or ''))
                 try:
                     candidate_windows = int(voice_debug.get('candidate_windows', 0) or 0)
                     predicted_windows = int(voice_debug.get('predicted_windows', 0) or 0)
@@ -54637,15 +56277,24 @@ class IntegratedRecordingInterface(QMainWindow):
                         f"，已绘制线 {int(debug_info.get('regions', 0) or 0)}"
                         f"，标签 {int(debug_info.get('labels', 0) or 0)}"
                     )
-                self.system_status_label.setText(f"状态: 技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}{suffix}{debug_suffix}{voice_status_suffix}")
+                self.system_status_label.setText(f"状态: {source_prefix}技巧识别完成，已标注 {event_count} 段{('（' + joined + '）') if joined else ''}{suffix}{debug_suffix}{voice_status_suffix}")
             else:
-                self.system_status_label.setText(f'状态: 技巧识别完成，当前录音未检测到需要标注的技巧区间{voice_status_suffix}')
+                self.system_status_label.setText(f'状态: {source_prefix}技巧识别完成，当前曲线未检测到需要标注的技巧区间{voice_status_suffix}')
         except Exception:
             pass
         if show_feedback:
             try:
                 if event_count > 0:
-                    msg = f"已完成离线技巧识别，共标注 {event_count} 段。\n录音时长: {duration:.1f}秒"
+                    if analysis_mode == 'onepass_full_audio':
+                        msg = f"已完成一次性绘制整段音频的技巧识别，共标注 {event_count} 段。\n分析时长: {resolved_duration:.1f}秒"
+                    elif analysis_mode == 'paused_local_realtime':
+                        msg = f"已完成暂停态技巧识别，共标注 {event_count} 段。\n当前已播放片段: {resolved_duration:.1f}秒"
+                    elif analysis_mode == 'paused_onepass_playback':
+                        msg = f"已完成一次性绘制暂停片段的技巧识别，共标注 {event_count} 段。\n当前已播放片段: {resolved_duration:.1f}秒"
+                    elif analysis_mode == 'paused_realtime_session':
+                        msg = f"已完成暂停片段技巧识别，共标注 {event_count} 段。\n当前已播放片段: {resolved_duration:.1f}秒"
+                    else:
+                        msg = f"已完成离线技巧识别，共标注 {event_count} 段。\n录音时长: {duration:.1f}秒"
                     if counts:
                         msg += '\n' + ' / '.join(f"{viz._technique_visible_types.get(k, k)} {v}" for k, v in counts.items() if v)
                     visible_count = int(visibility.get('visible', 0) or 0)
@@ -54671,9 +56320,14 @@ class IntegratedRecordingInterface(QMainWindow):
                             except Exception:
                                 pass
                 else:
-                    msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
+                    if analysis_mode == 'onepass_full_audio':
+                        msg = '已完成一次性绘制整段音频的技巧识别。\n当前主唱曲线未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
+                    elif analysis_mode in {'paused_local_realtime', 'paused_onepass_playback', 'paused_realtime_session'}:
+                        msg = '已完成当前已播放片段的技巧识别。\n当前主唱曲线未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
+                    else:
+                        msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
                     if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
-                        reason = str(voice_debug.get('reason', '') or '')
+                        reason = self._format_voice_type_debug_reason(str(voice_debug.get('reason', '') or ''))
                         if reason:
                             msg += f'\n真假声调试: {reason}'
                         try:
@@ -54738,7 +56392,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         selected_types = set(selected_types)
 
-        intro = QLabel('技巧识别会按当前已开放的项目做普通模式录音后的离线分区标注。当前可用项目为“换气”“颤音”和“真假声区间”，其它技巧先按分类展示为待开发。')
+        intro = QLabel('技巧识别会按当前已开放的项目做普通模式曲线分区标注。录音完成后可分析整段；本地实时分析暂停时分析当前已播放片段；一次性绘制模式下优先分析整段音频。当前可用项目为“换气”“颤音”和“真假声区间”，其它技巧先按分类展示为待开发。')
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -54849,7 +56503,10 @@ class IntegratedRecordingInterface(QMainWindow):
             if analysis_result and bool(analysis_result.get('ok', False)):
                 pass
             elif bool(getattr(new_cfg, 'enabled', False)) and not self._technique_analysis_source_ready():
-                self.system_status_label.setText('状态: 技巧识别配置已更新，录音完成后可分析当前普通模式曲线')
+                if bool(getattr(self, '_in_onepass_mode', False)):
+                    self.system_status_label.setText('状态: 技巧识别配置已更新；当前一次性绘制结果尚未准备好整段分析数据')
+                else:
+                    self.system_status_label.setText('状态: 技巧识别配置已更新，录音完成后可分析当前普通模式曲线')
             else:
                 self.system_status_label.setText('状态: 技巧识别配置已更新')
         except Exception:
@@ -54984,6 +56641,266 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             return 999.0
 
+    def _normal_mode_ui_correct_octave_overshoot(self, pitch_data, candidate_frequency: float, *, last_plot_freq: float = 0.0) -> float:
+        try:
+            current_frequency = float(candidate_frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0:
+            return 0.0
+
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            detected_frequency = float(pitch_data.get('detected_frequency', 0.0) or 0.0)
+        except Exception:
+            detected_frequency = 0.0
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+        try:
+            harmonic_candidates = list(pitch_data.get('harmonic_candidates', []) or [])
+        except Exception:
+            harmonic_candidates = []
+
+        support_base = max(float(raw_frequency), float(detected_frequency))
+        if support_base <= 0.0 or breath_hint:
+            return float(current_frequency)
+
+        if last_plot_freq > 0.0:
+            try:
+                if self._normal_mode_ui_semitone_distance(last_plot_freq, support_base) <= 3.4:
+                    support_base = max(float(support_base), float(last_plot_freq))
+            except Exception:
+                pass
+
+        sustained_high_context = bool(
+            max(float(raw_frequency), float(detected_frequency), float(last_plot_freq or 0.0)) >= 430.0
+            or (current_frequency >= 520.0 and support_base >= 330.0)
+        )
+        sustained_upper_track = bool(
+            last_plot_freq > 0.0
+            and current_frequency >= 220.0
+            and self._normal_mode_ui_semitone_distance(float(last_plot_freq), float(current_frequency)) <= 2.6
+            and float(last_plot_freq) >= max(220.0, float(support_base) * 1.45)
+        )
+        octave_gap = self._normal_mode_ui_semitone_distance(current_frequency, support_base)
+        low_register_support = bool(support_base <= 230.0)
+        octave_floor = 140.0 if low_register_support else 220.0
+        octave_like = bool(
+            current_frequency >= max(octave_floor, support_base * 1.70)
+            and 8.5 <= octave_gap <= 15.5
+            and (not sustained_high_context)
+            and (not sustained_upper_track)
+            and confidence < (0.96 if low_register_support else 0.93)
+        )
+        if not octave_like:
+            return float(current_frequency)
+
+        lower_support = 0.0
+        for cand in harmonic_candidates:
+            try:
+                cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                cand_conf = float(cand.get('confidence', 0.0) or 0.0)
+            except Exception:
+                continue
+            if cand_freq <= 0.0 or cand_conf < 0.12:
+                continue
+            if self._normal_mode_ui_semitone_distance(cand_freq, support_base) <= 2.6:
+                lower_support = max(float(lower_support), float(cand_freq))
+
+        corrected = max(float(support_base), float(lower_support))
+        if corrected <= 0.0:
+            corrected = float(support_base)
+        if corrected <= 0.0:
+            return float(current_frequency)
+        return float(0.88 * corrected + 0.12 * min(float(current_frequency), float(corrected) * 1.08))
+
+    def _normal_mode_ui_align_to_fundamental_support(self, pitch_data, candidate_frequency: float, *, last_plot_freq: float = 0.0) -> float:
+        try:
+            current_frequency = float(candidate_frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0:
+            return 0.0
+
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            detected_frequency = float(pitch_data.get('detected_frequency', 0.0) or 0.0)
+        except Exception:
+            detected_frequency = 0.0
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+        try:
+            harmonic_candidates = list(pitch_data.get('harmonic_candidates', []) or [])
+        except Exception:
+            harmonic_candidates = []
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
+        except Exception:
+            min_voice_rms = 0.0005
+
+        if breath_hint:
+            return float(current_frequency)
+
+        support_values = [float(freq) for freq in (raw_frequency, detected_frequency) if float(freq) > 0.0]
+        if not support_values:
+            return float(current_frequency)
+
+        support_low = min(support_values)
+        support_high = max(support_values)
+        support_ref = support_low if self._normal_mode_ui_semitone_distance(support_low, support_high) <= 3.2 else min(support_low, support_high)
+        if support_ref <= 0.0:
+            return float(current_frequency)
+
+        raw_supports_current = bool(raw_frequency > 0.0 and self._normal_mode_ui_semitone_distance(raw_frequency, current_frequency) <= 1.15)
+        detected_supports_current = bool(detected_frequency > 0.0 and self._normal_mode_ui_semitone_distance(detected_frequency, current_frequency) <= 1.35)
+        if raw_supports_current or detected_supports_current:
+            return float(current_frequency)
+
+        sustained_high_track = bool(
+            last_plot_freq > 0.0
+            and current_frequency >= 260.0
+            and self._normal_mode_ui_semitone_distance(last_plot_freq, current_frequency) <= 2.6
+            and last_plot_freq >= max(260.0, support_ref * 1.35)
+        )
+        if sustained_high_track:
+            return float(current_frequency)
+
+        lower_support = 0.0
+        lower_conf = 0.0
+        for cand in harmonic_candidates:
+            try:
+                cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                cand_conf = float(cand.get('confidence', 0.0) or 0.0)
+            except Exception:
+                continue
+            if cand_freq <= 0.0 or cand_conf < 0.10 or cand_freq >= current_frequency * 0.985:
+                continue
+            near_support = bool(self._normal_mode_ui_semitone_distance(cand_freq, support_ref) <= 2.8)
+            near_history = bool(last_plot_freq > 0.0 and self._normal_mode_ui_semitone_distance(cand_freq, last_plot_freq) <= 3.0)
+            if not (near_support or near_history):
+                continue
+            if cand_conf > lower_conf or (cand_conf >= lower_conf and cand_freq > lower_support):
+                lower_support = float(cand_freq)
+                lower_conf = float(cand_conf)
+
+        anchor_frequency = max(float(support_ref), float(lower_support)) if lower_support > 0.0 else float(support_ref)
+        if anchor_frequency <= 0.0 or current_frequency <= anchor_frequency:
+            return float(current_frequency)
+
+        semi_gap = self._normal_mode_ui_semitone_distance(current_frequency, anchor_frequency)
+        ratio = float(current_frequency / max(anchor_frequency, 1e-9))
+        low_mid_context = bool(anchor_frequency <= 360.0)
+        weak_energy = bool(audio_rms <= max(min_voice_rms * 2.2, 0.0012))
+        oversensitive_high = bool(
+            ratio >= (1.14 if low_mid_context else 1.20)
+            and semi_gap >= (2.2 if low_mid_context else 3.0)
+            and semi_gap <= 13.5
+            and confidence < (0.96 if anchor_frequency <= 220.0 else 0.93)
+        )
+        if not oversensitive_high:
+            return float(current_frequency)
+
+        if anchor_frequency <= 180.0:
+            pull_mix = 0.92
+        elif anchor_frequency <= 260.0:
+            pull_mix = 0.88
+        elif anchor_frequency <= 360.0:
+            pull_mix = 0.82
+        else:
+            pull_mix = 0.74
+        if lower_support > 0.0:
+            pull_mix += 0.04
+        if weak_energy:
+            pull_mix += 0.03
+        pull_mix = max(0.68, min(0.95, pull_mix))
+        corrected = float(pull_mix) * float(anchor_frequency) + (1.0 - float(pull_mix)) * min(float(current_frequency), float(anchor_frequency) * 1.08)
+        return float(corrected)
+
+    def _normal_mode_ui_high_register_relaxation(self, pitch_data, candidate_frequency: float, *, last_plot_freq: float = 0.0) -> bool:
+        try:
+            current_frequency = float(candidate_frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0:
+            return False
+
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            detected_frequency = float(pitch_data.get('detected_frequency', 0.0) or 0.0)
+        except Exception:
+            detected_frequency = 0.0
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+        try:
+            harmonic_candidates = list(pitch_data.get('harmonic_candidates', []) or [])
+        except Exception:
+            harmonic_candidates = []
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
+        except Exception:
+            min_voice_rms = 0.0005
+
+        support_context = max(float(raw_frequency), float(detected_frequency), float(last_plot_freq or 0.0))
+        high_register_context = bool(
+            support_context >= 315.0
+            or (current_frequency >= 520.0 and max(float(raw_frequency), float(detected_frequency)) >= 300.0)
+        )
+        if (not high_register_context) or breath_hint:
+            return False
+
+        very_high_context = bool(max(float(raw_frequency), float(detected_frequency), float(last_plot_freq or 0.0)) >= 520.0)
+        octave_gap_from_support = self._normal_mode_ui_semitone_distance(current_frequency, max(support_context, 1e-9)) if support_context > 0.0 else 999.0
+        if support_context > 0.0 and current_frequency >= support_context * 1.72 and octave_gap_from_support >= 8.5 and float(last_plot_freq or 0.0) < max(430.0, current_frequency * 0.82):
+            return False
+
+        raw_support = bool(
+            raw_frequency > 0.0 and (
+                self._normal_mode_ui_semitone_distance(raw_frequency, current_frequency) <= 1.20
+                or (max(raw_frequency, current_frequency) >= 360.0 and self._normal_mode_ui_semitone_distance(raw_frequency, current_frequency) <= 1.75)
+                or (very_high_context and self._normal_mode_ui_semitone_distance(raw_frequency, current_frequency) <= 2.05)
+            )
+        )
+        detected_support = bool(
+            detected_frequency > 0.0 and self._normal_mode_ui_semitone_distance(detected_frequency, current_frequency) <= (1.40 if very_high_context else 1.15)
+        )
+        stable_energy = bool(audio_rms >= max(min_voice_rms * (1.02 if very_high_context else 1.12), 0.00064 if very_high_context else 0.00072))
+        return bool(stable_energy and confidence >= (0.50 if very_high_context else 0.56) and (raw_support or detected_support))
+
     def _accept_normal_mode_display_candidate(self, pitch_data, candidate_frequency: float, *, last_plot_freq: float = 0.0, warmup_mode: bool = False) -> bool:
         try:
             current_frequency = float(candidate_frequency or 0.0)
@@ -55026,22 +56943,27 @@ class IntegratedRecordingInterface(QMainWindow):
         very_low_energy = bool(audio_rms <= max(min_voice_rms * 1.55, 0.00082))
         weak_confidence = bool(confidence <= 0.74)
         sparse_harmonics = bool(len(harmonic_candidates) <= 1)
+        high_register_supported = self._normal_mode_ui_high_register_relaxation(
+            pitch_data,
+            current_frequency,
+            last_plot_freq=last_plot_freq,
+        )
 
-        if very_low_energy and weak_confidence and (not raw_supports_candidate):
+        if very_low_energy and weak_confidence and (not raw_supports_candidate) and (not high_register_supported):
             return False
         if breath_hint and low_energy and (not raw_supports_candidate):
             return False
 
         if last_plot_freq > 0.0 and (not fast_turn):
             jump_semi = self._normal_mode_ui_semitone_distance(current_frequency, last_plot_freq)
-            if low_energy and jump_semi >= 3.2 and (not raw_supports_candidate):
+            if low_energy and jump_semi >= 3.2 and (not raw_supports_candidate) and (not high_register_supported):
                 return False
-            if very_low_energy and jump_semi >= 2.4 and confidence < 0.82:
+            if very_low_energy and jump_semi >= 2.4 and confidence < 0.82 and (not high_register_supported):
                 return False
-            if sparse_harmonics and low_energy and jump_semi >= 4.2 and confidence < 0.88:
+            if sparse_harmonics and low_energy and jump_semi >= 4.2 and confidence < 0.88 and (not high_register_supported):
                 return False
         elif warmup_mode:
-            if low_energy and confidence < 0.70 and (not raw_supports_candidate):
+            if low_energy and confidence < 0.70 and (not raw_supports_candidate) and (not high_register_supported):
                 return False
 
         return True
@@ -55062,6 +56984,20 @@ class IntegratedRecordingInterface(QMainWindow):
             self._reset_normal_mode_display_ui_warmup()
             return 0.0
 
+        current_frequency = self._normal_mode_ui_correct_octave_overshoot(
+            pitch_data,
+            current_frequency,
+            last_plot_freq=float(getattr(self, '_normal_mode_display_ui_last_plot_freq', 0.0) or 0.0),
+        )
+        current_frequency = self._normal_mode_ui_align_to_fundamental_support(
+            pitch_data,
+            current_frequency,
+            last_plot_freq=float(getattr(self, '_normal_mode_display_ui_last_plot_freq', 0.0) or 0.0),
+        )
+        if current_frequency <= 0.0:
+            self._reset_normal_mode_display_ui_warmup()
+            return 0.0
+
         try:
             last_plot_freq_seed = float(getattr(self, '_normal_mode_display_ui_last_plot_freq', 0.0) or 0.0)
         except Exception:
@@ -55073,6 +57009,11 @@ class IntegratedRecordingInterface(QMainWindow):
             warmup_mode=(last_plot_freq_seed <= 0.0),
         ):
             return 0.0
+        high_register_supported = self._normal_mode_ui_high_register_relaxation(
+            pitch_data,
+            current_frequency,
+            last_plot_freq=last_plot_freq_seed,
+        )
 
         now_wall = time.time()
         try:
@@ -55141,16 +57082,24 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._normal_mode_display_ui_warmup_done = True
                     self._normal_mode_display_ui_last_plot_freq = float(stable)
                     return float(stable)
+                if high_register_supported and warmup_elapsed >= min(0.045, warmup_max):
+                    stable = 0.72 * float(freq_values[-1]) + 0.28 * float(freq_values[-2])
+                    self._normal_mode_display_ui_warmup_done = True
+                    self._normal_mode_display_ui_last_plot_freq = float(stable)
+                    return float(stable)
                 if warmup_elapsed < warmup_max:
                     return 0.0
 
             stable_center = float(np.median(np.asarray(freq_values, dtype=np.float64))) if freq_values else float(current_frequency)
             latest_freq = float(freq_values[-1]) if freq_values else float(current_frequency)
             latest_gap = self._normal_mode_ui_semitone_distance(latest_freq, stable_center)
-            if latest_gap >= reject_jump_semi and len(freq_values) < 4 and warmup_elapsed < warmup_max:
+            if latest_gap >= reject_jump_semi and len(freq_values) < 4 and warmup_elapsed < warmup_max and (not high_register_supported):
                 return 0.0
 
-            stabilized = 0.72 * float(latest_freq) + 0.28 * float(stable_center)
+            if high_register_supported:
+                stabilized = 0.82 * float(latest_freq) + 0.18 * float(stable_center)
+            else:
+                stabilized = 0.72 * float(latest_freq) + 0.28 * float(stable_center)
             if not self._accept_normal_mode_display_candidate(
                 pitch_data,
                 stabilized,
@@ -55183,7 +57132,7 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             fast_turn = False
 
-        if last_plot_freq > 0.0 and segment_count <= 4 and (not fast_turn):
+        if last_plot_freq > 0.0 and segment_count <= 4 and (not fast_turn) and (not high_register_supported):
             early_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
             if early_gap >= reject_jump_semi:
                 step_ratio = 2.0 ** (float(early_step_semi) / 12.0)
@@ -55196,7 +57145,7 @@ class IntegratedRecordingInterface(QMainWindow):
         if last_plot_freq > 0.0 and (not fast_turn):
             up_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
             raw_supports_high = bool(raw_frequency > 0.0 and self._normal_mode_ui_semitone_distance(raw_frequency, refined_frequency) <= 1.05)
-            if up_gap >= 5.6 and pitch_confidence < 0.90 and (not raw_supports_high):
+            if up_gap >= 5.6 and pitch_confidence < 0.90 and (not raw_supports_high) and (not high_register_supported):
                 max_step_ratio = 2.0 ** (2.6 / 12.0)
                 refined_frequency = min(float(refined_frequency), float(last_plot_freq) * max_step_ratio)
                 refined_frequency = 0.88 * float(refined_frequency) + 0.12 * float(last_plot_freq)
@@ -58901,6 +60850,17 @@ class IntegratedRecordingInterface(QMainWindow):
             if has_pitch and frequency > 0:
                 # 记录平滑频率用于原逻辑
                 self.current_frequency = frequency
+                try:
+                    pitch_now = time.time()
+                    pitch_text = f"当前音高: {float(frequency):.1f} Hz"
+                    pitch_changed = pitch_text != getattr(self, '_last_current_pitch_text', None)
+                    last_pitch_ui = float(getattr(self, '_last_current_pitch_ui_wall', 0.0) or 0.0)
+                    if pitch_changed or (pitch_now - last_pitch_ui) >= float(getattr(self, '_current_pitch_ui_interval', 0.06) or 0.06):
+                        self._last_current_pitch_text = pitch_text
+                        self._last_current_pitch_ui_wall = pitch_now
+                        self.current_pitch_label.setText(pitch_text)
+                except Exception:
+                    pass
                 # 增加调试：显示 raw vs smooth（仅首次若开启）
                 if raw_frequency is not None:
                     if not hasattr(self, '_raw_smooth_debug'):
@@ -59746,24 +61706,41 @@ class IntegratedRecordingInterface(QMainWindow):
                     seconds = sec_int % 60
                     self.recording_time_label.setText(f"录音时长: {minutes:02d}:{seconds:02d}")
             
-            # 更新当前音高
-            if self.current_frequency > 0:
-                pitch_text = f"当前音高: {self.current_frequency:.1f} Hz"
-            else:
-                pitch_text = "当前音高: -- Hz"
-            if getattr(self, '_last_current_pitch_text', None) != pitch_text:
-                self._last_current_pitch_text = pitch_text
-                self.current_pitch_label.setText(pitch_text)
-            
-            # 更新检测统计
-            count_text = f"检测点数: {self.total_pitches_detected}"
-            if getattr(self, '_last_detection_count_text', None) != count_text:
-                self._last_detection_count_text = count_text
-                self.detection_count_label.setText(count_text)
             try:
                 status_now = time.time()
+            except Exception:
+                status_now = 0.0
+
+            recent_pitch_label = False
+            try:
+                recent_pitch_label = (status_now - float(getattr(self, '_last_current_pitch_ui_wall', 0.0) or 0.0)) < float(getattr(self, '_current_pitch_status_guard_interval', 0.10) or 0.10)
+            except Exception:
+                recent_pitch_label = False
+            if not recent_pitch_label:
+                if self.current_frequency > 0:
+                    pitch_text = f"当前音高: {self.current_frequency:.1f} Hz"
+                else:
+                    pitch_text = "当前音高: -- Hz"
+                if getattr(self, '_last_current_pitch_text', None) != pitch_text:
+                    self._last_current_pitch_text = pitch_text
+                    self._last_current_pitch_ui_wall = status_now
+                    self.current_pitch_label.setText(pitch_text)
+            
+            # 更新检测统计
+            recent_stats_label = False
+            try:
+                stats_guard = float(getattr(self, '_pitch_stats_ui_interval', 0.12) or 0.12)
+                recent_stats_label = (status_now - float(getattr(self, '_last_pitch_stats_ui_wall', 0.0) or 0.0)) < max(0.04, stats_guard * 0.7)
+            except Exception:
+                recent_stats_label = False
+            if not recent_stats_label:
+                count_text = f"检测点数: {self.total_pitches_detected}"
+                if getattr(self, '_last_detection_count_text', None) != count_text:
+                    self._last_detection_count_text = count_text
+                    self.detection_count_label.setText(count_text)
+            try:
                 last_rate_ui = float(getattr(self, '_last_detection_rate_ui_wall', 0.0) or 0.0)
-                if (status_now - last_rate_ui) >= float(getattr(self, '_status_rate_ui_interval', 0.12) or 0.12):
+                if (not recent_stats_label) and (status_now - last_rate_ui) >= float(getattr(self, '_status_rate_ui_interval', 0.12) or 0.12):
                     self._last_detection_rate_ui_wall = status_now
                     rate_text = self._compute_and_format_detection_rate()
                     if getattr(self, '_last_detection_rate_text', None) != rate_text:
@@ -66293,6 +68270,23 @@ def _ifc_start_offline_onepass(self, file_path: str):
             prog.set_progress(100)
             segs = payload.get('segments', [])
             dur = float(payload.get('duration', 0.0) or 0.0)
+            pitch_records = []
+            for seg in list(segs or []):
+                try:
+                    seg_times = list(seg[0] or [])
+                    seg_pitches = list(seg[1] or [])
+                except Exception:
+                    continue
+                for t_val, p_val in zip(seg_times, seg_pitches):
+                    try:
+                        pitch_records.append((float(t_val), float(p_val), 1.0, None))
+                    except Exception:
+                        continue
+            try:
+                self._onepass_analysis_payload = dict(payload or {})
+                self._onepass_analysis_payload['pitch_records'] = list(pitch_records)
+            except Exception:
+                self._onepass_analysis_payload = {'segments': segs, 'duration': dur, 'pitch_records': list(pitch_records)}
             # 设置时间轴为完整音频时长
             _apply_full_duration_axis(self.visualizer, dur)
             # 一次性绘制时间线：允许 UI 统一时间轴读取 visualizer.current_global_time
@@ -66300,10 +68294,45 @@ def _ifc_start_offline_onepass(self, file_path: str):
                 self.visualizer.start_time = time.time()
                 self.visualizer.current_global_time = 0.0
                 self.visualizer.is_recording_active = False
+                self.visualizer.guides_enabled = True
+                self.visualizer.guide_time_label_enabled = True
+                if hasattr(self.visualizer, '_set_onepass_time_cursor'):
+                    self.visualizer._set_onepass_time_cursor(0.0, visible=True)
+                if hasattr(self.visualizer, '_ensure_playhead'):
+                    self.visualizer._ensure_playhead()
+                if hasattr(self.visualizer, '_lb_playhead') and self.visualizer._lb_playhead is not None:
+                    self.visualizer._lb_playhead.set_xdata([0.0, 0.0])
+                    self.visualizer._lb_playhead.set_ydata([0.0, 1.0])
+                    self.visualizer._lb_playhead.set_visible(True)
+                    self.visualizer._lb_playhead.set_zorder(148)
             except Exception:
                 pass
             # 一次性绘制分段曲线
             self.visualizer.draw_segmented_pitch_line(segs)
+            try:
+                if hasattr(self.visualizer, '_pitch_store'):
+                    times = [float(rec[0]) for rec in pitch_records]
+                    pitches = [float(rec[1]) for rec in pitch_records]
+                    confs = [float(rec[2]) for rec in pitch_records]
+                    notes = [rec[3] for rec in pitch_records]
+                    self.visualizer._pitch_store.rebuild(times, pitches, confs, notes)
+                    if hasattr(self.visualizer, '_refresh_time_bins'):
+                        self.visualizer._refresh_time_bins()
+                    self.visualizer._last_added_time = float(times[-1]) if times else -1.0
+                    self.visualizer._artist_times_dirty = True
+                    self.visualizer._force_redraw_on_next_update = True
+                try:
+                    if hasattr(self.visualizer, 'update_display'):
+                        self.visualizer.update_display()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self.visualizer, 'update_guides'):
+                        self.visualizer.update_guides()
+                except Exception:
+                    pass
+            except Exception:
+                pass
             try:
                 if hasattr(self, '_apply_onepass_overlay_preview'):
                     self._apply_onepass_overlay_preview(payload)
@@ -66423,6 +68452,55 @@ class _OnePassPlaybackController(QObject):
         self.playing = False
         self._stream = None
         self._ui_timer = None
+    def _sync_visualizer_cursor(self, sec: float, *, follow_view: bool):
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+        except Exception:
+            viz = None
+        if viz is None:
+            return
+        try:
+            viz.guides_enabled = True
+            viz.guide_time_label_enabled = True
+        except Exception:
+            pass
+        try:
+            viz.current_global_time = float(max(0.0, sec))
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, '_set_onepass_time_cursor'):
+                viz._set_onepass_time_cursor(float(max(0.0, sec)), visible=True)
+        except Exception:
+            pass
+        try:
+            if hasattr(viz, '_ensure_playhead'):
+                viz._ensure_playhead()
+            playhead = getattr(viz, '_lb_playhead', None)
+            if playhead is not None:
+                x_val = float(max(0.0, sec))
+                playhead.set_xdata([x_val, x_val])
+                playhead.set_ydata([0.0, 1.0])
+                playhead.set_visible(True)
+                playhead.set_zorder(148)
+        except Exception:
+            pass
+        if follow_view:
+            try:
+                viz.follow_playback_time(float(max(0.0, sec)))
+            except Exception:
+                pass
+        else:
+            try:
+                if hasattr(viz, 'update_guides'):
+                    viz.update_guides()
+            except Exception:
+                pass
+            try:
+                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                    viz.canvas.draw_idle()
+            except Exception:
+                pass
     def decode_if_needed(self):
         if self.audio is not None:
             return
@@ -66476,28 +68554,61 @@ class _OnePassPlaybackController(QObject):
             self._ui_timer = QTimer(self)
             self._ui_timer.setTimerType(Qt.TimerType.PreciseTimer)
             self._ui_timer.timeout.connect(self._on_ui)
+        if self._ui_timer is not None and not self._ui_timer.isActive():
             self._ui_timer.start(30)
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+            if viz is not None and hasattr(viz, '_set_onepass_playback_point_mode'):
+                viz._set_onepass_playback_point_mode(True)
+                if hasattr(viz, 'update_display'):
+                    viz.update_display()
+        except Exception:
+            pass
+        self._sync_visualizer_cursor(float(self.pos) / float(max(1, self.sr)), follow_view=True)
     def pause(self):
         self.playing = False
+        try:
+            if self._ui_timer is not None and self._ui_timer.isActive():
+                self._ui_timer.stop()
+        except Exception:
+            pass
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+            if viz is not None and hasattr(viz, '_set_onepass_playback_point_mode'):
+                viz._set_onepass_playback_point_mode(False)
+                if hasattr(viz, 'update_display'):
+                    viz.update_display()
+        except Exception:
+            pass
+        self._sync_visualizer_cursor(float(self.pos) / float(max(1, self.sr)), follow_view=False)
     def stop(self):
         self.playing = False
+        try:
+            if self._ui_timer is not None and self._ui_timer.isActive():
+                self._ui_timer.stop()
+        except Exception:
+            pass
         self.pos = 0
         self.tick.emit(0.0)
+        try:
+            viz = getattr(self.ifc, 'visualizer', None)
+            if viz is not None and hasattr(viz, '_set_onepass_playback_point_mode'):
+                viz._set_onepass_playback_point_mode(False)
+                if hasattr(viz, 'update_display'):
+                    viz.update_display()
+        except Exception:
+            pass
+        self._sync_visualizer_cursor(0.0, follow_view=True)
     def seek(self, sec: float):
         sec = max(0.0, min(float(sec), self.total_s))
         self.pos = int(round(sec * self.sr))
         self.tick.emit(sec)
-        # 同步可视化器
+        self._sync_visualizer_cursor(sec, follow_view=True)
         try:
             if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
-                # 一次性绘制模式下：避免 notify_seek 引起的清空，保留已绘制分段/白点
                 try:
-                    if not getattr(self.ifc, '_in_onepass_mode', False):
-                        self.ifc.visualizer.notify_seek(sec)
-                except Exception:
-                    pass
-                self.ifc.visualizer.follow_playback_time(sec)
-                try:
+                    if hasattr(self.ifc.visualizer, '_set_onepass_playback_point_mode'):
+                        self.ifc.visualizer._set_onepass_playback_point_mode(bool(self.playing))
                     self.ifc.visualizer.update_display()
                 except Exception:
                     pass
@@ -66516,18 +68627,11 @@ class _OnePassPlaybackController(QObject):
         outdata[:,0] = chunk
         self.pos = min(self.pos + frames, len(self.audio))
     def _on_ui(self):
+        if not self.playing:
+            return
         cur_s = float(self.pos) / float(self.sr)
         self.tick.emit(cur_s)
-        # 一次性绘制模式下，持续推送可视化时间轴，供主界面时间线显示使用
-        try:
-            viz = getattr(self.ifc, 'visualizer', None)
-        except Exception:
-            viz = None
-        if viz is not None:
-            try:
-                viz.current_global_time = cur_s
-            except Exception:
-                pass
+        self._sync_visualizer_cursor(cur_s, follow_view=False)
 
 
 class _OnePassPlaybackPanel(QDialog):
@@ -66581,6 +68685,10 @@ class _OnePassPlaybackPanel(QDialog):
         self._dragging = False
         self._total_s = float(total_s)
         self.ctrl.tick.connect(self._on_tick)
+        self.btn_play.clicked.disconnect()
+        self.btn_pause.clicked.disconnect()
+        self.btn_play.clicked.connect(self._on_play)
+        self.btn_pause.clicked.connect(self._on_pause)
         self._update_lbl(0.0)
     @staticmethod
     def _fmt(s):
@@ -66591,14 +68699,31 @@ class _OnePassPlaybackPanel(QDialog):
             if self._total_s > 0:
                 v = int(round(cur_s / self._total_s * 1000))
                 self.slider.blockSignals(True); self.slider.setValue(max(0, min(1000, v))); self.slider.blockSignals(False)
-        # 同步可视化器时间与辅助线（纵向置中、横向跟随）
+        if self.ctrl.playing:
+            try:
+                if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
+                    self.ifc.visualizer.follow_playback_time(cur_s)
+            except Exception:
+                pass
+    def _on_play(self):
         try:
-            if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
-                self.ifc.visualizer.follow_playback_time(cur_s)
+            self.ctrl.play()
+        except Exception:
+            pass
+    def _on_pause(self):
+        try:
+            self.ctrl.pause()
         except Exception:
             pass
     def _on_press(self):
         self._dragging = True
+        try:
+            if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None and hasattr(self.ifc.visualizer, '_set_onepass_playback_point_mode'):
+                self.ifc.visualizer._set_onepass_playback_point_mode(False)
+                if hasattr(self.ifc.visualizer, 'update_display'):
+                    self.ifc.visualizer.update_display()
+        except Exception:
+            pass
     def _on_release(self):
         self._dragging = False
         self._apply_seek()
@@ -66608,6 +68733,8 @@ class _OnePassPlaybackPanel(QDialog):
             self._update_lbl(cur)
             try:
                 if hasattr(self.ifc, 'visualizer') and self.ifc.visualizer is not None:
+                    if hasattr(self.ifc.visualizer, '_set_onepass_playback_point_mode'):
+                        self.ifc.visualizer._set_onepass_playback_point_mode(False)
                     self.ifc.visualizer.follow_playback_time(cur)
                     try:
                         self.ifc.visualizer.update_display()
@@ -66707,6 +68834,10 @@ def _ifc_exit_onepass_mode(self):
             self._onepass_playback = None
         except Exception:
             pass
+    try:
+        self._onepass_analysis_payload = None
+    except Exception:
+        pass
     # 2) 恢复录音/监听状态
     try:
         prev = getattr(self, '_op_prev', {}) or {}
@@ -66772,6 +68903,15 @@ def _ifc_exit_onepass_mode(self):
     # 5) 退出一次性绘制模式标记
     try:
         self._in_onepass_mode = False
+    except Exception:
+        pass
+    try:
+        viz = getattr(self, 'visualizer', None)
+        if viz is not None and hasattr(viz, '_onepass_time_cursor') and getattr(viz, '_onepass_time_cursor', None) is not None:
+            try:
+                viz._onepass_time_cursor.set_visible(False)
+            except Exception:
+                pass
     except Exception:
         pass
     # 6) 清理一次性绘制时间线状态，避免影响后续实时录音
