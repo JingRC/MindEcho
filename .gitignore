@@ -13,6 +13,22 @@ tools/.venv_spleeter310/
 
 # Large assets (keep out of Git; use Releases or local-only)
 pretrained_models/**
+recordings/**
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.zip
+*.7z
+*.rar
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.opus
+*.m4a
+*.aiff
+*.wv
 tools/ffmpeg/bin/ffmpeg.exe
 tools/ffmpeg/bin/ffprobe.exe
 *.tar.gz
