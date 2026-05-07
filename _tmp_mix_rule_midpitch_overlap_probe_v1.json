@@ -1,0 +1,454 @@
+{
+  "manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\test_manifest.csv",
+  "item_names": [
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#想自由#Mixed_Voice_Group#0000",
+    "Chinese#ZH-Tenor-1#Pharyngeal#情歌#Control_Group#0015",
+    "Chinese#ZH-Tenor-1#Breathy#如果爱忘了#Control_Group#0007",
+    "Chinese#ZH-Alto-1#Glissando#十年#Control_Group#0010"
+  ],
+  "artifacts": [
+    {
+      "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu\\best_mix_binary_squeezenet.pt",
+      "samples": [
+        {
+          "item_name": "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#想自由#Mixed_Voice_Group#0000",
+          "group_name": "Mixed_Voice_Group",
+          "song_name": "想自由",
+          "singer": "ZH-Tenor-1",
+          "binary_role": "positive_mix",
+          "outcome": "miss",
+          "miss_reason": "rule_rejected_after_threshold",
+          "mix_event_count": 0,
+          "weak_mix_count": 0,
+          "strong_mix_count": 0,
+          "best_voice_mix_margin": 0.041647,
+          "best_voice_event": {
+            "event_type": "falsetto",
+            "start_time": 8.32,
+            "end_time": 9.76,
+            "confidence": 0.706028,
+            "strength": 0.817737,
+            "voice_type": "falsetto",
+            "mean_pitch_hz": 259.307983,
+            "chest_prob": 0.293972,
+            "falsetto_prob": 0.706028,
+            "mix_prob": 0.591647,
+            "mix_threshold": 0.55,
+            "feature_snapshot": {
+              "mean_rms": 0.033199,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "voiced_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.591647,
+              "mix_threshold": 0.55
+            }
+          },
+          "voice_rule_diagnosis": {
+            "voice_features": {
+              "duration": 1.44,
+              "confidence": 0.706028,
+              "strength": 0.817737,
+              "probability_margin": 0.412056,
+              "chest_prob": 0.293972,
+              "falsetto_prob": 0.706028,
+              "voiced_ratio": 1.0,
+              "mean_pitch_hz": 259.307983,
+              "mean_rms": 0.033199,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "learned_mix_prob": 0.591647,
+              "learned_mix_threshold": 0.55,
+              "learned_mix_margin": 0.041647
+            },
+            "supports": {
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.384874,
+              "mix_support": 0.261714,
+              "pitch_support": 0.214383,
+              "stable_support": 1.0,
+              "voiced_support": 1.0,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "weak_mix_support": 0.384874,
+              "weak_mix_support_floor": 0.2,
+              "weak_mix_pitch_floor": 180.0
+            },
+            "released_flags": {
+              "pure_learned_head_mix": true,
+              "marginal_head_mix": true,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_high_energy_midhigh_head_mix": false,
+              "released_supported_low_pitch_head_mix": false,
+              "released_lowmid_near_threshold_head_mix": false,
+              "released_midhigh_near_threshold_head_mix": false,
+              "released_ultrahigh_bright_head_point_mix": false,
+              "released_midchest_near_threshold_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false
+            },
+            "subtype_eval": {
+              "candidate_subtype": "weak_mix",
+              "candidate_subtype_conf": 0.629882,
+              "candidate_subtype_mix_support": 0.384874,
+              "strong_requires_threshold_block": false
+            },
+            "blockers": [
+              "reject_pure_head_low_pitch",
+              "reject_marginal_head_not_released"
+            ]
+          },
+          "strongest_mix_event": {},
+          "voice_debug": {
+            "model_ready": true,
+            "candidate_windows": 68,
+            "predicted_windows": 68,
+            "accepted_windows": 56,
+            "context_adjusted_windows": 13,
+            "relaxed_used": false,
+            "reason": "",
+            "backend": "external_python"
+          }
+        },
+        {
+          "item_name": "Chinese#ZH-Tenor-1#Pharyngeal#情歌#Control_Group#0015",
+          "group_name": "Control_Group",
+          "song_name": "情歌",
+          "singer": "ZH-Tenor-1",
+          "binary_role": "positive_mix",
+          "outcome": "miss",
+          "miss_reason": "rule_rejected_after_threshold",
+          "mix_event_count": 0,
+          "weak_mix_count": 0,
+          "strong_mix_count": 0,
+          "best_voice_mix_margin": 0.013647,
+          "best_voice_event": {
+            "event_type": "falsetto",
+            "start_time": 0.0,
+            "end_time": 2.8,
+            "confidence": 0.829671,
+            "strength": 0.894396,
+            "voice_type": "falsetto",
+            "mean_pitch_hz": 342.069702,
+            "chest_prob": 0.170329,
+            "falsetto_prob": 0.829671,
+            "mix_prob": 0.563647,
+            "mix_threshold": 0.55,
+            "feature_snapshot": {
+              "mean_rms": 0.068332,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "voiced_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.563647,
+              "mix_threshold": 0.55
+            }
+          },
+          "voice_rule_diagnosis": {
+            "voice_features": {
+              "duration": 2.8,
+              "confidence": 0.829671,
+              "strength": 0.894396,
+              "probability_margin": 0.659342,
+              "chest_prob": 0.170329,
+              "falsetto_prob": 0.829671,
+              "voiced_ratio": 1.0,
+              "mean_pitch_hz": 342.069702,
+              "mean_rms": 0.068332,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "learned_mix_prob": 0.563647,
+              "learned_mix_threshold": 0.55,
+              "learned_mix_margin": 0.013647
+            },
+            "supports": {
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.318207,
+              "mix_support": 0.216381,
+              "pitch_support": 0.574216,
+              "stable_support": 1.0,
+              "voiced_support": 1.0,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "weak_mix_support": 0.318207,
+              "weak_mix_support_floor": 0.2,
+              "weak_mix_pitch_floor": 180.0
+            },
+            "released_flags": {
+              "pure_learned_head_mix": true,
+              "marginal_head_mix": true,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_high_energy_midhigh_head_mix": false,
+              "released_supported_low_pitch_head_mix": false,
+              "released_lowmid_near_threshold_head_mix": false,
+              "released_midhigh_near_threshold_head_mix": false,
+              "released_ultrahigh_bright_head_point_mix": false,
+              "released_midchest_near_threshold_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false
+            },
+            "subtype_eval": {
+              "candidate_subtype": "weak_mix",
+              "candidate_subtype_conf": 0.679626,
+              "candidate_subtype_mix_support": 0.318207,
+              "strong_requires_threshold_block": false
+            },
+            "blockers": [
+              "reject_pure_head_low_pitch",
+              "reject_marginal_head_not_released"
+            ]
+          },
+          "strongest_mix_event": {},
+          "voice_debug": {
+            "model_ready": true,
+            "candidate_windows": 46,
+            "predicted_windows": 46,
+            "accepted_windows": 38,
+            "context_adjusted_windows": 0,
+            "relaxed_used": false,
+            "reason": "",
+            "backend": "external_python"
+          }
+        },
+        {
+          "item_name": "Chinese#ZH-Tenor-1#Breathy#如果爱忘了#Control_Group#0007",
+          "group_name": "Control_Group",
+          "song_name": "如果爱忘了",
+          "singer": "ZH-Tenor-1",
+          "binary_role": "control_negative",
+          "outcome": "clean",
+          "miss_reason": "",
+          "mix_event_count": 0,
+          "weak_mix_count": 0,
+          "strong_mix_count": 0,
+          "best_voice_mix_margin": 0.052876,
+          "best_voice_event": {
+            "event_type": "falsetto",
+            "start_time": 0.0,
+            "end_time": 6.110023,
+            "confidence": 0.8627,
+            "strength": 0.914874,
+            "voice_type": "falsetto",
+            "mean_pitch_hz": 319.740448,
+            "chest_prob": 0.405746,
+            "falsetto_prob": 0.8627,
+            "mix_prob": 0.602876,
+            "mix_threshold": 0.55,
+            "feature_snapshot": {
+              "mean_rms": 0.060974,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "voiced_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.602876,
+              "mix_threshold": 0.55
+            }
+          },
+          "voice_rule_diagnosis": {
+            "voice_features": {
+              "duration": 6.110023,
+              "confidence": 0.8627,
+              "strength": 0.914874,
+              "probability_margin": 0.456954,
+              "chest_prob": 0.405746,
+              "falsetto_prob": 0.8627,
+              "voiced_ratio": 1.0,
+              "mean_pitch_hz": 319.740448,
+              "mean_rms": 0.060974,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "learned_mix_prob": 0.602876,
+              "learned_mix_threshold": 0.55,
+              "learned_mix_margin": 0.052876
+            },
+            "supports": {
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.41161,
+              "mix_support": 0.279894,
+              "pitch_support": 0.477132,
+              "stable_support": 1.0,
+              "voiced_support": 1.0,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "weak_mix_support": 0.41161,
+              "weak_mix_support_floor": 0.2,
+              "weak_mix_pitch_floor": 180.0
+            },
+            "released_flags": {
+              "pure_learned_head_mix": true,
+              "marginal_head_mix": false,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_high_energy_midhigh_head_mix": false,
+              "released_supported_low_pitch_head_mix": false,
+              "released_lowmid_near_threshold_head_mix": false,
+              "released_midhigh_near_threshold_head_mix": false,
+              "released_ultrahigh_bright_head_point_mix": false,
+              "released_midchest_near_threshold_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false
+            },
+            "subtype_eval": {
+              "candidate_subtype": "weak_mix",
+              "candidate_subtype_conf": 0.699812,
+              "candidate_subtype_mix_support": 0.41161,
+              "strong_requires_threshold_block": false
+            },
+            "blockers": [
+              "reject_pure_head_low_pitch"
+            ]
+          },
+          "strongest_mix_event": {},
+          "voice_debug": {
+            "model_ready": true,
+            "candidate_windows": 36,
+            "predicted_windows": 36,
+            "accepted_windows": 32,
+            "context_adjusted_windows": 0,
+            "relaxed_used": false,
+            "reason": "",
+            "backend": "external_python"
+          }
+        },
+        {
+          "item_name": "Chinese#ZH-Alto-1#Glissando#十年#Control_Group#0010",
+          "group_name": "Control_Group",
+          "song_name": "十年",
+          "singer": "ZH-Alto-1",
+          "binary_role": "control_negative",
+          "outcome": "clean",
+          "miss_reason": "",
+          "mix_event_count": 0,
+          "weak_mix_count": 0,
+          "strong_mix_count": 0,
+          "best_voice_mix_margin": -0.015153,
+          "best_voice_event": {
+            "event_type": "falsetto",
+            "start_time": 0.0,
+            "end_time": 8.130023,
+            "confidence": 0.828868,
+            "strength": 0.893898,
+            "voice_type": "falsetto",
+            "mean_pitch_hz": 355.542633,
+            "chest_prob": 0.171132,
+            "falsetto_prob": 0.828868,
+            "mix_prob": 0.534847,
+            "mix_threshold": 0.55,
+            "feature_snapshot": {
+              "mean_rms": 0.07174,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "voiced_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.534847,
+              "mix_threshold": 0.55
+            }
+          },
+          "voice_rule_diagnosis": {
+            "voice_features": {
+              "duration": 8.130023,
+              "confidence": 0.828868,
+              "strength": 0.893898,
+              "probability_margin": 0.657736,
+              "chest_prob": 0.171132,
+              "falsetto_prob": 0.828868,
+              "voiced_ratio": 1.0,
+              "mean_pitch_hz": 355.542633,
+              "mean_rms": 0.07174,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "learned_mix_prob": 0.534847,
+              "learned_mix_threshold": 0.55,
+              "learned_mix_margin": -0.015153
+            },
+            "supports": {
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.249636,
+              "mix_support": 0.169752,
+              "pitch_support": 0.632794,
+              "stable_support": 1.0,
+              "voiced_support": 1.0,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "weak_mix_support": 0.169752,
+              "weak_mix_support_floor": 0.28,
+              "weak_mix_pitch_floor": 230.0
+            },
+            "released_flags": {
+              "pure_learned_head_mix": false,
+              "marginal_head_mix": false,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_high_energy_midhigh_head_mix": false,
+              "released_supported_low_pitch_head_mix": false,
+              "released_lowmid_near_threshold_head_mix": false,
+              "released_midhigh_near_threshold_head_mix": false,
+              "released_ultrahigh_bright_head_point_mix": false,
+              "released_midchest_near_threshold_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false
+            },
+            "subtype_eval": {
+              "candidate_subtype": "",
+              "candidate_subtype_conf": 0.0,
+              "candidate_subtype_mix_support": 0.169752,
+              "strong_requires_threshold_block": false
+            },
+            "blockers": [
+              "reject_no_subtype"
+            ]
+          },
+          "strongest_mix_event": {},
+          "voice_debug": {
+            "model_ready": true,
+            "candidate_windows": 48,
+            "predicted_windows": 48,
+            "accepted_windows": 48,
+            "context_adjusted_windows": 0,
+            "relaxed_used": false,
+            "reason": "",
+            "backend": "external_python"
+          }
+        }
+      ]
+    }
+  ]
+}

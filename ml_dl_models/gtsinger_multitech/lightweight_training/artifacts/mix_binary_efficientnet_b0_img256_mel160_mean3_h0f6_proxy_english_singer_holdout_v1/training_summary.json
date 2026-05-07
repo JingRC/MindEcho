@@ -1,0 +1,353 @@
+{
+  "device": "cuda",
+  "task": "mix_binary_crossentropy",
+  "init_checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\best_mix_binary_squeezenet.pt",
+  "backbone_name": "efficientnet_b0",
+  "augment_profile": "safe",
+  "image_size": 256,
+  "sample_rate": 22050,
+  "sample_secs": 2.4,
+  "eval_window_count": 3,
+  "eval_window_aggregation": "mean",
+  "eval_window_consistency_penalty": 0.0,
+  "eval_window_support_threshold": 0.4,
+  "eval_window_min_support_windows": 2,
+  "eval_window_high_support_threshold": 0.55,
+  "eval_window_min_high_support_windows": 1,
+  "n_fft": 1024,
+  "hop_length": 256,
+  "n_mels": 160,
+  "best_epoch": 2,
+  "class_weight_mode": "none",
+  "weighted_sampler": false,
+  "sample_weight_mode": "class_balanced",
+  "loss_weight_mode": "none",
+  "selection_metric": "product_proxy",
+  "best_threshold": 0.625,
+  "best_val_score": 0.782029,
+  "best_val_selection_score": 0.782029,
+  "best_val_metrics": {
+    "acc": 0.701897,
+    "balanced_acc": 0.703045,
+    "macro_f1": 0.701404,
+    "mix_f1": 0.713542,
+    "mix_precision": 0.740541,
+    "mix_recall": 0.688442
+  },
+  "best_val_group_rates": {
+    "Mixed_Voice_Group": 0.948339,
+    "Control_Group": 0.401525,
+    "Breathy_Group": 0.051471,
+    "Falsetto_Group": 0.498155
+  },
+  "best_val_binary_role_rates": {
+    "positive_mix": 0.688442,
+    "control_negative": 0.255738,
+    "breathy_group": 0.052632,
+    "falsetto_group": 0.498155
+  },
+  "best_val_threshold_constraints_ok": false,
+  "validation_threshold_constraints": {
+    "min_positive_mix_rate": 0.65,
+    "max_control_negative_rate": 0.24,
+    "max_breathy_negative_rate": 0.07,
+    "max_falsetto_negative_rate": 0.1
+  },
+  "best_val_acc": 0.701897,
+  "final_epoch": 6,
+  "final_stage": "finetune",
+  "final_threshold": 0.7,
+  "final_val_score": 0.750678,
+  "final_val_metrics": {
+    "acc": 0.673171,
+    "balanced_acc": 0.67864,
+    "macro_f1": 0.673084,
+    "mix_f1": 0.667769,
+    "mix_precision": 0.739024,
+    "mix_recall": 0.609045
+  },
+  "final_val_binary_role_rates": {
+    "positive_mix": 0.609045,
+    "control_negative": 0.206557,
+    "breathy_group": 0.052632,
+    "falsetto_group": 0.457565
+  },
+  "test_acc": 0.507817,
+  "test_loss": 0.796658,
+  "test_metrics": {
+    "acc": 0.507817,
+    "balanced_acc": 0.572621,
+    "macro_f1": 0.456001,
+    "mix_f1": 0.288107,
+    "mix_precision": 0.900524,
+    "mix_recall": 0.171486
+  },
+  "duration_sec": 1045.083,
+  "split_summary": {
+    "train": {
+      "items": 4309,
+      "labels": {
+        "0": 2407,
+        "1": 1902
+      },
+      "binary_roles": {
+        "breathy_group": 402,
+        "control_negative": 828,
+        "positive_mix": 1902,
+        "falsetto_group": 802,
+        "other_negative": 375
+      },
+      "groups": {
+        "Breathy_Group": 499,
+        "Control_Group": 1384,
+        "Falsetto_Group": 891,
+        "Glissando_Group": 103,
+        "Mixed_Voice_Group": 994,
+        "Pharyngeal_Group": 379,
+        "Vibrato_Group": 59
+      }
+    },
+    "validation": {
+      "items": 1845,
+      "labels": {
+        "0": 850,
+        "1": 995
+      },
+      "binary_roles": {
+        "breathy_group": 133,
+        "control_negative": 305,
+        "positive_mix": 995,
+        "other_negative": 141,
+        "falsetto_group": 271
+      },
+      "groups": {
+        "Breathy_Group": 136,
+        "Control_Group": 787,
+        "Glissando_Group": 128,
+        "Falsetto_Group": 271,
+        "Mixed_Voice_Group": 271,
+        "Pharyngeal_Group": 125,
+        "Vibrato_Group": 127
+      }
+    },
+    "test": {
+      "items": 1727,
+      "labels": {
+        "0": 724,
+        "1": 1003
+      },
+      "binary_roles": {
+        "breathy_group": 106,
+        "positive_mix": 1003,
+        "other_negative": 124,
+        "control_negative": 249,
+        "falsetto_group": 245
+      },
+      "groups": {
+        "Breathy_Group": 122,
+        "Control_Group": 741,
+        "Glissando_Group": 126,
+        "Falsetto_Group": 245,
+        "Mixed_Voice_Group": 245,
+        "Pharyngeal_Group": 122,
+        "Vibrato_Group": 126
+      }
+    }
+  },
+  "confusion_matrix": [
+    [
+      705,
+      19
+    ],
+    [
+      831,
+      172
+    ]
+  ],
+  "classification_report": {
+    "non_mix": {
+      "precision": 0.458984375,
+      "recall": 0.9737569060773481,
+      "f1-score": 0.6238938053097345,
+      "support": 724.0
+    },
+    "mix": {
+      "precision": 0.900523560209424,
+      "recall": 0.17148554336989033,
+      "f1-score": 0.288107202680067,
+      "support": 1003.0
+    },
+    "accuracy": 0.5078170237405906,
+    "macro avg": {
+      "precision": 0.679753967604712,
+      "recall": 0.5726212247236192,
+      "f1-score": 0.4560005039949008,
+      "support": 1727.0
+    },
+    "weighted avg": {
+      "precision": 0.7154196979676041,
+      "recall": 0.5078170237405906,
+      "f1-score": 0.4288770349347742,
+      "support": 1727.0
+    }
+  },
+  "test_mix_probability": {
+    "mean": 0.324009,
+    "min": 0.005558,
+    "max": 0.925003
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "stage": "finetune",
+      "train_loss": 0.451758,
+      "train_acc": 0.790903,
+      "val_loss": 0.665827,
+      "val_acc": 0.621138,
+      "val_balanced_acc": 0.631599,
+      "val_macro_f1": 0.61848,
+      "val_mix_f1": 0.586635,
+      "val_mix_precision": 0.712644,
+      "val_mix_recall": 0.498492,
+      "val_mixed_group_positive_rate": 0.878229,
+      "val_control_group_positive_rate": 0.240152,
+      "val_breathy_group_positive_rate": 0.051471,
+      "val_falsetto_group_positive_rate": 0.424354,
+      "val_positive_mix_rate": 0.498492,
+      "val_control_negative_rate": 0.203279,
+      "val_breathy_negative_rate": 0.052632,
+      "val_falsetto_negative_rate": 0.424354,
+      "val_selection_score": 0.670908,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.675,
+      "lr": 5e-05
+    },
+    {
+      "epoch": 2,
+      "stage": "finetune",
+      "train_loss": 0.423847,
+      "train_acc": 0.816431,
+      "val_loss": 0.600972,
+      "val_acc": 0.701897,
+      "val_balanced_acc": 0.703045,
+      "val_macro_f1": 0.701404,
+      "val_mix_f1": 0.713542,
+      "val_mix_precision": 0.740541,
+      "val_mix_recall": 0.688442,
+      "val_mixed_group_positive_rate": 0.948339,
+      "val_control_group_positive_rate": 0.401525,
+      "val_breathy_group_positive_rate": 0.051471,
+      "val_falsetto_group_positive_rate": 0.498155,
+      "val_positive_mix_rate": 0.688442,
+      "val_control_negative_rate": 0.255738,
+      "val_breathy_negative_rate": 0.052632,
+      "val_falsetto_negative_rate": 0.498155,
+      "val_selection_score": 0.782029,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.625,
+      "lr": 4.665e-05
+    },
+    {
+      "epoch": 3,
+      "stage": "finetune",
+      "train_loss": 0.408101,
+      "train_acc": 0.823625,
+      "val_loss": 0.645925,
+      "val_acc": 0.684553,
+      "val_balanced_acc": 0.684564,
+      "val_macro_f1": 0.683642,
+      "val_mix_f1": 0.700617,
+      "val_mix_precision": 0.717597,
+      "val_mix_recall": 0.684422,
+      "val_mixed_group_positive_rate": 0.948339,
+      "val_control_group_positive_rate": 0.407878,
+      "val_breathy_group_positive_rate": 0.117647,
+      "val_falsetto_group_positive_rate": 0.549815,
+      "val_positive_mix_rate": 0.684422,
+      "val_control_negative_rate": 0.272131,
+      "val_breathy_negative_rate": 0.112782,
+      "val_falsetto_negative_rate": 0.549815,
+      "val_selection_score": 0.737444,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.675,
+      "lr": 3.75e-05
+    },
+    {
+      "epoch": 4,
+      "stage": "finetune",
+      "train_loss": 0.410223,
+      "train_acc": 0.824321,
+      "val_loss": 0.643706,
+      "val_acc": 0.686179,
+      "val_balanced_acc": 0.6871,
+      "val_macro_f1": 0.685617,
+      "val_mix_f1": 0.698908,
+      "val_mix_precision": 0.724138,
+      "val_mix_recall": 0.675377,
+      "val_mixed_group_positive_rate": 0.948339,
+      "val_control_group_positive_rate": 0.39263,
+      "val_breathy_group_positive_rate": 0.073529,
+      "val_falsetto_group_positive_rate": 0.523985,
+      "val_positive_mix_rate": 0.675377,
+      "val_control_negative_rate": 0.278689,
+      "val_breathy_negative_rate": 0.067669,
+      "val_falsetto_negative_rate": 0.523985,
+      "val_selection_score": 0.747744,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.675,
+      "lr": 2.5e-05
+    },
+    {
+      "epoch": 5,
+      "stage": "finetune",
+      "train_loss": 0.394867,
+      "train_acc": 0.830123,
+      "val_loss": 0.626821,
+      "val_acc": 0.695935,
+      "val_balanced_acc": 0.695888,
+      "val_macro_f1": 0.695003,
+      "val_mix_f1": 0.711864,
+      "val_mix_precision": 0.727941,
+      "val_mix_recall": 0.696482,
+      "val_mixed_group_positive_rate": 0.95941,
+      "val_control_group_positive_rate": 0.419314,
+      "val_breathy_group_positive_rate": 0.066176,
+      "val_falsetto_group_positive_rate": 0.516605,
+      "val_positive_mix_rate": 0.696482,
+      "val_control_negative_rate": 0.291803,
+      "val_breathy_negative_rate": 0.06015,
+      "val_falsetto_negative_rate": 0.516605,
+      "val_selection_score": 0.762595,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.65,
+      "lr": 1.25e-05
+    },
+    {
+      "epoch": 6,
+      "stage": "finetune",
+      "train_loss": 0.397055,
+      "train_acc": 0.825482,
+      "val_loss": 0.628496,
+      "val_acc": 0.673171,
+      "val_balanced_acc": 0.67864,
+      "val_macro_f1": 0.673084,
+      "val_mix_f1": 0.667769,
+      "val_mix_precision": 0.739024,
+      "val_mix_recall": 0.609045,
+      "val_mixed_group_positive_rate": 0.926199,
+      "val_control_group_positive_rate": 0.316391,
+      "val_breathy_group_positive_rate": 0.058824,
+      "val_falsetto_group_positive_rate": 0.457565,
+      "val_positive_mix_rate": 0.609045,
+      "val_control_negative_rate": 0.206557,
+      "val_breathy_negative_rate": 0.052632,
+      "val_falsetto_negative_rate": 0.457565,
+      "val_selection_score": 0.750678,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.7,
+      "lr": 3.35e-06
+    }
+  ],
+  "checkpoint": "ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h0f6_proxy_english_singer_holdout_v1\\best_mix_binary_squeezenet.pt",
+  "final_checkpoint": "ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h0f6_proxy_english_singer_holdout_v1\\last_mix_binary_squeezenet.pt"
+}

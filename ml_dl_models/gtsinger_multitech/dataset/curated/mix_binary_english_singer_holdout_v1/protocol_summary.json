@@ -1,0 +1,130 @@
+{
+  "protocol_name": "english_singer_holdout_v1",
+  "source_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\english_mix_binary_eval\\full_manifest.csv",
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1",
+  "available_singers": [
+    "EN-Alto-1",
+    "EN-Alto-2",
+    "EN-Tenor-1"
+  ],
+  "used_default_protocol": true,
+  "split_assignment": {
+    "train": [
+      "EN-Alto-1"
+    ],
+    "validation": [
+      "EN-Tenor-1"
+    ],
+    "test": [
+      "EN-Alto-2"
+    ]
+  },
+  "rationale": [
+    "This protocol is frozen by singer identity. Using validation or test singers in training invalidates the held-out claim.",
+    "The default assignment keeps EN-Alto-1 as the adaptation singer, EN-Tenor-1 as validation, and EN-Alto-2 as the final test singer.",
+    "That default maps the more permissive high-false-positive regime to validation and the more over-conservative high-false-negative regime to the final test."
+  ],
+  "split_summary": {
+    "train": {
+      "items": 1255,
+      "labels": {
+        "1": 771,
+        "0": 484
+      },
+      "binary_roles": {
+        "positive_mix": 771,
+        "breathy_group": 6,
+        "control_negative": 206,
+        "falsetto_group": 180,
+        "other_negative": 92
+      },
+      "groups": {
+        "Breathy_Group": 103,
+        "Control_Group": 537,
+        "Glissando_Group": 99,
+        "Falsetto_Group": 181,
+        "Mixed_Voice_Group": 184,
+        "Pharyngeal_Group": 102,
+        "Vibrato_Group": 49
+      },
+      "singers": {
+        "EN-Alto-1": 1255
+      },
+      "mix_variants": {
+        "breathy_mix": 48,
+        "non_mix": 484,
+        "clear_mix": 717,
+        "head_mix": 6
+      }
+    },
+    "validation": {
+      "items": 1845,
+      "labels": {
+        "0": 850,
+        "1": 995
+      },
+      "binary_roles": {
+        "breathy_group": 133,
+        "control_negative": 305,
+        "positive_mix": 995,
+        "other_negative": 141,
+        "falsetto_group": 271
+      },
+      "groups": {
+        "Breathy_Group": 136,
+        "Control_Group": 787,
+        "Glissando_Group": 128,
+        "Falsetto_Group": 271,
+        "Mixed_Voice_Group": 271,
+        "Pharyngeal_Group": 125,
+        "Vibrato_Group": 127
+      },
+      "singers": {
+        "EN-Tenor-1": 1845
+      },
+      "mix_variants": {
+        "non_mix": 850,
+        "clear_mix": 976,
+        "head_mix": 16,
+        "breathy_mix": 3
+      }
+    },
+    "test": {
+      "items": 1727,
+      "labels": {
+        "0": 724,
+        "1": 1003
+      },
+      "binary_roles": {
+        "breathy_group": 106,
+        "positive_mix": 1003,
+        "other_negative": 124,
+        "control_negative": 249,
+        "falsetto_group": 245
+      },
+      "groups": {
+        "Breathy_Group": 122,
+        "Control_Group": 741,
+        "Glissando_Group": 126,
+        "Falsetto_Group": 245,
+        "Mixed_Voice_Group": 245,
+        "Pharyngeal_Group": 122,
+        "Vibrato_Group": 126
+      },
+      "singers": {
+        "EN-Alto-2": 1727
+      },
+      "mix_variants": {
+        "non_mix": 724,
+        "clear_mix": 972,
+        "breathy_mix": 25,
+        "head_mix": 6
+      }
+    }
+  },
+  "manifests": {
+    "train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\train_manifest.csv",
+    "validation_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\validation_manifest.csv",
+    "test_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\test_manifest.csv"
+  }
+}

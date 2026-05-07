@@ -1,0 +1,63 @@
+{
+  "groups": [
+    "Breathy_Group"
+  ],
+  "per_group": 2,
+  "skip": 0,
+  "aggregate": {
+    "sample_count": 2,
+    "samples_with_any_mix_event": 1,
+    "samples_with_strong_mix": 0,
+    "sample_level_any_mix_recall_proxy": 0.5,
+    "sample_level_strong_mix_recall_proxy": 0.0,
+    "voice_segments_total": 2,
+    "voice_segments_mix_ge_threshold": 1,
+    "voice_segment_mix_hit_ratio": 0.5,
+    "avg_max_mix_prob": 0.414066,
+    "avg_strong_mix_coverage": 0.0,
+    "avg_strong_mix_duration": 0.0
+  },
+  "rows": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#可乐#Breathy_Group#0007",
+      "group_name": "Breathy_Group",
+      "song_name": "可乐",
+      "binary_role": "breathy_group",
+      "event_count": 1,
+      "counts": {
+        "falsetto": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "max_mix_prob": 0.30536,
+      "strong_mix_duration": 0.0,
+      "voice_duration": 7.36,
+      "strong_mix_coverage": 0.0
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#失落沙洲#Breathy_Group#0007",
+      "group_name": "Breathy_Group",
+      "song_name": "失落沙洲",
+      "binary_role": "breathy_group",
+      "event_count": 2,
+      "counts": {
+        "falsetto": 1,
+        "weak_mix": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 1,
+      "strong_mix_count": 0,
+      "weak_mix_count": 1,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 1,
+      "max_mix_prob": 0.522772,
+      "strong_mix_duration": 0.0,
+      "voice_duration": 3.52,
+      "strong_mix_coverage": 0.0
+    }
+  ]
+}

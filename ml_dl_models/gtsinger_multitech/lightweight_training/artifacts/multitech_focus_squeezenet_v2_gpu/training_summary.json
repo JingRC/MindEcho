@@ -1,0 +1,225 @@
+{
+  "label_names": [
+    "mix",
+    "falsetto",
+    "breathy",
+    "vibrato",
+    "pharyngeal"
+  ],
+  "train_items": 5711,
+  "validation_items": 714,
+  "test_items": 714,
+  "device": "cuda",
+  "pos_weight_cap": 3.0,
+  "best_valid_macro_f1": 0.22528480379380258,
+  "best_thresholds": {
+    "mix": 0.20000000298023224,
+    "falsetto": 0.20000000298023224,
+    "breathy": 0.20000000298023224,
+    "vibrato": 0.20000000298023224,
+    "pharyngeal": 0.20000000298023224
+  },
+  "test_metrics": {
+    "macro_f1": 0.2084642829802661,
+    "macro_precision": 0.11904761904761904,
+    "macro_recall": 1.0,
+    "loss": 0.8581822219015169
+  },
+  "test_per_label": {
+    "mix": {
+      "f1": 0.3337222870478413,
+      "precision": 0.20028011204481794,
+      "recall": 1.0,
+      "positive_rate": 0.2002801150083542,
+      "predicted_positive_rate": 1.0,
+      "threshold": 0.20000000298023224
+    },
+    "falsetto": {
+      "f1": 0.28365384615384615,
+      "precision": 0.16526610644257703,
+      "recall": 1.0,
+      "positive_rate": 0.16526611149311066,
+      "predicted_positive_rate": 1.0,
+      "threshold": 0.20000000298023224
+    },
+    "breathy": {
+      "f1": 0.11360634081902246,
+      "precision": 0.06022408963585434,
+      "recall": 1.0,
+      "positive_rate": 0.06022408977150917,
+      "predicted_positive_rate": 1.0,
+      "threshold": 0.20000000298023224
+    },
+    "vibrato": {
+      "f1": 0.18781725888324874,
+      "precision": 0.10364145658263306,
+      "recall": 1.0,
+      "positive_rate": 0.10364145785570145,
+      "predicted_positive_rate": 1.0,
+      "threshold": 0.20000000298023224
+    },
+    "pharyngeal": {
+      "f1": 0.12352168199737187,
+      "precision": 0.06582633053221289,
+      "recall": 1.0,
+      "positive_rate": 0.06582633405923843,
+      "predicted_positive_rate": 1.0,
+      "threshold": 0.20000000298023224
+    }
+  },
+  "history": [
+    {
+      "stage": "head",
+      "epoch": 1,
+      "train_loss": 0.878979,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 123.47,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "head",
+      "epoch": 2,
+      "train_loss": 0.865422,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 96.01,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "head",
+      "epoch": 3,
+      "train_loss": 0.865364,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 76.78,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "finetune",
+      "epoch": 1,
+      "train_loss": 0.865349,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 72.62,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "finetune",
+      "epoch": 2,
+      "train_loss": 0.865348,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 70.75,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "finetune",
+      "epoch": 3,
+      "train_loss": 0.865348,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 73.15,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "finetune",
+      "epoch": 4,
+      "train_loss": 0.865347,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 75.78,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "finetune",
+      "epoch": 5,
+      "train_loss": 0.865348,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 77.46,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    },
+    {
+      "stage": "finetune",
+      "epoch": 6,
+      "train_loss": 0.865348,
+      "valid_loss": 0.872162,
+      "valid_macro_f1": 0.225285,
+      "valid_macro_precision": 0.129132,
+      "valid_macro_recall": 1.0,
+      "elapsed_sec": 77.87,
+      "valid_thresholds": {
+        "mix": 0.2,
+        "falsetto": 0.2,
+        "breathy": 0.2,
+        "vibrato": 0.2,
+        "pharyngeal": 0.2
+      }
+    }
+  ]
+}

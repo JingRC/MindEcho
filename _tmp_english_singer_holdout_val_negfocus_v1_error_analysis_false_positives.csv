@@ -1,0 +1,236 @@
+item_name,singer,song_name,group_name,binary_role,mix_variant,mix_prob,fp_margin
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Falsetto_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Falsetto_Group,falsetto_group,non_mix,0.994541,0.319541
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0001,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.992203,0.317203
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0008,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.989485,0.314485
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0003,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.98915,0.31415
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0003,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.985268,0.310268
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0010,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.982741,0.307741
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0006,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.98144,0.30644
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Call Out My Name#Falsetto_Group#0003,EN-Tenor-1,Call Out My Name,Falsetto_Group,falsetto_group,non_mix,0.980973,0.305973
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0006,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.980478,0.305478
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0007,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.976327,0.301327
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0008,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.974259,0.299259
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0005,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.973207,0.298207
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0012,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.97183,0.29683
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0015,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.971224,0.296224
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0007,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.971061,0.296061
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0001,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.969,0.294
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0008,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.965494,0.290494
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#You Belong With Me#Falsetto_Group#0002,EN-Tenor-1,You Belong With Me,Falsetto_Group,falsetto_group,non_mix,0.963823,0.288823
+English#EN-Tenor-1#Glissando#All I Ask#Glissando_Group#0001,EN-Tenor-1,All I Ask,Glissando_Group,other_negative,non_mix,0.962732,0.287732
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0000,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.962615,0.287615
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Falsetto_Group#0004,EN-Tenor-1,I Knew You Were Trouble,Falsetto_Group,falsetto_group,non_mix,0.961895,0.286895
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0002,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.959794,0.284794
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0009,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.959654,0.284654
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Look What You Make Me Do#Control_Group#0001,EN-Tenor-1,Look What You Make Me Do,Control_Group,control_negative,non_mix,0.956572,0.281572
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Umbrella#Falsetto_Group#0004,EN-Tenor-1,Umbrella,Falsetto_Group,falsetto_group,non_mix,0.956362,0.281362
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Umbrella#Falsetto_Group#0002,EN-Tenor-1,Umbrella,Falsetto_Group,falsetto_group,non_mix,0.955633,0.280633
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Umbrella#Falsetto_Group#0005,EN-Tenor-1,Umbrella,Falsetto_Group,falsetto_group,non_mix,0.955307,0.280307
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#August#Falsetto_Group#0002,EN-Tenor-1,August,Falsetto_Group,falsetto_group,non_mix,0.954707,0.279707
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Someone You Loved#Falsetto_Group#0000,EN-Tenor-1,Someone You Loved,Falsetto_Group,falsetto_group,non_mix,0.95445,0.27945
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0002,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.953412,0.278412
+English#EN-Tenor-1#Vibrato#All I Ask#Vibrato_Group#0001,EN-Tenor-1,All I Ask,Vibrato_Group,other_negative,non_mix,0.953134,0.278134
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0008,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.952403,0.277403
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0002,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.951814,0.276814
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0006,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.951657,0.276657
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Exile#Control_Group#0004,EN-Tenor-1,Exile,Control_Group,control_negative,non_mix,0.949887,0.274887
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0005,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.949572,0.274572
+English#EN-Tenor-1#Glissando#Someone Like You#Glissando_Group#0001,EN-Tenor-1,Someone Like You,Glissando_Group,other_negative,non_mix,0.948422,0.273422
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0009,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.946625,0.271625
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0004,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.945852,0.270852
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Control_Group#0002,EN-Tenor-1,Love Story,Control_Group,control_negative,non_mix,0.944507,0.269507
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0006,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.943883,0.268883
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Control_Group#0006,EN-Tenor-1,Love Story,Control_Group,control_negative,non_mix,0.942814,0.267814
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#You Belong With Me#Falsetto_Group#0001,EN-Tenor-1,You Belong With Me,Falsetto_Group,falsetto_group,non_mix,0.941179,0.266179
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0000,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.940271,0.265271
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0006,EN-Tenor-1,Someone Like You,Vibrato_Group,other_negative,non_mix,0.93789,0.26289
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Call Out My Name#Falsetto_Group#0002,EN-Tenor-1,Call Out My Name,Falsetto_Group,falsetto_group,non_mix,0.937802,0.262802
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Look What You Make Me Do#Control_Group#0000,EN-Tenor-1,Look What You Make Me Do,Control_Group,control_negative,non_mix,0.936915,0.261915
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Exile#Control_Group#0003,EN-Tenor-1,Exile,Control_Group,control_negative,non_mix,0.934811,0.259811
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0000,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.934135,0.259135
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Lavender Haze#Falsetto_Group#0002,EN-Tenor-1,Lavender Haze,Falsetto_Group,falsetto_group,non_mix,0.933538,0.258538
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0004,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.932395,0.257395
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0001,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.930499,0.255499
+English#EN-Tenor-1#Vibrato#All I Ask#Vibrato_Group#0000,EN-Tenor-1,All I Ask,Vibrato_Group,other_negative,non_mix,0.929214,0.254214
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0005,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.928818,0.253818
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0003,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.928599,0.253599
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#August#Falsetto_Group#0005,EN-Tenor-1,August,Falsetto_Group,falsetto_group,non_mix,0.928485,0.253485
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Falsetto_Group#0010,EN-Tenor-1,Firework,Falsetto_Group,falsetto_group,non_mix,0.925168,0.250168
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0002,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.924084,0.249084
+English#EN-Tenor-1#Glissando#All I Ask#Glissando_Group#0000,EN-Tenor-1,All I Ask,Glissando_Group,other_negative,non_mix,0.923846,0.248846
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0010,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.9237,0.2487
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0006,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.922572,0.247572
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Falsetto_Group#0006,EN-Tenor-1,Love Story,Falsetto_Group,falsetto_group,non_mix,0.921526,0.246526
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0003,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.919827,0.244827
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Blank Space#Control_Group#0000,EN-Tenor-1,Blank Space,Control_Group,control_negative,non_mix,0.919647,0.244647
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Diamonds#Falsetto_Group#0006,EN-Tenor-1,Diamonds,Falsetto_Group,falsetto_group,non_mix,0.919207,0.244207
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Blank Space#Control_Group#0001,EN-Tenor-1,Blank Space,Control_Group,control_negative,non_mix,0.918012,0.243012
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0001,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.916299,0.241299
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Exile#Control_Group#0002,EN-Tenor-1,Exile,Control_Group,control_negative,non_mix,0.91157,0.23657
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Blank Space#Control_Group#0002,EN-Tenor-1,Blank Space,Control_Group,control_negative,non_mix,0.911229,0.236229
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0008,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.909925,0.234925
+English#EN-Tenor-1#Vibrato#All I Ask#Vibrato_Group#0002,EN-Tenor-1,All I Ask,Vibrato_Group,other_negative,non_mix,0.909383,0.234383
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Control_Group#0001,EN-Tenor-1,Love Story,Control_Group,control_negative,non_mix,0.90821,0.23321
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0005,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.907335,0.232335
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0013,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.906899,0.231899
+English#EN-Tenor-1#Glissando#Someone Like You#Glissando_Group#0004,EN-Tenor-1,Someone Like You,Glissando_Group,other_negative,non_mix,0.906623,0.231623
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0004,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.90592,0.23092
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0006,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.902826,0.227826
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0011,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.902684,0.227684
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0007,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.901424,0.226424
+English#EN-Tenor-1#Glissando#Someone Like You#Glissando_Group#0000,EN-Tenor-1,Someone Like You,Glissando_Group,other_negative,non_mix,0.900184,0.225184
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0009,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.897815,0.222815
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0000,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.897055,0.222055
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Falsetto_Group#0005,EN-Tenor-1,Firework,Falsetto_Group,falsetto_group,non_mix,0.897017,0.222017
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Falsetto_Group#0001,EN-Tenor-1,Firework,Falsetto_Group,falsetto_group,non_mix,0.89609,0.22109
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0007,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.896057,0.221057
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0002,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.89401,0.21901
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Falsetto_Group#0006,EN-Tenor-1,I Knew You Were Trouble,Falsetto_Group,falsetto_group,non_mix,0.89197,0.21697
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0004,EN-Tenor-1,Someone Like You,Vibrato_Group,other_negative,non_mix,0.891729,0.216729
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#August#Falsetto_Group#0006,EN-Tenor-1,August,Falsetto_Group,falsetto_group,non_mix,0.891022,0.216022
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0005,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.889696,0.214696
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0008,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.886723,0.211723
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Someone You Loved#Falsetto_Group#0008,EN-Tenor-1,Someone You Loved,Falsetto_Group,falsetto_group,non_mix,0.885773,0.210773
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Back to December#Control_Group#0001,EN-Tenor-1,Back to December,Control_Group,control_negative,non_mix,0.883858,0.208858
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Breathy_Group#0011,EN-Tenor-1,Always Remember Us This Way,Breathy_Group,breathy_group,non_mix,0.883558,0.208558
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Control_Group#0005,EN-Tenor-1,Love Story,Control_Group,control_negative,non_mix,0.88252,0.20752
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0014,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.882111,0.207111
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0011,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.880032,0.205032
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Umbrella#Falsetto_Group#0006,EN-Tenor-1,Umbrella,Falsetto_Group,falsetto_group,non_mix,0.879788,0.204788
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#You Belong With Me#Control_Group#0004,EN-Tenor-1,You Belong With Me,Control_Group,control_negative,non_mix,0.878715,0.203715
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#You Belong With Me#Falsetto_Group#0004,EN-Tenor-1,You Belong With Me,Falsetto_Group,falsetto_group,non_mix,0.877842,0.202842
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0011,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.877582,0.202582
+English#EN-Tenor-1#Glissando#All I Ask#Glissando_Group#0002,EN-Tenor-1,All I Ask,Glissando_Group,other_negative,non_mix,0.876742,0.201742
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0004,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.875491,0.200491
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Falsetto_Group#0000,EN-Tenor-1,Summertime Sadness,Falsetto_Group,falsetto_group,non_mix,0.875045,0.200045
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Control_Group#0000,EN-Tenor-1,Love Story,Control_Group,control_negative,non_mix,0.866766,0.191766
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0002,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.866684,0.191684
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Control_Group#0004,EN-Tenor-1,Love Story,Control_Group,control_negative,non_mix,0.866108,0.191108
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Umbrella#Falsetto_Group#0000,EN-Tenor-1,Umbrella,Falsetto_Group,falsetto_group,non_mix,0.865225,0.190225
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0004,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.861749,0.186749
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#What Was I Made For？#Falsetto_Group#0002,EN-Tenor-1,What Was I Made For？,Falsetto_Group,falsetto_group,non_mix,0.858374,0.183374
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0004,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.857458,0.182458
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Falsetto_Group#0003,EN-Tenor-1,Summertime Sadness,Falsetto_Group,falsetto_group,non_mix,0.857031,0.182031
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#August#Falsetto_Group#0004,EN-Tenor-1,August,Falsetto_Group,falsetto_group,non_mix,0.855865,0.180865
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Style#Control_Group#0005,EN-Tenor-1,Style,Control_Group,control_negative,non_mix,0.854873,0.179873
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0009,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.85175,0.17675
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0007,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.850056,0.175056
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Control_Group#0006,EN-Tenor-1,Love on the Brain,Control_Group,control_negative,non_mix,0.849842,0.174842
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Enchanted#Control_Group#0005,EN-Tenor-1,Enchanted,Control_Group,control_negative,non_mix,0.848192,0.173192
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0009,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.847211,0.172211
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Breathy_Group#0001,EN-Tenor-1,Always Remember Us This Way,Breathy_Group,breathy_group,non_mix,0.846496,0.171496
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Control_Group#0006,EN-Tenor-1,I Knew You Were Trouble,Control_Group,control_negative,non_mix,0.84637,0.17137
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Umbrella#Falsetto_Group#0001,EN-Tenor-1,Umbrella,Falsetto_Group,falsetto_group,non_mix,0.846151,0.171151
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Diamonds#Falsetto_Group#0002,EN-Tenor-1,Diamonds,Falsetto_Group,falsetto_group,non_mix,0.84375,0.16875
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Style#Falsetto_Group#0005,EN-Tenor-1,Style,Falsetto_Group,falsetto_group,non_mix,0.842679,0.167679
+English#EN-Tenor-1#Breathy#All I Ask#Control_Group#0001,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.842446,0.167446
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Falsetto_Group#0000,EN-Tenor-1,Wildest Dreams,Falsetto_Group,falsetto_group,non_mix,0.842353,0.167353
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Control_Group#0004,EN-Tenor-1,I Knew You Were Trouble,Control_Group,control_negative,non_mix,0.840624,0.165624
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#August#Falsetto_Group#0001,EN-Tenor-1,August,Falsetto_Group,falsetto_group,non_mix,0.839938,0.164938
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Sparks Fly#Control_Group#0000,EN-Tenor-1,Sparks Fly,Control_Group,control_negative,non_mix,0.839906,0.164906
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Someone You Loved#Falsetto_Group#0007,EN-Tenor-1,Someone You Loved,Falsetto_Group,falsetto_group,non_mix,0.838058,0.163058
+English#EN-Tenor-1#Pharyngeal#Stay#Pharyngeal_Group#0002,EN-Tenor-1,Stay,Pharyngeal_Group,other_negative,non_mix,0.837866,0.162866
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Control_Group#0004,EN-Tenor-1,Unconditionally,Control_Group,control_negative,non_mix,0.837542,0.162542
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Blank Space#Control_Group#0003,EN-Tenor-1,Blank Space,Control_Group,control_negative,non_mix,0.837272,0.162272
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#What Was I Made For？#Falsetto_Group#0003,EN-Tenor-1,What Was I Made For？,Falsetto_Group,falsetto_group,non_mix,0.836291,0.161291
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Falsetto_Group#0007,EN-Tenor-1,Firework,Falsetto_Group,falsetto_group,non_mix,0.835671,0.160671
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Control_Group#0007,EN-Tenor-1,Take a Bow,Control_Group,control_negative,non_mix,0.835084,0.160084
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Back to December#Control_Group#0000,EN-Tenor-1,Back to December,Control_Group,control_negative,non_mix,0.834136,0.159136
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0003,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.833507,0.158507
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Falsetto_Group#0002,EN-Tenor-1,Love Story,Falsetto_Group,falsetto_group,non_mix,0.831364,0.156364
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0002,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.829138,0.154138
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#What Was I Made For？#Control_Group#0003,EN-Tenor-1,What Was I Made For？,Control_Group,control_negative,non_mix,0.829078,0.154078
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0000,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.827415,0.152415
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Control_Group#0000,EN-Tenor-1,Love on the Brain,Control_Group,control_negative,non_mix,0.827227,0.152227
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Breathy_Group#0002,EN-Tenor-1,Always Remember Us This Way,Breathy_Group,breathy_group,non_mix,0.821796,0.146796
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0007,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.821722,0.146722
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Falsetto_Group#0001,EN-Tenor-1,Summertime Sadness,Falsetto_Group,falsetto_group,non_mix,0.821413,0.146413
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Look What You Make Me Do#Control_Group#0003,EN-Tenor-1,Look What You Make Me Do,Control_Group,control_negative,non_mix,0.819659,0.144659
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Control_Group#0003,EN-Tenor-1,Unconditionally,Control_Group,control_negative,non_mix,0.818394,0.143394
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Control_Group#0004,EN-Tenor-1,Always Remember Us This Way,Control_Group,control_negative,non_mix,0.817959,0.142959
+English#EN-Tenor-1#Pharyngeal#Million Reasons#Pharyngeal_Group#0000,EN-Tenor-1,Million Reasons,Pharyngeal_Group,other_negative,non_mix,0.816332,0.141332
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#August#Falsetto_Group#0003,EN-Tenor-1,August,Falsetto_Group,falsetto_group,non_mix,0.815336,0.140336
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Dark Paradise#Falsetto_Group#0000,EN-Tenor-1,Dark Paradise,Falsetto_Group,falsetto_group,non_mix,0.809689,0.134689
+English#EN-Tenor-1#Breathy#All I Ask#Control_Group#0002,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.809396,0.134396
+English#EN-Tenor-1#Pharyngeal#All I Ask#Control_Group#0002,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.809396,0.134396
+English#EN-Tenor-1#Vibrato#All I Ask#Control_Group#0002,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.809396,0.134396
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0000,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.805945,0.130945
+English#EN-Tenor-1#Pharyngeal#Million Reasons#Pharyngeal_Group#0003,EN-Tenor-1,Million Reasons,Pharyngeal_Group,other_negative,non_mix,0.805435,0.130435
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Style#Control_Group#0003,EN-Tenor-1,Style,Control_Group,control_negative,non_mix,0.804983,0.129983
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0003,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.80244,0.12744
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Breathy_Group#0000,EN-Tenor-1,Always Remember Us This Way,Breathy_Group,breathy_group,non_mix,0.80055,0.12555
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Diamonds#Falsetto_Group#0001,EN-Tenor-1,Diamonds,Falsetto_Group,falsetto_group,non_mix,0.798893,0.123893
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0005,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.797587,0.122587
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0001,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.796166,0.121166
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Control_Group#0004,EN-Tenor-1,Shallow,Control_Group,control_negative,non_mix,0.792935,0.117935
+English#EN-Tenor-1#Pharyngeal#Million Reasons#Pharyngeal_Group#0006,EN-Tenor-1,Million Reasons,Pharyngeal_Group,other_negative,non_mix,0.791803,0.116803
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Breathy_Group#0003,EN-Tenor-1,Always Remember Us This Way,Breathy_Group,breathy_group,non_mix,0.791387,0.116387
+English#EN-Tenor-1#Pharyngeal#Million Reasons#Pharyngeal_Group#0001,EN-Tenor-1,Million Reasons,Pharyngeal_Group,other_negative,non_mix,0.789411,0.114411
+English#EN-Tenor-1#Breathy#Someone Like You#Control_Group#0002,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.787143,0.112143
+English#EN-Tenor-1#Pharyngeal#Someone Like You#Control_Group#0002,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.787143,0.112143
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Call Out My Name#Falsetto_Group#0001,EN-Tenor-1,Call Out My Name,Falsetto_Group,falsetto_group,non_mix,0.782241,0.107241
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Diamonds#Falsetto_Group#0008,EN-Tenor-1,Diamonds,Falsetto_Group,falsetto_group,non_mix,0.781146,0.106146
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Rolling in the Deep#Control_Group#0004,EN-Tenor-1,Rolling in the Deep,Control_Group,control_negative,non_mix,0.77591,0.10091
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Falsetto_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Falsetto_Group,falsetto_group,non_mix,0.775813,0.100813
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Falsetto_Group#0007,EN-Tenor-1,Shallow,Falsetto_Group,falsetto_group,non_mix,0.775806,0.100806
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0005,EN-Tenor-1,Someone Like You,Vibrato_Group,other_negative,non_mix,0.775624,0.100624
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Young and Beautiful#Falsetto_Group#0004,EN-Tenor-1,Young and Beautiful,Falsetto_Group,falsetto_group,non_mix,0.773897,0.098897
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#You Belong With Me#Falsetto_Group#0006,EN-Tenor-1,You Belong With Me,Falsetto_Group,falsetto_group,non_mix,0.773816,0.098816
+English#EN-Tenor-1#Pharyngeal#All I Ask#Control_Group#0001,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.772724,0.097724
+English#EN-Tenor-1#Vibrato#All I Ask#Control_Group#0001,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.772724,0.097724
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0002,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.771289,0.096289
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Style#Control_Group#0002,EN-Tenor-1,Style,Control_Group,control_negative,non_mix,0.76784,0.09284
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Rolling in the Deep#Control_Group#0006,EN-Tenor-1,Rolling in the Deep,Control_Group,control_negative,non_mix,0.767179,0.092179
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Back to December#Falsetto_Group#0007,EN-Tenor-1,Back to December,Falsetto_Group,falsetto_group,non_mix,0.763567,0.088567
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Pharyngeal_Group#0003,EN-Tenor-1,Always Remember Us This Way,Pharyngeal_Group,other_negative,non_mix,0.763276,0.088276
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Exile#Control_Group#0000,EN-Tenor-1,Exile,Control_Group,control_negative,non_mix,0.761334,0.086334
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Control_Group#0006,EN-Tenor-1,Take a Bow,Control_Group,control_negative,non_mix,0.759111,0.084111
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Know Places#Falsetto_Group#0003,EN-Tenor-1,I Know Places,Falsetto_Group,falsetto_group,non_mix,0.758582,0.083582
+English#EN-Tenor-1#Breathy#Someone Like You#Control_Group#0006,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.758514,0.083514
+English#EN-Tenor-1#Pharyngeal#Someone Like You#Control_Group#0006,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.758514,0.083514
+English#EN-Tenor-1#Vibrato#Someone Like You#Control_Group#0006,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.758514,0.083514
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0006,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.758217,0.083217
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Control_Group#0005,EN-Tenor-1,I Knew You Were Trouble,Control_Group,control_negative,non_mix,0.753162,0.078162
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Call Out My Name#Falsetto_Group#0004,EN-Tenor-1,Call Out My Name,Falsetto_Group,falsetto_group,non_mix,0.751899,0.076899
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Enchanted#Control_Group#0004,EN-Tenor-1,Enchanted,Control_Group,control_negative,non_mix,0.750868,0.075868
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Call Out My Name#Falsetto_Group#0000,EN-Tenor-1,Call Out My Name,Falsetto_Group,falsetto_group,non_mix,0.749612,0.074612
+English#EN-Tenor-1#Glissando#Someone Like You#Glissando_Group#0002,EN-Tenor-1,Someone Like You,Glissando_Group,other_negative,non_mix,0.747158,0.072158
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0005,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.746957,0.071957
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Lavender Haze#Control_Group#0001,EN-Tenor-1,Lavender Haze,Control_Group,control_negative,non_mix,0.74408,0.06908
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Falsetto_Group#0001,EN-Tenor-1,Love Story,Falsetto_Group,falsetto_group,non_mix,0.743403,0.068403
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Breathy_Group#0013,EN-Tenor-1,Always Remember Us This Way,Breathy_Group,breathy_group,non_mix,0.74219,0.06719
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0013,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.741939,0.066939
+English#EN-Tenor-1#Breathy#Someone Like You#Control_Group#0004,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.740029,0.065029
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Control_Group#0003,EN-Tenor-1,Love on the Brain,Control_Group,control_negative,non_mix,0.739116,0.064116
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Control_Group#0008,EN-Tenor-1,Love on the Brain,Control_Group,control_negative,non_mix,0.732164,0.057164
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Falsetto_Group#0009,EN-Tenor-1,Firework,Falsetto_Group,falsetto_group,non_mix,0.732093,0.057093
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Control_Group#0001,EN-Tenor-1,Shallow,Control_Group,control_negative,non_mix,0.729624,0.054624
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love Story#Falsetto_Group#0000,EN-Tenor-1,Love Story,Falsetto_Group,falsetto_group,non_mix,0.726155,0.051155
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Back to December#Falsetto_Group#0002,EN-Tenor-1,Back to December,Falsetto_Group,falsetto_group,non_mix,0.726105,0.051105
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Look What You Make Me Do#Control_Group#0002,EN-Tenor-1,Look What You Make Me Do,Control_Group,control_negative,non_mix,0.72047,0.04547
+English#EN-Tenor-1#Glissando#All I Ask#Control_Group#0001,EN-Tenor-1,All I Ask,Control_Group,control_negative,non_mix,0.720049,0.045049
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Falsetto_Group#0011,EN-Tenor-1,Take a Bow,Falsetto_Group,falsetto_group,non_mix,0.715315,0.040315
+English#EN-Tenor-1#Breathy#Someone Like You#Control_Group#0005,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.715089,0.040089
+English#EN-Tenor-1#Pharyngeal#Someone Like You#Control_Group#0005,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.715089,0.040089
+English#EN-Tenor-1#Vibrato#Someone Like You#Control_Group#0005,EN-Tenor-1,Someone Like You,Control_Group,control_negative,non_mix,0.715089,0.040089
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Falsetto_Group#0014,EN-Tenor-1,Love on the Brain,Falsetto_Group,falsetto_group,non_mix,0.713387,0.038387
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Sparks Fly#Control_Group#0002,EN-Tenor-1,Sparks Fly,Control_Group,control_negative,non_mix,0.712778,0.037778
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Control_Group#0013,EN-Tenor-1,Love on the Brain,Control_Group,control_negative,non_mix,0.709989,0.034989
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Knew You Were Trouble#Control_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Control_Group,control_negative,non_mix,0.709349,0.034349
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Style#Falsetto_Group#0001,EN-Tenor-1,Style,Falsetto_Group,falsetto_group,non_mix,0.708916,0.033916
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Diamonds#Control_Group#0000,EN-Tenor-1,Diamonds,Control_Group,control_negative,non_mix,0.705267,0.030267
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0003,EN-Tenor-1,Someone Like You,Vibrato_Group,other_negative,non_mix,0.703258,0.028258
+English#EN-Tenor-1#Glissando#Someone Like You#Glissando_Group#0003,EN-Tenor-1,Someone Like You,Glissando_Group,other_negative,non_mix,0.702186,0.027186
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Control_Group#0000,EN-Tenor-1,Shallow,Control_Group,control_negative,non_mix,0.701767,0.026767
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Someone You Loved#Control_Group#0001,EN-Tenor-1,Someone You Loved,Control_Group,control_negative,non_mix,0.69974,0.02474
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Love on the Brain#Control_Group#0004,EN-Tenor-1,Love on the Brain,Control_Group,control_negative,non_mix,0.699415,0.024415
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Take a Bow#Control_Group#0004,EN-Tenor-1,Take a Bow,Control_Group,control_negative,non_mix,0.699025,0.024025
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Cardigan#Falsetto_Group#0001,EN-Tenor-1,Cardigan,Falsetto_Group,falsetto_group,non_mix,0.699023,0.024023
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Always Remember Us This Way#Falsetto_Group#0010,EN-Tenor-1,Always Remember Us This Way,Falsetto_Group,falsetto_group,non_mix,0.695969,0.020969
+English#EN-Tenor-1#Breathy#All I Ask#Breathy_Group#0002,EN-Tenor-1,All I Ask,Breathy_Group,breathy_group,non_mix,0.694814,0.019814
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Falsetto_Group#0000,EN-Tenor-1,Firework,Falsetto_Group,falsetto_group,non_mix,0.687629,0.012629
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Unconditionally#Falsetto_Group#0001,EN-Tenor-1,Unconditionally,Falsetto_Group,falsetto_group,non_mix,0.686086,0.011086
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Diamonds#Falsetto_Group#0004,EN-Tenor-1,Diamonds,Falsetto_Group,falsetto_group,non_mix,0.679346,0.004346
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Style#Falsetto_Group#0003,EN-Tenor-1,Style,Falsetto_Group,falsetto_group,non_mix,0.67901,0.00401
+English#EN-Tenor-1#Breathy#All I Ask#Breathy_Group#0001,EN-Tenor-1,All I Ask,Breathy_Group,breathy_group,non_mix,0.678666,0.003666
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Dark Paradise#Falsetto_Group#0002,EN-Tenor-1,Dark Paradise,Falsetto_Group,falsetto_group,non_mix,0.676216,0.001216

@@ -1,0 +1,65 @@
+{
+  "primary_blocker": {
+    "passes_rule_core": 14,
+    "reject_pure_head_low_pitch": 4
+  },
+  "blocker_sets": {
+    "passes_rule_core": 14,
+    "reject_pure_head_low_pitch": 4
+  },
+  "candidate_subtypes": {
+    "strong_mix": 3,
+    "weak_mix": 15
+  },
+  "strongest_mix_subtypes": {
+    "strong_mix": 8,
+    "weak_mix": 10
+  },
+  "strongest_mix_signatures": {
+    "strong_mix|strong_mix|chest": 8,
+    "weak_mix|weak_mix|falsetto": 10
+  },
+  "released_flags": {
+    "pure_learned_head_mix": 10
+  },
+  "mix_event_counts": {
+    "1": 11,
+    "2": 6,
+    "3": 1
+  },
+  "weak_mix_counts": {
+    "0": 3,
+    "1": 14,
+    "2": 1
+  },
+  "strong_mix_counts": {
+    "1": 8,
+    "0": 9,
+    "2": 1
+  },
+  "best_voice_mix_margin_stats": {
+    "min": 0.066189,
+    "median": 0.129249,
+    "max": 0.187745
+  },
+  "best_voice_mix_prob_stats": {
+    "min": 0.491189,
+    "median": 0.554249,
+    "max": 0.612745
+  },
+  "mix_support_stats": {
+    "min": 0.301449,
+    "median": 0.4061,
+    "max": 0.729942
+  },
+  "head_bias_stats": {
+    "min": 0.13922,
+    "median": 1.0,
+    "max": 1.0
+  },
+  "mean_pitch_hz_stats": {
+    "min": 217.258652,
+    "median": 286.724793,
+    "max": 577.448975
+  }
+}

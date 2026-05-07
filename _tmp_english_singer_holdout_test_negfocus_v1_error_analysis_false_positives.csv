@@ -1,0 +1,24 @@
+item_name,singer,song_name,group_name,binary_role,mix_variant,mix_prob,fp_margin
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hello#Control_Group#0003,EN-Alto-2,Hello,Control_Group,control_negative,non_mix,0.813014,0.138014
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Let Her Go#Control_Group#0002,EN-Alto-2,Let Her Go,Control_Group,control_negative,non_mix,0.790414,0.115414
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Someone Like You#Control_Group#0003,EN-Alto-2,Someone Like You,Control_Group,control_negative,non_mix,0.764084,0.089084
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#My Heart Will Go On#Control_Group#0003,EN-Alto-2,My Heart Will Go On,Control_Group,control_negative,non_mix,0.751473,0.076473
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Lemon Tree#Falsetto_Group#0001,EN-Alto-2,Lemon Tree,Falsetto_Group,falsetto_group,non_mix,0.743537,0.068537
+English#EN-Alto-2#Breathy#Someone Like You#Breathy_Group#0006,EN-Alto-2,Someone Like You,Breathy_Group,breathy_group,non_mix,0.738598,0.063598
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Try#Control_Group#0001,EN-Alto-2,Try,Control_Group,control_negative,non_mix,0.737897,0.062897
+English#EN-Alto-2#Breathy#Someone Like You#Breathy_Group#0000,EN-Alto-2,Someone Like You,Breathy_Group,breathy_group,non_mix,0.737199,0.062199
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#City Of Stars#Falsetto_Group#0006,EN-Alto-2,City Of Stars,Falsetto_Group,falsetto_group,non_mix,0.732855,0.057855
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hello#Control_Group#0000,EN-Alto-2,Hello,Control_Group,control_negative,non_mix,0.728226,0.053226
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#City Of Stars#Control_Group#0005,EN-Alto-2,City Of Stars,Control_Group,control_negative,non_mix,0.723422,0.048422
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Try#Control_Group#0000,EN-Alto-2,Try,Control_Group,control_negative,non_mix,0.721414,0.046414
+English#EN-Alto-2#Pharyngeal#You Raise Me Up#Pharyngeal_Group#0000,EN-Alto-2,You Raise Me Up,Pharyngeal_Group,other_negative,non_mix,0.721358,0.046358
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#You Raise Me Up#Falsetto_Group#0000,EN-Alto-2,You Raise Me Up,Falsetto_Group,falsetto_group,non_mix,0.712903,0.037903
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Seasons of Love#Control_Group#0001,EN-Alto-2,Seasons of Love,Control_Group,control_negative,non_mix,0.705657,0.030657
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#My Heart Will Go On#Control_Group#0007,EN-Alto-2,My Heart Will Go On,Control_Group,control_negative,non_mix,0.693969,0.018969
+English#EN-Alto-2#Pharyngeal#My Heart Will Go On#Pharyngeal_Group#0007,EN-Alto-2,My Heart Will Go On,Pharyngeal_Group,other_negative,non_mix,0.693969,0.018969
+English#EN-Alto-2#Breathy#All of Me#Breathy_Group#0009,EN-Alto-2,All of Me,Breathy_Group,breathy_group,non_mix,0.688262,0.013262
+English#EN-Alto-2#Glissando#You Raise Me Up#Glissando_Group#0005,EN-Alto-2,You Raise Me Up,Glissando_Group,other_negative,non_mix,0.685859,0.010859
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#My Heart Will Go On#Control_Group#0009,EN-Alto-2,My Heart Will Go On,Control_Group,control_negative,non_mix,0.684827,0.009827
+English#EN-Alto-2#Pharyngeal#Someone Like You#Pharyngeal_Group#0003,EN-Alto-2,Someone Like You,Pharyngeal_Group,other_negative,non_mix,0.682887,0.007887
+English#EN-Alto-2#Breathy#My Heart Will Go On#Breathy_Group#0001,EN-Alto-2,My Heart Will Go On,Breathy_Group,breathy_group,non_mix,0.681939,0.006939
+English#EN-Alto-2#Breathy#Someone Like You#Breathy_Group#0002,EN-Alto-2,Someone Like You,Breathy_Group,breathy_group,non_mix,0.677928,0.002928

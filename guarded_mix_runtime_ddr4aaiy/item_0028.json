@@ -1,0 +1,293 @@
+{
+  "manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\guarded_calibration_manifest.csv",
+  "item_names": [
+    "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#我喜欢上你时的内心活动#Mixed_Voice_Group#0006"
+  ],
+  "artifacts": [
+    {
+      "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu\\best_mix_binary_squeezenet.pt",
+      "samples": [
+        {
+          "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#我喜欢上你时的内心活动#Mixed_Voice_Group#0006",
+          "group_name": "Mixed_Voice_Group",
+          "song_name": "我喜欢上你时的内心活动",
+          "singer": "ZH-Alto-1",
+          "binary_role": "positive_mix",
+          "outcome": "miss",
+          "miss_reason": "voice_mix_below_threshold",
+          "mix_event_count": 0,
+          "weak_mix_count": 0,
+          "strong_mix_count": 0,
+          "best_voice_mix_margin": -0.067293,
+          "best_voice_event": {
+            "event_type": "falsetto",
+            "start_time": 0.0,
+            "end_time": 7.42,
+            "confidence": 0.912465,
+            "strength": 0.945728,
+            "voice_type": "falsetto",
+            "mean_pitch_hz": 385.618591,
+            "chest_prob": 0.087535,
+            "falsetto_prob": 0.912465,
+            "mix_prob": 0.482707,
+            "mix_threshold": 0.55,
+            "feature_snapshot": {
+              "mean_rms": 0.071212,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "voiced_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.482707,
+              "mix_threshold": 0.55
+            }
+          },
+          "voice_rule_diagnosis": {
+            "voice_features": {
+              "duration": 7.42,
+              "confidence": 0.912465,
+              "strength": 0.945728,
+              "probability_margin": 0.82493,
+              "chest_prob": 0.087535,
+              "falsetto_prob": 0.912465,
+              "voiced_ratio": 1.0,
+              "mean_pitch_hz": 385.618591,
+              "mean_rms": 0.071212,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "learned_mix_prob": 0.482707,
+              "learned_mix_threshold": 0.55,
+              "learned_mix_margin": -0.067293
+            },
+            "supports": {
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.125493,
+              "mix_support": 0.085335,
+              "pitch_support": 0.763559,
+              "stable_support": 1.0,
+              "voiced_support": 1.0,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "weak_mix_support": 0.085335,
+              "weak_mix_support_floor": 0.28,
+              "weak_mix_pitch_floor": 230.0
+            },
+            "released_flags": {
+              "pure_learned_head_mix": false,
+              "marginal_head_mix": false,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_high_energy_midhigh_head_mix": false,
+              "released_supported_low_pitch_head_mix": false,
+              "released_lowmid_near_threshold_head_mix": false,
+              "released_midhigh_near_threshold_head_mix": false,
+              "released_ultrahigh_bright_head_point_mix": false,
+              "released_midchest_near_threshold_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "released_midpitch_underpowered_pure_head_mix": false,
+              "released_midhigh_balanced_pure_head_mix": false,
+              "released_underpowered_short_lowpitch_head_mix": false,
+              "released_midpitch_long_lowenergy_marginal_head_mix": false,
+              "released_midhigh_nearthreshold_softhead_long_mix": false,
+              "released_highpitch_nearthreshold_supported_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false
+            },
+            "subtype_eval": {
+              "candidate_subtype": "",
+              "candidate_subtype_conf": 0.0,
+              "candidate_subtype_mix_support": 0.085335,
+              "reject_low_pitch_chesty_mix": false,
+              "reject_high_pitch_headbiased_weak_mix": false,
+              "reject_midpitch_pure_head_control": false,
+              "reject_low_pitch_strong_mix_chest": false,
+              "strong_requires_threshold_block": false
+            },
+            "blockers": [
+              "reject_no_subtype"
+            ]
+          },
+          "strongest_mix_event": {},
+          "voice_debug": {
+            "model_ready": true,
+            "candidate_windows": 44,
+            "predicted_windows": 44,
+            "accepted_windows": 44,
+            "context_adjusted_windows": 0,
+            "relaxed_used": false,
+            "reason": "",
+            "backend": "external_python"
+          }
+        }
+      ]
+    },
+    {
+      "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\best_mix_binary_squeezenet.pt",
+      "samples": [
+        {
+          "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#我喜欢上你时的内心活动#Mixed_Voice_Group#0006",
+          "group_name": "Mixed_Voice_Group",
+          "song_name": "我喜欢上你时的内心活动",
+          "singer": "ZH-Alto-1",
+          "binary_role": "positive_mix",
+          "outcome": "hit",
+          "miss_reason": "",
+          "mix_event_count": 1,
+          "weak_mix_count": 1,
+          "strong_mix_count": 0,
+          "best_voice_mix_margin": 0.00194,
+          "best_voice_event": {
+            "event_type": "falsetto",
+            "start_time": 0.0,
+            "end_time": 7.42,
+            "confidence": 0.912465,
+            "strength": 0.945728,
+            "voice_type": "falsetto",
+            "mean_pitch_hz": 385.617981,
+            "chest_prob": 0.087535,
+            "falsetto_prob": 0.912465,
+            "mix_prob": 0.42694,
+            "mix_threshold": 0.425,
+            "feature_snapshot": {
+              "mean_rms": 0.071212,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "voiced_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.42694,
+              "mix_threshold": 0.425
+            }
+          },
+          "voice_rule_diagnosis": {
+            "voice_features": {
+              "duration": 7.42,
+              "confidence": 0.912465,
+              "strength": 0.945728,
+              "probability_margin": 0.82493,
+              "chest_prob": 0.087535,
+              "falsetto_prob": 0.912465,
+              "voiced_ratio": 1.0,
+              "mean_pitch_hz": 385.617981,
+              "mean_rms": 0.071212,
+              "mean_zcr": 0.0,
+              "stable_ratio": 1.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "learned_mix_prob": 0.42694,
+              "learned_mix_threshold": 0.425,
+              "learned_mix_margin": 0.00194
+            },
+            "supports": {
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.290333,
+              "mix_support": 0.197427,
+              "pitch_support": 0.763556,
+              "stable_support": 1.0,
+              "voiced_support": 1.0,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "weak_mix_support": 0.290333,
+              "weak_mix_support_floor": 0.2,
+              "weak_mix_pitch_floor": 180.0
+            },
+            "released_flags": {
+              "pure_learned_head_mix": true,
+              "marginal_head_mix": true,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_high_energy_midhigh_head_mix": false,
+              "released_supported_low_pitch_head_mix": false,
+              "released_lowmid_near_threshold_head_mix": false,
+              "released_midhigh_near_threshold_head_mix": false,
+              "released_ultrahigh_bright_head_point_mix": false,
+              "released_midchest_near_threshold_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "released_midpitch_underpowered_pure_head_mix": true,
+              "released_midhigh_balanced_pure_head_mix": false,
+              "released_underpowered_short_lowpitch_head_mix": false,
+              "released_midpitch_long_lowenergy_marginal_head_mix": false,
+              "released_midhigh_nearthreshold_softhead_long_mix": false,
+              "released_highpitch_nearthreshold_supported_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false
+            },
+            "subtype_eval": {
+              "candidate_subtype": "weak_mix",
+              "candidate_subtype_conf": 0.710378,
+              "candidate_subtype_mix_support": 0.290333,
+              "reject_low_pitch_chesty_mix": false,
+              "reject_high_pitch_headbiased_weak_mix": false,
+              "reject_midpitch_pure_head_control": false,
+              "reject_low_pitch_strong_mix_chest": false,
+              "strong_requires_threshold_block": false
+            },
+            "blockers": [
+              "passes_rule_core"
+            ]
+          },
+          "strongest_mix_event": {
+            "event_type": "weak_mix",
+            "subtype": "weak_mix",
+            "base_voice_type": "falsetto",
+            "start_time": 0.0,
+            "end_time": 7.42,
+            "confidence": 0.710378,
+            "strength": 0.652437,
+            "feature_snapshot": {
+              "mix_support": 0.290333,
+              "learned_mix_margin": 0.00194,
+              "heuristic_mix_support": 0.0,
+              "learned_mix_support": 0.290333,
+              "breathiness": 0.0,
+              "head_bias": 1.0,
+              "chest_bias": 0.0,
+              "pure_learned_head_mix": true,
+              "marginal_head_mix": true,
+              "released_high_pitch_head_mix": false,
+              "released_near_threshold_high_pitch_head_mix": false,
+              "released_ultra_high_pitch_head_mix": false,
+              "released_low_energy_midhigh_head_mix": false,
+              "released_sustained_highpitch_marginal_head_mix": false,
+              "released_midpitch_lowchest_pure_head_mix": false,
+              "released_short_lowpitch_marginal_head_mix": false,
+              "released_underpowered_short_lowpitch_head_mix": false,
+              "released_midpitch_long_lowenergy_marginal_head_mix": false,
+              "released_midhigh_nearthreshold_softhead_long_mix": false,
+              "released_highpitch_nearthreshold_supported_head_mix": false,
+              "underpowered_low_pitch_head_mix": false,
+              "borderline_low_mid_pitch_head_mix": false,
+              "weak_mix_support_floor": 0.2,
+              "weak_mix_pitch_floor": 180.0,
+              "mix_prob": 0.42694,
+              "mix_threshold": 0.425,
+              "mean_pitch_hz": 385.617981
+            }
+          },
+          "voice_debug": {
+            "model_ready": true,
+            "candidate_windows": 44,
+            "predicted_windows": 44,
+            "accepted_windows": 44,
+            "context_adjusted_windows": 0,
+            "relaxed_used": false,
+            "reason": "",
+            "backend": "external_python"
+          }
+        }
+      ]
+    }
+  ]
+}

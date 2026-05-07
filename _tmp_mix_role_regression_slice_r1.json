@@ -1,0 +1,535 @@
+{
+  "manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\test_manifest.csv",
+  "binary_roles": [
+    "positive_mix",
+    "control_negative"
+  ],
+  "groups": [],
+  "limit_per_role": 3,
+  "skip_per_role": 0,
+  "selected_count": 6,
+  "aggregate": {
+    "sample_count": 6,
+    "error_count": 0,
+    "binary_roles": {
+      "control_negative": {
+        "sample_count": 3,
+        "error_count": 0,
+        "samples_with_any_mix_event": 0,
+        "samples_with_strong_mix": 0,
+        "sample_level_false_positive_rate": 0.0,
+        "avg_best_voice_mix_prob": 0.380776,
+        "false_positives": []
+      },
+      "positive_mix": {
+        "sample_count": 3,
+        "error_count": 0,
+        "samples_with_any_mix_event": 0,
+        "samples_with_strong_mix": 0,
+        "sample_level_any_mix_recall_proxy": 0.0,
+        "avg_best_voice_mix_prob": 0.486382,
+        "misses": [
+          {
+            "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小幸运#Control_Group#0005",
+            "group_name": "Control_Group",
+            "song_name": "小幸运",
+            "singer": "ZH-Alto-1",
+            "binary_role": "positive_mix",
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\小幸运\\Control_Group\\0005.wav",
+            "error": "",
+            "outcome": "miss",
+            "miss_reason": "voice_mix_below_threshold",
+            "onepass_duration": 6.232042,
+            "segment_count": 2,
+            "pitch_record_count": 341,
+            "event_count": 1,
+            "counts": {
+              "falsetto": 1
+            },
+            "voice_event_count": 1,
+            "mix_event_count": 0,
+            "strong_mix_count": 0,
+            "weak_mix_count": 0,
+            "balanced_mix_count": 0,
+            "voice_segments_mix_ge_threshold": 0,
+            "best_voice_event": {
+              "event_type": "falsetto",
+              "start_time": 0.0,
+              "end_time": 6.232063,
+              "mix_prob": 0.52055,
+              "mix_threshold": 0.55,
+              "mean_pitch_hz": 507.774048,
+              "chest_prob": 0.016542,
+              "falsetto_prob": 0.983458
+            },
+            "best_voice_mix_prob": 0.52055,
+            "best_voice_mix_margin": -0.02945,
+            "strongest_mix_event": {
+              "event_type": "",
+              "start_time": 0.0,
+              "end_time": 0.0,
+              "mix_prob": 0.0,
+              "mix_threshold": 0.45,
+              "mix_support": 0.0,
+              "mean_pitch_hz": 0.0
+            },
+            "voice_debug": {
+              "model_ready": true,
+              "candidate_windows": 36,
+              "predicted_windows": 36,
+              "accepted_windows": 36,
+              "context_adjusted_windows": 0,
+              "relaxed_used": false,
+              "reason": "",
+              "backend": "external_python"
+            }
+          },
+          {
+            "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+            "group_name": "Control_Group",
+            "song_name": "崇拜",
+            "singer": "ZH-Alto-1",
+            "binary_role": "positive_mix",
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav",
+            "error": "",
+            "outcome": "miss",
+            "miss_reason": "voice_mix_below_threshold",
+            "onepass_duration": 6.65,
+            "segment_count": 1,
+            "pitch_record_count": 364,
+            "event_count": 1,
+            "counts": {
+              "falsetto": 1
+            },
+            "voice_event_count": 1,
+            "mix_event_count": 0,
+            "strong_mix_count": 0,
+            "weak_mix_count": 0,
+            "balanced_mix_count": 0,
+            "voice_segments_mix_ge_threshold": 0,
+            "best_voice_event": {
+              "event_type": "falsetto",
+              "start_time": 0.0,
+              "end_time": 6.650023,
+              "mix_prob": 0.481435,
+              "mix_threshold": 0.55,
+              "mean_pitch_hz": 449.90506,
+              "chest_prob": 0.046652,
+              "falsetto_prob": 0.953348
+            },
+            "best_voice_mix_prob": 0.481435,
+            "best_voice_mix_margin": -0.068565,
+            "strongest_mix_event": {
+              "event_type": "",
+              "start_time": 0.0,
+              "end_time": 0.0,
+              "mix_prob": 0.0,
+              "mix_threshold": 0.45,
+              "mix_support": 0.0,
+              "mean_pitch_hz": 0.0
+            },
+            "voice_debug": {
+              "model_ready": true,
+              "candidate_windows": 39,
+              "predicted_windows": 39,
+              "accepted_windows": 39,
+              "context_adjusted_windows": 0,
+              "relaxed_used": false,
+              "reason": "",
+              "backend": "external_python"
+            }
+          },
+          {
+            "item_name": "Chinese#ZH-Alto-1#Pharyngeal#逆光#Control_Group#0001",
+            "group_name": "Control_Group",
+            "song_name": "逆光",
+            "singer": "ZH-Alto-1",
+            "binary_role": "positive_mix",
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\逆光\\Control_Group\\0001.wav",
+            "error": "",
+            "outcome": "miss",
+            "miss_reason": "voice_mix_below_threshold",
+            "onepass_duration": 12.57,
+            "segment_count": 1,
+            "pitch_record_count": 689,
+            "event_count": 1,
+            "counts": {
+              "falsetto": 1
+            },
+            "voice_event_count": 1,
+            "mix_event_count": 0,
+            "strong_mix_count": 0,
+            "weak_mix_count": 0,
+            "balanced_mix_count": 0,
+            "voice_segments_mix_ge_threshold": 0,
+            "best_voice_event": {
+              "event_type": "falsetto",
+              "start_time": 0.0,
+              "end_time": 12.570023,
+              "mix_prob": 0.45716,
+              "mix_threshold": 0.55,
+              "mean_pitch_hz": 548.595703,
+              "chest_prob": 0.062114,
+              "falsetto_prob": 0.937886
+            },
+            "best_voice_mix_prob": 0.45716,
+            "best_voice_mix_margin": -0.09284,
+            "strongest_mix_event": {
+              "event_type": "",
+              "start_time": 0.0,
+              "end_time": 0.0,
+              "mix_prob": 0.0,
+              "mix_threshold": 0.45,
+              "mix_support": 0.0,
+              "mean_pitch_hz": 0.0
+            },
+            "voice_debug": {
+              "model_ready": true,
+              "candidate_windows": 76,
+              "predicted_windows": 76,
+              "accepted_windows": 76,
+              "context_adjusted_windows": 0,
+              "relaxed_used": false,
+              "reason": "",
+              "backend": "external_python"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "rows": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#一次就好#Control_Group#0007",
+      "group_name": "Control_Group",
+      "song_name": "一次就好",
+      "singer": "ZH-Alto-1",
+      "binary_role": "control_negative",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Mixed_Voice_and_Falsetto\\一次就好\\Control_Group\\0007.wav",
+      "error": "",
+      "outcome": "clean",
+      "miss_reason": "",
+      "onepass_duration": 7.47,
+      "segment_count": 3,
+      "pitch_record_count": 399,
+      "event_count": 3,
+      "counts": {
+        "falsetto": 2,
+        "breath": 1
+      },
+      "voice_event_count": 2,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "best_voice_event": {
+        "event_type": "falsetto",
+        "start_time": 0.0,
+        "end_time": 3.52,
+        "mix_prob": 0.457639,
+        "mix_threshold": 0.55,
+        "mean_pitch_hz": 408.983215,
+        "chest_prob": 0.224924,
+        "falsetto_prob": 0.90517
+      },
+      "best_voice_mix_prob": 0.457639,
+      "best_voice_mix_margin": -0.092361,
+      "strongest_mix_event": {
+        "event_type": "",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "mix_prob": 0.0,
+        "mix_threshold": 0.45,
+        "mix_support": 0.0,
+        "mean_pitch_hz": 0.0
+      },
+      "voice_debug": {
+        "model_ready": true,
+        "candidate_windows": 44,
+        "predicted_windows": 44,
+        "accepted_windows": 39,
+        "context_adjusted_windows": 1,
+        "relaxed_used": false,
+        "reason": "",
+        "backend": "external_python"
+      }
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#不再见#Control_Group#0003",
+      "group_name": "Control_Group",
+      "song_name": "不再见",
+      "singer": "ZH-Alto-1",
+      "binary_role": "control_negative",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Breathy\\不再见\\Control_Group\\0003.wav",
+      "error": "",
+      "outcome": "clean",
+      "miss_reason": "",
+      "onepass_duration": 7.9,
+      "segment_count": 6,
+      "pitch_record_count": 396,
+      "event_count": 2,
+      "counts": {
+        "falsetto": 1,
+        "breath": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "best_voice_event": {
+        "event_type": "falsetto",
+        "start_time": 0.0,
+        "end_time": 5.92,
+        "mix_prob": 0.349366,
+        "mix_threshold": 0.55,
+        "mean_pitch_hz": 408.427338,
+        "chest_prob": 0.164387,
+        "falsetto_prob": 0.835613
+      },
+      "best_voice_mix_prob": 0.349366,
+      "best_voice_mix_margin": -0.200634,
+      "strongest_mix_event": {
+        "event_type": "",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "mix_prob": 0.0,
+        "mix_threshold": 0.45,
+        "mix_support": 0.0,
+        "mean_pitch_hz": 0.0
+      },
+      "voice_debug": {
+        "model_ready": true,
+        "candidate_windows": 47,
+        "predicted_windows": 47,
+        "accepted_windows": 43,
+        "context_adjusted_windows": 0,
+        "relaxed_used": false,
+        "reason": "",
+        "backend": "external_python"
+      }
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#不再见#Control_Group#0005",
+      "group_name": "Control_Group",
+      "song_name": "不再见",
+      "singer": "ZH-Alto-1",
+      "binary_role": "control_negative",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Breathy\\不再见\\Control_Group\\0005.wav",
+      "error": "",
+      "outcome": "clean",
+      "miss_reason": "",
+      "onepass_duration": 7.45,
+      "segment_count": 2,
+      "pitch_record_count": 408,
+      "event_count": 1,
+      "counts": {
+        "falsetto": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "best_voice_event": {
+        "event_type": "falsetto",
+        "start_time": 0.0,
+        "end_time": 7.450023,
+        "mix_prob": 0.335324,
+        "mix_threshold": 0.55,
+        "mean_pitch_hz": 452.528809,
+        "chest_prob": 0.035976,
+        "falsetto_prob": 0.964024
+      },
+      "best_voice_mix_prob": 0.335324,
+      "best_voice_mix_margin": -0.214676,
+      "strongest_mix_event": {
+        "event_type": "",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "mix_prob": 0.0,
+        "mix_threshold": 0.45,
+        "mix_support": 0.0,
+        "mean_pitch_hz": 0.0
+      },
+      "voice_debug": {
+        "model_ready": true,
+        "candidate_windows": 44,
+        "predicted_windows": 44,
+        "accepted_windows": 44,
+        "context_adjusted_windows": 0,
+        "relaxed_used": false,
+        "reason": "",
+        "backend": "external_python"
+      }
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小幸运#Control_Group#0005",
+      "group_name": "Control_Group",
+      "song_name": "小幸运",
+      "singer": "ZH-Alto-1",
+      "binary_role": "positive_mix",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\小幸运\\Control_Group\\0005.wav",
+      "error": "",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "onepass_duration": 6.232042,
+      "segment_count": 2,
+      "pitch_record_count": 341,
+      "event_count": 1,
+      "counts": {
+        "falsetto": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "best_voice_event": {
+        "event_type": "falsetto",
+        "start_time": 0.0,
+        "end_time": 6.232063,
+        "mix_prob": 0.52055,
+        "mix_threshold": 0.55,
+        "mean_pitch_hz": 507.774048,
+        "chest_prob": 0.016542,
+        "falsetto_prob": 0.983458
+      },
+      "best_voice_mix_prob": 0.52055,
+      "best_voice_mix_margin": -0.02945,
+      "strongest_mix_event": {
+        "event_type": "",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "mix_prob": 0.0,
+        "mix_threshold": 0.45,
+        "mix_support": 0.0,
+        "mean_pitch_hz": 0.0
+      },
+      "voice_debug": {
+        "model_ready": true,
+        "candidate_windows": 36,
+        "predicted_windows": 36,
+        "accepted_windows": 36,
+        "context_adjusted_windows": 0,
+        "relaxed_used": false,
+        "reason": "",
+        "backend": "external_python"
+      }
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "group_name": "Control_Group",
+      "song_name": "崇拜",
+      "singer": "ZH-Alto-1",
+      "binary_role": "positive_mix",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav",
+      "error": "",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "onepass_duration": 6.65,
+      "segment_count": 1,
+      "pitch_record_count": 364,
+      "event_count": 1,
+      "counts": {
+        "falsetto": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "best_voice_event": {
+        "event_type": "falsetto",
+        "start_time": 0.0,
+        "end_time": 6.650023,
+        "mix_prob": 0.481435,
+        "mix_threshold": 0.55,
+        "mean_pitch_hz": 449.90506,
+        "chest_prob": 0.046652,
+        "falsetto_prob": 0.953348
+      },
+      "best_voice_mix_prob": 0.481435,
+      "best_voice_mix_margin": -0.068565,
+      "strongest_mix_event": {
+        "event_type": "",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "mix_prob": 0.0,
+        "mix_threshold": 0.45,
+        "mix_support": 0.0,
+        "mean_pitch_hz": 0.0
+      },
+      "voice_debug": {
+        "model_ready": true,
+        "candidate_windows": 39,
+        "predicted_windows": 39,
+        "accepted_windows": 39,
+        "context_adjusted_windows": 0,
+        "relaxed_used": false,
+        "reason": "",
+        "backend": "external_python"
+      }
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#逆光#Control_Group#0001",
+      "group_name": "Control_Group",
+      "song_name": "逆光",
+      "singer": "ZH-Alto-1",
+      "binary_role": "positive_mix",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\逆光\\Control_Group\\0001.wav",
+      "error": "",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "onepass_duration": 12.57,
+      "segment_count": 1,
+      "pitch_record_count": 689,
+      "event_count": 1,
+      "counts": {
+        "falsetto": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "best_voice_event": {
+        "event_type": "falsetto",
+        "start_time": 0.0,
+        "end_time": 12.570023,
+        "mix_prob": 0.45716,
+        "mix_threshold": 0.55,
+        "mean_pitch_hz": 548.595703,
+        "chest_prob": 0.062114,
+        "falsetto_prob": 0.937886
+      },
+      "best_voice_mix_prob": 0.45716,
+      "best_voice_mix_margin": -0.09284,
+      "strongest_mix_event": {
+        "event_type": "",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "mix_prob": 0.0,
+        "mix_threshold": 0.45,
+        "mix_support": 0.0,
+        "mean_pitch_hz": 0.0
+      },
+      "voice_debug": {
+        "model_ready": true,
+        "candidate_windows": 76,
+        "predicted_windows": 76,
+        "accepted_windows": 76,
+        "context_adjusted_windows": 0,
+        "relaxed_used": false,
+        "reason": "",
+        "backend": "external_python"
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "source_manifest": "ml_dl_models/gtsinger_multitech/dataset/curated/mix_binary_core/test_manifest.csv",
+  "positive_source_manifest": "ml_dl_models/gtsinger_multitech/dataset/curated/mix_binary_residual_pharyngeal_048_052_v1/manifest.csv",
+  "purpose": "conservative_narrow_domain_threshold_scan",
+  "selection_logic": {
+    "positives": "4 residual positive_mix misses from calibrated Control_Group Pharyngeal slice",
+    "alto_negatives": "all ZH-Alto-1 + Pharyngeal + Control_Group + control_negative rows from mix_binary_core test manifest",
+    "tenor_negatives": "all ZH-Tenor-1 + Control_Group + control_negative rows from mix_binary_core test manifest because same-singer Pharyngeal control negatives are absent"
+  },
+  "counts": {
+    "positive_mix": 4,
+    "control_negative": 18,
+    "total": 22
+  },
+  "singer_counts": {
+    "ZH-Alto-1": {
+      "positive_mix": 3,
+      "control_negative": 13
+    },
+    "ZH-Tenor-1": {
+      "positive_mix": 1,
+      "control_negative": 5
+    }
+  },
+  "notes": [
+    "This companion manifest is intended for local threshold scans and conservative recalibration experiments, not as a new global validation split.",
+    "The Tenor guard set is broader in technique because same-singer Pharyngeal control_negative samples are not present in mix_binary_core/test_manifest.csv."
+  ]
+}

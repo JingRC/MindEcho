@@ -1,0 +1,49 @@
+item_name,singer,song_name,group_name,binary_role,mix_variant,mix_prob,threshold_gap,selection_bucket_field,selection_bucket_value
+English#EN-Alto-2#Pharyngeal#Dream It Possible#Pharyngeal_Group#0006,EN-Alto-2,Dream It Possible,Pharyngeal_Group,positive_mix,clear_mix,0.461752,0.178248,group_name,Pharyngeal_Group
+English#EN-Alto-2#Breathy#My Heart Will Go On#Breathy_Group#0010,EN-Alto-2,My Heart Will Go On,Breathy_Group,positive_mix,breathy_mix,0.611278,0.028722,group_name,Breathy_Group
+English#EN-Alto-2#Vibrato#Easy On Me#Vibrato_Group#0005,EN-Alto-2,Easy On Me,Vibrato_Group,positive_mix,clear_mix,0.630214,0.009786,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#My Heart Will Go On#Glissando_Group#0006,EN-Alto-2,My Heart Will Go On,Glissando_Group,positive_mix,clear_mix,0.632123,0.007877,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Let It Go#Mixed_Voice_Group#0003,EN-Alto-2,Let It Go,Mixed_Voice_Group,positive_mix,clear_mix,0.638483,0.001517,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Vibrato#Someone Like You#Control_Group#0002,EN-Alto-2,Someone Like You,Control_Group,positive_mix,clear_mix,0.639598,0.000402,group_name,Control_Group
+English#EN-Alto-2#Pharyngeal#What Are Words#Pharyngeal_Group#0002,EN-Alto-2,What Are Words,Pharyngeal_Group,positive_mix,clear_mix,0.117449,0.522551,group_name,Pharyngeal_Group
+English#EN-Alto-2#Breathy#Safe and Sound#Breathy_Group#0000,EN-Alto-2,Safe and Sound,Breathy_Group,positive_mix,breathy_mix,0.591978,0.048022,group_name,Breathy_Group
+English#EN-Alto-2#Vibrato#Easy On Me#Vibrato_Group#0004,EN-Alto-2,Easy On Me,Vibrato_Group,positive_mix,clear_mix,0.630094,0.009906,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#Someone Like You#Glissando_Group#0008,EN-Alto-2,Someone Like You,Glissando_Group,positive_mix,clear_mix,0.626426,0.013574,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Lemon Tree#Mixed_Voice_Group#0003,EN-Alto-2,Lemon Tree,Mixed_Voice_Group,positive_mix,clear_mix,0.627764,0.012236,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Glissando#You Raise Me Up#Control_Group#0003,EN-Alto-2,You Raise Me Up,Control_Group,positive_mix,clear_mix,0.628749,0.011251,group_name,Control_Group
+English#EN-Alto-2#Pharyngeal#Love Me Like You Do#Pharyngeal_Group#0003,EN-Alto-2,Love Me Like You Do,Pharyngeal_Group,positive_mix,clear_mix,0.086391,0.553609,group_name,Pharyngeal_Group
+English#EN-Alto-2#Breathy#Love Me Like You Do#Breathy_Group#0003,EN-Alto-2,Love Me Like You Do,Breathy_Group,positive_mix,breathy_mix,0.588474,0.051526,group_name,Breathy_Group
+English#EN-Alto-2#Vibrato#My Love#Vibrato_Group#0006,EN-Alto-2,My Love,Vibrato_Group,positive_mix,clear_mix,0.6273,0.0127,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#Young And Beautiful#Glissando_Group#0002,EN-Alto-2,Young And Beautiful,Glissando_Group,positive_mix,clear_mix,0.626316,0.013684,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#City Of Stars#Mixed_Voice_Group#0010,EN-Alto-2,City Of Stars,Mixed_Voice_Group,positive_mix,clear_mix,0.626797,0.013203,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Pharyngeal#You Raise Me Up#Control_Group#0003,EN-Alto-2,You Raise Me Up,Control_Group,positive_mix,clear_mix,0.628749,0.011251,group_name,Control_Group
+English#EN-Alto-2#Pharyngeal#Love Story#Pharyngeal_Group#0003,EN-Alto-2,Love Story,Pharyngeal_Group,positive_mix,clear_mix,0.084367,0.555633,group_name,Pharyngeal_Group
+English#EN-Alto-2#Breathy#Yesterday Once More#Breathy_Group#0007,EN-Alto-2,Yesterday Once More,Breathy_Group,positive_mix,breathy_mix,0.554765,0.085235,group_name,Breathy_Group
+English#EN-Alto-2#Vibrato#My Love#Vibrato_Group#0004,EN-Alto-2,My Love,Vibrato_Group,positive_mix,clear_mix,0.611627,0.028373,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#Yesterday Once More#Glissando_Group#0003,EN-Alto-2,Yesterday Once More,Glissando_Group,positive_mix,clear_mix,0.620727,0.019273,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#All of Me#Mixed_Voice_Group#0006,EN-Alto-2,All of Me,Mixed_Voice_Group,positive_mix,clear_mix,0.617494,0.022506,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Pharyngeal#Fly Me to the Moon#Control_Group#0001,EN-Alto-2,Fly Me to the Moon,Control_Group,positive_mix,clear_mix,0.620238,0.019762,group_name,Control_Group
+English#EN-Alto-2#Pharyngeal#What Are Words#Pharyngeal_Group#0001,EN-Alto-2,What Are Words,Pharyngeal_Group,positive_mix,clear_mix,0.037223,0.602777,group_name,Pharyngeal_Group
+English#EN-Alto-2#Breathy#Love Story#Breathy_Group#0004,EN-Alto-2,Love Story,Breathy_Group,positive_mix,breathy_mix,0.455205,0.184795,group_name,Breathy_Group
+English#EN-Alto-2#Vibrato#A Thousand Years#Vibrato_Group#0007,EN-Alto-2,A Thousand Years,Vibrato_Group,positive_mix,clear_mix,0.608465,0.031535,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#Young And Beautiful#Glissando_Group#0001,EN-Alto-2,Young And Beautiful,Glissando_Group,positive_mix,clear_mix,0.619148,0.020852,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#City Of Stars#Mixed_Voice_Group#0012,EN-Alto-2,City Of Stars,Mixed_Voice_Group,positive_mix,clear_mix,0.617123,0.022877,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Pharyngeal#Dream It Possible#Control_Group#0004,EN-Alto-2,Dream It Possible,Control_Group,positive_mix,clear_mix,0.607327,0.032673,group_name,Control_Group
+English#EN-Alto-2#Breathy#Safe and Sound#Breathy_Group#0005,EN-Alto-2,Safe and Sound,Breathy_Group,positive_mix,breathy_mix,0.406342,0.233658,group_name,Breathy_Group
+English#EN-Alto-2#Vibrato#A Thousand Years#Vibrato_Group#0005,EN-Alto-2,A Thousand Years,Vibrato_Group,positive_mix,clear_mix,0.601016,0.038984,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#Someone You Loved#Glissando_Group#0004,EN-Alto-2,Someone You Loved,Glissando_Group,positive_mix,clear_mix,0.55638,0.08362,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Let It Go#Mixed_Voice_Group#0002,EN-Alto-2,Let It Go,Mixed_Voice_Group,positive_mix,clear_mix,0.613623,0.026377,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Breathy#Someone You Loved#Control_Group#0002,EN-Alto-2,Someone You Loved,Control_Group,positive_mix,clear_mix,0.599264,0.040736,group_name,Control_Group
+English#EN-Alto-2#Vibrato#All of Me#Vibrato_Group#0005,EN-Alto-2,All of Me,Vibrato_Group,positive_mix,clear_mix,0.563884,0.076116,group_name,Vibrato_Group
+English#EN-Alto-2#Glissando#Fly Me to the Moon#Glissando_Group#0005,EN-Alto-2,Fly Me to the Moon,Glissando_Group,positive_mix,clear_mix,0.486343,0.153657,group_name,Glissando_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Lemon Tree#Mixed_Voice_Group#0004,EN-Alto-2,Lemon Tree,Mixed_Voice_Group,positive_mix,clear_mix,0.60614,0.03386,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hey Jude#Mixed_Voice_Group#0005,EN-Alto-2,Hey Jude,Mixed_Voice_Group,positive_mix,clear_mix,0.606134,0.033866,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Cry on My Shoulder#Mixed_Voice_Group#0001,EN-Alto-2,Cry on My Shoulder,Mixed_Voice_Group,positive_mix,clear_mix,0.599176,0.040824,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Let Her Go#Mixed_Voice_Group#0000,EN-Alto-2,Let Her Go,Mixed_Voice_Group,positive_mix,clear_mix,0.597523,0.042477,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hey Jude#Mixed_Voice_Group#0008,EN-Alto-2,Hey Jude,Mixed_Voice_Group,positive_mix,clear_mix,0.590865,0.049135,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#You Belong With Me#Mixed_Voice_Group#0005,EN-Alto-2,You Belong With Me,Mixed_Voice_Group,positive_mix,clear_mix,0.588664,0.051336,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Cry on My Shoulder#Mixed_Voice_Group#0003,EN-Alto-2,Cry on My Shoulder,Mixed_Voice_Group,positive_mix,clear_mix,0.587127,0.052873,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hello#Mixed_Voice_Group#0008,EN-Alto-2,Hello,Mixed_Voice_Group,positive_mix,clear_mix,0.565653,0.074347,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Try#Mixed_Voice_Group#0000,EN-Alto-2,Try,Mixed_Voice_Group,positive_mix,clear_mix,0.565285,0.074715,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hello#Mixed_Voice_Group#0000,EN-Alto-2,Hello,Mixed_Voice_Group,positive_mix,clear_mix,0.542602,0.097398,group_name,Mixed_Voice_Group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#The Show#Mixed_Voice_Group#0003,EN-Alto-2,The Show,Mixed_Voice_Group,positive_mix,clear_mix,0.54137,0.09863,group_name,Mixed_Voice_Group

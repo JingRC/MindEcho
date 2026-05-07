@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-04-14 14:17:20",
+  "samples": [
+    {
+      "wav_path": "D:\\教程、软件、Py项目文件夹\\嗓音分离项目\\vsp校准\\1\\Group_3_Training\\ZH-Alto-1\\Mixed_Voice_and_Falsetto\\化身孤岛的鲸\\Mixed_Voice_Group\\0016.wav",
+      "onepass": {},
+      "analysis": {},
+      "messages": [],
+      "error": "当前没有可分析的普通模式数据"
+    }
+  ],
+  "init_log": "",
+  "requested_backend_preferences": {
+    "prefer_mix_cpu": false,
+    "prefer_voice_cpu": false,
+    "force_external_mix": false,
+    "force_external_voice": false
+  },
+  "sample_count": 1,
+  "error_count": 1
+}

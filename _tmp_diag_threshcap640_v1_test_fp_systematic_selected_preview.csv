@@ -1,0 +1,20 @@
+item_name,singer,song_name,group_name,binary_role,mix_variant,mix_prob,fp_margin,selection_bucket_field,selection_bucket_value
+English#EN-Alto-2#Pharyngeal#You Raise Me Up#Pharyngeal_Group#0000,EN-Alto-2,You Raise Me Up,Pharyngeal_Group,other_negative,non_mix,0.721427,0.081427,binary_role,other_negative
+English#EN-Alto-2#Breathy#Someone Like You#Breathy_Group#0006,EN-Alto-2,Someone Like You,Breathy_Group,breathy_group,non_mix,0.738662,0.098662,binary_role,breathy_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Lemon Tree#Falsetto_Group#0001,EN-Alto-2,Lemon Tree,Falsetto_Group,falsetto_group,non_mix,0.743432,0.103432,binary_role,falsetto_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hello#Control_Group#0003,EN-Alto-2,Hello,Control_Group,control_negative,non_mix,0.813115,0.173115,binary_role,control_negative
+English#EN-Alto-2#Pharyngeal#My Heart Will Go On#Pharyngeal_Group#0007,EN-Alto-2,My Heart Will Go On,Pharyngeal_Group,other_negative,non_mix,0.693822,0.053822,binary_role,other_negative
+English#EN-Alto-2#Breathy#Someone Like You#Breathy_Group#0000,EN-Alto-2,Someone Like You,Breathy_Group,breathy_group,non_mix,0.737234,0.097234,binary_role,breathy_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#City Of Stars#Falsetto_Group#0006,EN-Alto-2,City Of Stars,Falsetto_Group,falsetto_group,non_mix,0.732971,0.092971,binary_role,falsetto_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Let Her Go#Control_Group#0002,EN-Alto-2,Let Her Go,Control_Group,control_negative,non_mix,0.790477,0.150477,binary_role,control_negative
+English#EN-Alto-2#Glissando#You Raise Me Up#Glissando_Group#0005,EN-Alto-2,You Raise Me Up,Glissando_Group,other_negative,non_mix,0.685866,0.045866,binary_role,other_negative
+English#EN-Alto-2#Breathy#All of Me#Breathy_Group#0009,EN-Alto-2,All of Me,Breathy_Group,breathy_group,non_mix,0.688437,0.048437,binary_role,breathy_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Love Me Like You Do#Falsetto_Group#0005,EN-Alto-2,Love Me Like You Do,Falsetto_Group,falsetto_group,non_mix,0.672343,0.032343,binary_role,falsetto_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#My Heart Will Go On#Control_Group#0003,EN-Alto-2,My Heart Will Go On,Control_Group,control_negative,non_mix,0.75154,0.11154,binary_role,control_negative
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Try#Falsetto_Group#0000,EN-Alto-2,Try,Falsetto_Group,falsetto_group,non_mix,0.647296,0.007296,binary_role,falsetto_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Try#Control_Group#0001,EN-Alto-2,Try,Control_Group,control_negative,non_mix,0.737676,0.097676,binary_role,control_negative
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Love Me Like You Do#Falsetto_Group#0004,EN-Alto-2,Love Me Like You Do,Falsetto_Group,falsetto_group,non_mix,0.642317,0.002317,binary_role,falsetto_group
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Hello#Control_Group#0000,EN-Alto-2,Hello,Control_Group,control_negative,non_mix,0.728375,0.088375,binary_role,control_negative
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#City Of Stars#Control_Group#0005,EN-Alto-2,City Of Stars,Control_Group,control_negative,non_mix,0.72326,0.08326,binary_role,control_negative
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Seasons of Love#Control_Group#0001,EN-Alto-2,Seasons of Love,Control_Group,control_negative,non_mix,0.70547,0.06547,binary_role,control_negative
+English#EN-Alto-2#Mixed_Voice_and_Falsetto#Cry on My Shoulder#Control_Group#0000,EN-Alto-2,Cry on My Shoulder,Control_Group,control_negative,non_mix,0.673521,0.033521,binary_role,control_negative

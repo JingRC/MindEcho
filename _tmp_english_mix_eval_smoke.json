@@ -1,0 +1,67 @@
+{
+  "manifest": "ml_dl_models\\gtsinger_multitech\\dataset\\curated\\english_mix_binary_eval\\full_manifest.csv",
+  "groups": [
+    "Mixed_Voice_Group",
+    "Falsetto_Group",
+    "Breathy_Group",
+    "Control_Group"
+  ],
+  "eval_window_count_override": 0,
+  "eval_window_aggregation_override": "",
+  "eval_window_consistency_penalty_override": null,
+  "eval_window_support_threshold_override": null,
+  "eval_window_min_support_windows_override": null,
+  "eval_window_high_support_threshold_override": null,
+  "eval_window_min_high_support_windows_override": null,
+  "artifacts": {
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_alto_below_threshold_runtimeaware_v1": {
+      "threshold": 0.425,
+      "backbone_name": "efficientnet_b0",
+      "image_size": 256,
+      "sample_rate": 22050,
+      "n_fft": 1024,
+      "hop_length": 256,
+      "eval_window_count": 3,
+      "eval_window_aggregation": "mean",
+      "eval_window_consistency_penalty": 0.0,
+      "eval_window_support_threshold": 0.4,
+      "eval_window_min_support_windows": 2,
+      "eval_window_high_support_threshold": 0.55,
+      "eval_window_min_high_support_windows": 1,
+      "overall": {
+        "sample_count": 3,
+        "acc": 0.0,
+        "balanced_acc": 0.0,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0,
+        "predicted_positive_rate": 0.0,
+        "avg_mix_prob": 0.144497
+      },
+      "groups": {
+        "Breathy_Group": {
+          "sample_count": 3,
+          "acc": 0.0,
+          "balanced_acc": 0.0,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.0,
+          "avg_mix_prob": 0.144497
+        }
+      },
+      "binary_roles": {
+        "positive_mix": {
+          "sample_count": 3,
+          "acc": 0.0,
+          "balanced_acc": 0.0,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.0,
+          "avg_mix_prob": 0.144497
+        }
+      }
+    }
+  }
+}

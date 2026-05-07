@@ -1,0 +1,6 @@
+﻿flag released_midlow_balanced_lowprob_softhead_mix
+count 0
+flag released_lowmid_chesty_lowprob_softhead_mix
+count 0
+flag released_highpitch_long_lowprob_softhead_mix
+count 0

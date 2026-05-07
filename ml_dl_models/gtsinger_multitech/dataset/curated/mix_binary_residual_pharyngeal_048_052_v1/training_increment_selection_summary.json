@@ -1,0 +1,99 @@
+{
+  "source_guard_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_pharyngeal_048_052_v1\\guarded_calibration_manifest.csv",
+  "source_artifact": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+  "selection_policy": "all residual positives plus top-8 guard negatives by current h4f6 mix_prob",
+  "counts": {
+    "positive_mix": 4,
+    "selected_control_negative": 8,
+    "total": 12
+  },
+  "max_positive_prob": 0.455574,
+  "selected_negatives": [
+    {
+      "item_name": "Chinese#ZH-Tenor-1#Breathy#如果爱忘了#Control_Group#0007",
+      "singer": "ZH-Tenor-1",
+      "song_name": "如果爱忘了",
+      "binary_role": "control_negative",
+      "mix_prob": 0.827835
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#听海#Control_Group#0002",
+      "singer": "ZH-Alto-1",
+      "song_name": "听海",
+      "binary_role": "control_negative",
+      "mix_prob": 0.679917
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0010",
+      "singer": "ZH-Alto-1",
+      "song_name": "我好想你",
+      "binary_role": "control_negative",
+      "mix_prob": 0.629527
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0008",
+      "singer": "ZH-Alto-1",
+      "song_name": "我好想你",
+      "binary_role": "control_negative",
+      "mix_prob": 0.598911
+    },
+    {
+      "item_name": "Chinese#ZH-Tenor-1#Vibrato#如果爱忘了#Control_Group#0019",
+      "singer": "ZH-Tenor-1",
+      "song_name": "如果爱忘了",
+      "binary_role": "control_negative",
+      "mix_prob": 0.525408
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0004",
+      "singer": "ZH-Alto-1",
+      "song_name": "小半",
+      "binary_role": "control_negative",
+      "mix_prob": 0.469234
+    },
+    {
+      "item_name": "Chinese#ZH-Tenor-1#Breathy#会呼吸的痛#Control_Group#0006",
+      "singer": "ZH-Tenor-1",
+      "song_name": "会呼吸的痛",
+      "binary_role": "control_negative",
+      "mix_prob": 0.450881
+    },
+    {
+      "item_name": "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#崇拜#Control_Group#0001",
+      "singer": "ZH-Tenor-1",
+      "song_name": "崇拜",
+      "binary_role": "control_negative",
+      "mix_prob": 0.436359
+    }
+  ],
+  "positives": [
+    {
+      "item_name": "Chinese#ZH-Tenor-1#Pharyngeal#亲爱的那不是爱情#Control_Group#0004",
+      "singer": "ZH-Tenor-1",
+      "song_name": "亲爱的那不是爱情",
+      "binary_role": "positive_mix",
+      "mix_prob": 0.455574
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "singer": "ZH-Alto-1",
+      "song_name": "崇拜",
+      "binary_role": "positive_mix",
+      "mix_prob": 0.444066
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0001",
+      "singer": "ZH-Alto-1",
+      "song_name": "默",
+      "binary_role": "positive_mix",
+      "mix_prob": 0.28762
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0003",
+      "singer": "ZH-Alto-1",
+      "song_name": "默",
+      "binary_role": "positive_mix",
+      "mix_prob": 0.170277
+    }
+  ]
+}

@@ -1,0 +1,208 @@
+{
+  "runtime_report": "D:\\-MindEcho-main\\_tmp_mix_rule_guarded_alto_below_threshold_trainadapt_v1.json",
+  "selected_artifact_checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_alto_below_threshold_v1\\best_mix_binary_squeezenet.pt",
+  "selected_artifact_summary": {
+    "positive_hits": 30,
+    "positive_total": 43,
+    "control_false_positive": 18,
+    "control_total": 21
+  },
+  "base_curated_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_v1",
+  "selection_policy": "select all control_negative false_positive rows from the chosen runtime guarded report and, when a base curated dir is provided, merge them with the base guarded positives into a runtime-aware training increment",
+  "counts": {
+    "family_rows": 18,
+    "positive_source_rows": 43,
+    "clean_guard_rows": 3,
+    "training_increment_rows": 61,
+    "guarded_rows": 64
+  },
+  "bucket_summary": {
+    "primary_blocker": {
+      "passes_rule_core": 14,
+      "reject_pure_head_low_pitch": 4
+    },
+    "blocker_sets": {
+      "passes_rule_core": 14,
+      "reject_pure_head_low_pitch": 4
+    },
+    "candidate_subtypes": {
+      "strong_mix": 3,
+      "weak_mix": 15
+    },
+    "strongest_mix_subtypes": {
+      "strong_mix": 8,
+      "weak_mix": 10
+    },
+    "strongest_mix_signatures": {
+      "strong_mix|strong_mix|chest": 8,
+      "weak_mix|weak_mix|falsetto": 10
+    },
+    "released_flags": {
+      "pure_learned_head_mix": 10
+    },
+    "mix_event_counts": {
+      "1": 11,
+      "2": 6,
+      "3": 1
+    },
+    "weak_mix_counts": {
+      "0": 3,
+      "1": 14,
+      "2": 1
+    },
+    "strong_mix_counts": {
+      "1": 8,
+      "0": 9,
+      "2": 1
+    },
+    "best_voice_mix_margin_stats": {
+      "min": 0.066189,
+      "median": 0.129249,
+      "max": 0.187745
+    },
+    "best_voice_mix_prob_stats": {
+      "min": 0.491189,
+      "median": 0.554249,
+      "max": 0.612745
+    },
+    "mix_support_stats": {
+      "min": 0.301449,
+      "median": 0.4061,
+      "max": 0.729942
+    },
+    "head_bias_stats": {
+      "min": 0.13922,
+      "median": 1.0,
+      "max": 1.0
+    },
+    "mean_pitch_hz_stats": {
+      "min": 217.258652,
+      "median": 286.724793,
+      "max": 577.448975
+    }
+  },
+  "top_family_examples": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#我喜欢上你时的内心活动#Control_Group#0012",
+      "song_name": "我喜欢上你时的内心活动",
+      "best_voice_mix_margin": 0.187745,
+      "best_voice_mix_prob": 0.612745,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "strong_mix",
+      "strongest_mix_subtype": "strong_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0008",
+      "song_name": "小半",
+      "best_voice_mix_margin": 0.153068,
+      "best_voice_mix_prob": 0.578068,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "weak_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#慢慢喜欢你#Control_Group#0002",
+      "song_name": "慢慢喜欢你",
+      "best_voice_mix_margin": 0.150297,
+      "best_voice_mix_prob": 0.575297,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "weak_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#最长的电影#Control_Group#0005",
+      "song_name": "最长的电影",
+      "best_voice_mix_margin": 0.146488,
+      "best_voice_mix_prob": 0.571488,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "strong_mix",
+      "strongest_mix_subtype": "strong_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#后来#Control_Group#0006",
+      "song_name": "后来",
+      "best_voice_mix_margin": 0.143642,
+      "best_voice_mix_prob": 0.568642,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "strong_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#成都#Control_Group#0008",
+      "song_name": "成都",
+      "best_voice_mix_margin": 0.137858,
+      "best_voice_mix_prob": 0.562858,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "strong_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#成都#Control_Group#0005",
+      "song_name": "成都",
+      "best_voice_mix_margin": 0.131945,
+      "best_voice_mix_prob": 0.556945,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "strong_mix",
+      "strongest_mix_subtype": "strong_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#我喜欢上你时的内心活动#Control_Group#0005",
+      "song_name": "我喜欢上你时的内心活动",
+      "best_voice_mix_margin": 0.131625,
+      "best_voice_mix_prob": 0.556625,
+      "primary_blocker": "reject_pure_head_low_pitch",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "strong_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0010",
+      "song_name": "我好想你",
+      "best_voice_mix_margin": 0.130028,
+      "best_voice_mix_prob": 0.555028,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "weak_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0008",
+      "song_name": "我好想你",
+      "best_voice_mix_margin": 0.12847,
+      "best_voice_mix_prob": 0.55347,
+      "primary_blocker": "passes_rule_core",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "weak_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#好久不见#Control_Group#0002",
+      "song_name": "好久不见",
+      "best_voice_mix_margin": 0.114964,
+      "best_voice_mix_prob": 0.539964,
+      "primary_blocker": "reject_pure_head_low_pitch",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "weak_mix"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#大鱼#Control_Group#0007",
+      "song_name": "大鱼",
+      "best_voice_mix_margin": 0.107241,
+      "best_voice_mix_prob": 0.532241,
+      "primary_blocker": "reject_pure_head_low_pitch",
+      "candidate_subtype": "weak_mix",
+      "strongest_mix_subtype": "strong_mix"
+    }
+  ],
+  "artifacts": {
+    "runtime_false_positive_family_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\runtime_false_positive_family_manifest.csv",
+    "runtime_false_positive_family_diagnosis": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\runtime_false_positive_family_diagnosis.json",
+    "runtime_false_positive_bucket_summary": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\runtime_false_positive_bucket_summary.json",
+    "training_increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\training_increment_manifest.csv",
+    "guarded_calibration_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\guarded_calibration_manifest.csv",
+    "retained_clean_guard_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\retained_clean_guard_manifest.csv",
+    "positive_source_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_runtimeaware_v1\\positive_source_manifest.csv"
+  },
+  "rationale": [
+    "This entry stops threshold-only iteration and turns the observed runtime false-positive family into explicit guard negatives for the next trainadapt pass.",
+    "The family rows are taken after rule application, so the bucket summary reflects actual frozen-runtime reopen paths instead of raw model-only confusion.",
+    "Keeping the base guarded calibration manifest unchanged preserves the strict acceptance gate while the new training increment concentrates on the reopened control family."
+  ]
+}

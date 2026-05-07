@@ -1,0 +1,145 @@
+{
+  "generated_at": "2026-04-14 17:43:06",
+  "samples": [
+    {
+      "sample": {
+        "source": "explicit",
+        "group_name": "",
+        "item_name": "0017",
+        "song_name": "",
+        "singer": "",
+        "binary_role": "",
+        "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Tenor-1\\Pharyngeal\\不为谁而作的歌\\Control_Group\\0017.wav",
+        "mix": null,
+        "falsetto": null,
+        "breathy": null
+      },
+      "onepass": {
+        "duration": 10.52701,
+        "segment_count": 1,
+        "pitch_record_count": 577,
+        "sample_rate": 96000
+      },
+      "analysis": {
+        "summary": {
+          "ok": true,
+          "reason": "",
+          "event_count": 1,
+          "counts": {
+            "falsetto": 1
+          },
+          "duration": 10.527029
+        },
+        "voice_debug": {
+          "model_ready": true,
+          "candidate_windows": 63,
+          "predicted_windows": 63,
+          "accepted_windows": 63,
+          "context_adjusted_windows": 0,
+          "relaxed_used": false,
+          "reason": "",
+          "backend": "external_python"
+        },
+        "events": [
+          {
+            "event_type": "falsetto",
+            "display_label": "假声",
+            "start_time": 0.0,
+            "end_time": 10.527029,
+            "confidence": 0.938006,
+            "strength": 0.961563,
+            "source_layer": "offline_squeezenet",
+            "voice_type": "falsetto",
+            "subtype": null,
+            "base_voice_type": null,
+            "mean_pitch_hz": 520.457336,
+            "chest_prob": 0.061994,
+            "falsetto_prob": 0.938006,
+            "mix_prob": 0.548891,
+            "breathiness_score": null,
+            "mix_support_score": null,
+            "display_payload": {
+              "model": "squeezenet_binary_mel_safe_v2",
+              "window_s": 0.64,
+              "hop_s": 0.16,
+              "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_binary.pt",
+              "source_kind": "local_file_onepass",
+              "stable_ratio": 1.0,
+              "mean_rms": 0.109989,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.548891,
+              "mix_threshold": 0.55
+            },
+            "feature_snapshot": {
+              "mean_pitch_hz": 520.457336,
+              "voiced_ratio": 1.0,
+              "stable_ratio": 1.0,
+              "mean_rms": 0.109989,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "chest_prob": 0.061994,
+              "falsetto_prob": 0.938006,
+              "mix_prob": 0.548891,
+              "mix_threshold": 0.55
+            }
+          }
+        ],
+        "mix_events": [],
+        "voice_events": [
+          {
+            "event_type": "falsetto",
+            "display_label": "假声",
+            "start_time": 0.0,
+            "end_time": 10.527029,
+            "confidence": 0.938006,
+            "strength": 0.961563,
+            "source_layer": "offline_squeezenet",
+            "voice_type": "falsetto",
+            "subtype": null,
+            "base_voice_type": null,
+            "mean_pitch_hz": 520.457336,
+            "chest_prob": 0.061994,
+            "falsetto_prob": 0.938006,
+            "mix_prob": 0.548891,
+            "breathiness_score": null,
+            "mix_support_score": null,
+            "display_payload": {
+              "model": "squeezenet_binary_mel_safe_v2",
+              "window_s": 0.64,
+              "hop_s": 0.16,
+              "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_binary.pt",
+              "source_kind": "local_file_onepass",
+              "stable_ratio": 1.0,
+              "mean_rms": 0.109989,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.548891,
+              "mix_threshold": 0.55
+            },
+            "feature_snapshot": {
+              "mean_pitch_hz": 520.457336,
+              "voiced_ratio": 1.0,
+              "stable_ratio": 1.0,
+              "mean_rms": 0.109989,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "chest_prob": 0.061994,
+              "falsetto_prob": 0.938006,
+              "mix_prob": 0.548891,
+              "mix_threshold": 0.55
+            }
+          }
+        ]
+      },
+      "error": ""
+    }
+  ],
+  "init_log": "",
+  "sample_count": 1,
+  "error_count": 0
+}

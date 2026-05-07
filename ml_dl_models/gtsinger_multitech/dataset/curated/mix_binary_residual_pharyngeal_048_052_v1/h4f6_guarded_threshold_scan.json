@@ -1,0 +1,433 @@
+{
+  "artifact_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+  "manifest_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_pharyngeal_048_052_v1\\guarded_calibration_manifest.csv",
+  "sample_count": 22,
+  "binary_role_counts": {
+    "positive_mix": 4,
+    "control_negative": 18
+  },
+  "artifact_meta": {
+    "backbone_name": "efficientnet_b0",
+    "eval_window_count": 3,
+    "eval_window_aggregation": "mean",
+    "eval_window_consistency_penalty": 0.0,
+    "eval_window_support_threshold": 0.4,
+    "eval_window_min_support_windows": 2,
+    "eval_window_high_support_threshold": 0.55,
+    "eval_window_min_high_support_windows": 1,
+    "image_size": 256,
+    "sample_rate": 22050,
+    "sample_secs": 2.4,
+    "n_fft": 1024,
+    "hop_length": 256,
+    "n_mels": 160
+  },
+  "best_zero_control_candidate": null,
+  "threshold_scan": [
+    {
+      "threshold": 0.45,
+      "metrics": {
+        "acc": 0.545455,
+        "balanced_acc": 0.430556,
+        "macro_f1": 0.427083,
+        "mix_f1": 0.166667,
+        "mix_precision": 0.125,
+        "mix_recall": 0.25
+      },
+      "role_rates": {
+        "positive_mix": 0.25,
+        "control_negative": 0.388889
+      }
+    },
+    {
+      "threshold": 0.455,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.458333,
+        "macro_f1": 0.454545,
+        "mix_f1": 0.181818,
+        "mix_precision": 0.142857,
+        "mix_recall": 0.25
+      },
+      "role_rates": {
+        "positive_mix": 0.25,
+        "control_negative": 0.333333
+      }
+    },
+    {
+      "threshold": 0.46,
+      "metrics": {
+        "acc": 0.545455,
+        "balanced_acc": 0.333333,
+        "macro_f1": 0.352941,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.333333
+      }
+    },
+    {
+      "threshold": 0.465,
+      "metrics": {
+        "acc": 0.545455,
+        "balanced_acc": 0.333333,
+        "macro_f1": 0.352941,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.333333
+      }
+    },
+    {
+      "threshold": 0.47,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.475,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.48,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.485,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.49,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.495,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.5,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.505,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.51,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.515,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.52,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.525,
+      "metrics": {
+        "acc": 0.590909,
+        "balanced_acc": 0.361111,
+        "macro_f1": 0.371429,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.277778
+      }
+    },
+    {
+      "threshold": 0.53,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.535,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.54,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.545,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.55,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.555,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.56,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.565,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.57,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.575,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    },
+    {
+      "threshold": 0.58,
+      "metrics": {
+        "acc": 0.636364,
+        "balanced_acc": 0.388889,
+        "macro_f1": 0.388889,
+        "mix_f1": 0.0,
+        "mix_precision": 0.0,
+        "mix_recall": 0.0
+      },
+      "role_rates": {
+        "positive_mix": 0.0,
+        "control_negative": 0.222222
+      }
+    }
+  ]
+}

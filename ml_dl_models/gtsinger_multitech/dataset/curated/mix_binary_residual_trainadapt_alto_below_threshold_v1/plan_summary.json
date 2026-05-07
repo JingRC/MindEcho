@@ -1,0 +1,216 @@
+{
+  "base_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\test_manifest.csv",
+  "source_core_regression": "d:\\-MindEcho-main\\_tmp_mix_rule_core_posctrl_dualpath.json",
+  "source_probe_compare": "d:\\-MindEcho-main\\_tmp_mix_rule_alto_threshold_probe_compare.json",
+  "current_artifact": "d:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+  "rejected_candidate_artifact": "d:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_alto_mo_v2",
+  "selection_focus": "ZH-Alto-1 Mixed_Voice_Group voice_mix_below_threshold residual cluster under software threshold 0.55",
+  "training_increment_manifest": "d:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_v1\\training_increment_manifest.csv",
+  "guarded_calibration_manifest": "d:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_below_threshold_v1\\guarded_calibration_manifest.csv",
+  "selection_policy": "all current Alto mixed below-threshold positives; training increment adds top-16 ZH-Alto-1 control negatives by current h4f6 mix_prob; guarded manifest keeps all ZH-Alto-1 control negatives with mix_prob >= 0.50",
+  "counts": {
+    "positive_mix": 43,
+    "training_control_negative": 16,
+    "guarded_control_negative": 21,
+    "training_total": 59,
+    "guarded_total": 64
+  },
+  "current_cluster_stats": {
+    "threshold_values": [
+      0.55
+    ],
+    "mix_prob_min": 0.396646,
+    "mix_prob_median": 0.490947,
+    "mix_prob_max": 0.534561,
+    "margin_min": -0.153354,
+    "margin_median": -0.059053,
+    "margin_max": -0.015439
+  },
+  "guard_negative_stats": {
+    "min_mix_prob": 0.504621,
+    "median_mix_prob": 0.542582,
+    "max_mix_prob": 0.577788,
+    "current_false_positive_count": 6,
+    "current_clean_count": 15
+  },
+  "targeted_probe_compare": {
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu": {
+      "positive_hit_count": 0,
+      "positive_sample_count": 8,
+      "control_fp_count": 5,
+      "control_sample_count": 8
+    },
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_alto_mo_v2": {
+      "positive_hit_count": 6,
+      "positive_sample_count": 8,
+      "control_fp_count": 8,
+      "control_sample_count": 8
+    }
+  },
+  "selected_training_negatives": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#慢慢喜欢你#Control_Group#0002",
+      "group_name": "Control_Group",
+      "mix_prob": 0.577788,
+      "outcome": "false_positive"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0008",
+      "group_name": "Control_Group",
+      "mix_prob": 0.575932,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#我喜欢上你时的内心活动#Control_Group#0005",
+      "group_name": "Control_Group",
+      "mix_prob": 0.56534,
+      "outcome": "false_positive"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#成都#Control_Group#0008",
+      "group_name": "Control_Group",
+      "mix_prob": 0.562433,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#我喜欢上你时的内心活动#Control_Group#0012",
+      "group_name": "Control_Group",
+      "mix_prob": 0.556044,
+      "outcome": "false_positive"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#后来#Control_Group#0006",
+      "group_name": "Control_Group",
+      "mix_prob": 0.550217,
+      "outcome": "false_positive"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0010",
+      "group_name": "Control_Group",
+      "mix_prob": 0.549881,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Breathy#成都#Control_Group#0005",
+      "group_name": "Control_Group",
+      "mix_prob": 0.546638,
+      "outcome": "false_positive"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0008",
+      "group_name": "Control_Group",
+      "mix_prob": 0.544823,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#好久不见#Control_Group#0002",
+      "group_name": "Control_Group",
+      "mix_prob": 0.54312,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#最长的电影#Control_Group#0005",
+      "group_name": "Control_Group",
+      "mix_prob": 0.542582,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Glissando#十年#Control_Group#0010",
+      "group_name": "Control_Group",
+      "mix_prob": 0.534847,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#大鱼#Control_Group#0002",
+      "group_name": "Control_Group",
+      "mix_prob": 0.527505,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Vibrato#大鱼#Control_Group#0007",
+      "group_name": "Control_Group",
+      "mix_prob": 0.523215,
+      "outcome": "false_positive"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#听海#Control_Group#0015",
+      "group_name": "Control_Group",
+      "mix_prob": 0.518616,
+      "outcome": "clean"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#老男孩#Control_Group#0003",
+      "group_name": "Control_Group",
+      "mix_prob": 0.51351,
+      "outcome": "clean"
+    }
+  ],
+  "top_positive_examples": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#画心#Mixed_Voice_Group#0003",
+      "mix_prob": 0.534561,
+      "margin": -0.015439
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#剑伤#Mixed_Voice_Group#0009",
+      "mix_prob": 0.532223,
+      "margin": -0.017777
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#鸽子#Mixed_Voice_Group#0001",
+      "mix_prob": 0.530036,
+      "margin": -0.019964
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#爱情转移#Mixed_Voice_Group#0000",
+      "mix_prob": 0.526105,
+      "margin": -0.023895
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#我喜欢上你时的内心活动#Mixed_Voice_Group#0005",
+      "mix_prob": 0.525355,
+      "margin": -0.024645
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#青花瓷#Mixed_Voice_Group#0010",
+      "mix_prob": 0.525022,
+      "margin": -0.024978
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#红玫瑰#Mixed_Voice_Group#0009",
+      "mix_prob": 0.516279,
+      "margin": -0.033721
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#演员#Mixed_Voice_Group#0019",
+      "mix_prob": 0.515504,
+      "margin": -0.034496
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#演员#Mixed_Voice_Group#0006",
+      "mix_prob": 0.514643,
+      "margin": -0.035357
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#给电影人的情书#Mixed_Voice_Group#0000",
+      "mix_prob": 0.512657,
+      "margin": -0.037343
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#走马#Mixed_Voice_Group#0000",
+      "mix_prob": 0.512504,
+      "margin": -0.037496
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#给电影人的情书#Mixed_Voice_Group#0009",
+      "mix_prob": 0.507577,
+      "margin": -0.042423
+    }
+  ],
+  "rationale": [
+    "Runtime-side narrow threshold windows did not find a clean separation against Alto controls.",
+    "Current h4f6 leaves the full cluster under threshold 0.55 with no calibration delta.",
+    "The existing alto train-adapt artifact rescues targeted positives but also lights up all targeted high-risk controls, so it is not safe as a default swap.",
+    "The next model-side iteration should start from a focused increment plus an explicit Alto guard set rather than another software rule patch."
+  ]
+}

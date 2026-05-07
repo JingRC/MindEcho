@@ -1,0 +1,34 @@
+item_name,singer,song_name,group_name,binary_role,mix_variant,mix_prob,threshold_gap,selection_bucket_field,selection_bucket_value
+English#EN-Tenor-1#Breathy#Someone Like You#Breathy_Group#0004,EN-Tenor-1,Someone Like You,Breathy_Group,positive_mix,breathy_mix,0.417951,0.222049,group_name,Breathy_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Mixed_Voice_Group#0002,EN-Tenor-1,Summertime Sadness,Mixed_Voice_Group,positive_mix,clear_mix,0.634866,0.005134,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Vibrato_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Vibrato_Group,positive_mix,clear_mix,0.62274,0.01726,group_name,Vibrato_Group
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Glissando_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Glissando_Group,positive_mix,clear_mix,0.639416,0.000584,group_name,Glissando_Group
+English#EN-Tenor-1#Glissando#Stay#Control_Group#0010,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.639147,0.000853,group_name,Control_Group
+English#EN-Tenor-1#Breathy#Stay#Breathy_Group#0003,EN-Tenor-1,Stay,Breathy_Group,positive_mix,breathy_mix,0.123044,0.516956,group_name,Breathy_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Mixed_Voice_Group#0011,EN-Tenor-1,Shallow,Mixed_Voice_Group,positive_mix,clear_mix,0.628457,0.011543,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Vibrato_Group#0004,EN-Tenor-1,What Was I Made For？,Vibrato_Group,positive_mix,clear_mix,0.519439,0.120561,group_name,Vibrato_Group
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0009,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.628515,0.011485,group_name,Glissando_Group
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0002,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.636047,0.003953,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Mixed_Voice_Group#0002,EN-Tenor-1,Shallow,Mixed_Voice_Group,positive_mix,clear_mix,0.602695,0.037305,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0001,EN-Tenor-1,Someone Like You,Vibrato_Group,positive_mix,clear_mix,0.515526,0.124474,group_name,Vibrato_Group
+English#EN-Tenor-1#Glissando#Enchanted#Glissando_Group#0007,EN-Tenor-1,Enchanted,Glissando_Group,positive_mix,clear_mix,0.583862,0.056138,group_name,Glissando_Group
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0011,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.634049,0.005951,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Lavender Haze#Mixed_Voice_Group#0005,EN-Tenor-1,Lavender Haze,Mixed_Voice_Group,positive_mix,clear_mix,0.569211,0.070789,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Vibrato#Long Live#Vibrato_Group#0010,EN-Tenor-1,Long Live,Vibrato_Group,positive_mix,clear_mix,0.511983,0.128017,group_name,Vibrato_Group
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0002,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.581585,0.058415,group_name,Glissando_Group
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0009,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.618739,0.021261,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Blank Space#Mixed_Voice_Group#0005,EN-Tenor-1,Blank Space,Mixed_Voice_Group,positive_mix,clear_mix,0.567867,0.072133,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Vibrato#Rolling in the Deep#Vibrato_Group#0004,EN-Tenor-1,Rolling in the Deep,Vibrato_Group,positive_mix,clear_mix,0.430619,0.209381,group_name,Vibrato_Group
+English#EN-Tenor-1#Glissando#Enchanted#Glissando_Group#0009,EN-Tenor-1,Enchanted,Glissando_Group,positive_mix,clear_mix,0.57322,0.06678,group_name,Glissando_Group
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0011,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.613824,0.026176,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Mixed_Voice_Group#0000,EN-Tenor-1,Wildest Dreams,Mixed_Voice_Group,positive_mix,clear_mix,0.564923,0.075077,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Glissando#Long Live#Glissando_Group#0004,EN-Tenor-1,Long Live,Glissando_Group,positive_mix,clear_mix,0.55297,0.08703,group_name,Glissando_Group
+English#EN-Tenor-1#Breathy#Unconditionally#Control_Group#0000,EN-Tenor-1,Unconditionally,Control_Group,positive_mix,clear_mix,0.580049,0.059951,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Mixed_Voice_Group#0005,EN-Tenor-1,Summertime Sadness,Mixed_Voice_Group,positive_mix,clear_mix,0.558464,0.081536,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Glissando#Unconditionally#Control_Group#0000,EN-Tenor-1,Unconditionally,Control_Group,positive_mix,clear_mix,0.580049,0.059951,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Mixed_Voice_Group#0000,EN-Tenor-1,Firework,Mixed_Voice_Group,positive_mix,clear_mix,0.504965,0.135035,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Breathy#All I Ask#Control_Group#0003,EN-Tenor-1,All I Ask,Control_Group,positive_mix,clear_mix,0.513823,0.126177,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Mixed_Voice_Group#0001,EN-Tenor-1,Firework,Mixed_Voice_Group,positive_mix,clear_mix,0.489912,0.150088,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Pharyngeal#All I Ask#Control_Group#0003,EN-Tenor-1,All I Ask,Control_Group,positive_mix,clear_mix,0.513823,0.126177,group_name,Control_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Lavender Haze#Mixed_Voice_Group#0007,EN-Tenor-1,Lavender Haze,Mixed_Voice_Group,positive_mix,clear_mix,0.483523,0.156477,group_name,Mixed_Voice_Group
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Know Places#Mixed_Voice_Group#0003,EN-Tenor-1,I Know Places,Mixed_Voice_Group,positive_mix,clear_mix,0.368591,0.271409,group_name,Mixed_Voice_Group

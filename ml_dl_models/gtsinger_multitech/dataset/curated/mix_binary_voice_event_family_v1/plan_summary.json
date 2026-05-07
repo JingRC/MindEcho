@@ -1,0 +1,317 @@
+{
+  "train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\train_manifest.csv",
+  "artifact_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+  "artifact_threshold": 0.475,
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1",
+  "selection_config": {
+    "preselect_count": 64,
+    "preselect_sort_mode": "threshold_proximity",
+    "preselect_max_per_singer": 32,
+    "preselect_max_per_song": 8,
+    "preselect_max_per_singer_song": 4,
+    "marginal_keep_count": 24,
+    "no_subtype_keep_count": 24,
+    "min_pitch_hz": 430.0,
+    "min_head_bias": 0.92,
+    "runtime_margin_min": -0.1,
+    "runtime_margin_max": 0.03,
+    "allow_blockers": [
+      "reject_marginal_head_not_released",
+      "reject_no_subtype"
+    ],
+    "max_per_singer": 12,
+    "max_per_song": 4,
+    "max_per_singer_song": 2,
+    "control_preselect_count": 64,
+    "control_preselect_sort_mode": "highest_mix_prob",
+    "control_preselect_max_per_singer": 32,
+    "control_preselect_max_per_song": 8,
+    "control_preselect_max_per_singer_song": 4,
+    "control_keep_count": 24,
+    "control_min_head_bias": 0.7,
+    "control_runtime_margin_min": 0.0,
+    "control_runtime_margin_max": 0.18,
+    "control_allow_blockers": [
+      "reject_pure_head_low_pitch",
+      "reject_marginal_head_not_released",
+      "reject_no_subtype"
+    ],
+    "control_max_per_singer": 12,
+    "control_max_per_song": 4,
+    "control_max_per_singer_song": 2,
+    "combined_positive_family": "marginal_only",
+    "eval_window_count": 3,
+    "eval_window_aggregation": "mean",
+    "eval_window_consistency_penalty": 0.0,
+    "eval_window_support_threshold": 0.4,
+    "eval_window_min_support_windows": 2,
+    "eval_window_high_support_threshold": 0.55,
+    "eval_window_min_high_support_windows": 1,
+    "score_batch_size": 4,
+    "score_row_chunk_size": 128,
+    "device": "cpu",
+    "runtime_chunk_size": 4,
+    "cache_reuse_enabled": true
+  },
+  "counts": {
+    "train_rows": 3054,
+    "positive_pool": 1131,
+    "positive_preselected_rows": 64,
+    "control_pool": 622,
+    "control_preselected_rows": 64,
+    "marginal_family_pool_rows": 7,
+    "no_subtype_family_pool_rows": 5,
+    "control_guard_pool_rows": 20,
+    "selected_marginal_rows": 7,
+    "selected_no_subtype_rows": 5,
+    "selected_control_guard_rows": 19,
+    "combined_increment_rows": 26
+  },
+  "rationale": [
+    "Split the train-side positive family into marginal-head and no-subtype branches instead of collapsing both failure modes into one increment bucket.",
+    "Emit a conservative default increment that keeps only marginal-head positives for adaptation and adds explicit pure_learned_head_mix control guards to resist the K-style control reopening path.",
+    "Keep the no-subtype branch as a separate artifact for analysis instead of feeding it into the next trainadapt candidate by default."
+  ],
+  "summaries": {
+    "positive_preselected_rows": {
+      "items": 64,
+      "labels": {
+        "1": 64
+      },
+      "binary_roles": {
+        "positive_mix": 64
+      },
+      "groups": {
+        "Falsetto_Group": 4,
+        "Control_Group": 16,
+        "Mixed_Voice_Group": 43,
+        "Glissando_Group": 1
+      },
+      "singers": {
+        "ZH-Alto-1": 32,
+        "ZH-Tenor-1": 32
+      },
+      "branches": {
+        "reject_marginal_head_not_released": 17,
+        "reject_pure_head_low_pitch": 16,
+        "reject_no_subtype": 7,
+        "passes_rule_core": 24
+      },
+      "blockers": {
+        "reject_pure_head_low_pitch": 22,
+        "reject_no_subtype": 7,
+        "passes_rule_core": 24,
+        "reject_marginal_head_not_released": 11
+      }
+    },
+    "control_preselected_rows": {
+      "items": 64,
+      "labels": {
+        "0": 64
+      },
+      "binary_roles": {
+        "control_negative": 64
+      },
+      "groups": {
+        "Control_Group": 64
+      },
+      "singers": {
+        "ZH-Tenor-1": 32,
+        "ZH-Alto-1": 32
+      },
+      "branches": {
+        "reject_pure_head_low_pitch": 9,
+        "passes_rule_core": 24,
+        "reject_marginal_head_not_released": 18,
+        "reject_no_subtype": 13
+      },
+      "blockers": {
+        "reject_pure_head_low_pitch": 12,
+        "passes_rule_core": 24,
+        "reject_marginal_head_not_released": 15,
+        "reject_no_subtype": 12,
+        "reject_strong_mix_below_threshold": 1
+      }
+    },
+    "marginal_family_pool": {
+      "items": 7,
+      "labels": {
+        "1": 7
+      },
+      "binary_roles": {
+        "positive_mix": 7
+      },
+      "groups": {
+        "Glissando_Group": 1,
+        "Control_Group": 1,
+        "Mixed_Voice_Group": 5
+      },
+      "singers": {
+        "ZH-Alto-1": 7
+      },
+      "branches": {
+        "reject_marginal_head_not_released": 7
+      },
+      "blockers": {
+        "reject_marginal_head_not_released": 7
+      }
+    },
+    "no_subtype_family_pool": {
+      "items": 5,
+      "labels": {
+        "1": 5
+      },
+      "binary_roles": {
+        "positive_mix": 5
+      },
+      "groups": {
+        "Control_Group": 2,
+        "Mixed_Voice_Group": 3
+      },
+      "singers": {
+        "ZH-Tenor-1": 1,
+        "ZH-Alto-1": 4
+      },
+      "branches": {
+        "reject_no_subtype": 5
+      },
+      "blockers": {
+        "reject_no_subtype": 5
+      }
+    },
+    "control_guard_pool": {
+      "items": 20,
+      "labels": {
+        "0": 20
+      },
+      "binary_roles": {
+        "control_negative": 20
+      },
+      "groups": {
+        "Control_Group": 20
+      },
+      "singers": {
+        "ZH-Tenor-1": 8,
+        "ZH-Alto-1": 12
+      },
+      "branches": {
+        "reject_pure_head_low_pitch": 4,
+        "reject_marginal_head_not_released": 16
+      },
+      "blockers": {
+        "reject_pure_head_low_pitch": 7,
+        "reject_marginal_head_not_released": 13
+      }
+    },
+    "selected_marginal_rows": {
+      "items": 7,
+      "labels": {
+        "1": 7
+      },
+      "binary_roles": {
+        "positive_mix": 7
+      },
+      "groups": {
+        "Glissando_Group": 1,
+        "Control_Group": 1,
+        "Mixed_Voice_Group": 5
+      },
+      "singers": {
+        "ZH-Alto-1": 7
+      },
+      "branches": {
+        "reject_marginal_head_not_released": 7
+      },
+      "blockers": {
+        "reject_marginal_head_not_released": 7
+      }
+    },
+    "selected_no_subtype_rows": {
+      "items": 5,
+      "labels": {
+        "1": 5
+      },
+      "binary_roles": {
+        "positive_mix": 5
+      },
+      "groups": {
+        "Control_Group": 2,
+        "Mixed_Voice_Group": 3
+      },
+      "singers": {
+        "ZH-Tenor-1": 1,
+        "ZH-Alto-1": 4
+      },
+      "branches": {
+        "reject_no_subtype": 5
+      },
+      "blockers": {
+        "reject_no_subtype": 5
+      }
+    },
+    "selected_control_guard_rows": {
+      "items": 19,
+      "labels": {
+        "0": 19
+      },
+      "binary_roles": {
+        "control_negative": 19
+      },
+      "groups": {
+        "Control_Group": 19
+      },
+      "singers": {
+        "ZH-Tenor-1": 8,
+        "ZH-Alto-1": 11
+      },
+      "branches": {
+        "reject_pure_head_low_pitch": 4,
+        "reject_marginal_head_not_released": 15
+      },
+      "blockers": {
+        "reject_pure_head_low_pitch": 7,
+        "reject_marginal_head_not_released": 12
+      }
+    },
+    "combined_increment_rows": {
+      "items": 26,
+      "labels": {
+        "1": 7,
+        "0": 19
+      },
+      "binary_roles": {
+        "positive_mix": 7,
+        "control_negative": 19
+      },
+      "groups": {
+        "Glissando_Group": 1,
+        "Control_Group": 20,
+        "Mixed_Voice_Group": 5
+      },
+      "singers": {
+        "ZH-Alto-1": 18,
+        "ZH-Tenor-1": 8
+      },
+      "branches": {
+        "reject_marginal_head_not_released": 22,
+        "reject_pure_head_low_pitch": 4
+      },
+      "blockers": {
+        "reject_marginal_head_not_released": 19,
+        "reject_pure_head_low_pitch": 7
+      }
+    }
+  },
+  "artifacts": {
+    "training_increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\training_increment_manifest.csv",
+    "positive_marginal_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\positive_marginal_manifest.csv",
+    "positive_no_subtype_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\positive_no_subtype_manifest.csv",
+    "control_pure_head_guard_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\control_pure_head_guard_manifest.csv",
+    "preselected_diagnosis": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\preselected_diagnosis.json",
+    "selected_family_diagnosis": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\selected_family_diagnosis.json",
+    "positive_marginal_diagnosis": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\positive_marginal_diagnosis.json",
+    "positive_no_subtype_diagnosis": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\positive_no_subtype_diagnosis.json",
+    "control_pure_head_guard_diagnosis": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\control_pure_head_guard_diagnosis.json",
+    "cache_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_voice_event_family_v1\\_cache"
+  }
+}

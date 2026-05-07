@@ -1,0 +1,62 @@
+{
+  "groups": [
+    "Falsetto_Group"
+  ],
+  "per_group": 2,
+  "skip": 2,
+  "aggregate": {
+    "sample_count": 2,
+    "samples_with_any_mix_event": 0,
+    "samples_with_strong_mix": 0,
+    "sample_level_any_mix_recall_proxy": 0.0,
+    "sample_level_strong_mix_recall_proxy": 0.0,
+    "voice_segments_total": 3,
+    "voice_segments_mix_ge_threshold": 0,
+    "voice_segment_mix_hit_ratio": 0.0,
+    "avg_max_mix_prob": 0.282543,
+    "avg_strong_mix_coverage": 0.0,
+    "avg_strong_mix_duration": 0.0
+  },
+  "rows": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#别找我麻烦#Falsetto_Group#0000",
+      "group_name": "Falsetto_Group",
+      "song_name": "别找我麻烦",
+      "binary_role": "falsetto_group",
+      "event_count": 1,
+      "counts": {
+        "falsetto": 1
+      },
+      "voice_event_count": 1,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "max_mix_prob": 0.261866,
+      "strong_mix_duration": 0.0,
+      "voice_duration": 3.52,
+      "strong_mix_coverage": 0.0
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Mixed_Voice_and_Falsetto#别找我麻烦#Falsetto_Group#0005",
+      "group_name": "Falsetto_Group",
+      "song_name": "别找我麻烦",
+      "binary_role": "falsetto_group",
+      "event_count": 2,
+      "counts": {
+        "falsetto": 2
+      },
+      "voice_event_count": 2,
+      "mix_event_count": 0,
+      "strong_mix_count": 0,
+      "weak_mix_count": 0,
+      "balanced_mix_count": 0,
+      "voice_segments_mix_ge_threshold": 0,
+      "max_mix_prob": 0.30322,
+      "strong_mix_duration": 0.0,
+      "voice_duration": 6.258005,
+      "strong_mix_coverage": 0.0
+    }
+  ]
+}

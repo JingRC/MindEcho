@@ -1,0 +1,57 @@
+﻿{
+    "base_split":  "mix_binary_core",
+    "warm_start_artifact":  "mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+    "training_increment_manifest":  "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_chongbai0000_v1\\training_increment_manifest.csv",
+    "selection_focus":  "0000-only micro-tune around the last residual miss",
+    "selected_targets":  [
+                             "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000"
+                         ],
+    "selected_alto_guard_negatives":  [
+                                          "Chinese#ZH-Alto-1#Pharyngeal#听海#Control_Group#0002",
+                                          "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0010",
+                                          "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0008",
+                                          "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0004",
+                                          "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0008",
+                                          "Chinese#ZH-Alto-1#Pharyngeal#你就不要想起我#Control_Group#0008"
+                                      ],
+    "repeat_config":  {
+                          "target_positive_repeat":  20,
+                          "alto_guard_negative_repeat":  3
+                      },
+    "counts":  {
+                   "core_train":  3054,
+                   "micro_train":  3092,
+                   "core_validation":  381,
+                   "micro_test":  371,
+                   "increment_unique":  7,
+                   "removed_from_test_union":  7
+               },
+    "binary_role_counts":  {
+                               "core_train":  {
+                                                  "breathy_group":  396,
+                                                  "falsetto_group":  622,
+                                                  "control_negative":  622,
+                                                  "other_negative":  283,
+                                                  "positive_mix":  1131
+                                              },
+                               "micro_train":  {
+                                                   "breathy_group":  396,
+                                                   "falsetto_group":  622,
+                                                   "control_negative":  640,
+                                                   "other_negative":  283,
+                                                   "positive_mix":  1151
+                                               },
+                               "micro_test":  {
+                                                  "breathy_group":  41,
+                                                  "falsetto_group":  79,
+                                                  "control_negative":  73,
+                                                  "other_negative":  36,
+                                                  "positive_mix":  142
+                                              }
+                           },
+    "rationale":  [
+                      "Use only 崇拜/0000 as the injected positive target because GUI-side repairs are frozen and all other local misses are already resolved outside the checkpoint.",
+                      "Pair the target with the closest Alto-1 Pharyngeal control negatives by current raw h4f6 mix probability so the micro-tune nudges 0000 upward without reopening the same confusable guard set.",
+                      "Keep validation on the untouched core split and remove injected rows from test to preserve the non-leaky adaptation pattern used in earlier residual branches."
+                  ]
+}

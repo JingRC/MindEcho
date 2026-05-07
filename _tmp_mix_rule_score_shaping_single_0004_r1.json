@@ -1,0 +1,157 @@
+{
+  "generated_at": "2026-04-15 16:24:03",
+  "samples": [
+    {
+      "sample": {
+        "source": "explicit",
+        "group_name": "",
+        "item_name": "0004",
+        "song_name": "",
+        "singer": "",
+        "binary_role": "",
+        "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Tenor-1\\Pharyngeal\\亲爱的那不是爱情\\Control_Group\\0004.wav",
+        "mix": null,
+        "falsetto": null,
+        "breathy": null
+      },
+      "onepass": {
+        "duration": 11.63,
+        "segment_count": 1,
+        "pitch_record_count": 636,
+        "sample_rate": 96000
+      },
+      "analysis": {
+        "summary": {
+          "ok": true,
+          "reason": "",
+          "event_count": 1,
+          "counts": {
+            "falsetto": 1
+          },
+          "duration": 11.630023
+        },
+        "voice_debug": {
+          "model_ready": true,
+          "candidate_windows": 70,
+          "predicted_windows": 70,
+          "accepted_windows": 69,
+          "context_adjusted_windows": 0,
+          "relaxed_used": false,
+          "reason": "",
+          "backend": "external_python"
+        },
+        "events": [
+          {
+            "event_type": "falsetto",
+            "display_label": "假声",
+            "start_time": 0.0,
+            "end_time": 11.630023,
+            "confidence": 0.911884,
+            "strength": 0.945368,
+            "source_layer": "offline_squeezenet",
+            "voice_type": "falsetto",
+            "subtype": null,
+            "base_voice_type": null,
+            "mean_pitch_hz": 414.289948,
+            "chest_prob": 0.308294,
+            "falsetto_prob": 0.911884,
+            "mix_prob": 0.52192,
+            "breathiness_score": null,
+            "mix_support_score": null,
+            "display_payload": {
+              "model": "squeezenet_binary_mel_safe_v2",
+              "window_s": 0.64,
+              "hop_s": 0.16,
+              "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_binary.pt",
+              "source_kind": "local_file_onepass",
+              "stable_ratio": 1.0,
+              "mean_rms": 0.018591,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "raw_mix_prob": 0.556629,
+              "mix_prob": 0.556629,
+              "mix_threshold": 0.55,
+              "mix_calibration_delta": 0.0,
+              "mix_calibration_profile": ""
+            },
+            "feature_snapshot": {
+              "mean_pitch_hz": 414.289948,
+              "voiced_ratio": 1.0,
+              "stable_ratio": 1.0,
+              "mean_rms": 0.018591,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "chest_prob": 0.308294,
+              "falsetto_prob": 0.691706,
+              "raw_mix_prob": 0.556629,
+              "mix_prob": 0.556629,
+              "mix_threshold": 0.55,
+              "mix_calibration_delta": 0.0,
+              "mix_calibration_profile": ""
+            }
+          }
+        ],
+        "mix_events": [],
+        "voice_events": [
+          {
+            "event_type": "falsetto",
+            "display_label": "假声",
+            "start_time": 0.0,
+            "end_time": 11.630023,
+            "confidence": 0.911884,
+            "strength": 0.945368,
+            "source_layer": "offline_squeezenet",
+            "voice_type": "falsetto",
+            "subtype": null,
+            "base_voice_type": null,
+            "mean_pitch_hz": 414.289948,
+            "chest_prob": 0.308294,
+            "falsetto_prob": 0.911884,
+            "mix_prob": 0.52192,
+            "breathiness_score": null,
+            "mix_support_score": null,
+            "display_payload": {
+              "model": "squeezenet_binary_mel_safe_v2",
+              "window_s": 0.64,
+              "hop_s": 0.16,
+              "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_binary.pt",
+              "source_kind": "local_file_onepass",
+              "stable_ratio": 1.0,
+              "mean_rms": 0.018591,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "raw_mix_prob": 0.556629,
+              "mix_prob": 0.556629,
+              "mix_threshold": 0.55,
+              "mix_calibration_delta": 0.0,
+              "mix_calibration_profile": ""
+            },
+            "feature_snapshot": {
+              "mean_pitch_hz": 414.289948,
+              "voiced_ratio": 1.0,
+              "stable_ratio": 1.0,
+              "mean_rms": 0.018591,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "chest_prob": 0.308294,
+              "falsetto_prob": 0.691706,
+              "raw_mix_prob": 0.556629,
+              "mix_prob": 0.556629,
+              "mix_threshold": 0.55,
+              "mix_calibration_delta": 0.0,
+              "mix_calibration_profile": ""
+            }
+          }
+        ]
+      },
+      "error": ""
+    }
+  ],
+  "init_log": "",
+  "sample_count": 1,
+  "error_count": 0
+}

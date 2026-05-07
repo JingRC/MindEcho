@@ -1,0 +1,104 @@
+{
+  "plan_name": "english_error_increment_exploratory_v1",
+  "source_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\english_mix_binary_eval\\full_manifest.csv",
+  "false_negative_csv": "D:\\-MindEcho-main\\_tmp_english_mix_error_analysis_false_negatives.csv",
+  "false_positive_csv": "D:\\-MindEcho-main\\_tmp_english_mix_error_analysis_false_positives.csv",
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_error_increment_v1",
+  "focus_config": {
+    "positive_singers": [
+      "EN-Alto-2"
+    ],
+    "negative_singers": [
+      "EN-Tenor-1"
+    ],
+    "negative_roles": [
+      "control_negative",
+      "falsetto_group"
+    ],
+    "positive_keep_count": 96,
+    "negative_keep_count": 96,
+    "max_per_song": 4,
+    "max_per_singer_song": 4,
+    "min_fn_threshold_gap": 0.1,
+    "min_fp_margin": 0.1
+  },
+  "rationale": [
+    "This increment is exploratory and intentionally targets the dominant English error clusters surfaced by the full-manifest analysis.",
+    "EN-Alto-2 false negatives are used as hard positives so the next trainadapt pass explicitly sees the over-conservative miss regime.",
+    "EN-Tenor-1 control and falsetto false positives are used as hard negatives so the next trainadapt pass explicitly suppresses the permissive leakage regime.",
+    "If these singers are also part of a held-out protocol, using this increment for training invalidates that held-out claim for those same singers."
+  ],
+  "counts": {
+    "source_rows": 4827,
+    "positive_pool_rows": 851,
+    "negative_pool_rows": 202,
+    "selected_positive_rows": 96,
+    "selected_negative_rows": 96,
+    "increment_rows": 192,
+    "missing_positive_item_names": 0,
+    "missing_negative_item_names": 0
+  },
+  "missing_item_names": {
+    "positive": [],
+    "negative": []
+  },
+  "summaries": {
+    "selected_positives": {
+      "items": 96,
+      "binary_roles": {
+        "positive_mix": 96
+      },
+      "groups": {
+        "Pharyngeal_Group": 4,
+        "Control_Group": 54,
+        "Mixed_Voice_Group": 38
+      },
+      "singers": {
+        "EN-Alto-2": 96
+      },
+      "mix_prob_min": 0.001889,
+      "mix_prob_mean": 0.031976,
+      "mix_prob_max": 0.086111
+    },
+    "selected_negatives": {
+      "items": 96,
+      "binary_roles": {
+        "falsetto_group": 60,
+        "control_negative": 36
+      },
+      "groups": {
+        "Falsetto_Group": 60,
+        "Control_Group": 36
+      },
+      "singers": {
+        "EN-Tenor-1": 96
+      },
+      "mix_prob_min": 0.656504,
+      "mix_prob_mean": 0.855315,
+      "mix_prob_max": 0.995131
+    },
+    "increment_rows": {
+      "items": 192,
+      "binary_roles": {
+        "positive_mix": 96,
+        "falsetto_group": 60,
+        "control_negative": 36
+      },
+      "groups": {
+        "Pharyngeal_Group": 4,
+        "Control_Group": 90,
+        "Mixed_Voice_Group": 38,
+        "Falsetto_Group": 60
+      },
+      "singers": {
+        "EN-Alto-2": 96,
+        "EN-Tenor-1": 96
+      }
+    }
+  },
+  "manifests": {
+    "training_increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_error_increment_v1\\training_increment_manifest.csv",
+    "hard_positive_preview": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_error_increment_v1\\hard_positive_preview.csv",
+    "hard_negative_preview": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_error_increment_v1\\hard_negative_preview.csv"
+  }
+}

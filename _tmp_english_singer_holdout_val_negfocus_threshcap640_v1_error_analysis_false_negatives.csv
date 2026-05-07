@@ -1,0 +1,292 @@
+item_name,singer,song_name,group_name,binary_role,mix_variant,mix_prob,threshold_gap
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Glissando_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Glissando_Group,positive_mix,clear_mix,0.639416,0.000584
+English#EN-Tenor-1#Glissando#Stay#Control_Group#0010,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.639147,0.000853
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0002,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.636047,0.003953
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Mixed_Voice_Group#0002,EN-Tenor-1,Summertime Sadness,Mixed_Voice_Group,positive_mix,clear_mix,0.634866,0.005134
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0011,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.634049,0.005951
+English#EN-Tenor-1#Breathy#Stay#Control_Group#0008,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.633684,0.006316
+English#EN-Tenor-1#Vibrato#Stay#Control_Group#0009,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.633684,0.006316
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Glissando_Group#0002,EN-Tenor-1,I Knew You Were Trouble,Glissando_Group,positive_mix,clear_mix,0.63127,0.00873
+English#EN-Tenor-1#Glissando#Stay#Control_Group#0009,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.629063,0.010937
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0009,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.628515,0.011485
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Mixed_Voice_Group#0011,EN-Tenor-1,Shallow,Mixed_Voice_Group,positive_mix,clear_mix,0.628457,0.011543
+English#EN-Tenor-1#Breathy#Stay#Control_Group#0009,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.628346,0.011654
+English#EN-Tenor-1#Pharyngeal#Stay#Control_Group#0007,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.628346,0.011654
+English#EN-Tenor-1#Vibrato#Stay#Control_Group#0010,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.628346,0.011654
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0000,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.628278,0.011722
+English#EN-Tenor-1#Glissando#Shallow#Control_Group#0000,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.628278,0.011722
+English#EN-Tenor-1#Pharyngeal#Shallow#Control_Group#0000,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.628278,0.011722
+English#EN-Tenor-1#Vibrato#Shallow#Control_Group#0000,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.628278,0.011722
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0001,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.626259,0.013741
+English#EN-Tenor-1#Glissando#Shallow#Control_Group#0001,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.626259,0.013741
+English#EN-Tenor-1#Pharyngeal#Shallow#Control_Group#0001,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.626259,0.013741
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Vibrato_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Vibrato_Group,positive_mix,clear_mix,0.62274,0.01726
+English#EN-Tenor-1#Glissando#Stay#Control_Group#0001,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.619381,0.020619
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0009,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.618739,0.021261
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0009,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.618739,0.021261
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0009,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.618739,0.021261
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0002,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.616588,0.023412
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0011,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.613824,0.026176
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0012,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.612907,0.027093
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0004,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.61115,0.02885
+English#EN-Tenor-1#Breathy#Rolling in the Deep#Control_Group#0004,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.6099,0.0301
+English#EN-Tenor-1#Pharyngeal#Rolling in the Deep#Control_Group#0004,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.6099,0.0301
+English#EN-Tenor-1#Vibrato#Rolling in the Deep#Control_Group#0004,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.6099,0.0301
+English#EN-Tenor-1#Glissando#Stay#Control_Group#0005,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.609587,0.030413
+English#EN-Tenor-1#Breathy#Long Live#Control_Group#0011,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.60942,0.03058
+English#EN-Tenor-1#Glissando#Long Live#Control_Group#0011,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.60942,0.03058
+English#EN-Tenor-1#Pharyngeal#Long Live#Control_Group#0011,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.60942,0.03058
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0008,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.607322,0.032678
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0009,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.607322,0.032678
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0004,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.604309,0.035691
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Mixed_Voice_Group#0002,EN-Tenor-1,Shallow,Mixed_Voice_Group,positive_mix,clear_mix,0.602695,0.037305
+English#EN-Tenor-1#Breathy#Rolling in the Deep#Control_Group#0007,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.59933,0.04067
+English#EN-Tenor-1#Pharyngeal#Rolling in the Deep#Control_Group#0007,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.59933,0.04067
+English#EN-Tenor-1#Vibrato#Rolling in the Deep#Control_Group#0007,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.59933,0.04067
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0008,EN-Tenor-1,Someone Like You,Control_Group,positive_mix,clear_mix,0.598164,0.041836
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0010,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.595535,0.044465
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0010,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.595535,0.044465
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0010,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.595535,0.044465
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.594174,0.045826
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.594174,0.045826
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0008,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.594174,0.045826
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0002,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.591714,0.048286
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0002,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.590702,0.049298
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0007,EN-Tenor-1,Someone Like You,Control_Group,positive_mix,clear_mix,0.588438,0.051562
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0000,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.587523,0.052477
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0000,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.587523,0.052477
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0000,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.587523,0.052477
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0006,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.586967,0.053033
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0011,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.584979,0.055021
+English#EN-Tenor-1#Glissando#Enchanted#Glissando_Group#0007,EN-Tenor-1,Enchanted,Glissando_Group,positive_mix,clear_mix,0.583862,0.056138
+English#EN-Tenor-1#Breathy#Stay#Control_Group#0001,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.583002,0.056998
+English#EN-Tenor-1#Vibrato#Stay#Control_Group#0001,EN-Tenor-1,Stay,Control_Group,positive_mix,clear_mix,0.583002,0.056998
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0002,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.581585,0.058415
+English#EN-Tenor-1#Breathy#Unconditionally#Control_Group#0000,EN-Tenor-1,Unconditionally,Control_Group,positive_mix,clear_mix,0.580049,0.059951
+English#EN-Tenor-1#Glissando#Unconditionally#Control_Group#0000,EN-Tenor-1,Unconditionally,Control_Group,positive_mix,clear_mix,0.580049,0.059951
+English#EN-Tenor-1#Vibrato#Unconditionally#Control_Group#0000,EN-Tenor-1,Unconditionally,Control_Group,positive_mix,clear_mix,0.580049,0.059951
+English#EN-Tenor-1#Glissando#Stay#Glissando_Group#0005,EN-Tenor-1,Stay,Glissando_Group,positive_mix,clear_mix,0.579614,0.060386
+English#EN-Tenor-1#Vibrato#Someone Like You#Control_Group#0000,EN-Tenor-1,Someone Like You,Control_Group,positive_mix,clear_mix,0.579549,0.060451
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.578928,0.061072
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.578928,0.061072
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.578928,0.061072
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0011,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.578579,0.061421
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0007,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.574422,0.065578
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0007,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.574364,0.065636
+English#EN-Tenor-1#Glissando#Enchanted#Glissando_Group#0009,EN-Tenor-1,Enchanted,Glissando_Group,positive_mix,clear_mix,0.57322,0.06678
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0008,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.572088,0.067912
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Lavender Haze#Mixed_Voice_Group#0005,EN-Tenor-1,Lavender Haze,Mixed_Voice_Group,positive_mix,clear_mix,0.569211,0.070789
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0007,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.56868,0.07132
+English#EN-Tenor-1#Breathy#Enchanted#Control_Group#0008,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.568631,0.071369
+English#EN-Tenor-1#Pharyngeal#Enchanted#Control_Group#0008,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.568631,0.071369
+English#EN-Tenor-1#Vibrato#Enchanted#Control_Group#0008,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.568631,0.071369
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Blank Space#Mixed_Voice_Group#0005,EN-Tenor-1,Blank Space,Mixed_Voice_Group,positive_mix,clear_mix,0.567867,0.072133
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0013,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.566589,0.073411
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0013,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.566589,0.073411
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0013,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.566589,0.073411
+English#EN-Tenor-1#Glissando#Enchanted#Glissando_Group#0006,EN-Tenor-1,Enchanted,Glissando_Group,positive_mix,clear_mix,0.566253,0.073747
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Wildest Dreams#Mixed_Voice_Group#0000,EN-Tenor-1,Wildest Dreams,Mixed_Voice_Group,positive_mix,clear_mix,0.564923,0.075077
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0013,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.56218,0.07782
+English#EN-Tenor-1#Glissando#What Was I Made For？#Glissando_Group#0000,EN-Tenor-1,What Was I Made For？,Glissando_Group,positive_mix,clear_mix,0.561272,0.078728
+English#EN-Tenor-1#Breathy#Long Live#Control_Group#0002,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.560664,0.079336
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0012,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.558897,0.081103
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Summertime Sadness#Mixed_Voice_Group#0005,EN-Tenor-1,Summertime Sadness,Mixed_Voice_Group,positive_mix,clear_mix,0.558464,0.081536
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0002,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.554622,0.085378
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0002,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.554622,0.085378
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0002,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.554622,0.085378
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0002,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.554622,0.085378
+English#EN-Tenor-1#Glissando#Long Live#Glissando_Group#0004,EN-Tenor-1,Long Live,Glissando_Group,positive_mix,clear_mix,0.55297,0.08703
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0001,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.551142,0.088858
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.549684,0.090316
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0004,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.549078,0.090922
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0004,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.546451,0.093549
+English#EN-Tenor-1#Glissando#Stay#Glissando_Group#0001,EN-Tenor-1,Stay,Glissando_Group,positive_mix,clear_mix,0.53972,0.10028
+English#EN-Tenor-1#Breathy#Long Live#Control_Group#0007,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.539107,0.100893
+English#EN-Tenor-1#Glissando#Long Live#Control_Group#0007,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.539107,0.100893
+English#EN-Tenor-1#Pharyngeal#Long Live#Control_Group#0007,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.539107,0.100893
+English#EN-Tenor-1#Vibrato#Long Live#Control_Group#0007,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.539107,0.100893
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0005,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.537544,0.102456
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0005,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.537544,0.102456
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0004,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.53682,0.10318
+English#EN-Tenor-1#Breathy#Enchanted#Control_Group#0004,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.534572,0.105428
+English#EN-Tenor-1#Pharyngeal#Enchanted#Control_Group#0004,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.534572,0.105428
+English#EN-Tenor-1#Vibrato#Enchanted#Control_Group#0004,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.534572,0.105428
+English#EN-Tenor-1#Glissando#Enchanted#Glissando_Group#0002,EN-Tenor-1,Enchanted,Glissando_Group,positive_mix,clear_mix,0.533088,0.106912
+English#EN-Tenor-1#Pharyngeal#Long Live#Control_Group#0002,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.532261,0.107739
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0005,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.529792,0.110208
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0013,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.528645,0.111355
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0005,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.528572,0.111428
+English#EN-Tenor-1#Glissando#Shallow#Control_Group#0005,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.528572,0.111428
+English#EN-Tenor-1#Pharyngeal#Shallow#Control_Group#0005,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.528572,0.111428
+English#EN-Tenor-1#Vibrato#Shallow#Control_Group#0005,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.528572,0.111428
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Glissando_Group#0006,EN-Tenor-1,Rolling in the Deep,Glissando_Group,positive_mix,clear_mix,0.528407,0.111593
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Vibrato_Group#0001,EN-Tenor-1,I Knew You Were Trouble,Vibrato_Group,positive_mix,clear_mix,0.526653,0.113347
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0003,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.524793,0.115207
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0013,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.523251,0.116749
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0013,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.523251,0.116749
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0013,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.523251,0.116749
+English#EN-Tenor-1#Glissando#What Was I Made For？#Glissando_Group#0005,EN-Tenor-1,What Was I Made For？,Glissando_Group,positive_mix,clear_mix,0.522891,0.117109
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Mixed_Voice_Group#0007,EN-Tenor-1,Shallow,Mixed_Voice_Group,positive_mix,clear_mix,0.521349,0.118651
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0004,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.519465,0.120535
+English#EN-Tenor-1#Glissando#Shallow#Control_Group#0004,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.519465,0.120535
+English#EN-Tenor-1#Pharyngeal#Shallow#Control_Group#0004,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.519465,0.120535
+English#EN-Tenor-1#Vibrato#Shallow#Control_Group#0004,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.519465,0.120535
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Vibrato_Group#0004,EN-Tenor-1,What Was I Made For？,Vibrato_Group,positive_mix,clear_mix,0.519439,0.120561
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Shallow#Mixed_Voice_Group#0003,EN-Tenor-1,Shallow,Mixed_Voice_Group,positive_mix,clear_mix,0.518824,0.121176
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0011,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.517593,0.122407
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0001,EN-Tenor-1,Someone Like You,Vibrato_Group,positive_mix,clear_mix,0.515526,0.124474
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0002,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.515477,0.124523
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0005,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.513995,0.126005
+English#EN-Tenor-1#Breathy#All I Ask#Control_Group#0003,EN-Tenor-1,All I Ask,Control_Group,positive_mix,clear_mix,0.513823,0.126177
+English#EN-Tenor-1#Pharyngeal#All I Ask#Control_Group#0003,EN-Tenor-1,All I Ask,Control_Group,positive_mix,clear_mix,0.513823,0.126177
+English#EN-Tenor-1#Vibrato#All I Ask#Control_Group#0003,EN-Tenor-1,All I Ask,Control_Group,positive_mix,clear_mix,0.513823,0.126177
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0003,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.512349,0.127651
+English#EN-Tenor-1#Vibrato#Long Live#Vibrato_Group#0010,EN-Tenor-1,Long Live,Vibrato_Group,positive_mix,clear_mix,0.511983,0.128017
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0012,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.510035,0.129965
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0007,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.508868,0.131132
+English#EN-Tenor-1#Vibrato#Long Live#Control_Group#0002,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.508655,0.131345
+English#EN-Tenor-1#Glissando#Long Live#Control_Group#0010,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.508107,0.131893
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0000,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.507426,0.132574
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0000,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.507426,0.132574
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0000,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.507426,0.132574
+English#EN-Tenor-1#Breathy#Long Live#Control_Group#0010,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.507292,0.132708
+English#EN-Tenor-1#Pharyngeal#Long Live#Control_Group#0010,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.507292,0.132708
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Glissando_Group#0001,EN-Tenor-1,I Knew You Were Trouble,Glissando_Group,positive_mix,clear_mix,0.506189,0.133811
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Mixed_Voice_Group#0000,EN-Tenor-1,Firework,Mixed_Voice_Group,positive_mix,clear_mix,0.504965,0.135035
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0005,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.504546,0.135454
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0010,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.50044,0.13956
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0004,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.49308,0.14692
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Firework#Mixed_Voice_Group#0001,EN-Tenor-1,Firework,Mixed_Voice_Group,positive_mix,clear_mix,0.489912,0.150088
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0004,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.489567,0.150433
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0004,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.489567,0.150433
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0004,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.489567,0.150433
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0006,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.488853,0.151147
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#Lavender Haze#Mixed_Voice_Group#0007,EN-Tenor-1,Lavender Haze,Mixed_Voice_Group,positive_mix,clear_mix,0.483523,0.156477
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0005,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.480991,0.159009
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0007,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.480863,0.159137
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0002,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.478482,0.161518
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0002,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.478482,0.161518
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0002,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.478482,0.161518
+English#EN-Tenor-1#Vibrato#Shallow#Control_Group#0001,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.47705,0.16295
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0007,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.476528,0.163472
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0006,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.476373,0.163627
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0006,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.472824,0.167176
+English#EN-Tenor-1#Glissando#Long Live#Control_Group#0009,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.472114,0.167886
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0006,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.466826,0.173174
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0006,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.466826,0.173174
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0005,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.454545,0.185455
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0005,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.454545,0.185455
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0005,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.454545,0.185455
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#What Was I Made For？#Mixed_Voice_Group#0006,EN-Tenor-1,What Was I Made For？,Mixed_Voice_Group,positive_mix,clear_mix,0.452982,0.187018
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0007,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.45248,0.18752
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0009,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.450998,0.189002
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0006,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.449119,0.190881
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0004,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.445931,0.194069
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0004,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.445931,0.194069
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0004,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.445931,0.194069
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0007,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.443519,0.196481
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0008,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.441809,0.198191
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0009,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.440636,0.199364
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0010,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.440636,0.199364
+English#EN-Tenor-1#Glissando#What Was I Made For？#Glissando_Group#0006,EN-Tenor-1,What Was I Made For？,Glissando_Group,positive_mix,clear_mix,0.440211,0.199789
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0006,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.437669,0.202331
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0005,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.436786,0.203214
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0005,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.436786,0.203214
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0005,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.436786,0.203214
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0011,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.436516,0.203484
+English#EN-Tenor-1#Glissando#Long Live#Control_Group#0002,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.436086,0.203914
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0008,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.432485,0.207515
+English#EN-Tenor-1#Vibrato#Rolling in the Deep#Vibrato_Group#0004,EN-Tenor-1,Rolling in the Deep,Vibrato_Group,positive_mix,clear_mix,0.430619,0.209381
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0007,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.427192,0.212808
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0005,EN-Tenor-1,Someone Like You,Control_Group,positive_mix,clear_mix,0.426189,0.213811
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0004,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.424426,0.215574
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0004,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.424426,0.215574
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0004,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.424426,0.215574
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0004,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.424426,0.215574
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0008,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.42168,0.21832
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0001,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.42047,0.21953
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0002,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.419993,0.220007
+English#EN-Tenor-1#Breathy#Someone Like You#Breathy_Group#0004,EN-Tenor-1,Someone Like You,Breathy_Group,positive_mix,breathy_mix,0.417951,0.222049
+English#EN-Tenor-1#Vibrato#Someone Like You#Vibrato_Group#0000,EN-Tenor-1,Someone Like You,Vibrato_Group,positive_mix,clear_mix,0.417578,0.222422
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0002,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.417341,0.222659
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0004,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.415245,0.224755
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0012,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.41327,0.22673
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0011,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.409467,0.230533
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0005,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.408489,0.231511
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0004,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.407188,0.232812
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0000,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.40695,0.23305
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0014,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.40553,0.23447
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Vibrato_Group#0007,EN-Tenor-1,What Was I Made For？,Vibrato_Group,positive_mix,clear_mix,0.398332,0.241668
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0002,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.390304,0.249696
+English#EN-Tenor-1#Breathy#Long Live#Control_Group#0009,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.388735,0.251265
+English#EN-Tenor-1#Pharyngeal#Long Live#Control_Group#0009,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.388735,0.251265
+English#EN-Tenor-1#Vibrato#Long Live#Control_Group#0009,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.388735,0.251265
+English#EN-Tenor-1#Glissando#Someone Like You#Control_Group#0006,EN-Tenor-1,Someone Like You,Control_Group,positive_mix,clear_mix,0.381405,0.258595
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0004,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.381066,0.258934
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0000,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.377024,0.262976
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0006,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.376132,0.263868
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0011,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.370439,0.269561
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0010,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.370439,0.269561
+English#EN-Tenor-1#Mixed_Voice_and_Falsetto#I Know Places#Mixed_Voice_Group#0003,EN-Tenor-1,I Know Places,Mixed_Voice_Group,positive_mix,clear_mix,0.368591,0.271409
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0009,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.366375,0.273625
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0006,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.363777,0.276223
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0006,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.363777,0.276223
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0008,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.36154,0.27846
+English#EN-Tenor-1#Glissando#All I Ask#Control_Group#0005,EN-Tenor-1,All I Ask,Control_Group,positive_mix,clear_mix,0.359755,0.280245
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0010,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.359398,0.280602
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0010,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.355654,0.284346
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0005,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.355317,0.284683
+English#EN-Tenor-1#Vibrato#Long Live#Control_Group#0010,EN-Tenor-1,Long Live,Control_Group,positive_mix,clear_mix,0.349319,0.290681
+English#EN-Tenor-1#Glissando#What Was I Made For？#Control_Group#0009,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.345998,0.294002
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0000,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.341271,0.298729
+English#EN-Tenor-1#Glissando#I Knew You Were Trouble#Control_Group#0001,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.340311,0.299689
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0007,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.334176,0.305824
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0001,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.333514,0.306486
+English#EN-Tenor-1#Pharyngeal#What Was I Made For？#Control_Group#0008,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.333191,0.306809
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0008,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.333191,0.306809
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0009,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.333094,0.306906
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0000,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.330322,0.309678
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0010,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.329872,0.310128
+English#EN-Tenor-1#Breathy#What Was I Made For？#Control_Group#0012,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.323132,0.316868
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Control_Group#0011,EN-Tenor-1,What Was I Made For？,Control_Group,positive_mix,clear_mix,0.323132,0.316868
+English#EN-Tenor-1#Glissando#Rolling in the Deep#Control_Group#0006,EN-Tenor-1,Rolling in the Deep,Control_Group,positive_mix,clear_mix,0.316422,0.323578
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0008,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.306398,0.333602
+English#EN-Tenor-1#Vibrato#Someone Like You#Control_Group#0001,EN-Tenor-1,Someone Like You,Control_Group,positive_mix,clear_mix,0.304007,0.335993
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0000,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.297566,0.342434
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0013,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.297521,0.342479
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0009,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.296134,0.343866
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0000,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.292538,0.347462
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0000,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.277083,0.362917
+English#EN-Tenor-1#Glissando#Enchanted#Control_Group#0008,EN-Tenor-1,Enchanted,Control_Group,positive_mix,clear_mix,0.272384,0.367616
+English#EN-Tenor-1#Breathy#Shallow#Control_Group#0009,EN-Tenor-1,Shallow,Control_Group,positive_mix,clear_mix,0.270512,0.369488
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0001,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.269066,0.370934
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0007,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.267834,0.372166
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0006,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.266293,0.373707
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0001,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.265292,0.374708
+English#EN-Tenor-1#Breathy#I Knew You Were Trouble#Control_Group#0001,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.263982,0.376018
+English#EN-Tenor-1#Pharyngeal#I Knew You Were Trouble#Control_Group#0001,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.263982,0.376018
+English#EN-Tenor-1#Vibrato#I Knew You Were Trouble#Control_Group#0001,EN-Tenor-1,I Knew You Were Trouble,Control_Group,positive_mix,clear_mix,0.263982,0.376018
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0004,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.26128,0.37872
+English#EN-Tenor-1#Glissando#You Belong With Me#Glissando_Group#0000,EN-Tenor-1,You Belong With Me,Glissando_Group,positive_mix,clear_mix,0.254201,0.385799
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0001,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.252907,0.387093
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0008,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.238121,0.401879
+English#EN-Tenor-1#Vibrato#Always Remember Us This Way#Control_Group#0001,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.235384,0.404616
+English#EN-Tenor-1#Breathy#Always Remember Us This Way#Control_Group#0008,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,head_mix,0.234358,0.405642
+English#EN-Tenor-1#Glissando#Always Remember Us This Way#Control_Group#0008,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.234358,0.405642
+English#EN-Tenor-1#Pharyngeal#Always Remember Us This Way#Control_Group#0008,EN-Tenor-1,Always Remember Us This Way,Control_Group,positive_mix,clear_mix,0.234358,0.405642
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0006,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.217258,0.422742
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Vibrato_Group#0008,EN-Tenor-1,What Was I Made For？,Vibrato_Group,positive_mix,clear_mix,0.216748,0.423252
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0007,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.200533,0.439467
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0008,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.199085,0.440915
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0008,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.195812,0.444188
+English#EN-Tenor-1#Vibrato#You Belong With Me#Control_Group#0007,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.165538,0.474462
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0007,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.154614,0.485386
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0004,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.153493,0.486507
+English#EN-Tenor-1#Vibrato#What Was I Made For？#Vibrato_Group#0006,EN-Tenor-1,What Was I Made For？,Vibrato_Group,positive_mix,clear_mix,0.151722,0.488278
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0008,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.125902,0.514098
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0008,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.124852,0.515148
+English#EN-Tenor-1#Breathy#Stay#Breathy_Group#0003,EN-Tenor-1,Stay,Breathy_Group,positive_mix,breathy_mix,0.123044,0.516956
+English#EN-Tenor-1#Vibrato#You Belong With Me#Vibrato_Group#0006,EN-Tenor-1,You Belong With Me,Vibrato_Group,positive_mix,clear_mix,0.118186,0.521814
+English#EN-Tenor-1#Breathy#You Belong With Me#Control_Group#0007,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.106071,0.533929
+English#EN-Tenor-1#Pharyngeal#You Belong With Me#Control_Group#0007,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.097143,0.542857
+English#EN-Tenor-1#Glissando#You Belong With Me#Control_Group#0005,EN-Tenor-1,You Belong With Me,Control_Group,positive_mix,clear_mix,0.06392,0.57608

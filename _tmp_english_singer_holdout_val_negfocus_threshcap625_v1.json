@@ -1,0 +1,127 @@
+{
+  "manifest": "ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\validation_manifest.csv",
+  "groups": [
+    "Mixed_Voice_Group",
+    "Falsetto_Group",
+    "Breathy_Group",
+    "Control_Group"
+  ],
+  "eval_window_count_override": 0,
+  "eval_window_aggregation_override": "",
+  "eval_window_consistency_penalty_override": null,
+  "eval_window_support_threshold_override": null,
+  "eval_window_min_support_windows_override": null,
+  "eval_window_high_support_threshold_override": null,
+  "eval_window_min_high_support_windows_override": null,
+  "artifacts": {
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h0f4_proxy_english_singer_holdout_negfocus_threshcap625_v1": {
+      "threshold": 0.625,
+      "backbone_name": "efficientnet_b0",
+      "image_size": 256,
+      "sample_rate": 22050,
+      "n_fft": 1024,
+      "hop_length": 256,
+      "eval_window_count": 3,
+      "eval_window_aggregation": "mean",
+      "eval_window_consistency_penalty": 0.0,
+      "eval_window_support_threshold": 0.4,
+      "eval_window_min_support_windows": 2,
+      "eval_window_high_support_threshold": 0.55,
+      "eval_window_min_high_support_windows": 1,
+      "overall": {
+        "sample_count": 1845,
+        "acc": 0.702439,
+        "balanced_acc": 0.700204,
+        "mix_f1": 0.725363,
+        "mix_precision": 0.722112,
+        "mix_recall": 0.728643,
+        "predicted_positive_rate": 0.544173,
+        "avg_mix_prob": 0.611169
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 271,
+          "acc": 0.95572,
+          "balanced_acc": 0.95572,
+          "mix_f1": 0.977358,
+          "mix_precision": 1.0,
+          "mix_recall": 0.95572,
+          "predicted_positive_rate": 0.95572,
+          "avg_mix_prob": 0.885161
+        },
+        "Falsetto_Group": {
+          "sample_count": 271,
+          "acc": 0.453875,
+          "balanced_acc": 0.453875,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.546125,
+          "avg_mix_prob": 0.599219
+        },
+        "Breathy_Group": {
+          "sample_count": 136,
+          "acc": 0.897059,
+          "balanced_acc": 0.621554,
+          "mix_f1": 0.125,
+          "mix_precision": 0.076923,
+          "mix_recall": 0.333333,
+          "predicted_positive_rate": 0.095588,
+          "avg_mix_prob": 0.221542
+        },
+        "Control_Group": {
+          "sample_count": 787,
+          "acc": 0.602287,
+          "balanced_acc": 0.616917,
+          "mix_f1": 0.629586,
+          "mix_precision": 0.732782,
+          "mix_recall": 0.551867,
+          "predicted_positive_rate": 0.461245,
+          "avg_mix_prob": 0.579554
+        }
+      },
+      "binary_roles": {
+        "positive_mix": {
+          "sample_count": 995,
+          "acc": 0.728643,
+          "balanced_acc": 0.728643,
+          "mix_f1": 0.843023,
+          "mix_precision": 1.0,
+          "mix_recall": 0.728643,
+          "predicted_positive_rate": 0.728643,
+          "avg_mix_prob": 0.740663
+        },
+        "control_negative": {
+          "sample_count": 305,
+          "acc": 0.681967,
+          "balanced_acc": 0.681967,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.318033,
+          "avg_mix_prob": 0.47521
+        },
+        "falsetto_group": {
+          "sample_count": 271,
+          "acc": 0.453875,
+          "balanced_acc": 0.453875,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.546125,
+          "avg_mix_prob": 0.599219
+        },
+        "breathy_group": {
+          "sample_count": 133,
+          "acc": 0.909774,
+          "balanced_acc": 0.909774,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.090226,
+          "avg_mix_prob": 0.216718
+        }
+      }
+    }
+  }
+}

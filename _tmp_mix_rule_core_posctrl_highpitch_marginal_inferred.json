@@ -1,0 +1,29 @@
+{
+  "source_role_regression": "d:\\-MindEcho-main\\_tmp_mix_rule_core_posctrl_dualpath.json",
+  "new_rule": "released_sustained_highpitch_marginal_head_mix",
+  "inference_basis": {
+    "targeted_probe_positive_hits": 4,
+    "targeted_probe_control_false_positive": 0,
+    "exhaustive_row_scan_positive_matches": 4,
+    "exhaustive_row_scan_control_matches": 0
+  },
+  "baseline": {
+    "positive_hits": 49,
+    "positive_total": 143,
+    "control_false_positive": 8,
+    "control_total": 79
+  },
+  "inferred_after_patch": {
+    "positive_hits": 53,
+    "positive_total": 143,
+    "control_false_positive": 8,
+    "control_total": 79
+  },
+  "matched_positive_items": [
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#你就不要想起我#Mixed_Voice_Group#0012",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#想自由#Mixed_Voice_Group#0010",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#枫#Mixed_Voice_Group#0006",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#老男孩#Mixed_Voice_Group#0019"
+  ],
+  "matched_control_items": []
+}

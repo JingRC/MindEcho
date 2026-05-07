@@ -1,0 +1,137 @@
+{
+  "input_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_chongbai0000_microonly_v1\\training_increment_manifest.csv",
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1",
+  "anchor_source": "best_voice",
+  "clip_secs": 2.4,
+  "target_sample_rate": 22050,
+  "repeat_config": {
+    "positive_repeat": 20,
+    "negative_repeat": 3
+  },
+  "counts": {
+    "increment_unique": 7,
+    "train_rows": 38,
+    "positive_unique": 1,
+    "negative_unique": 6
+  },
+  "binary_role_counts": {
+    "positive_mix": 1,
+    "control_negative": 6
+  },
+  "pair_positive_counts": {
+    "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000": 6
+  },
+  "manifests": {
+    "training_increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1\\training_increment_manifest.csv",
+    "event_eval_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1\\event_eval_manifest.csv",
+    "train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1\\train_manifest.csv",
+    "validation_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1\\validation_manifest.csv",
+    "test_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1\\test_manifest.csv",
+    "analysis_report": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_eventpair_chongbai0000_v1\\pair_analysis.json"
+  },
+  "records": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "binary_role": "positive_mix",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 0.0,
+      "event_end_time": 6.650023,
+      "event_duration": 6.650023,
+      "event_mix_prob": 0.480251,
+      "event_mean_pitch_hz": 450.458405,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.0,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#听海#Control_Group#0002",
+      "binary_role": "control_negative",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 0.0,
+      "event_end_time": 6.4,
+      "event_duration": 6.4,
+      "event_mix_prob": 0.507092,
+      "event_mean_pitch_hz": 513.027588,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.086064,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\听海\\Control_Group\\0002.wav"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0010",
+      "binary_role": "control_negative",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 0.0,
+      "event_end_time": 9.490023,
+      "event_duration": 9.490023,
+      "event_mix_prob": 0.551839,
+      "event_mean_pitch_hz": 577.443726,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.206116,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\我好想你\\Control_Group\\0010.wav"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0008",
+      "binary_role": "control_negative",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 0.0,
+      "event_end_time": 6.890023,
+      "event_duration": 6.890023,
+      "event_mix_prob": 0.543647,
+      "event_mean_pitch_hz": 506.100311,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.085611,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\我好想你\\Control_Group\\0008.wav"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0004",
+      "binary_role": "control_negative",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 0.0,
+      "event_end_time": 7.370023,
+      "event_duration": 7.370023,
+      "event_mix_prob": 0.440247,
+      "event_mean_pitch_hz": 501.904205,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.08904,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\小半\\Control_Group\\0004.wav"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0008",
+      "binary_role": "control_negative",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 7.18,
+      "event_end_time": 7.82,
+      "event_duration": 0.64,
+      "event_mix_prob": 0.574212,
+      "event_mean_pitch_hz": 235.081451,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.486421,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\小半\\Control_Group\\0008.wav"
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#你就不要想起我#Control_Group#0008",
+      "binary_role": "control_negative",
+      "anchor_label": "best_voice_event",
+      "anchor_event_type": "falsetto",
+      "event_start_time": 0.16,
+      "event_end_time": 12.394059,
+      "event_duration": 12.234059,
+      "event_mix_prob": 0.476814,
+      "event_mean_pitch_hz": 748.276489,
+      "pair_positive_item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "pair_distance": 0.330777,
+      "source_wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\你就不要想起我\\Control_Group\\0008.wav"
+    }
+  ],
+  "rationale": [
+    "Use the runtime-selected event anchor instead of the full clip so training pressure lands on the same local region that drives GUI decisions.",
+    "Keep output as ordinary wav manifests so existing mix training and probe code can be reused without touching the core trainer.",
+    "Record pair assignments and event statistics in JSON so future runtime regressions can be compared against the exact anchored segments."
+  ]
+}

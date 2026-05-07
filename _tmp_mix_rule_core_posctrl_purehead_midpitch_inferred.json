@@ -1,0 +1,36 @@
+{
+  "source_role_regression": "d:\\-MindEcho-main\\_tmp_mix_rule_core_posctrl_dualpath.json",
+  "new_rule": "released_midpitch_lowchest_pure_head_mix",
+  "evidence_basis": {
+    "purehead_probe_positive_hits": 10,
+    "purehead_probe_control_false_positive": 0,
+    "core_candidate_universe_count": 22,
+    "core_released_positive_hits": 10,
+    "core_released_control_count": 0
+  },
+  "baseline_after_highpitch_patch": {
+    "positive_hits": 53,
+    "positive_total": 143,
+    "control_false_positive": 8,
+    "control_total": 79
+  },
+  "inferred_after_purehead_patch": {
+    "positive_hits": 63,
+    "positive_total": 143,
+    "control_false_positive": 8,
+    "control_total": 79
+  },
+  "released_positive_items": [
+    "Chinese#ZH-Tenor-1#Pharyngeal#曹操#Control_Group#0003",
+    "Chinese#ZH-Tenor-1#Pharyngeal#雨爱#Control_Group#0012",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#不能说的秘密#Mixed_Voice_Group#0002",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#不能说的秘密#Mixed_Voice_Group#0003",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#你就不要想起我#Mixed_Voice_Group#0000",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#我的歌声里#Mixed_Voice_Group#0002",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#最初的梦想#Mixed_Voice_Group#0008",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#枫#Mixed_Voice_Group#0003",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#江南#Mixed_Voice_Group#0002",
+    "Chinese#ZH-Tenor-1#Mixed_Voice_and_Falsetto#过火#Mixed_Voice_Group#0000"
+  ],
+  "released_control_items": []
+}

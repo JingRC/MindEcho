@@ -1,0 +1,287 @@
+{
+  "source_report": "_tmp_mix_role_regression_positive_controlgroup_r4_calibrated.json",
+  "filters": {
+    "binary_roles": [
+      "positive_mix"
+    ],
+    "groups": [
+      "Control_Group"
+    ],
+    "outcomes": [
+      "miss"
+    ],
+    "min_mix_prob": 0.48,
+    "max_mix_prob": 0.522,
+    "pitch_cuts_hz": [
+      380.0,
+      460.0,
+      540.0
+    ],
+    "pitch_bands": [
+      "lt380",
+      "380to460",
+      "460to540",
+      "ge540"
+    ]
+  },
+  "match_count": 4,
+  "singer_counts": {
+    "ZH-Alto-1": 3,
+    "ZH-Tenor-1": 1
+  },
+  "pitch_band_counts": {
+    "380to460": 2,
+    "ge540": 2
+  },
+  "by_singer": {
+    "ZH-Alto-1": {
+      "count": 3,
+      "avg_mix_prob": 0.484224,
+      "avg_mix_margin": -0.065776,
+      "avg_pitch_hz": 536.670217,
+      "avg_mean_rms": 0.07573,
+      "items": [
+        {
+          "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+          "song_name": "崇拜",
+          "best_voice_mix_prob": 0.484838,
+          "mean_pitch_hz": 449.90506,
+          "mean_rms": 0.117575,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav"
+        },
+        {
+          "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0003",
+          "song_name": "默",
+          "best_voice_mix_prob": 0.484117,
+          "mean_pitch_hz": 557.990234,
+          "mean_rms": 0.066004,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0003.wav"
+        },
+        {
+          "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0001",
+          "song_name": "默",
+          "best_voice_mix_prob": 0.483716,
+          "mean_pitch_hz": 602.115356,
+          "mean_rms": 0.043612,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0001.wav"
+        }
+      ]
+    },
+    "ZH-Tenor-1": {
+      "count": 1,
+      "avg_mix_prob": 0.52192,
+      "avg_mix_margin": -0.02808,
+      "avg_pitch_hz": 414.262604,
+      "avg_mean_rms": 0.01858,
+      "items": [
+        {
+          "item_name": "Chinese#ZH-Tenor-1#Pharyngeal#亲爱的那不是爱情#Control_Group#0004",
+          "song_name": "亲爱的那不是爱情",
+          "best_voice_mix_prob": 0.52192,
+          "mean_pitch_hz": 414.262604,
+          "mean_rms": 0.01858,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Tenor-1\\Pharyngeal\\亲爱的那不是爱情\\Control_Group\\0004.wav"
+        }
+      ]
+    }
+  },
+  "by_pitch_band": {
+    "380to460": {
+      "count": 2,
+      "avg_mix_prob": 0.503379,
+      "avg_mix_margin": -0.046621,
+      "avg_pitch_hz": 432.083832,
+      "avg_mean_rms": 0.068077,
+      "items": [
+        {
+          "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+          "song_name": "崇拜",
+          "best_voice_mix_prob": 0.484838,
+          "mean_pitch_hz": 449.90506,
+          "mean_rms": 0.117575,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav"
+        },
+        {
+          "item_name": "Chinese#ZH-Tenor-1#Pharyngeal#亲爱的那不是爱情#Control_Group#0004",
+          "song_name": "亲爱的那不是爱情",
+          "best_voice_mix_prob": 0.52192,
+          "mean_pitch_hz": 414.262604,
+          "mean_rms": 0.01858,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Tenor-1\\Pharyngeal\\亲爱的那不是爱情\\Control_Group\\0004.wav"
+        }
+      ]
+    },
+    "ge540": {
+      "count": 2,
+      "avg_mix_prob": 0.483916,
+      "avg_mix_margin": -0.066083,
+      "avg_pitch_hz": 580.052795,
+      "avg_mean_rms": 0.054808,
+      "items": [
+        {
+          "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0003",
+          "song_name": "默",
+          "best_voice_mix_prob": 0.484117,
+          "mean_pitch_hz": 557.990234,
+          "mean_rms": 0.066004,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0003.wav"
+        },
+        {
+          "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0001",
+          "song_name": "默",
+          "best_voice_mix_prob": 0.483716,
+          "mean_pitch_hz": 602.115356,
+          "mean_rms": 0.043612,
+          "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0001.wav"
+        }
+      ]
+    }
+  },
+  "by_singer_pitch_band": {
+    "ZH-Alto-1": {
+      "380to460": {
+        "count": 1,
+        "avg_mix_prob": 0.484838,
+        "avg_mix_margin": -0.065162,
+        "avg_pitch_hz": 449.90506,
+        "avg_mean_rms": 0.117575,
+        "items": [
+          {
+            "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+            "song_name": "崇拜",
+            "best_voice_mix_prob": 0.484838,
+            "mean_pitch_hz": 449.90506,
+            "mean_rms": 0.117575,
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav"
+          }
+        ]
+      },
+      "ge540": {
+        "count": 2,
+        "avg_mix_prob": 0.483916,
+        "avg_mix_margin": -0.066083,
+        "avg_pitch_hz": 580.052795,
+        "avg_mean_rms": 0.054808,
+        "items": [
+          {
+            "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0003",
+            "song_name": "默",
+            "best_voice_mix_prob": 0.484117,
+            "mean_pitch_hz": 557.990234,
+            "mean_rms": 0.066004,
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0003.wav"
+          },
+          {
+            "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0001",
+            "song_name": "默",
+            "best_voice_mix_prob": 0.483716,
+            "mean_pitch_hz": 602.115356,
+            "mean_rms": 0.043612,
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0001.wav"
+          }
+        ]
+      }
+    },
+    "ZH-Tenor-1": {
+      "380to460": {
+        "count": 1,
+        "avg_mix_prob": 0.52192,
+        "avg_mix_margin": -0.02808,
+        "avg_pitch_hz": 414.262604,
+        "avg_mean_rms": 0.01858,
+        "items": [
+          {
+            "item_name": "Chinese#ZH-Tenor-1#Pharyngeal#亲爱的那不是爱情#Control_Group#0004",
+            "song_name": "亲爱的那不是爱情",
+            "best_voice_mix_prob": 0.52192,
+            "mean_pitch_hz": 414.262604,
+            "mean_rms": 0.01858,
+            "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Tenor-1\\Pharyngeal\\亲爱的那不是爱情\\Control_Group\\0004.wav"
+          }
+        ]
+      }
+    }
+  },
+  "matches": [
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000",
+      "group_name": "Control_Group",
+      "song_name": "崇拜",
+      "singer": "ZH-Alto-1",
+      "binary_role": "positive_mix",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\崇拜\\Control_Group\\0000.wav",
+      "best_voice_mix_prob": 0.484838,
+      "best_voice_mix_margin": -0.065162,
+      "mean_pitch_hz": 449.90506,
+      "pitch_band": "380to460",
+      "event_type": "falsetto",
+      "chest_prob": 0.046652,
+      "falsetto_prob": 0.953348,
+      "mean_rms": 0.117575,
+      "stable_ratio": 1.0,
+      "voiced_ratio": 1.0
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0003",
+      "group_name": "Control_Group",
+      "song_name": "默",
+      "singer": "ZH-Alto-1",
+      "binary_role": "positive_mix",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0003.wav",
+      "best_voice_mix_prob": 0.484117,
+      "best_voice_mix_margin": -0.065883,
+      "mean_pitch_hz": 557.990234,
+      "pitch_band": "ge540",
+      "event_type": "falsetto",
+      "chest_prob": 0.014704,
+      "falsetto_prob": 0.985296,
+      "mean_rms": 0.066004,
+      "stable_ratio": 1.0,
+      "voiced_ratio": 1.0
+    },
+    {
+      "item_name": "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0001",
+      "group_name": "Control_Group",
+      "song_name": "默",
+      "singer": "ZH-Alto-1",
+      "binary_role": "positive_mix",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Pharyngeal\\默\\Control_Group\\0001.wav",
+      "best_voice_mix_prob": 0.483716,
+      "best_voice_mix_margin": -0.066284,
+      "mean_pitch_hz": 602.115356,
+      "pitch_band": "ge540",
+      "event_type": "falsetto",
+      "chest_prob": 0.040641,
+      "falsetto_prob": 0.959359,
+      "mean_rms": 0.043612,
+      "stable_ratio": 1.0,
+      "voiced_ratio": 1.0
+    },
+    {
+      "item_name": "Chinese#ZH-Tenor-1#Pharyngeal#亲爱的那不是爱情#Control_Group#0004",
+      "group_name": "Control_Group",
+      "song_name": "亲爱的那不是爱情",
+      "singer": "ZH-Tenor-1",
+      "binary_role": "positive_mix",
+      "outcome": "miss",
+      "miss_reason": "voice_mix_below_threshold",
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Tenor-1\\Pharyngeal\\亲爱的那不是爱情\\Control_Group\\0004.wav",
+      "best_voice_mix_prob": 0.52192,
+      "best_voice_mix_margin": -0.02808,
+      "mean_pitch_hz": 414.262604,
+      "pitch_band": "380to460",
+      "event_type": "falsetto",
+      "chest_prob": 0.308294,
+      "falsetto_prob": 0.911875,
+      "mean_rms": 0.01858,
+      "stable_ratio": 1.0,
+      "voiced_ratio": 1.0
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "manifest": "ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\validation_manifest.csv",
+  "groups": [
+    "Mixed_Voice_Group",
+    "Falsetto_Group",
+    "Breathy_Group",
+    "Control_Group"
+  ],
+  "eval_window_count_override": 0,
+  "eval_window_aggregation_override": "",
+  "eval_window_consistency_penalty_override": null,
+  "eval_window_support_threshold_override": null,
+  "eval_window_min_support_windows_override": null,
+  "eval_window_high_support_threshold_override": null,
+  "eval_window_min_high_support_windows_override": null,
+  "artifacts": {
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h0f4_proxy_english_singer_holdout_negfocus_falsetto_losslite_v1": {
+      "threshold": 0.675,
+      "backbone_name": "efficientnet_b0",
+      "image_size": 256,
+      "sample_rate": 22050,
+      "n_fft": 1024,
+      "hop_length": 256,
+      "eval_window_count": 3,
+      "eval_window_aggregation": "mean",
+      "eval_window_consistency_penalty": 0.0,
+      "eval_window_support_threshold": 0.4,
+      "eval_window_min_support_windows": 2,
+      "eval_window_high_support_threshold": 0.55,
+      "eval_window_min_high_support_windows": 1,
+      "overall": {
+        "sample_count": 1845,
+        "acc": 0.699729,
+        "balanced_acc": 0.701463,
+        "mix_f1": 0.709339,
+        "mix_precision": 0.742042,
+        "mix_recall": 0.679397,
+        "predicted_positive_rate": 0.493767,
+        "avg_mix_prob": 0.611307
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 271,
+          "acc": 0.944649,
+          "balanced_acc": 0.944649,
+          "mix_f1": 0.971537,
+          "mix_precision": 1.0,
+          "mix_recall": 0.944649,
+          "predicted_positive_rate": 0.944649,
+          "avg_mix_prob": 0.885234
+        },
+        "Falsetto_Group": {
+          "sample_count": 271,
+          "acc": 0.505535,
+          "balanced_acc": 0.505535,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.494465,
+          "avg_mix_prob": 0.599289
+        },
+        "Breathy_Group": {
+          "sample_count": 136,
+          "acc": 0.926471,
+          "balanced_acc": 0.636591,
+          "mix_f1": 0.166667,
+          "mix_precision": 0.111111,
+          "mix_recall": 0.333333,
+          "predicted_positive_rate": 0.066176,
+          "avg_mix_prob": 0.221454
+        },
+        "Control_Group": {
+          "sample_count": 787,
+          "acc": 0.590851,
+          "balanced_acc": 0.622631,
+          "mix_f1": 0.590331,
+          "mix_precision": 0.763158,
+          "mix_recall": 0.481328,
+          "predicted_positive_rate": 0.386277,
+          "avg_mix_prob": 0.579743
+        }
+      },
+      "binary_roles": {
+        "positive_mix": {
+          "sample_count": 995,
+          "acc": 0.679397,
+          "balanced_acc": 0.679397,
+          "mix_f1": 0.809096,
+          "mix_precision": 1.0,
+          "mix_recall": 0.679397,
+          "predicted_positive_rate": 0.679397,
+          "avg_mix_prob": 0.740866
+        },
+        "control_negative": {
+          "sample_count": 305,
+          "acc": 0.763934,
+          "balanced_acc": 0.763934,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.236066,
+          "avg_mix_prob": 0.475284
+        },
+        "falsetto_group": {
+          "sample_count": 271,
+          "acc": 0.505535,
+          "balanced_acc": 0.505535,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.494465,
+          "avg_mix_prob": 0.599289
+        },
+        "breathy_group": {
+          "sample_count": 133,
+          "acc": 0.93985,
+          "balanced_acc": 0.93985,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.06015,
+          "avg_mix_prob": 0.216634
+        }
+      }
+    }
+  }
+}

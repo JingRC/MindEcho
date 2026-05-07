@@ -1,0 +1,231 @@
+{
+  "manifest": "d:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\test_manifest.csv",
+  "groups": [
+    "Mixed_Voice_Group",
+    "Falsetto_Group",
+    "Breathy_Group",
+    "Control_Group"
+  ],
+  "artifacts": {
+    "mix_binary_ce_v2_calibrated_gpu": {
+      "threshold": 0.45,
+      "overall": {
+        "sample_count": 378,
+        "acc": 0.722222,
+        "balanced_acc": 0.708154,
+        "mix_f1": 0.639175,
+        "mix_precision": 0.628378,
+        "mix_recall": 0.65035,
+        "predicted_positive_rate": 0.391534,
+        "avg_mix_prob": 0.397896
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 109,
+          "acc": 0.633028,
+          "balanced_acc": 0.633028,
+          "mix_f1": 0.775281,
+          "mix_precision": 1.0,
+          "mix_recall": 0.633028,
+          "predicted_positive_rate": 0.633028,
+          "avg_mix_prob": 0.49384
+        },
+        "Falsetto_Group": {
+          "sample_count": 87,
+          "acc": 0.747126,
+          "balanced_acc": 0.579905,
+          "mix_f1": 0.214286,
+          "mix_precision": 0.15,
+          "mix_recall": 0.375,
+          "predicted_positive_rate": 0.229885,
+          "avg_mix_prob": 0.307587
+        },
+        "Breathy_Group": {
+          "sample_count": 41,
+          "acc": 0.634146,
+          "balanced_acc": 0.634146,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.365854,
+          "avg_mix_prob": 0.385918
+        },
+        "Control_Group": {
+          "sample_count": 104,
+          "acc": 0.836538,
+          "balanced_acc": 0.824051,
+          "mix_f1": 0.701754,
+          "mix_precision": 0.625,
+          "mix_recall": 0.8,
+          "predicted_positive_rate": 0.307692,
+          "avg_mix_prob": 0.379329
+        }
+      }
+    },
+    "mix_binary_hardneg_v2_gpu": {
+      "threshold": 0.425,
+      "overall": {
+        "sample_count": 378,
+        "acc": 0.724868,
+        "balanced_acc": 0.704806,
+        "mix_f1": 0.631206,
+        "mix_precision": 0.640288,
+        "mix_recall": 0.622378,
+        "predicted_positive_rate": 0.367725,
+        "avg_mix_prob": 0.389465
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 109,
+          "acc": 0.623853,
+          "balanced_acc": 0.623853,
+          "mix_f1": 0.768362,
+          "mix_precision": 1.0,
+          "mix_recall": 0.623853,
+          "predicted_positive_rate": 0.623853,
+          "avg_mix_prob": 0.51385
+        },
+        "Falsetto_Group": {
+          "sample_count": 87,
+          "acc": 0.862069,
+          "balanced_acc": 0.587025,
+          "mix_f1": 0.25,
+          "mix_precision": 0.25,
+          "mix_recall": 0.25,
+          "predicted_positive_rate": 0.091954,
+          "avg_mix_prob": 0.224891
+        },
+        "Breathy_Group": {
+          "sample_count": 41,
+          "acc": 0.731707,
+          "balanced_acc": 0.731707,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.268293,
+          "avg_mix_prob": 0.331377
+        },
+        "Control_Group": {
+          "sample_count": 104,
+          "acc": 0.769231,
+          "balanced_acc": 0.766076,
+          "mix_f1": 0.612903,
+          "mix_precision": 0.513514,
+          "mix_recall": 0.76,
+          "predicted_positive_rate": 0.355769,
+          "avg_mix_prob": 0.403199
+        }
+      }
+    },
+    "mix_binary_hardneg_v3_gpu": {
+      "threshold": 0.45,
+      "overall": {
+        "sample_count": 378,
+        "acc": 0.650794,
+        "balanced_acc": 0.635649,
+        "mix_f1": 0.554054,
+        "mix_precision": 0.535948,
+        "mix_recall": 0.573427,
+        "predicted_positive_rate": 0.404762,
+        "avg_mix_prob": 0.421903
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 109,
+          "acc": 0.568807,
+          "balanced_acc": 0.568807,
+          "mix_f1": 0.725146,
+          "mix_precision": 1.0,
+          "mix_recall": 0.568807,
+          "predicted_positive_rate": 0.568807,
+          "avg_mix_prob": 0.475556
+        },
+        "Falsetto_Group": {
+          "sample_count": 87,
+          "acc": 0.793103,
+          "balanced_acc": 0.605222,
+          "mix_f1": 0.25,
+          "mix_precision": 0.1875,
+          "mix_recall": 0.375,
+          "predicted_positive_rate": 0.183908,
+          "avg_mix_prob": 0.34739
+        },
+        "Breathy_Group": {
+          "sample_count": 41,
+          "acc": 0.585366,
+          "balanced_acc": 0.585366,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.414634,
+          "avg_mix_prob": 0.426548
+        },
+        "Control_Group": {
+          "sample_count": 104,
+          "acc": 0.692308,
+          "balanced_acc": 0.67443,
+          "mix_f1": 0.5,
+          "mix_precision": 0.410256,
+          "mix_recall": 0.64,
+          "predicted_positive_rate": 0.375,
+          "avg_mix_prob": 0.415742
+        }
+      }
+    },
+    "mix_binary_hardneg_v3_recall_calibrated_gpu": {
+      "threshold": 0.15,
+      "overall": {
+        "sample_count": 378,
+        "acc": 0.39418,
+        "balanced_acc": 0.511397,
+        "mix_f1": 0.553606,
+        "mix_precision": 0.383784,
+        "mix_recall": 0.993007,
+        "predicted_positive_rate": 0.978836,
+        "avg_mix_prob": 0.421903
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 109,
+          "acc": 1.0,
+          "balanced_acc": 1.0,
+          "mix_f1": 1.0,
+          "mix_precision": 1.0,
+          "mix_recall": 1.0,
+          "predicted_positive_rate": 1.0,
+          "avg_mix_prob": 0.475556
+        },
+        "Falsetto_Group": {
+          "sample_count": 87,
+          "acc": 0.149425,
+          "balanced_acc": 0.531646,
+          "mix_f1": 0.177778,
+          "mix_precision": 0.097561,
+          "mix_recall": 1.0,
+          "predicted_positive_rate": 0.942529,
+          "avg_mix_prob": 0.34739
+        },
+        "Breathy_Group": {
+          "sample_count": 41,
+          "acc": 0.0,
+          "balanced_acc": 0.0,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 1.0,
+          "avg_mix_prob": 0.426548
+        },
+        "Control_Group": {
+          "sample_count": 104,
+          "acc": 0.25,
+          "balanced_acc": 0.492658,
+          "mix_f1": 0.380952,
+          "mix_precision": 0.237624,
+          "mix_recall": 0.96,
+          "predicted_positive_rate": 0.971154,
+          "avg_mix_prob": 0.415742
+        }
+      }
+    }
+  }
+}

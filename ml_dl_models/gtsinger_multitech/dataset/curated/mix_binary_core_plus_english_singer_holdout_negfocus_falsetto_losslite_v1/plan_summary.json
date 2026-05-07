@@ -1,0 +1,131 @@
+{
+  "base_train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_v1\\train_manifest.csv",
+  "focus_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_official_indistribution_negfocus_v1\\training_increment_manifest.csv",
+  "validation_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_v1\\validation_manifest.csv",
+  "test_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_v1\\test_manifest.csv",
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_negfocus_falsetto_losslite_v1",
+  "focus_weight_config": {
+    "hard_positive_sample_multiplier": 1.0,
+    "hard_positive_loss_multiplier": 1.0,
+    "control_negative_sample_multiplier": 1.18,
+    "control_negative_loss_multiplier": 1.08,
+    "falsetto_negative_sample_multiplier": 1.4,
+    "falsetto_negative_loss_multiplier": 1.12,
+    "breathy_negative_sample_multiplier": 1.0,
+    "breathy_negative_loss_multiplier": 1.0,
+    "other_negative_sample_multiplier": 1.0,
+    "other_negative_loss_multiplier": 1.0,
+    "difficulty_scaling_mode": "none",
+    "difficulty_floor": 0.35
+  },
+  "rationale": [
+    "Soft-focus weighting keeps every train row unique and annotates only selected in-distribution hard cases with higher sampler and loss multipliers.",
+    "The focus rows must come from the same official train split, so no held-out singer samples are leaked into training.",
+    "This is intentionally a softer alternative to hard repeats for exploratory trainadapt work."
+  ],
+  "counts": {
+    "base_train_rows": 4309,
+    "focus_rows": 36,
+    "focused_item_count": 36,
+    "missing_focus_item_names": 0,
+    "validation_rows": 1845,
+    "test_rows": 1727
+  },
+  "missing_focus_item_names": [],
+  "split_summary": {
+    "train": {
+      "items": 4309,
+      "focused_rows": 36,
+      "binary_roles": {
+        "breathy_group": 402,
+        "control_negative": 828,
+        "positive_mix": 1902,
+        "falsetto_group": 802,
+        "other_negative": 375
+      },
+      "groups": {
+        "Breathy_Group": 499,
+        "Control_Group": 1384,
+        "Falsetto_Group": 891,
+        "Glissando_Group": 103,
+        "Mixed_Voice_Group": 994,
+        "Pharyngeal_Group": 379,
+        "Vibrato_Group": 59
+      },
+      "singers": {
+        "ZH-Alto-1": 1813,
+        "ZH-Tenor-1": 1241,
+        "EN-Alto-1": 1255
+      },
+      "focus_roles": {
+        "control_negative": 30,
+        "falsetto_negative": 6
+      },
+      "sample_weight_min": 1.0,
+      "sample_weight_max": 1.4,
+      "loss_weight_min": 1.0,
+      "loss_weight_max": 1.12
+    },
+    "validation": {
+      "items": 1845,
+      "focused_rows": 0,
+      "binary_roles": {
+        "breathy_group": 133,
+        "control_negative": 305,
+        "positive_mix": 995,
+        "other_negative": 141,
+        "falsetto_group": 271
+      },
+      "groups": {
+        "Breathy_Group": 136,
+        "Control_Group": 787,
+        "Glissando_Group": 128,
+        "Falsetto_Group": 271,
+        "Mixed_Voice_Group": 271,
+        "Pharyngeal_Group": 125,
+        "Vibrato_Group": 127
+      },
+      "singers": {
+        "EN-Tenor-1": 1845
+      },
+      "focus_roles": {},
+      "sample_weight_min": 1.0,
+      "sample_weight_max": 1.0,
+      "loss_weight_min": 1.0,
+      "loss_weight_max": 1.0
+    },
+    "test": {
+      "items": 1727,
+      "focused_rows": 0,
+      "binary_roles": {
+        "breathy_group": 106,
+        "positive_mix": 1003,
+        "other_negative": 124,
+        "control_negative": 249,
+        "falsetto_group": 245
+      },
+      "groups": {
+        "Breathy_Group": 122,
+        "Control_Group": 741,
+        "Glissando_Group": 126,
+        "Falsetto_Group": 245,
+        "Mixed_Voice_Group": 245,
+        "Pharyngeal_Group": 122,
+        "Vibrato_Group": 126
+      },
+      "singers": {
+        "EN-Alto-2": 1727
+      },
+      "focus_roles": {},
+      "sample_weight_min": 1.0,
+      "sample_weight_max": 1.0,
+      "loss_weight_min": 1.0,
+      "loss_weight_max": 1.0
+    }
+  },
+  "manifests": {
+    "train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_negfocus_falsetto_losslite_v1\\train_manifest.csv",
+    "validation_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_negfocus_falsetto_losslite_v1\\validation_manifest.csv",
+    "test_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_negfocus_falsetto_losslite_v1\\test_manifest.csv"
+  }
+}

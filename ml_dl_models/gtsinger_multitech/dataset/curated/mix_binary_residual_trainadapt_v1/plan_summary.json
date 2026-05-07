@@ -1,0 +1,58 @@
+{
+  "base_split": "mix_binary_core",
+  "increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_pharyngeal_048_052_v1\\training_increment_manifest.csv",
+  "recommended_ratio": {
+    "positive_repeat": 8,
+    "control_negative_repeat": 4
+  },
+  "rationale": [
+    "Residual positives are extremely under-represented if appended once, so they are repeated 8x.",
+    "Hard negatives are repeated 4x to preserve a strong guard rail without overpowering positive adaptation.",
+    "Validation is kept unchanged to preserve global model selection comparability.",
+    "Test removes the 12 injected rows to avoid direct train-test leakage in adaptation experiments."
+  ],
+  "counts": {
+    "base_train": 3054,
+    "base_validation": 381,
+    "base_test": 378,
+    "increment_total": 12,
+    "increment_positive_mix": 4,
+    "increment_control_negative": 8,
+    "augmented_train": 3118,
+    "adaptation_test": 366
+  },
+  "binary_role_counts": {
+    "base_train": {
+      "breathy_group": 396,
+      "control_negative": 622,
+      "positive_mix": 1131,
+      "falsetto_group": 622,
+      "other_negative": 283
+    },
+    "augmented_train": {
+      "breathy_group": 396,
+      "control_negative": 654,
+      "positive_mix": 1163,
+      "falsetto_group": 622,
+      "other_negative": 283
+    },
+    "base_validation": {
+      "breathy_group": 49,
+      "control_negative": 78,
+      "positive_mix": 141,
+      "falsetto_group": 78,
+      "other_negative": 35
+    },
+    "adaptation_test": {
+      "breathy_group": 41,
+      "control_negative": 71,
+      "positive_mix": 139,
+      "falsetto_group": 79,
+      "other_negative": 36
+    }
+  },
+  "caveats": [
+    "This is an adaptation split derived partly from original core test samples, so original same-manifest core-test comparability is no longer valid.",
+    "Use the unchanged core validation for selection and the filtered adaptation test only as a non-leaky post-adaptation check."
+  ]
+}

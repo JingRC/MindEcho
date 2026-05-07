@@ -1,0 +1,120 @@
+{
+  "generated_at": "2026-04-14 11:33:36",
+  "samples": [
+    {
+      "wav_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\raw\\Chinese\\ZH-Alto-1\\Mixed_Voice_and_Falsetto\\化身孤岛的鲸\\Falsetto_Group\\0020.wav",
+      "onepass": {
+        "elapsed_s": 4.599335,
+        "duration_s": 15.52,
+        "segment_count": 4,
+        "pitch_record_count": 851,
+        "has_playback": true,
+        "has_panel": true
+      },
+      "analysis": {
+        "elapsed_s": 13.978515,
+        "total_elapsed_s": 18.577849,
+        "summary": {
+          "event_count": 1,
+          "counts": {
+            "falsetto": 1
+          },
+          "duration": 15.52
+        },
+        "voice_debug": {
+          "model_ready": true,
+          "candidate_windows": 94,
+          "predicted_windows": 94,
+          "accepted_windows": 94,
+          "context_adjusted_windows": 0,
+          "relaxed_used": false,
+          "reason": "",
+          "backend": "external_python"
+        },
+        "mix_model": {},
+        "mix_backend_log": [
+          {
+            "backend": "external_python",
+            "window_count": 94,
+            "result_count": 94,
+            "elapsed_s": 8.045517,
+            "prefer_cpu": true,
+            "error": ""
+          }
+        ],
+        "voice_backend_log": [
+          {
+            "backend": "external_python",
+            "window_count": 94,
+            "result_count": 94,
+            "elapsed_s": 5.772781,
+            "prefer_cpu": true,
+            "error": ""
+          }
+        ],
+        "last_mix_model_error": "forced_external_probe",
+        "last_chest_falsetto_model_error": "",
+        "prefer_mix_external_cpu": true,
+        "prefer_voice_external_cpu": true,
+        "events": [
+          {
+            "event_type": "falsetto",
+            "display_label": "假声",
+            "start_time": 0.0,
+            "end_time": 15.52,
+            "confidence": 0.970674,
+            "strength": 0.981818,
+            "source_layer": "offline_squeezenet",
+            "voice_type": "falsetto",
+            "subtype": null,
+            "base_voice_type": null,
+            "mean_pitch_hz": 502.093414,
+            "chest_prob": 0.029326,
+            "falsetto_prob": 0.970674,
+            "mix_prob": 0.466019,
+            "breathiness_score": null,
+            "mix_support_score": null,
+            "display_payload": {
+              "model": "squeezenet_binary_mel_safe_v2",
+              "window_s": 0.64,
+              "hop_s": 0.16,
+              "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_binary.pt",
+              "source_kind": "local_file_onepass",
+              "stable_ratio": 1.0,
+              "mean_rms": 0.061325,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "mix_prob": 0.466019,
+              "mix_threshold": 0.55
+            },
+            "feature_snapshot": {
+              "mean_pitch_hz": 502.093414,
+              "voiced_ratio": 1.0,
+              "stable_ratio": 1.0,
+              "mean_rms": 0.061325,
+              "mean_zcr": 0.0,
+              "mean_breath_score": 0.0,
+              "breath_hint_ratio": 0.0,
+              "chest_prob": 0.029326,
+              "falsetto_prob": 0.970674,
+              "mix_prob": 0.466019,
+              "mix_threshold": 0.55
+            }
+          }
+        ]
+      },
+      "messages": [],
+      "error": ""
+    }
+  ],
+  "init_log": "",
+  "requested_backend_preferences": {
+    "prefer_mix_cpu": true,
+    "prefer_voice_cpu": true,
+    "force_external_mix": true,
+    "force_external_voice": true
+  },
+  "sample_count": 1,
+  "error_count": 0
+}

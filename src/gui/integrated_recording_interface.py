@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 from collections import deque
+import copy
 import bisect
 import time, threading, queue, json, os, sys, wave, math
 import importlib
@@ -39,6 +40,14 @@ _CHEST_FALSETTO_CHECKPOINT_CANDIDATES = (
     project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts_mel_safe_v2' / 'best_squeezenet_binary.pt',
     project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts' / 'best_squeezenet_binary.pt',
 )
+_MIX_BINARY_CHECKPOINT_CANDIDATES = (
+    project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu' / 'best_mix_binary_squeezenet.pt',
+    project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_ce_v2_calibrated_gpu' / 'best_mix_binary_squeezenet.pt',
+    project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_ce_v1_gpu' / 'best_mix_binary_squeezenet.pt',
+)
+_MIX_BINARY_SOFTWARE_THRESHOLD_FLOORS = {
+    'mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu': 0.55,
+}
 _CHEST_FALSETTO_TARGET_SR = 22050
 _CHEST_FALSETTO_WINDOW_S = 0.64
 _CHEST_FALSETTO_HOP_S = 0.16
@@ -84,17 +93,214 @@ def _ensure_windows_torch_dll_paths() -> None:
             continue
 
 
-def _import_torch_safely():
+_TORCH_IMPORT_CACHE = None
+_TORCH_IMPORT_ERROR = ''
+_TORCH_IMPORT_ATTEMPTED = False
+_LOCAL_TORCH_IMPORT_FAILURE_KEY = 'technique/local_torch_import_failure'
+_LOCAL_TORCH_IMPORT_FAILURE_PYTHON_KEY = 'technique/local_torch_import_failure_python'
+_LOCAL_TORCH_IMPORT_FAILURE_TS_KEY = 'technique/local_torch_import_failure_ts'
+_LOCAL_TORCH_IMPORT_FAILURE_TTL_S = 12.0 * 3600.0
+_TECHNIQUE_EXTERNAL_INFER_PREFER_CPU_KEY = 'technique/external_infer_prefer_cpu'
+_TECHNIQUE_EXTERNAL_INFER_STRATEGY_KEY = 'technique/external_infer_strategy'
+
+
+def _coerce_qsettings_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {'1', 'true', 'yes', 'on'}:
+        return True
+    if text in {'0', 'false', 'no', 'off'}:
+        return False
     try:
-        return importlib.import_module('torch'), ''
+        return bool(int(text))
+    except Exception:
+        return bool(default)
+
+
+def _load_technique_external_infer_prefer_cpu_setting(default: bool = True) -> bool:
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        return _coerce_qsettings_bool(settings.value(_TECHNIQUE_EXTERNAL_INFER_PREFER_CPU_KEY, default), default)
+    except Exception:
+        return bool(default)
+
+
+def _save_technique_external_infer_prefer_cpu_setting(enabled: bool) -> None:
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        settings.setValue(_TECHNIQUE_EXTERNAL_INFER_PREFER_CPU_KEY, bool(enabled))
+        settings.sync()
+    except Exception:
+        pass
+
+
+def _normalize_technique_external_infer_strategy(value: Any, default: str = 'auto') -> str:
+    fallback = str(default or 'auto').strip().lower() or 'auto'
+    if isinstance(value, bool):
+        return 'cpu' if value else 'gpu'
+    text = str(value or '').strip().lower()
+    if text in {'auto', '自动'}:
+        return 'auto'
+    if text in {'cpu', 'cpu_first', 'cpu-first', 'prefer_cpu', 'cpu优先'}:
+        return 'cpu'
+    if text in {'gpu', 'gpu_first', 'gpu-first', 'prefer_gpu', 'gpu优先'}:
+        return 'gpu'
+    return fallback if fallback in {'auto', 'cpu', 'gpu'} else 'auto'
+
+
+def _load_technique_external_infer_strategy_setting(default: str = 'auto') -> str:
+    fallback = _normalize_technique_external_infer_strategy(default, 'auto')
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        raw = settings.value(_TECHNIQUE_EXTERNAL_INFER_STRATEGY_KEY, None)
+        if raw is not None and str(raw).strip() != '':
+            return _normalize_technique_external_infer_strategy(raw, fallback)
+        legacy = settings.value(_TECHNIQUE_EXTERNAL_INFER_PREFER_CPU_KEY, None)
+        if legacy is not None and str(legacy).strip() != '':
+            return 'cpu' if _coerce_qsettings_bool(legacy, True) else 'gpu'
+    except Exception:
+        pass
+    return fallback
+
+
+def _save_technique_external_infer_strategy_setting(strategy: str) -> None:
+    normalized = _normalize_technique_external_infer_strategy(strategy, 'auto')
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        settings.setValue(_TECHNIQUE_EXTERNAL_INFER_STRATEGY_KEY, normalized)
+        if normalized == 'auto':
+            settings.remove(_TECHNIQUE_EXTERNAL_INFER_PREFER_CPU_KEY)
+        else:
+            settings.setValue(_TECHNIQUE_EXTERNAL_INFER_PREFER_CPU_KEY, normalized == 'cpu')
+        settings.sync()
+    except Exception:
+        pass
+
+
+def _normalize_torch_runtime_key(value: str) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    try:
+        return os.path.normcase(os.path.normpath(text))
+    except Exception:
+        return text.lower()
+
+
+def _clear_persisted_torch_import_failure() -> None:
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        settings.remove(_LOCAL_TORCH_IMPORT_FAILURE_KEY)
+        settings.remove(_LOCAL_TORCH_IMPORT_FAILURE_PYTHON_KEY)
+        settings.remove(_LOCAL_TORCH_IMPORT_FAILURE_TS_KEY)
+        settings.sync()
+    except Exception:
+        pass
+
+
+def _reset_torch_import_runtime_state() -> None:
+    global _TORCH_IMPORT_CACHE, _TORCH_IMPORT_ERROR, _TORCH_IMPORT_ATTEMPTED
+    _TORCH_IMPORT_CACHE = None
+    _TORCH_IMPORT_ERROR = ''
+    _TORCH_IMPORT_ATTEMPTED = False
+
+
+def _get_local_torch_import_failure_reason() -> str:
+    try:
+        current_error = str(_TORCH_IMPORT_ERROR or '').strip()
+    except Exception:
+        current_error = ''
+    if current_error.startswith('torch_import_failed:'):
+        return current_error
+    return str(_load_persisted_torch_import_failure() or '').strip()
+
+
+def _load_persisted_torch_import_failure() -> str:
+    if os.name != 'nt':
+        return ''
+    retry_flag = str(os.environ.get('MIND_ECHO_RETRY_LOCAL_TORCH_IMPORT', '') or '').strip().lower()
+    if retry_flag in {'1', 'true', 'yes', 'on'}:
+        _clear_persisted_torch_import_failure()
+        return ''
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        error_text = str(settings.value(_LOCAL_TORCH_IMPORT_FAILURE_KEY, '') or '').strip()
+        if not error_text.startswith('torch_import_failed:OSError'):
+            return ''
+        stored_python = _normalize_torch_runtime_key(settings.value(_LOCAL_TORCH_IMPORT_FAILURE_PYTHON_KEY, '') or '')
+        current_python = _normalize_torch_runtime_key(sys.executable or '')
+        if stored_python and current_python and stored_python != current_python:
+            _clear_persisted_torch_import_failure()
+            return ''
+        try:
+            failed_at = float(settings.value(_LOCAL_TORCH_IMPORT_FAILURE_TS_KEY, 0.0) or 0.0)
+        except Exception:
+            failed_at = 0.0
+        if failed_at > 0.0 and (time.time() - failed_at) > _LOCAL_TORCH_IMPORT_FAILURE_TTL_S:
+            _clear_persisted_torch_import_failure()
+            return ''
+        return error_text
+    except Exception:
+        return ''
+
+
+def _persist_torch_import_failure(error_text: str) -> None:
+    normalized = str(error_text or '').strip()
+    if os.name != 'nt' or not normalized.startswith('torch_import_failed:OSError'):
+        return
+    try:
+        settings = QSettings('MindEcho', 'IntegratedRecorder')
+        settings.setValue(_LOCAL_TORCH_IMPORT_FAILURE_KEY, normalized)
+        settings.setValue(_LOCAL_TORCH_IMPORT_FAILURE_PYTHON_KEY, str(sys.executable or '').strip())
+        settings.setValue(_LOCAL_TORCH_IMPORT_FAILURE_TS_KEY, float(time.time()))
+        settings.sync()
+    except Exception:
+        pass
+
+
+def _import_torch_safely():
+    global _TORCH_IMPORT_CACHE, _TORCH_IMPORT_ERROR, _TORCH_IMPORT_ATTEMPTED
+    if _TORCH_IMPORT_CACHE is not None:
+        return _TORCH_IMPORT_CACHE, ''
+    if _TORCH_IMPORT_ATTEMPTED and _TORCH_IMPORT_ERROR:
+        return None, _TORCH_IMPORT_ERROR
+    persisted_error = _load_persisted_torch_import_failure()
+    if persisted_error:
+        _TORCH_IMPORT_ERROR = str(persisted_error)
+        _TORCH_IMPORT_ATTEMPTED = True
+        return None, _TORCH_IMPORT_ERROR
+    try:
+        module = importlib.import_module('torch')
+        _TORCH_IMPORT_CACHE = module
+        _TORCH_IMPORT_ERROR = ''
+        _TORCH_IMPORT_ATTEMPTED = True
+        _clear_persisted_torch_import_failure()
+        return module, ''
     except OSError as exc:
         try:
             _ensure_windows_torch_dll_paths()
-            return importlib.import_module('torch'), ''
+            module = importlib.import_module('torch')
+            _TORCH_IMPORT_CACHE = module
+            _TORCH_IMPORT_ERROR = ''
+            _TORCH_IMPORT_ATTEMPTED = True
+            _clear_persisted_torch_import_failure()
+            return module, ''
         except Exception as retry_exc:
-            return None, f'torch_import_failed:{type(retry_exc).__name__}'
+            _TORCH_IMPORT_ERROR = f'torch_import_failed:{type(retry_exc).__name__}'
+            _TORCH_IMPORT_ATTEMPTED = True
+            _persist_torch_import_failure(_TORCH_IMPORT_ERROR)
+            return None, _TORCH_IMPORT_ERROR
     except Exception as exc:
-        return None, f'torch_import_failed:{type(exc).__name__}'
+        _TORCH_IMPORT_ERROR = f'torch_import_failed:{type(exc).__name__}'
+        _TORCH_IMPORT_ATTEMPTED = True
+        _persist_torch_import_failure(_TORCH_IMPORT_ERROR)
+        return None, _TORCH_IMPORT_ERROR
+
 
 # 确保项目根目录与 src 包在Python路径中，解决作为脚本直接运行时的导入问题
 try:
@@ -797,9 +1003,9 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '混声技术（Mix Voice）',
         'items': (
-            {'key': 'strong_mix', 'label': '强混声', 'implemented': False},
-            {'key': 'weak_mix', 'label': '弱混声', 'implemented': False},
-            {'key': 'balanced_mix', 'label': '平衡混声', 'implemented': False},
+            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'parent_key': 'mix_voice'},
+            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'parent_key': 'mix_voice'},
+            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'parent_key': 'mix_voice'},
         ),
     },
     {
@@ -815,6 +1021,7 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '音色与动态控制技巧',
         'items': (
+            {'key': 'mix_voice', 'label': '混声', 'implemented': True},
             {'key': 'breathy_phonation', 'label': '气声', 'implemented': False},
             {'key': 'falsetto', 'label': '假声', 'implemented': True},
             {'key': 'chest_voice', 'label': '真声', 'implemented': True},
@@ -838,6 +1045,43 @@ def _implemented_technique_types() -> List[str]:
     for item in _iter_technique_catalog_items():
         key = str(item.get('key', '') or '')
         if key and bool(item.get('implemented', False)):
+            result.append(key)
+    return result
+
+
+def _technique_parent_map() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for item in _iter_technique_catalog_items():
+        key = str(item.get('key', '') or '')
+        parent_key = str(item.get('parent_key', '') or '')
+        if key and parent_key:
+            mapping[key] = parent_key
+    return mapping
+
+
+def _technique_child_map() -> Dict[str, List[str]]:
+    mapping: Dict[str, List[str]] = {}
+    for child_key, parent_key in _technique_parent_map().items():
+        mapping.setdefault(parent_key, []).append(child_key)
+    return mapping
+
+
+def _apply_technique_dependencies(values: List[str]) -> List[str]:
+    ordered = list(values)
+    selected = set(ordered)
+    parent_map = _technique_parent_map()
+    child_map = _technique_child_map()
+    for key in list(ordered):
+        parent_key = parent_map.get(key)
+        if parent_key and parent_key not in selected:
+            ordered.append(parent_key)
+            selected.add(parent_key)
+    for parent_key, child_keys in child_map.items():
+        if parent_key not in selected:
+            ordered = [key for key in ordered if key not in child_keys]
+    result: List[str] = []
+    for key in ordered:
+        if key not in result:
             result.append(key)
     return result
 
@@ -880,7 +1124,7 @@ def _normalize_technique_selection(values: Optional[List[str]]) -> List[str]:
         key = str(raw or '')
         if key in allowed and key not in result:
             result.append(key)
-    return result
+    return _apply_technique_dependencies(result)
 
 
 def _normalize_technique_panel_state(state: Optional['TechniquePanelState']) -> 'TechniquePanelState':
@@ -1062,8 +1306,21 @@ class VoiceTypeEvent(BaseTechniqueEvent):
     voiced_ratio: Optional[float] = None
     chest_prob: Optional[float] = None
     falsetto_prob: Optional[float] = None
+    mix_prob: Optional[float] = None
     probability_margin: Optional[float] = None
     window_count: int = 0
+
+
+@dataclass
+class MixVoiceEvent(BaseTechniqueEvent):
+    subtype: str = 'strong_mix'
+    base_voice_type: str = 'chest'
+    mean_pitch_hz: Optional[float] = None
+    chest_prob: Optional[float] = None
+    falsetto_prob: Optional[float] = None
+    mix_prob: Optional[float] = None
+    breathiness_score: Optional[float] = None
+    mix_support_score: Optional[float] = None
 
 
 # 通用：延迟显示格式化（避免出现 "Nonems" 等）
@@ -3338,6 +3595,7 @@ class IntegratedAudioProcessor(QThread):
             # 诊断与节流
             "_diag_last_pitch_time", "_diag_pitch_intervals", "_diag_pitch_last_report",
             "_last_no_pitch_emit_t", "_ui_last_emit_t",
+            "_analysis_time_override", "_offline_pitch_time_base", "_low_level_input_gain_logged",
             # Hann缓存
             "_hann_cache_len", "_hann_win_cache",
             # 帧缓冲（切换到录音后重新对齐）
@@ -3369,6 +3627,15 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             pass
         print(f"🔄 重置音高分析状态完成: {reason}")
+
+    def _current_pitch_analysis_time(self) -> float:
+        try:
+            override = getattr(self, '_analysis_time_override', None)
+            if override is not None:
+                return float(override)
+        except Exception:
+            pass
+        return time.time()
 
     # ========= 音高后处理（Phase1: 提取独立逻辑） ========= #
     def _post_process_pitch(self, raw_frequency: float, preview_only: bool = False) -> float:
@@ -3403,7 +3670,7 @@ class IntegratedAudioProcessor(QThread):
         # 识别快速变化（转音/滑音/颤音），临时提高跟随性
         fast_change = False
         try:
-            now_t = time.time()
+            now_t = self._current_pitch_analysis_time()
             last_raw = float(getattr(self, lr_name, 0.0) or 0.0)
             last_rt = float(getattr(self, lrt_name, 0.0) or 0.0)
             if last_raw > 0 and now_t > last_rt:
@@ -3558,7 +3825,7 @@ class IntegratedAudioProcessor(QThread):
         head_anchor_until_name = '_mon_display_head_voice_anchor_until' if preview_only else '_display_head_voice_anchor_until'
         head_entry_until_name = '_mon_display_head_voice_entry_until' if preview_only else '_display_head_voice_entry_until'
 
-        now_t = time.time()
+        now_t = self._current_pitch_analysis_time()
         try:
             last_display = float(getattr(self, prev_name, 0.0) or 0.0)
         except Exception:
@@ -9097,6 +9364,22 @@ class IntegratedAudioProcessor(QThread):
             self._pitch_analysis_counter += 1
             # 先记录当前时间
             current_time = time.time()
+            if forced_global_time is not None:
+                try:
+                    offline_base = float(getattr(self, '_offline_pitch_time_base', 0.0) or 0.0)
+                except Exception:
+                    offline_base = 0.0
+                if offline_base <= 0.0:
+                    offline_base = float(current_time)
+                    self._offline_pitch_time_base = float(offline_base)
+                try:
+                    current_time = float(offline_base) + max(0.0, float(forced_global_time))
+                except Exception:
+                    current_time = float(offline_base)
+            try:
+                self._analysis_time_override = float(current_time)
+            except Exception:
+                pass
             try:
                 host = getattr(self, '_host_interface', None)
             except Exception:
@@ -14216,6 +14499,8 @@ class ECGStylePitchVisualizer(QWidget):
         self.time_window = 16.0
         self.max_points = 1024
         self.update_interval = 16  # ~60FPS
+        # 需要尽早可用，避免构造后半段尚未完成时 add_pitch_data 被异步回调访问。
+        self._min_heavy_interval = 0.016
 
         # ===== 视图 / 历史窗口初始化 =====
         self.max_history_time = 300.0
@@ -14638,6 +14923,13 @@ class ECGStylePitchVisualizer(QWidget):
         self._offline_technique_service = None
         self._chest_falsetto_model_bundle = None
         self._last_chest_falsetto_model_error = ''
+        self._mix_binary_model_bundle = None
+        self._last_mix_binary_model_error = ''
+        self._technique_external_infer_strategy = _load_technique_external_infer_strategy_setting()
+        self._prefer_chest_falsetto_external_cpu = False
+        self._prefer_mix_binary_external_cpu = False
+        self._external_voice_gpu_retry_blocked = False
+        self._external_mix_gpu_retry_blocked = False
         self._last_voice_type_debug = {}
         self._disable_realtime_vibrato_detection = False
         self._technique_visible_types = _technique_label_map()
@@ -21516,6 +21808,17 @@ class ECGStylePitchVisualizer(QWidget):
             self._post_retake_new_data_started = True
         except Exception:
             pass
+        for attr, value in (
+            ('_last_visible_time_set', set()),
+            ('_prev_visible_window', (0.0, 0.0)),
+            ('_prev_visible_point_count', 0),
+            ('_prev_single_point_segs', 0),
+            ('_diag_last_fine_log', 0.0),
+        ):
+            try:
+                setattr(self, attr, value)
+            except Exception:
+                pass
 
     def purge_visual_elements(self):
         """强制移除所有潜在残留的高层绘制元素（PathCollection/Line2D/Text）。"""
@@ -22217,6 +22520,14 @@ class ECGStylePitchVisualizer(QWidget):
             }
         """)
         controls_row2_layout.addWidget(self.technique_recognition_btn)
+
+        self.technique_backend_label = QLabel('技巧推理: 自动/CPU优先')
+        self.technique_backend_label.setToolTip('显示当前技巧识别推理模式与 external 调度顺序')
+        self.technique_backend_label.setStyleSheet(
+            'color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
+        )
+        controls_row2_layout.addWidget(self.technique_backend_label)
+        self._update_technique_backend_status_visualizer()
         
         # 清除按钮
         clear_btn = QPushButton("清除")
@@ -30624,6 +30935,123 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
+    def _get_technique_external_infer_strategy_visualizer(self, strategy_override: Optional[str] = None) -> str:
+        if strategy_override is not None:
+            return _normalize_technique_external_infer_strategy(strategy_override, 'auto')
+        try:
+            current = getattr(self, '_technique_external_infer_strategy', None)
+        except Exception:
+            current = None
+        return _normalize_technique_external_infer_strategy(current, _load_technique_external_infer_strategy_setting())
+
+    def _translate_technique_external_reason(self, reason: str) -> str:
+        mapping = {
+            'manual_cpu': '设置项指定 CPU 优先',
+            'manual_gpu': '设置项指定 GPU 优先',
+            'env_force_cpu': '检测到强制 CPU 环境变量',
+            'cuda_hidden': 'CUDA 设备已被环境变量隐藏',
+            'local_torch_failure': '当前 GUI 进程本地 torch 导入失败',
+            'recent_gpu_failure': '最近一次 GPU external 推理失败后已降级 CPU',
+            'gpu_probe_unavailable': '未检测到可用 GPU',
+            'gpu_probe_missing': '当前无法获取 GPU probe，保守降级 CPU',
+            'gpu_available': '检测到 GPU 可用，可优先尝试 GPU',
+        }
+        return mapping.get(str(reason or '').strip(), str(reason or '').strip() or '未记录')
+
+    def _resolve_effective_external_force_cpu_preference(self, preference_attr: str, *, strategy_override: Optional[str] = None) -> Tuple[bool, str]:
+        strategy = self._get_technique_external_infer_strategy_visualizer(strategy_override)
+        if strategy == 'cpu':
+            return True, 'manual_cpu'
+        if strategy == 'gpu':
+            return False, 'manual_gpu'
+        env_force_cpu = str(os.environ.get('MIND_ECHO_FORCE_CPU', '') or '').strip().lower()
+        if env_force_cpu in {'1', 'true', 'yes', 'on'}:
+            return True, 'env_force_cpu'
+        if 'CUDA_VISIBLE_DEVICES' in os.environ and str(os.environ.get('CUDA_VISIBLE_DEVICES', '') or '').strip() == '':
+            return True, 'cuda_hidden'
+        if _get_local_torch_import_failure_reason():
+            return True, 'local_torch_failure'
+        backend_key = 'voice' if 'chest' in str(preference_attr or '') else 'mix'
+        if bool(getattr(self, f'_external_{backend_key}_gpu_retry_blocked', False)):
+            return True, 'recent_gpu_failure'
+        try:
+            gpu_accelerator = getattr(self, 'gpu_accelerator', None)
+        except Exception:
+            gpu_accelerator = None
+        if gpu_accelerator is not None:
+            try:
+                if bool(gpu_accelerator.is_gpu_available()):
+                    return False, 'gpu_available'
+                return True, 'gpu_probe_unavailable'
+            except Exception:
+                pass
+        return True, 'gpu_probe_missing'
+
+    def _build_technique_backend_status_visualizer(self, strategy_override: Optional[str] = None) -> Tuple[str, str, bool]:
+        voice_cpu, voice_reason = self._resolve_effective_external_force_cpu_preference('_prefer_chest_falsetto_external_cpu', strategy_override=strategy_override)
+        mix_cpu, mix_reason = self._resolve_effective_external_force_cpu_preference('_prefer_mix_binary_external_cpu', strategy_override=strategy_override)
+        strategy = self._get_technique_external_infer_strategy_visualizer(strategy_override)
+        if voice_cpu == mix_cpu:
+            order_text = 'CPU优先' if voice_cpu else 'GPU优先'
+        else:
+            order_text = f"音色{'CPU' if voice_cpu else 'GPU'}/混声{'CPU' if mix_cpu else 'GPU'}"
+        failure_reason = _get_local_torch_import_failure_reason()
+        external_only = bool(failure_reason)
+        mode_text = 'external-only' if external_only else '自动'
+        if strategy == 'auto':
+            strategy_text = f'自动→{order_text}'
+        elif strategy == 'cpu':
+            strategy_text = '手动CPU优先'
+        else:
+            strategy_text = '手动GPU优先'
+        short_text = f'技巧推理: {mode_text}/{strategy_text}'
+        tooltip_lines = [
+            f'当前技巧推理路径: {mode_text}',
+            f'external 调度策略: {"自动" if strategy == "auto" else strategy_text.replace("手动", "")}',
+            f'当前生效顺序: {order_text}',
+        ]
+        if strategy == 'auto':
+            if voice_reason == mix_reason:
+                tooltip_lines.append(f'自动策略依据: {self._translate_technique_external_reason(voice_reason)}')
+            else:
+                tooltip_lines.append(f'音色自动依据: {self._translate_technique_external_reason(voice_reason)}')
+                tooltip_lines.append(f'混声自动依据: {self._translate_technique_external_reason(mix_reason)}')
+        if external_only:
+            tooltip_lines.append('本地 torch 当前不可用，已直接切到 external-only。')
+            if failure_reason:
+                tooltip_lines.append(f'原因: {failure_reason}')
+            tooltip_lines.append('若已修复本地环境，可在设置中清除 external-only 缓存。')
+        else:
+            tooltip_lines.append('本地模型可用时优先使用本地；不可用时回退 external。')
+        return short_text, '\n'.join(tooltip_lines), external_only
+
+    def _update_technique_backend_status_visualizer(self) -> None:
+        try:
+            label = getattr(self, 'technique_backend_label', None)
+            if label is None:
+                return
+            text, tooltip, external_only = self._build_technique_backend_status_visualizer()
+            if str(label.text() or '') != text:
+                label.setText(text)
+            label.setToolTip(tooltip)
+            if external_only:
+                label.setStyleSheet(
+                    'color: #FFF3D6; background: rgba(96, 52, 12, 0.95); border: 1px solid #E0A84F; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
+                )
+            else:
+                label.setStyleSheet(
+                    'color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
+                )
+        except Exception:
+            pass
+        try:
+            host = getattr(self, '_host_interface', None)
+            refresher = getattr(host, '_refresh_technique_backend_status_panel', None) if host is not None else None
+            if callable(refresher):
+                refresher()
+        except Exception:
+            pass
+
     def open_technique_recognition_dialog(self):
         try:
             host = getattr(self, '_host_interface', None)
@@ -31695,9 +32123,33 @@ class ECGStylePitchVisualizer(QWidget):
             raw_gap = cur_t - prev_t
             if raw_gap < max(0.11, base_dt * 2.4):
                 continue
+            prev_support_gap = None
+            next_support_gap = None
+            if idx >= 2:
+                try:
+                    prev_support_gap = prev_t - float(valid_frames[idx - 2].timeline_time)
+                except Exception:
+                    prev_support_gap = None
+            if idx + 1 < len(valid_frames):
+                try:
+                    next_support_gap = float(valid_frames[idx + 1].timeline_time) - cur_t
+                except Exception:
+                    next_support_gap = None
+            support_gap_limit = max(0.11, base_dt * 2.1)
+            has_prev_support = bool(prev_support_gap is not None and prev_support_gap <= support_gap_limit)
+            has_next_support = bool(next_support_gap is not None and next_support_gap <= support_gap_limit)
+            if not (has_prev_support and has_next_support):
+                continue
             start_time = max(0.0, prev_t + base_dt * 0.45)
             end_time = max(start_time, cur_t - base_dt * 0.45)
             duration = max(0.0, end_time - start_time)
+            startup_guard_s = 0.0
+            try:
+                startup_guard_s = float(getattr(self, '_offline_gap_breath_start_guard_s', 0.50) or 0.50)
+            except Exception:
+                startup_guard_s = 0.50
+            if start_time < max(0.0, startup_guard_s):
+                continue
             if duration < 0.09 or duration > 0.95:
                 continue
             mean_rms = 0.0
@@ -31742,6 +32194,8 @@ class ECGStylePitchVisualizer(QWidget):
                 feature_snapshot={
                     'gap_duration_s': float(duration),
                     'base_dt_s': float(base_dt),
+                    'has_prev_support': bool(has_prev_support),
+                    'has_next_support': bool(has_next_support),
                 },
                 display_payload={
                     'detector': 'offline_gap_breath',
@@ -31760,12 +32214,112 @@ class ECGStylePitchVisualizer(QWidget):
                 continue
         return None
 
+    def _resolve_mix_binary_checkpoint_path(self) -> Optional[Path]:
+        for candidate in _MIX_BINARY_CHECKPOINT_CANDIDATES:
+            try:
+                if Path(candidate).exists():
+                    return Path(candidate)
+            except Exception:
+                continue
+        return None
+
+    def _resolve_mix_binary_summary_payload(self, checkpoint_path: Optional[Path] = None) -> Dict[str, Any]:
+        resolved_path = Path(checkpoint_path) if checkpoint_path is not None else self._resolve_mix_binary_checkpoint_path()
+        if resolved_path is None:
+            return {}
+        summary_path = Path(resolved_path).with_name('training_summary.json')
+        try:
+            if summary_path.exists():
+                payload = json.loads(summary_path.read_text(encoding='utf-8'))
+                if isinstance(payload, dict):
+                    return dict(payload)
+        except Exception:
+            pass
+        return {}
+
+    def _resolve_mix_binary_threshold(self) -> float:
+        default_threshold = 0.45
+        checkpoint_path = self._resolve_mix_binary_checkpoint_path()
+        if checkpoint_path is None:
+            return default_threshold
+        try:
+            payload = self._resolve_mix_binary_summary_payload(checkpoint_path)
+            threshold = default_threshold
+            if payload:
+                threshold = float(payload.get('best_threshold', payload.get('threshold', default_threshold)) or default_threshold)
+            artifact_name = str(Path(checkpoint_path).parent.name or '')
+            threshold_floor = _MIX_BINARY_SOFTWARE_THRESHOLD_FLOORS.get(artifact_name)
+            if threshold_floor is not None:
+                threshold = max(float(threshold), float(threshold_floor))
+            return max(0.05, min(0.95, float(threshold)))
+        except Exception:
+            pass
+        return default_threshold
+
     def _resolve_chest_falsetto_batch_infer_script_path(self) -> Optional[Path]:
         candidate = project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'batch_infer_squeezenet_binary.py'
         try:
             return candidate if candidate.exists() else None
         except Exception:
             return None
+
+    def _resolve_mix_binary_batch_infer_script_path(self) -> Optional[Path]:
+        candidate = project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'batch_infer_mix_binary_squeezenet.py'
+        try:
+            return candidate if candidate.exists() else None
+        except Exception:
+            return None
+
+    def _should_retry_external_infer_on_cpu(self, error_text: str) -> bool:
+        text = str(error_text or '').strip().lower()
+        if not text:
+            return False
+        return any(token in text for token in ('bad allocation', 'out of memory', 'cuda', 'cudnn', 'cublas'))
+
+    def _build_external_infer_env(self, force_cpu: bool) -> Optional[Dict[str, str]]:
+        if not force_cpu:
+            return None
+        env = dict(os.environ)
+        env['CUDA_VISIBLE_DEVICES'] = ''
+        env['MIND_ECHO_FORCE_CPU'] = '1'
+        return env
+
+    def _resolve_external_python_candidates(self) -> List[str]:
+        python_candidates: List[str] = []
+        preferred_python = str(getattr(self, '_preferred_external_torch_python', '') or '').strip()
+        if preferred_python:
+            python_candidates.append(preferred_python)
+        env_python = str(os.environ.get('MIND_ECHO_TORCH_PYTHON', '') or '').strip()
+        if env_python:
+            python_candidates.append(env_python)
+        try:
+            current_python = str(sys.executable or '').strip()
+            if current_python:
+                python_candidates.append(current_python)
+        except Exception:
+            pass
+        python_candidates.append('python')
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for item in python_candidates:
+            key = str(item or '').strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(str(item))
+        return deduped
+
+    def _resolve_external_force_cpu_order(self, preference_attr: str) -> Tuple[bool, bool]:
+        prefer_cpu, reason = self._resolve_effective_external_force_cpu_preference(preference_attr)
+        setattr(self, preference_attr, bool(prefer_cpu))
+        try:
+            if 'chest' in str(preference_attr or ''):
+                self._last_external_voice_order_reason = str(reason)
+            else:
+                self._last_external_mix_order_reason = str(reason)
+        except Exception:
+            pass
+        return (True, False) if prefer_cpu else (False, True)
 
     def _resample_chest_falsetto_audio(self, audio: np.ndarray, sample_rate: int, target_sample_rate: int) -> np.ndarray:
         y = np.asarray(audio, dtype=np.float32).reshape(-1)
@@ -31851,25 +32405,7 @@ class ECGStylePitchVisualizer(QWidget):
         if not audio_windows:
             self._last_chest_falsetto_model_error = 'external_infer_no_windows'
             return None
-        python_candidates: List[str] = []
-        env_python = str(os.environ.get('MIND_ECHO_TORCH_PYTHON', '') or '').strip()
-        if env_python:
-            python_candidates.append(env_python)
-        python_candidates.append('python')
-        try:
-            current_python = str(sys.executable or '').strip()
-            if current_python:
-                python_candidates.append(current_python)
-        except Exception:
-            pass
-        deduped: List[str] = []
-        seen: set[str] = set()
-        for item in python_candidates:
-            key = str(item or '').strip().lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            deduped.append(str(item))
+        deduped = self._resolve_external_python_candidates()
 
         import tempfile
         import subprocess
@@ -31900,44 +32436,144 @@ class ECGStylePitchVisualizer(QWidget):
 
             last_error = 'external_infer_launch_failed'
             for python_cmd in deduped:
-                try:
-                    completed = subprocess.run(
-                        [
-                            python_cmd,
-                            str(script_path),
-                            '--input-npz',
-                            str(input_npz),
-                            '--output-json',
-                            str(output_json),
-                            '--checkpoint',
-                            str(checkpoint_path),
-                            '--image-size',
-                            str(_CHEST_FALSETTO_IMAGE_SIZE),
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=180,
-                        check=False,
-                    )
-                except Exception as exc:
-                    last_error = f'external_infer_exec_failed:{type(exc).__name__}'
-                    continue
-                if completed.returncode != 0:
-                    stderr_text = str(completed.stderr or '').strip()
-                    last_error = f'external_infer_failed:{completed.returncode}'
-                    if stderr_text:
-                        last_error += f':{stderr_text.splitlines()[-1][:96]}'
-                    continue
-                try:
-                    payload = json.loads(output_json.read_text(encoding='utf-8'))
-                except Exception as exc:
-                    last_error = f'external_infer_parse_failed:{type(exc).__name__}'
-                    continue
-                if isinstance(payload, list):
-                    self._last_chest_falsetto_model_error = ''
-                    return payload
-                last_error = 'external_infer_bad_payload'
+                for force_cpu in self._resolve_external_force_cpu_order('_prefer_chest_falsetto_external_cpu'):
+                    try:
+                        completed = subprocess.run(
+                            [
+                                python_cmd,
+                                str(script_path),
+                                '--input-npz',
+                                str(input_npz),
+                                '--output-json',
+                                str(output_json),
+                                '--checkpoint',
+                                str(checkpoint_path),
+                                '--image-size',
+                                str(_CHEST_FALSETTO_IMAGE_SIZE),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                            check=False,
+                            env=self._build_external_infer_env(force_cpu),
+                        )
+                    except Exception as exc:
+                        last_error = f'external_infer_exec_failed:{type(exc).__name__}'
+                        break
+                    if completed.returncode != 0:
+                        stderr_text = str(completed.stderr or '').strip()
+                        last_error = f'external_infer_failed:{completed.returncode}'
+                        if stderr_text:
+                            last_error += f':{stderr_text.splitlines()[-1][:96]}'
+                        if (not force_cpu) and self._should_retry_external_infer_on_cpu(stderr_text):
+                            setattr(self, '_external_voice_gpu_retry_blocked', True)
+                            continue
+                        break
+                    try:
+                        payload = json.loads(output_json.read_text(encoding='utf-8'))
+                    except Exception as exc:
+                        last_error = f'external_infer_parse_failed:{type(exc).__name__}'
+                        break
+                    if isinstance(payload, list):
+                        self._preferred_external_torch_python = str(python_cmd)
+                        setattr(self, '_prefer_chest_falsetto_external_cpu', bool(force_cpu))
+                        if not force_cpu:
+                            setattr(self, '_external_voice_gpu_retry_blocked', False)
+                        self._last_chest_falsetto_model_error = ''
+                        return payload
+                    last_error = 'external_infer_bad_payload'
+                    break
             self._last_chest_falsetto_model_error = last_error
+            return None
+
+    def _run_mix_binary_external_inference(self, audio_windows: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
+        script_path = self._resolve_mix_binary_batch_infer_script_path()
+        checkpoint_path = self._resolve_mix_binary_checkpoint_path()
+        if script_path is None or checkpoint_path is None:
+            self._last_mix_binary_model_error = 'external_infer_missing_assets'
+            return None
+        if not audio_windows:
+            self._last_mix_binary_model_error = 'external_infer_no_windows'
+            return None
+        deduped = self._resolve_external_python_candidates()
+
+        import tempfile
+        import subprocess
+
+        windows = []
+        for item in audio_windows:
+            try:
+                windows.append(np.asarray(item, dtype=np.float32).reshape(-1))
+            except Exception:
+                continue
+        if not windows:
+            self._last_mix_binary_model_error = 'external_infer_no_valid_windows'
+            return None
+
+        with tempfile.TemporaryDirectory(prefix='mindecho_mix_') as temp_dir:
+            temp_root = Path(temp_dir)
+            input_npz = temp_root / 'windows.npz'
+            output_json = temp_root / 'result.json'
+            try:
+                np.savez_compressed(
+                    str(input_npz),
+                    windows=np.stack(windows, axis=0).astype(np.float32),
+                    sample_rate=np.asarray([_CHEST_FALSETTO_TARGET_SR], dtype=np.int32),
+                )
+            except Exception as exc:
+                self._last_mix_binary_model_error = f'external_infer_pack_failed:{type(exc).__name__}'
+                return None
+
+            last_error = 'external_infer_launch_failed'
+            for python_cmd in deduped:
+                for force_cpu in self._resolve_external_force_cpu_order('_prefer_mix_binary_external_cpu'):
+                    try:
+                        completed = subprocess.run(
+                            [
+                                python_cmd,
+                                str(script_path),
+                                '--input-npz',
+                                str(input_npz),
+                                '--output-json',
+                                str(output_json),
+                                '--checkpoint',
+                                str(checkpoint_path),
+                                '--artifact-dir',
+                                str(Path(checkpoint_path).parent),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                            check=False,
+                            env=self._build_external_infer_env(force_cpu),
+                        )
+                    except Exception as exc:
+                        last_error = f'external_infer_exec_failed:{type(exc).__name__}'
+                        break
+                    if completed.returncode != 0:
+                        stderr_text = str(completed.stderr or '').strip()
+                        last_error = f'external_infer_failed:{completed.returncode}'
+                        if stderr_text:
+                            last_error += f':{stderr_text.splitlines()[-1][:96]}'
+                        if (not force_cpu) and self._should_retry_external_infer_on_cpu(stderr_text):
+                            setattr(self, '_external_mix_gpu_retry_blocked', True)
+                            continue
+                        break
+                    try:
+                        payload = json.loads(output_json.read_text(encoding='utf-8'))
+                    except Exception as exc:
+                        last_error = f'external_infer_parse_failed:{type(exc).__name__}'
+                        break
+                    if isinstance(payload, list):
+                        self._preferred_external_torch_python = str(python_cmd)
+                        setattr(self, '_prefer_mix_binary_external_cpu', bool(force_cpu))
+                        if not force_cpu:
+                            setattr(self, '_external_mix_gpu_retry_blocked', False)
+                        self._last_mix_binary_model_error = ''
+                        return payload
+                    last_error = 'external_infer_bad_payload'
+                    break
+            self._last_mix_binary_model_error = last_error
             return None
 
     def _get_chest_falsetto_model_bundle(self) -> Optional[Dict[str, Any]]:
@@ -32059,6 +32695,261 @@ class ECGStylePitchVisualizer(QWidget):
         self._chest_falsetto_model_bundle = bundle
         return bundle
 
+    def _get_mix_binary_model_bundle(self) -> Optional[Dict[str, Any]]:
+        checkpoint_path = self._resolve_mix_binary_checkpoint_path()
+        if checkpoint_path is None:
+            self._last_mix_binary_model_error = 'checkpoint_missing'
+            return None
+        try:
+            mtime = float(checkpoint_path.stat().st_mtime)
+        except Exception:
+            mtime = 0.0
+        cached = getattr(self, '_mix_binary_model_bundle', None)
+        if isinstance(cached, dict):
+            try:
+                if str(cached.get('path', '')) == str(checkpoint_path) and float(cached.get('mtime', -1.0)) == mtime:
+                    self._last_mix_binary_model_error = ''
+                    return cached
+            except Exception:
+                pass
+        summary_payload = self._resolve_mix_binary_summary_payload(checkpoint_path)
+        backbone_name = str(summary_payload.get('backbone_name', 'squeezenet11') or 'squeezenet11').strip().lower()
+        threshold = self._resolve_mix_binary_threshold()
+        image_size = max(64, int(summary_payload.get('image_size', 224) or 224))
+        sample_rate = max(8000, int(summary_payload.get('sample_rate', _CHEST_FALSETTO_TARGET_SR) or _CHEST_FALSETTO_TARGET_SR))
+        n_fft = max(128, int(summary_payload.get('n_fft', 1024) or 1024))
+        hop_length = max(32, int(summary_payload.get('hop_length', 256) or 256))
+        n_mels = max(32, int(summary_payload.get('n_mels', 128) or 128))
+        bundle = {
+            'path': str(checkpoint_path),
+            'mtime': mtime,
+            'threshold': max(0.05, min(0.95, threshold)),
+            'backbone_name': backbone_name,
+            'image_size': image_size,
+            'sample_rate': sample_rate,
+            'n_fft': n_fft,
+            'hop_length': hop_length,
+            'n_mels': n_mels,
+            'force_external': False,
+        }
+        torch, torch_error = _import_torch_safely()
+        if torch is None:
+            bundle['force_external'] = True
+            self._last_mix_binary_model_error = str(torch_error or 'torch_import_failed')
+            self._mix_binary_model_bundle = bundle
+            return bundle
+        device = torch.device('cpu')
+        try:
+            model = self._build_mix_binary_model_architecture(torch, backbone_name)
+        except Exception as exc:
+            bundle['force_external'] = True
+            self._last_mix_binary_model_error = f'model_build_failed:{type(exc).__name__}'
+            self._mix_binary_model_bundle = bundle
+            return bundle
+        try:
+            checkpoint = torch.load(str(checkpoint_path), map_location=device)
+        except TypeError:
+            try:
+                checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
+            except Exception as exc:
+                bundle['force_external'] = True
+                self._last_mix_binary_model_error = f'checkpoint_load_failed:{type(exc).__name__}'
+                self._mix_binary_model_bundle = bundle
+                return bundle
+        except Exception as exc:
+            exc_text = str(exc or '')
+            if 'weights_only' in exc_text:
+                try:
+                    checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
+                except Exception as retry_exc:
+                    bundle['force_external'] = True
+                    self._last_mix_binary_model_error = f'checkpoint_load_failed:{type(retry_exc).__name__}'
+                    self._mix_binary_model_bundle = bundle
+                    return bundle
+            else:
+                bundle['force_external'] = True
+                self._last_mix_binary_model_error = f'checkpoint_load_failed:{type(exc).__name__}'
+                self._mix_binary_model_bundle = bundle
+                return bundle
+        state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        try:
+            model.load_state_dict(state_dict)
+        except Exception as exc:
+            bundle['force_external'] = True
+            self._last_mix_binary_model_error = f'state_dict_load_failed:{type(exc).__name__}'
+            self._mix_binary_model_bundle = bundle
+            return bundle
+        model.to(device)
+        model.eval()
+        try:
+            if isinstance(checkpoint, dict):
+                threshold = float(checkpoint.get('threshold', checkpoint.get('best_threshold', threshold)) or threshold)
+        except Exception:
+            threshold = self._resolve_mix_binary_threshold()
+        mel_filter = self._build_mix_binary_mel_filterbank(sample_rate=sample_rate, n_fft=n_fft, n_mels=n_mels)
+        bundle.update({
+            'torch': torch,
+            'device': device,
+            'model': model,
+            'threshold': max(0.05, min(0.95, threshold)),
+            'mean': torch.tensor(_CHEST_FALSETTO_MEAN, dtype=torch.float32).view(3, 1, 1),
+            'std': torch.tensor(_CHEST_FALSETTO_STD, dtype=torch.float32).view(3, 1, 1),
+            'stft_window': torch.hann_window(int(n_fft), dtype=torch.float32),
+            'mel_filter': torch.from_numpy(np.asarray(mel_filter, dtype=np.float32)),
+        })
+        self._last_mix_binary_model_error = ''
+        self._mix_binary_model_bundle = bundle
+        return bundle
+
+    def _build_mix_binary_model_architecture(self, torch_module: Any, backbone_name: str) -> Any:
+        name = str(backbone_name or 'squeezenet11').strip().lower()
+        from torchvision import models  # type: ignore
+        if name == 'squeezenet11':
+            model = models.squeezenet1_1(weights=None)
+            model.classifier[1] = torch_module.nn.Conv2d(512, 2, kernel_size=1)
+            model.num_classes = 2
+            return model
+        if name == 'mobilenet_v3_small':
+            model = models.mobilenet_v3_small(weights=None)
+            in_features = int(model.classifier[-1].in_features)
+            model.classifier[-1] = torch_module.nn.Linear(in_features, 2)
+            return model
+        if name == 'efficientnet_b0':
+            model = models.efficientnet_b0(weights=None)
+            in_features = int(model.classifier[-1].in_features)
+            model.classifier[-1] = torch_module.nn.Linear(in_features, 2)
+            return model
+        raise ValueError(f'unsupported_backbone:{name}')
+
+    def _build_mix_binary_mel_filterbank(self, *, sample_rate: int, n_fft: int, n_mels: int) -> np.ndarray:
+        upper_hz = float(sample_rate) * 0.5
+        mel_points = np.linspace(
+            2595.0 * math.log10(1.0 + 30.0 / 700.0),
+            2595.0 * math.log10(1.0 + upper_hz / 700.0),
+            n_mels + 2,
+            dtype=np.float32,
+        )
+        hz_points = np.asarray([700.0 * (10.0 ** (float(item) / 2595.0) - 1.0) for item in mel_points], dtype=np.float32)
+        bins = np.floor((n_fft + 1) * hz_points / float(sample_rate)).astype(np.int32)
+        bins = np.clip(bins, 0, n_fft // 2)
+        filterbank = np.zeros((n_mels, n_fft // 2 + 1), dtype=np.float32)
+        for mel_idx in range(1, n_mels + 1):
+            left = int(bins[mel_idx - 1])
+            center = int(bins[mel_idx])
+            right = int(bins[mel_idx + 1])
+            if center <= left:
+                center = min(left + 1, n_fft // 2)
+            if right <= center:
+                right = min(center + 1, n_fft // 2)
+            if center > left:
+                filterbank[mel_idx - 1, left:center] = np.linspace(0.0, 1.0, max(center - left, 1), endpoint=False, dtype=np.float32)
+            if right > center:
+                filterbank[mel_idx - 1, center:right] = np.linspace(1.0, 0.0, max(right - center, 1), endpoint=False, dtype=np.float32)
+        return filterbank
+
+    def _build_mix_binary_window_tensor(self, audio_window: np.ndarray, bundle: Dict[str, Any]) -> Optional[Any]:
+        try:
+            import torch.nn.functional as torch_F  # type: ignore
+        except Exception:
+            return None
+        torch = bundle.get('torch')
+        if torch is None:
+            return None
+        y = np.asarray(audio_window, dtype=np.float32).reshape(-1)
+        if y.size < 32:
+            return None
+        target_sample_rate = int(bundle.get('sample_rate', _CHEST_FALSETTO_TARGET_SR) or _CHEST_FALSETTO_TARGET_SR)
+        if target_sample_rate != int(_CHEST_FALSETTO_TARGET_SR):
+            try:
+                y = self._resample_chest_falsetto_audio(y, int(_CHEST_FALSETTO_TARGET_SR), target_sample_rate)
+            except Exception:
+                return None
+        n_fft = int(bundle.get('n_fft', 1024) or 1024)
+        hop_length = int(bundle.get('hop_length', 256) or 256)
+        image_size = int(bundle.get('image_size', 224) or 224)
+        waveform = torch.as_tensor(y)
+        if int(waveform.numel()) < n_fft:
+            waveform = torch.nn.functional.pad(waveform, (0, n_fft - int(waveform.numel())))
+        try:
+            window = bundle.get('stft_window')
+            if window is None or int(window.numel()) != n_fft:
+                window = torch.hann_window(n_fft, dtype=torch.float32)
+            stft = torch.stft(
+                waveform,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=n_fft,
+                window=window,
+                center=True,
+                return_complex=True,
+            )
+            power = stft.abs().pow(2.0)
+            mel_filter = bundle.get('mel_filter')
+            if mel_filter is None:
+                mel_filter = self._build_mix_binary_mel_filterbank(
+                    sample_rate=target_sample_rate,
+                    n_fft=n_fft,
+                    n_mels=int(bundle.get('n_mels', 128) or 128),
+                )
+                mel_filter = torch.from_numpy(np.asarray(mel_filter, dtype=np.float32))
+            elif not hasattr(mel_filter, 'device'):
+                mel_filter = torch.from_numpy(np.asarray(mel_filter, dtype=np.float32))
+            mel_spec = torch.matmul(mel_filter, power)
+            mel_spec = torch.log10(torch.clamp(mel_spec, min=1e-10))
+            mel_spec = mel_spec - mel_spec.amin()
+            peak = float(mel_spec.amax()) if int(mel_spec.numel()) > 0 else 0.0
+            if peak > 0.0:
+                mel_spec = mel_spec / peak
+            rgb = torch.stack((mel_spec, mel_spec, mel_spec), dim=0).to(dtype=torch.float32)
+            tensor = torch_F.interpolate(
+                rgb.unsqueeze(0),
+                size=(image_size, image_size),
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
+            mean = bundle.get('mean')
+            std = bundle.get('std')
+            if mean is not None and std is not None:
+                tensor = (tensor - mean) / std
+            return tensor
+        except Exception:
+            return None
+
+    def _predict_mix_binary_local(self, audio_windows: List[np.ndarray], bundle: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        torch = bundle.get('torch') if isinstance(bundle, dict) else None
+        model = bundle.get('model') if isinstance(bundle, dict) else None
+        device = bundle.get('device') if isinstance(bundle, dict) else None
+        if torch is None or model is None or device is None:
+            return None
+        tensors = []
+        for item in list(audio_windows or []):
+            tensor = self._build_mix_binary_window_tensor(item, bundle)
+            if tensor is None:
+                self._last_mix_binary_model_error = 'local_preprocess_failed'
+                return None
+            tensors.append(tensor)
+        if not tensors:
+            self._last_mix_binary_model_error = 'local_no_valid_windows'
+            return None
+        results: List[Dict[str, Any]] = []
+        batch_size = int(_CHEST_FALSETTO_BATCH_SIZE)
+        try:
+            with torch.no_grad():
+                for start_idx in range(0, len(tensors), batch_size):
+                    batch = torch.stack(tensors[start_idx:start_idx + batch_size]).to(device)
+                    logits = model(batch)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    for prob in probs:
+                        results.append({
+                            'non_mix_prob': float(prob[0]),
+                            'mix_prob': float(prob[1]),
+                        })
+        except Exception as exc:
+            self._last_mix_binary_model_error = f'local_predict_failed:{type(exc).__name__}'
+            return None
+        self._last_mix_binary_model_error = ''
+        return results
+
     def _build_chest_falsetto_window_tensor(self, audio_window: np.ndarray, bundle: Dict[str, Any]) -> Optional[Any]:
         try:
             import torch.nn.functional as torch_F  # type: ignore
@@ -32112,6 +33003,9 @@ class ECGStylePitchVisualizer(QWidget):
             cur_item['voice_type'] = prev_item.get('voice_type', prev_type)
             cur_item['chest_prob'] = 0.5 * (float(prev_item.get('chest_prob', 0.0) or 0.0) + float(next_item.get('chest_prob', 0.0) or 0.0))
             cur_item['falsetto_prob'] = 0.5 * (float(prev_item.get('falsetto_prob', 0.0) or 0.0) + float(next_item.get('falsetto_prob', 0.0) or 0.0))
+            if 'mix_prob' in prev_item or 'mix_prob' in next_item:
+                cur_item['mix_prob'] = 0.5 * (float(prev_item.get('mix_prob', 0.0) or 0.0) + float(next_item.get('mix_prob', 0.0) or 0.0))
+                cur_item['mix_threshold'] = 0.5 * (float(prev_item.get('mix_threshold', 0.45) or 0.45) + float(next_item.get('mix_threshold', 0.45) or 0.45))
             cur_item['confidence'] = max(float(cur_item.get('confidence', 0.0) or 0.0), 0.5 * (float(prev_item.get('confidence', 0.0) or 0.0) + float(next_item.get('confidence', 0.0) or 0.0)))
             cur_item['probability_margin'] = abs(float(cur_item.get('chest_prob', 0.0) or 0.0) - float(cur_item.get('falsetto_prob', 0.0) or 0.0))
         return smoothed
@@ -32352,15 +33246,17 @@ class ECGStylePitchVisualizer(QWidget):
                 'breath_hint_ratio': breath_hint_ratio,
                 'mean_pitch_hz': mean_pitch_hz,
             }
+            window_audio = np.asarray(window, dtype=np.float32)
             if bundle is not None:
                 tensor = self._build_chest_falsetto_window_tensor(window, bundle)
                 if tensor is None:
                     continue
                 candidate_windows.append(candidate_meta)
                 tensors.append(tensor)
+                audio_windows.append(window_audio)
             else:
                 candidate_windows.append(candidate_meta)
-                audio_windows.append(np.asarray(window, dtype=np.float32))
+                audio_windows.append(window_audio)
 
         self._last_voice_type_debug['candidate_windows'] = len(candidate_windows)
 
@@ -32371,6 +33267,13 @@ class ECGStylePitchVisualizer(QWidget):
         all_predictions: List[Dict[str, Any]] = []
         predictions: List[Dict[str, Any]] = []
         if bundle is not None:
+            mix_bundle = self._get_mix_binary_model_bundle()
+            mix_threshold = float(mix_bundle.get('threshold', self._resolve_mix_binary_threshold()) or self._resolve_mix_binary_threshold()) if isinstance(mix_bundle, dict) else self._resolve_mix_binary_threshold()
+            mix_results = None
+            if isinstance(mix_bundle, dict) and not bool(mix_bundle.get('force_external', False)):
+                mix_results = self._predict_mix_binary_local(audio_windows, mix_bundle)
+            if mix_results is None:
+                mix_results = self._run_mix_binary_external_inference(audio_windows)
             batch_size = int(_CHEST_FALSETTO_BATCH_SIZE)
             with torch.no_grad():
                 for start_idx in range(0, len(tensors), batch_size):
@@ -32382,7 +33285,14 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         continue
                     for offset, prob in enumerate(probs):
-                        record = dict(candidate_windows[start_idx + offset])
+                        record_idx = start_idx + offset
+                        record = dict(candidate_windows[record_idx])
+                        if mix_results is not None and record_idx < len(mix_results):
+                            try:
+                                record['mix_prob'] = float(mix_results[record_idx].get('mix_prob', 0.0) or 0.0)
+                                record['mix_threshold'] = float(mix_threshold)
+                            except Exception:
+                                pass
                         adjusted = self._apply_voice_type_context_priors(
                             float(prob[0]),
                             float(prob[1]),
@@ -32417,6 +33327,13 @@ class ECGStylePitchVisualizer(QWidget):
             if external_results is None:
                 self._last_voice_type_debug['reason'] = str(getattr(self, '_last_chest_falsetto_model_error', '') or 'model_unavailable')
                 return []
+            mix_bundle = self._get_mix_binary_model_bundle()
+            mix_threshold = float(mix_bundle.get('threshold', self._resolve_mix_binary_threshold()) or self._resolve_mix_binary_threshold()) if isinstance(mix_bundle, dict) else self._resolve_mix_binary_threshold()
+            mix_results = None
+            if isinstance(mix_bundle, dict) and not bool(mix_bundle.get('force_external', False)):
+                mix_results = self._predict_mix_binary_local(audio_windows, mix_bundle)
+            if mix_results is None:
+                mix_results = self._run_mix_binary_external_inference(audio_windows)
             self._last_voice_type_debug['model_ready'] = True
             self._last_voice_type_debug['backend'] = 'external_python'
             for idx, prob in enumerate(list(external_results or [])):
@@ -32428,6 +33345,12 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     continue
                 record = dict(candidate_windows[idx])
+                if mix_results is not None and idx < len(mix_results):
+                    try:
+                        record['mix_prob'] = float(mix_results[idx].get('mix_prob', 0.0) or 0.0)
+                        record['mix_threshold'] = float(mix_threshold)
+                    except Exception:
+                        pass
                 adjusted = self._apply_voice_type_context_priors(
                     chest_prob,
                     falsetto_prob,
@@ -32540,6 +33463,8 @@ class ECGStylePitchVisualizer(QWidget):
             mean_pitch_hz = float(np.mean(positive_pitch)) if positive_pitch.size else float(np.mean([float(item.get('mean_pitch_hz', 0.0) or 0.0) for item in run]))
             chest_prob = float(np.mean([float(item.get('chest_prob', 0.0) or 0.0) for item in run]))
             falsetto_prob = float(np.mean([float(item.get('falsetto_prob', 0.0) or 0.0) for item in run]))
+            mix_prob = float(np.mean([float(item.get('mix_prob', 0.0) or 0.0) for item in run])) if any('mix_prob' in item for item in run) else 0.0
+            mix_threshold = float(np.mean([float(item.get('mix_threshold', 0.45) or 0.45) for item in run])) if any('mix_threshold' in item for item in run) else 0.45
             confidence = float(np.mean([float(item.get('confidence', 0.0) or 0.0) for item in run]))
             probability_margin = float(np.mean([float(item.get('probability_margin', 0.0) or 0.0) for item in run]))
             margin_strength = max(0.0, min(1.0, probability_margin / 0.35))
@@ -32566,6 +33491,8 @@ class ECGStylePitchVisualizer(QWidget):
                     'breath_hint_ratio': breath_hint_ratio,
                     'chest_prob': chest_prob,
                     'falsetto_prob': falsetto_prob,
+                    'mix_prob': mix_prob,
+                    'mix_threshold': mix_threshold,
                 },
                 display_payload={
                     'model': 'squeezenet_binary_mel_safe_v2',
@@ -32578,17 +33505,1353 @@ class ECGStylePitchVisualizer(QWidget):
                     'mean_zcr': mean_zcr,
                     'mean_breath_score': mean_breath_score,
                     'breath_hint_ratio': breath_hint_ratio,
+                    'mix_prob': mix_prob,
+                    'mix_threshold': mix_threshold,
                 },
                 voice_type='chest' if event_type == 'chest_voice' else 'falsetto',
                 mean_pitch_hz=mean_pitch_hz,
                 voiced_ratio=voiced_ratio,
                 chest_prob=chest_prob,
                 falsetto_prob=falsetto_prob,
+                mix_prob=mix_prob,
                 probability_margin=probability_margin,
                 window_count=len(run),
             )
             events.append(event)
         return events
+
+    def _build_rule_based_mix_events(
+        self,
+        frames: List[FrameFeatures],
+        voice_events: List[VoiceTypeEvent],
+    ) -> List[MixVoiceEvent]:
+        if not any(self._technique_type_selected(name) for name in ('strong_mix', 'weak_mix', 'balanced_mix')):
+            return []
+
+        def _clamp01(value: float) -> float:
+            return max(0.0, min(1.0, float(value or 0.0)))
+
+        mix_events: List[MixVoiceEvent] = []
+        for event in list(voice_events or []):
+            if not isinstance(event, VoiceTypeEvent):
+                continue
+            try:
+                duration = float(getattr(event, 'duration', 0.0) or 0.0)
+                confidence = float(getattr(event, 'confidence', 0.0) or 0.0)
+                strength = float(getattr(event, 'strength', 0.0) or 0.0)
+                probability_margin = float(getattr(event, 'probability_margin', 0.0) or 0.0)
+                chest_prob = float(getattr(event, 'chest_prob', 0.0) or 0.0)
+                falsetto_prob = float(getattr(event, 'falsetto_prob', 0.0) or 0.0)
+                voiced_ratio = float(getattr(event, 'voiced_ratio', 0.0) or 0.0)
+                mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
+            except Exception:
+                continue
+            if duration < 0.18 or mean_pitch_hz <= 0.0:
+                continue
+
+            try:
+                snapshot = dict(getattr(event, 'feature_snapshot', {}) or {})
+            except Exception:
+                snapshot = {}
+            mean_rms = float(snapshot.get('mean_rms', 0.0) or 0.0)
+            mean_zcr = float(snapshot.get('mean_zcr', 0.0) or 0.0)
+            stable_ratio = float(snapshot.get('stable_ratio', 0.0) or 0.0)
+            mean_breath_score = float(snapshot.get('mean_breath_score', 0.0) or 0.0)
+            breath_hint_ratio = float(snapshot.get('breath_hint_ratio', 0.0) or 0.0)
+            learned_mix_prob = float(snapshot.get('mix_prob', getattr(event, 'mix_prob', 0.0) or 0.0) or 0.0)
+            learned_mix_threshold = float(snapshot.get('mix_threshold', 0.45) or 0.45)
+            learned_mix_margin = (learned_mix_prob - learned_mix_threshold) if learned_mix_prob > 0.0 else 0.0
+
+            heuristic_mix_support = _clamp01(1.0 - (probability_margin / 0.40))
+            learned_mix_support = _clamp01((learned_mix_prob - (learned_mix_threshold - 0.12)) / 0.42) if learned_mix_prob > 0.0 else 0.0
+            mix_support = heuristic_mix_support
+            if learned_mix_prob > 0.0:
+                mix_support = _clamp01(0.32 * heuristic_mix_support + 0.68 * learned_mix_support)
+            pitch_support = _clamp01((mean_pitch_hz - 210.0) / 230.0)
+            stable_support = _clamp01((stable_ratio - 0.08) / 0.24)
+            voiced_support = _clamp01((voiced_ratio - 0.34) / 0.34)
+            low_energy_air = _clamp01((0.0014 - mean_rms) / 0.0011) if mean_rms > 0.0 else 0.0
+            zcr_air = _clamp01((mean_zcr - 0.08) / 0.16)
+            breathiness = max(
+                _clamp01(mean_breath_score / 0.34),
+                _clamp01(breath_hint_ratio / 0.22),
+                zcr_air * 0.82,
+                low_energy_air * 0.68,
+            )
+            head_bias = _clamp01((falsetto_prob - chest_prob + 0.18) / 0.50)
+            chest_bias = _clamp01((chest_prob - falsetto_prob + 0.18) / 0.50)
+            pure_learned_head_mix = (
+                learned_mix_prob >= learned_mix_threshold
+                and head_bias >= 0.70
+                and heuristic_mix_support <= 0.08
+            )
+            marginal_head_mix = (
+                learned_mix_prob >= learned_mix_threshold
+                and head_bias >= 0.90
+                and learned_mix_margin < 0.05
+                and heuristic_mix_support < 0.30
+                and learned_mix_support < 0.45
+            )
+            released_high_pitch_head_mix = (
+                marginal_head_mix
+                and mean_pitch_hz >= 470.0
+                and falsetto_prob >= 0.95
+                and mean_rms >= 0.075
+                and learned_mix_margin >= 0.005
+                and learned_mix_support >= 0.30
+            )
+            released_near_threshold_high_pitch_head_mix = (
+                not released_high_pitch_head_mix
+                and learned_mix_margin >= -0.0015
+                and learned_mix_prob >= max(0.50, learned_mix_threshold - 0.002)
+                and head_bias >= 0.92
+                and mean_pitch_hz >= 500.0
+                and falsetto_prob >= 0.93
+                and falsetto_prob <= 0.96
+                and mean_rms >= 0.08
+                and learned_mix_support >= 0.28
+            )
+            released_ultra_high_pitch_head_mix = (
+                not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and learned_mix_margin >= -0.072
+                and learned_mix_margin <= -0.015
+                and learned_mix_prob >= max(0.479, learned_mix_threshold - 0.072)
+                and head_bias >= 0.95
+                and mean_pitch_hz >= 540.0
+                and falsetto_prob >= 0.945
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
+                and learned_mix_support >= 0.115
+                and learned_mix_support <= 0.16
+            )
+            released_high_energy_midhigh_head_mix = (
+                not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and not released_ultra_high_pitch_head_mix
+                and learned_mix_margin >= -0.072
+                and learned_mix_margin <= -0.045
+                and learned_mix_prob >= max(0.479, learned_mix_threshold - 0.072)
+                and head_bias >= 0.95
+                and mean_pitch_hz >= 440.0
+                and mean_pitch_hz <= 470.0
+                and falsetto_prob >= 0.95
+                and mean_rms >= 0.11
+                and heuristic_mix_support <= 0.08
+                and learned_mix_support >= 0.115
+                and learned_mix_support <= 0.14
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
+            )
+            released_supported_low_pitch_head_mix = (
+                pure_learned_head_mix
+                and mean_pitch_hz >= 290.0
+                and mean_pitch_hz <= 400.0
+                and falsetto_prob >= 0.76
+                and falsetto_prob <= 0.88
+                and chest_prob >= 0.18 
+                and chest_prob <= 0.24
+                and mean_rms >= 0.06
+                and heuristic_mix_support <= 0.08
+                and learned_mix_margin >= 0.06
+                and learned_mix_support >= 0.43
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
+            )
+            released_lowmid_near_threshold_head_mix = (
+                not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and not released_ultra_high_pitch_head_mix
+                and not released_high_energy_midhigh_head_mix
+                and not released_supported_low_pitch_head_mix
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_margin >= -0.0045
+                and learned_mix_margin <= -0.0015
+                and head_bias >= 0.95
+                and mean_pitch_hz >= 326.0
+                and mean_pitch_hz <= 340.0
+                and falsetto_prob >= 0.805
+                and falsetto_prob <= 0.830
+                and chest_prob >= 0.175
+                and chest_prob <= 0.200
+                and mean_rms >= 0.060
+                and mean_rms <= 0.068
+                and learned_mix_support >= 0.278
+                and learned_mix_support <= 0.282
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
+            )
+            released_midhigh_near_threshold_head_mix = (
+                not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and not released_ultra_high_pitch_head_mix
+                and not released_high_energy_midhigh_head_mix
+                and not released_supported_low_pitch_head_mix
+                and not released_lowmid_near_threshold_head_mix
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_margin >= -0.0065
+                and learned_mix_margin <= -0.0025
+                and head_bias >= 0.95
+                and mean_pitch_hz >= 396.0
+                and mean_pitch_hz <= 442.0
+                and falsetto_prob >= 0.868
+                and falsetto_prob <= 0.885
+                and chest_prob >= 0.117
+                and chest_prob <= 0.132
+                and mean_rms >= 0.029
+                and mean_rms <= 0.043
+                and learned_mix_support >= 0.270
+                and learned_mix_support <= 0.279
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
+            )
+            released_ultrahigh_bright_head_point_mix = (
+                not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and not released_ultra_high_pitch_head_mix
+                and not released_high_energy_midhigh_head_mix
+                and not released_supported_low_pitch_head_mix
+                and not released_lowmid_near_threshold_head_mix
+                and not released_midhigh_near_threshold_head_mix
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_margin >= -0.0160
+                and learned_mix_margin <= -0.0153
+                and head_bias >= 0.95
+                and mean_pitch_hz >= 524.5
+                and mean_pitch_hz <= 525.5
+                and falsetto_prob >= 0.9610
+                and falsetto_prob <= 0.9625
+                and chest_prob >= 0.0375
+                and chest_prob <= 0.0395
+                and mean_rms >= 0.0950
+                and mean_rms <= 0.0960
+                and learned_mix_support >= 0.2480
+                and learned_mix_support <= 0.2488
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midchest_near_threshold_head_mix = (
+                not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and not released_ultra_high_pitch_head_mix
+                and not released_high_energy_midhigh_head_mix
+                and not released_supported_low_pitch_head_mix
+                and not released_lowmid_near_threshold_head_mix
+                and not released_midhigh_near_threshold_head_mix
+                and not released_ultrahigh_bright_head_point_mix
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_margin >= -0.027
+                and learned_mix_margin <= -0.009
+                and head_bias >= 0.95
+                and mean_pitch_hz >= 319.0
+                and mean_pitch_hz <= 406.1
+                and falsetto_prob >= 0.8635
+                and falsetto_prob <= 0.8790
+                and chest_prob >= 0.225
+                and chest_prob <= 0.271
+                and mean_rms >= 0.0528
+                and mean_rms <= 0.0937
+                and learned_mix_support >= 0.2217
+                and learned_mix_support <= 0.2635
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            underpowered_low_pitch_head_mix = (
+                learned_mix_prob >= learned_mix_threshold
+                and head_bias >= 0.88
+                and mean_pitch_hz < 240.0
+                and learned_mix_margin < 0.09
+                and learned_mix_support < 0.50
+            )
+            borderline_low_mid_pitch_head_mix = (
+                learned_mix_prob >= learned_mix_threshold
+                and not marginal_head_mix
+                and head_bias >= 0.90
+                and learned_mix_margin < 0.06
+                and mean_pitch_hz < 300.0
+                and falsetto_prob < 0.78
+                and mean_rms < 0.06
+                and heuristic_mix_support < 0.32
+                and learned_mix_support < 0.43
+            )
+            released_low_energy_midhigh_head_mix = (
+                marginal_head_mix
+                and not released_high_pitch_head_mix
+                and duration >= 0.55
+                and duration <= 0.95
+                and mean_pitch_hz >= 408.0
+                and mean_pitch_hz <= 422.0
+                and falsetto_prob >= 0.66
+                and falsetto_prob <= 0.75
+                and chest_prob >= 0.27
+                and chest_prob <= 0.34
+                and learned_mix_margin >= 0.005
+                and learned_mix_margin <= 0.015
+                and heuristic_mix_support <= 0.08
+                and learned_mix_support >= 0.29
+                and learned_mix_support <= 0.34
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
+            )
+            released_sustained_highpitch_marginal_head_mix = (
+                marginal_head_mix
+                and not released_high_pitch_head_mix
+                and not released_near_threshold_high_pitch_head_mix
+                and duration >= 6.50
+                and duration <= 12.10
+                and mean_pitch_hz >= 438.0
+                and mean_pitch_hz <= 489.5
+                and falsetto_prob >= 0.875
+                and falsetto_prob <= 0.94
+                and chest_prob >= 0.075
+                and chest_prob <= 0.245
+                and mean_rms >= 0.065
+                and mean_rms <= 0.091
+                and heuristic_mix_support <= 0.08
+                and learned_mix_margin >= 0.012
+                and learned_mix_margin <= 0.045
+                and learned_mix_support >= 0.31
+                and learned_mix_support <= 0.40
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midpitch_lowchest_pure_head_mix = (
+                pure_learned_head_mix
+                and mean_pitch_hz >= 323.0
+                and mean_pitch_hz <= 395.0
+                and chest_prob >= 0.13
+                and chest_prob <= 0.19
+                and falsetto_prob >= 0.81
+                and falsetto_prob <= 0.89
+                and mean_rms >= 0.033
+                and mean_rms <= 0.072
+                and duration >= 2.80
+                and duration <= 8.45
+                and heuristic_mix_support <= 0.08
+                and learned_mix_margin >= 0.004
+                and learned_mix_margin <= 0.063
+                and learned_mix_support >= 0.295
+                and learned_mix_support <= 0.435
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_short_lowpitch_marginal_head_mix = (
+                marginal_head_mix
+                and mean_pitch_hz >= 240.0
+                and mean_pitch_hz <= 308.0
+                and chest_prob >= 0.20
+                and chest_prob <= 0.39
+                and falsetto_prob >= 0.64
+                and falsetto_prob <= 0.84
+                and mean_rms >= 0.023
+                and mean_rms <= 0.050
+                and duration >= 1.20
+                and duration <= 5.40
+                and heuristic_mix_support <= 0.30
+                and learned_mix_margin >= 0.003
+                and learned_mix_margin <= 0.037
+                and learned_mix_support >= 0.29
+                and learned_mix_support <= 0.38
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midpitch_underpowered_pure_head_mix = (
+                pure_learned_head_mix
+                and marginal_head_mix
+                and mean_pitch_hz >= 360.0
+                and mean_pitch_hz <= 430.0
+                and chest_prob >= 0.05
+                and chest_prob <= 0.14
+                and falsetto_prob >= 0.86
+                and falsetto_prob <= 0.95
+                and mean_rms >= 0.045
+                and mean_rms <= 0.085
+                and duration >= 6.0
+                and duration <= 11.5
+                and learned_mix_margin >= 0.0
+                and learned_mix_margin <= 0.01
+                and learned_mix_support >= 0.28
+                and learned_mix_support <= 0.31
+                and mix_support >= 0.19
+                and mix_support <= 0.21
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midhigh_balanced_pure_head_mix = (
+                pure_learned_head_mix
+                and marginal_head_mix
+                and mean_pitch_hz >= 455.0
+                and mean_pitch_hz <= 470.0
+                and chest_prob >= 0.07
+                and chest_prob <= 0.10
+                and falsetto_prob >= 0.90
+                and falsetto_prob <= 0.93
+                and mean_rms >= 0.08
+                and mean_rms <= 0.13
+                and duration >= 6.0
+                and duration <= 10.5
+                and learned_mix_margin >= 0.0
+                and learned_mix_margin <= 0.045
+                and learned_mix_support >= 0.29
+                and learned_mix_support <= 0.39
+                and mix_support >= 0.20
+                and mix_support <= 0.27
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_underpowered_short_lowpitch_head_mix = (
+                underpowered_low_pitch_head_mix
+                and marginal_head_mix
+                and mean_pitch_hz >= 235.0
+                and mean_pitch_hz <= 236.0
+                and chest_prob >= 0.25
+                and chest_prob <= 0.29
+                and falsetto_prob >= 0.73
+                and falsetto_prob <= 0.75
+                and mean_rms >= 0.024
+                and mean_rms <= 0.026
+                and duration >= 1.90
+                and duration <= 2.20
+                and heuristic_mix_support <= 0.05
+                and learned_mix_margin >= 0.003
+                and learned_mix_margin <= 0.006
+                and learned_mix_support >= 0.29
+                and learned_mix_support <= 0.30
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midpitch_long_lowenergy_marginal_head_mix = (
+                pure_learned_head_mix
+                and marginal_head_mix
+                and mean_pitch_hz >= 396.0
+                and mean_pitch_hz <= 414.0
+                and chest_prob >= 0.04
+                and chest_prob <= 0.06
+                and falsetto_prob >= 0.94
+                and falsetto_prob <= 0.96
+                and mean_rms >= 0.038
+                and mean_rms <= 0.060
+                and duration >= 9.0
+                and duration <= 11.2
+                and learned_mix_margin >= 0.012
+                and learned_mix_margin <= 0.032
+                and learned_mix_support >= 0.32
+                and learned_mix_support <= 0.37
+                and mix_support >= 0.22
+                and mix_support <= 0.25
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midhigh_nearthreshold_softhead_long_mix = (
+                learned_mix_prob < learned_mix_threshold
+                and learned_mix_margin >= -0.030
+                and learned_mix_margin <= -0.010
+                and mean_pitch_hz >= 426.0
+                and mean_pitch_hz <= 436.0
+                and chest_prob >= 0.05
+                and chest_prob <= 0.08
+                and falsetto_prob >= 0.92
+                and falsetto_prob <= 0.95
+                and mean_rms >= 0.038
+                and mean_rms <= 0.055
+                and duration >= 9.0
+                and duration <= 11.5
+                and learned_mix_support >= 0.22
+                and learned_mix_support <= 0.26
+                and mix_support >= 0.14
+                and mix_support <= 0.19
+                and heuristic_mix_support <= 0.06
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_highpitch_nearthreshold_supported_head_mix = (
+                learned_mix_prob < learned_mix_threshold
+                and mean_pitch_hz >= 455.0
+                and mean_pitch_hz <= 540.0
+                and chest_prob >= 0.015
+                and chest_prob <= 0.055
+                and falsetto_prob >= 0.946
+                and falsetto_prob <= 0.985
+                and learned_mix_margin >= -0.065
+                and learned_mix_margin <= -0.003
+                and learned_mix_support >= 0.130
+                and learned_mix_support <= 0.280
+                and mix_support >= 0.090
+                and mix_support <= 0.190
+                and mean_rms >= 0.062
+                and mean_rms <= 0.115
+                and duration >= 7.0
+                and duration <= 18.5
+                and heuristic_mix_support <= 0.06
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midhigh_supported_softhead_mix = (
+                learned_mix_prob < learned_mix_threshold
+                and mean_pitch_hz >= 417.0
+                and mean_pitch_hz <= 517.0
+                and chest_prob >= 0.011
+                and chest_prob <= 0.099
+                and falsetto_prob >= 0.901
+                and falsetto_prob <= 0.989
+                and learned_mix_margin >= -0.071
+                and learned_mix_margin <= 0.0
+                and learned_mix_support >= 0.117
+                and learned_mix_support <= 0.268
+                and mix_support >= 0.079
+                and mix_support <= 0.182
+                and mean_rms >= 0.041
+                and mean_rms <= 0.095
+                and duration >= 6.5
+                and duration <= 18.5
+                and heuristic_mix_support <= 0.06
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_balanced_supported_softhead_mix = (
+                learned_mix_prob < learned_mix_threshold
+                and mean_pitch_hz >= 340.0
+                and mean_pitch_hz <= 460.0
+                and chest_prob >= 0.098
+                and chest_prob <= 0.140
+                and falsetto_prob >= 0.860
+                and falsetto_prob <= 0.901
+                and learned_mix_margin >= -0.068
+                and learned_mix_margin <= -0.003
+                and learned_mix_support >= 0.126
+                and learned_mix_support <= 0.280
+                and mix_support >= 0.086
+                and mix_support <= 0.190
+                and mean_rms >= 0.050
+                and mean_rms <= 0.088
+                and duration >= 4.9
+                and duration <= 8.4
+                and heuristic_mix_support <= 0.06
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_highpitch_long_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob >= 0.255
+                and learned_mix_prob <= 0.290
+                and learned_mix_prob < max(0.26, learned_mix_threshold - 0.08)
+                and mean_pitch_hz >= 438.0
+                and mean_pitch_hz <= 540.0
+                and chest_prob >= 0.010
+                and chest_prob <= 0.034
+                and falsetto_prob >= 0.967
+                and falsetto_prob <= 0.989
+                and learned_mix_margin >= -0.170
+                and learned_mix_margin <= -0.135
+                and mean_rms >= 0.058
+                and mean_rms <= 0.080
+                and duration >= 8.8
+                and duration <= 10.7
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midlow_balanced_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob >= 0.200
+                and learned_mix_prob <= 0.245
+                and learned_mix_prob < max(0.26, learned_mix_threshold - 0.08)
+                and mean_pitch_hz >= 385.0
+                and mean_pitch_hz <= 420.0
+                and chest_prob >= 0.090
+                and chest_prob <= 0.140
+                and falsetto_prob >= 0.860
+                and falsetto_prob <= 0.910
+                and learned_mix_margin >= -0.225
+                and learned_mix_margin <= -0.170
+                and mean_rms >= 0.030
+                and mean_rms <= 0.075
+                and duration >= 6.0
+                and duration <= 10.5
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_lowmid_chesty_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob >= 0.210
+                and learned_mix_prob <= 0.282
+                and learned_mix_prob < max(0.26, learned_mix_threshold - 0.08)
+                and mean_pitch_hz >= 315.0
+                and mean_pitch_hz <= 335.0
+                and chest_prob >= 0.175
+                and chest_prob <= 0.198
+                and falsetto_prob >= 0.805
+                and falsetto_prob <= 0.823
+                and learned_mix_margin >= -0.210
+                and learned_mix_margin <= -0.145
+                and duration >= 6.0
+                and duration <= 10.5
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_short_lowpitch_supported_softhead_mix = (
+                learned_mix_prob < learned_mix_threshold
+                and mean_pitch_hz >= 300.0
+                and mean_pitch_hz <= 309.0
+                and chest_prob >= 0.24
+                and chest_prob <= 0.28
+                and falsetto_prob >= 0.70
+                and falsetto_prob <= 0.76
+                and learned_mix_margin >= -0.036
+                and learned_mix_margin <= -0.025
+                and learned_mix_support >= 0.20
+                and learned_mix_support <= 0.23
+                and mix_support >= 0.13
+                and mix_support <= 0.16
+                and mean_rms >= 0.048
+                and mean_rms <= 0.052
+                and duration >= 3.6
+                and duration <= 4.3
+                and heuristic_mix_support <= 0.06
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_nearthreshold_extreme_energy_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_margin >= -0.110
+                and learned_mix_margin <= -0.070
+                and mean_pitch_hz >= 448.0
+                and mean_pitch_hz <= 590.0
+                and chest_prob >= 0.035
+                and chest_prob <= 0.085
+                and falsetto_prob >= 0.920
+                and falsetto_prob <= 0.970
+                and ((mean_rms >= 0.014 and mean_rms <= 0.026) or (mean_rms >= 0.100 and mean_rms <= 0.160))
+                and duration >= 3.5
+                and duration <= 8.5
+                and learned_mix_support >= 0.035
+                and learned_mix_support <= 0.105
+                and mix_support >= 0.024
+                and mix_support <= 0.075
+                and heuristic_mix_support <= 0.03
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_sustained_highpitch_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_prob >= 0.380
+                and learned_mix_prob <= 0.520
+                and learned_mix_margin >= -0.260
+                and learned_mix_margin <= -0.120
+                and mean_pitch_hz >= 448.0
+                and mean_pitch_hz <= 545.0
+                and chest_prob >= 0.025
+                and chest_prob <= 0.085
+                and falsetto_prob >= 0.920
+                and falsetto_prob <= 0.975
+                and mean_rms >= 0.060
+                and mean_rms <= 0.115
+                and duration >= 6.3
+                and duration <= 16.5
+                and learned_mix_support <= 0.105
+                and mix_support <= 0.075
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midhigh_long_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_prob >= 0.390
+                and learned_mix_prob <= 0.470
+                and learned_mix_margin >= -0.245
+                and learned_mix_margin <= -0.135
+                and mean_pitch_hz >= 388.0
+                and mean_pitch_hz <= 430.0
+                and chest_prob >= 0.060
+                and chest_prob <= 0.110
+                and falsetto_prob >= 0.915
+                and falsetto_prob <= 0.940
+                and mean_rms >= 0.082
+                and mean_rms <= 0.110
+                and duration >= 6.0
+                and duration <= 10.5
+                and learned_mix_support <= 0.035
+                and mix_support <= 0.025
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midhigh_moderate_energy_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_prob >= 0.430
+                and learned_mix_prob <= 0.560
+                and learned_mix_margin >= -0.215
+                and learned_mix_margin <= -0.080
+                and mean_pitch_hz >= 460.0
+                and mean_pitch_hz <= 535.0
+                and chest_prob >= 0.015
+                and chest_prob <= 0.040
+                and falsetto_prob >= 0.960
+                and falsetto_prob <= 0.985
+                and mean_rms >= 0.045
+                and mean_rms <= 0.075
+                and duration >= 7.5
+                and duration <= 12.5
+                and learned_mix_support <= 0.060
+                and mix_support <= 0.040
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_highpitch_long_moderate_energy_lowprob_softhead_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and learned_mix_prob >= 0.430
+                and learned_mix_prob <= 0.490
+                and learned_mix_margin >= -0.215
+                and learned_mix_margin <= -0.150
+                and mean_pitch_hz >= 500.0
+                and mean_pitch_hz <= 581.0
+                and chest_prob >= 0.018
+                and chest_prob <= 0.040
+                and falsetto_prob >= 0.960
+                and falsetto_prob <= 0.982
+                and mean_rms >= 0.084
+                and mean_rms <= 0.106
+                and duration >= 8.5
+                and duration <= 19.0
+                and learned_mix_support <= 0.010
+                and mix_support <= 0.010
+                and heuristic_mix_support <= 0.02
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_highpitch_headbiased_combination_soft_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.98
+                and learned_mix_prob >= 0.430
+                and learned_mix_prob <= 0.530
+                and learned_mix_margin >= -0.200
+                and learned_mix_margin <= -0.060
+                and mean_pitch_hz >= 430.0
+                and mean_pitch_hz <= 520.0
+                and chest_prob <= 0.110
+                and falsetto_prob >= 0.890
+                and falsetto_prob <= 0.980
+                and mean_rms >= 0.050
+                and mean_rms <= 0.115
+                and duration >= 3.8
+                and duration <= 18.5
+                and learned_mix_support <= 0.030
+                and mix_support <= 0.020
+                and heuristic_mix_support <= 0.020
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_highpitch_chesty_nearthreshold_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.98
+                and learned_mix_prob >= 0.400
+                and learned_mix_prob <= 0.490
+                and learned_mix_margin >= -0.240
+                and learned_mix_margin <= -0.150
+                and mean_pitch_hz >= 440.0
+                and mean_pitch_hz <= 530.0
+                and chest_prob >= 0.100
+                and chest_prob <= 0.130
+                and falsetto_prob >= 0.870
+                and falsetto_prob <= 0.900
+                and mean_rms >= 0.050
+                and mean_rms <= 0.160
+                and duration >= 6.0
+                and duration <= 16.5
+                and learned_mix_support <= 0.020
+                and mix_support <= 0.015
+                and heuristic_mix_support <= 0.020
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_ultrahigh_lowchest_zero_support_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.99
+                and learned_mix_prob >= 0.300
+                and learned_mix_prob <= 0.430
+                and learned_mix_margin >= -0.340
+                and learned_mix_margin <= -0.200
+                and mean_pitch_hz >= 520.0
+                and mean_pitch_hz <= 600.0
+                and chest_prob >= 0.020
+                and chest_prob <= 0.046
+                and falsetto_prob >= 0.954
+                and falsetto_prob <= 0.980
+                and duration >= 5.0
+                and duration <= 15.0
+                and learned_mix_support <= 0.001
+                and mix_support <= 0.001
+                and heuristic_mix_support <= 0.020
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_midhigh_headbiased_zero_support_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.99
+                and learned_mix_prob >= 0.410
+                and learned_mix_prob <= 0.430
+                and learned_mix_margin >= -0.235
+                and learned_mix_margin <= -0.205
+                and mean_pitch_hz >= 385.0
+                and mean_pitch_hz <= 420.0
+                and chest_prob >= 0.075
+                and chest_prob <= 0.125
+                and falsetto_prob >= 0.870
+                and falsetto_prob <= 0.930
+                and mean_rms >= 0.079
+                and mean_rms <= 0.115
+                and duration >= 5.0
+                and duration <= 9.0
+                and learned_mix_support <= 0.002
+                and mix_support <= 0.002
+                and heuristic_mix_support <= 0.020
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_short_lowmid_supported_headbias_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.99
+                and learned_mix_prob >= 0.540
+                and learned_mix_prob <= 0.590
+                and learned_mix_margin >= -0.100
+                and learned_mix_margin <= -0.050
+                and mean_pitch_hz >= 255.0
+                and mean_pitch_hz <= 310.0
+                and chest_prob >= 0.240
+                and chest_prob <= 0.340
+                and falsetto_prob >= 0.660
+                and falsetto_prob <= 0.760
+                and mean_rms >= 0.020
+                and mean_rms <= 0.080
+                and duration >= 1.0
+                and duration <= 2.2
+                and learned_mix_support >= 0.090
+                and learned_mix_support <= 0.170
+                and mix_support >= 0.060
+                and mix_support <= 0.170
+                and heuristic_mix_support <= 0.180
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_supportful_midhigh_nearthreshold_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.99
+                and learned_mix_prob >= 0.520
+                and learned_mix_prob <= 0.560
+                and learned_mix_margin >= -0.130
+                and learned_mix_margin <= -0.080
+                and mean_pitch_hz >= 315.0
+                and mean_pitch_hz <= 370.0
+                and chest_prob >= 0.190
+                and chest_prob <= 0.220
+                and falsetto_prob >= 0.780
+                and falsetto_prob <= 0.810
+                and mean_rms >= 0.045
+                and mean_rms <= 0.065
+                and duration >= 5.0
+                and duration <= 8.5
+                and learned_mix_support >= 0.010
+                and learned_mix_support <= 0.080
+                and mix_support >= 0.010
+                and mix_support <= 0.050
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_supportful_highpitch_nearthreshold_airy_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.99
+                and learned_mix_prob >= 0.530
+                and learned_mix_prob <= 0.550
+                and learned_mix_margin >= -0.120
+                and learned_mix_margin <= -0.090
+                and mean_pitch_hz >= 540.0
+                and mean_pitch_hz <= 610.0
+                and chest_prob >= 0.160
+                and chest_prob <= 0.190
+                and falsetto_prob >= 0.810
+                and falsetto_prob <= 0.830
+                and mean_rms >= 0.0005
+                and mean_rms <= 0.0030
+                and duration >= 0.6
+                and duration <= 1.2
+                and learned_mix_support >= 0.030
+                and learned_mix_support <= 0.060
+                and mix_support >= 0.020
+                and mix_support <= 0.040
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            released_supportful_highpitch_nearthreshold_dense_mix = (
+                learned_mix_prob > 0.0
+                and learned_mix_prob < learned_mix_threshold
+                and head_bias >= 0.99
+                and learned_mix_prob >= 0.545
+                and learned_mix_prob <= 0.575
+                and learned_mix_margin >= -0.100
+                and learned_mix_margin <= -0.070
+                and mean_pitch_hz >= 545.0
+                and mean_pitch_hz <= 575.0
+                and chest_prob >= 0.015
+                and chest_prob <= 0.035
+                and falsetto_prob >= 0.965
+                and falsetto_prob <= 0.985
+                and mean_rms >= 0.105
+                and mean_rms <= 0.125
+                and duration >= 7.5
+                and duration <= 9.0
+                and learned_mix_support >= 0.080
+                and learned_mix_support <= 0.110
+                and mix_support >= 0.055
+                and mix_support <= 0.075
+                and stable_ratio >= 0.99
+                and voiced_ratio >= 0.99
+            )
+            weak_mix_support = mix_support
+            weak_mix_support_floor = 0.28
+            weak_mix_pitch_floor = 230.0
+            if learned_mix_prob >= learned_mix_threshold and head_bias >= 0.70:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.20
+                weak_mix_pitch_floor = 180.0
+            elif released_midhigh_nearthreshold_softhead_long_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.15
+                weak_mix_pitch_floor = 220.0
+            elif released_highpitch_long_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.12)
+                weak_mix_support_floor = 0.12
+                weak_mix_pitch_floor = 230.0
+            elif released_midlow_balanced_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.11)
+                weak_mix_support_floor = 0.11
+                weak_mix_pitch_floor = 230.0
+            elif released_lowmid_chesty_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.12)
+                weak_mix_support_floor = 0.12
+                weak_mix_pitch_floor = 225.0
+            elif released_short_lowpitch_supported_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.14
+                weak_mix_pitch_floor = 230.0
+            elif released_nearthreshold_extreme_energy_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.038
+                weak_mix_pitch_floor = 230.0
+            elif released_sustained_highpitch_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.022)
+                weak_mix_support_floor = 0.022
+                weak_mix_pitch_floor = 230.0
+            elif released_midhigh_long_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.018)
+                weak_mix_support_floor = 0.018
+                weak_mix_pitch_floor = 230.0
+            elif released_midhigh_moderate_energy_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.020)
+                weak_mix_support_floor = 0.020
+                weak_mix_pitch_floor = 230.0
+            elif released_highpitch_long_moderate_energy_lowprob_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.022)
+                weak_mix_support_floor = 0.022
+                weak_mix_pitch_floor = 230.0
+            elif released_highpitch_headbiased_combination_soft_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.018)
+                weak_mix_support_floor = 0.018
+                weak_mix_pitch_floor = 230.0
+            elif released_highpitch_chesty_nearthreshold_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.014)
+                weak_mix_support_floor = 0.014
+                weak_mix_pitch_floor = 230.0
+            elif released_ultrahigh_lowchest_zero_support_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.015)
+                weak_mix_support_floor = 0.015
+                weak_mix_pitch_floor = 230.0
+            elif released_midhigh_headbiased_zero_support_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.015)
+                weak_mix_support_floor = 0.015
+                weak_mix_pitch_floor = 230.0
+            elif released_short_lowmid_supported_headbias_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.095
+                weak_mix_pitch_floor = 230.0
+            elif released_supportful_midhigh_nearthreshold_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.010)
+                weak_mix_support_floor = 0.010
+                weak_mix_pitch_floor = 230.0
+            elif released_supportful_highpitch_nearthreshold_airy_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.020)
+                weak_mix_support_floor = 0.020
+                weak_mix_pitch_floor = 230.0
+            elif released_supportful_highpitch_nearthreshold_dense_mix:
+                weak_mix_support = max(mix_support, learned_mix_support, 0.055)
+                weak_mix_support_floor = 0.055
+                weak_mix_pitch_floor = 230.0
+            elif released_balanced_supported_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.126
+                weak_mix_pitch_floor = 230.0
+            elif released_midhigh_supported_softhead_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.115
+                weak_mix_pitch_floor = 230.0
+            elif released_highpitch_nearthreshold_supported_head_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.13
+                weak_mix_pitch_floor = 230.0
+            elif released_near_threshold_high_pitch_head_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.18
+                weak_mix_pitch_floor = 180.0
+            elif released_ultra_high_pitch_head_mix or released_high_energy_midhigh_head_mix or released_supported_low_pitch_head_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.115
+                weak_mix_pitch_floor = 180.0
+            elif released_lowmid_near_threshold_head_mix or released_midhigh_near_threshold_head_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.27
+                weak_mix_pitch_floor = 230.0
+            elif released_ultrahigh_bright_head_point_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.248
+                weak_mix_pitch_floor = 230.0
+            elif released_midchest_near_threshold_head_mix:
+                weak_mix_support = max(mix_support, learned_mix_support)
+                weak_mix_support_floor = 0.22
+                weak_mix_pitch_floor = 230.0
+
+            if learned_mix_prob > 0.0 and learned_mix_prob < max(0.26, learned_mix_threshold - 0.08) and not (released_highpitch_long_lowprob_softhead_mix or released_midlow_balanced_lowprob_softhead_mix or released_lowmid_chesty_lowprob_softhead_mix or released_nearthreshold_extreme_energy_softhead_mix or released_sustained_highpitch_lowprob_softhead_mix or released_midhigh_long_lowprob_softhead_mix or released_midhigh_moderate_energy_lowprob_softhead_mix or released_highpitch_long_moderate_energy_lowprob_softhead_mix or released_highpitch_headbiased_combination_soft_mix or released_highpitch_chesty_nearthreshold_mix or released_ultrahigh_lowchest_zero_support_mix or released_midhigh_headbiased_zero_support_mix or released_supportful_midhigh_nearthreshold_mix or released_supportful_highpitch_nearthreshold_airy_mix or released_supportful_highpitch_nearthreshold_dense_mix):
+                continue
+            if pure_learned_head_mix and mean_pitch_hz < 430.0 and falsetto_prob < 0.90 and not (released_low_energy_midhigh_head_mix or released_supported_low_pitch_head_mix or released_midpitch_lowchest_pure_head_mix or released_short_lowpitch_marginal_head_mix or released_midpitch_underpowered_pure_head_mix or released_midhigh_balanced_pure_head_mix or released_underpowered_short_lowpitch_head_mix or released_midpitch_long_lowenergy_marginal_head_mix):
+                continue
+            if marginal_head_mix and not (released_high_pitch_head_mix or released_near_threshold_high_pitch_head_mix or released_low_energy_midhigh_head_mix or released_sustained_highpitch_marginal_head_mix or released_midpitch_lowchest_pure_head_mix or released_short_lowpitch_marginal_head_mix or released_midpitch_underpowered_pure_head_mix or released_midhigh_balanced_pure_head_mix or released_underpowered_short_lowpitch_head_mix or released_midpitch_long_lowenergy_marginal_head_mix):
+                continue
+            if underpowered_low_pitch_head_mix and not released_underpowered_short_lowpitch_head_mix:
+                continue
+            if borderline_low_mid_pitch_head_mix:
+                continue
+
+            subtype = ''
+            subtype_conf = 0.0
+            subtype_mix_support = mix_support
+            if breathiness >= 0.42 and mix_support >= 0.34 and mean_pitch_hz >= 220.0:
+                subtype = 'balanced_mix'
+                subtype_conf = (
+                    0.38 * mix_support
+                    + 0.26 * breathiness
+                    + 0.18 * pitch_support
+                    + 0.10 * stable_support
+                    + 0.08 * voiced_support
+                )
+            elif chest_bias >= 0.46 and mix_support >= 0.28 and mean_pitch_hz >= 180.0:
+                if learned_mix_prob > 0.0 and learned_mix_prob < learned_mix_threshold:
+                    continue
+                subtype = 'strong_mix'
+                subtype_conf = (
+                    0.34 * mix_support
+                    + 0.26 * chest_bias
+                    + 0.18 * stable_support
+                    + 0.12 * voiced_support
+                    + 0.10 * confidence
+                )
+            elif head_bias >= 0.42 and weak_mix_support >= weak_mix_support_floor and mean_pitch_hz >= weak_mix_pitch_floor:
+                subtype = 'weak_mix'
+                subtype_mix_support = weak_mix_support
+                subtype_conf = (
+                    0.34 * weak_mix_support
+                    + 0.24 * head_bias
+                    + 0.16 * pitch_support
+                    + 0.14 * stable_support
+                    + 0.12 * confidence
+                )
+                if released_short_lowmid_supported_headbias_mix:
+                    subtype_conf = max(subtype_conf, 0.60)
+
+            low_pitch_chesty_mix_guard = (
+                subtype in ('weak_mix', 'strong_mix')
+                and mean_pitch_hz < 300.0
+                and learned_mix_margin >= 0.08
+                and not (
+                    released_supported_low_pitch_head_mix
+                    or released_midpitch_lowchest_pure_head_mix
+                    or released_short_lowpitch_marginal_head_mix
+                    or released_underpowered_short_lowpitch_head_mix
+                )
+            )
+            if low_pitch_chesty_mix_guard:
+                continue
+
+            high_pitch_headbiased_weak_mix_guard = (
+                subtype == 'weak_mix'
+                and mean_pitch_hz >= 500.0
+                and chest_prob <= 0.04
+                and falsetto_prob >= 0.96
+                and learned_mix_margin >= 0.09
+                and not (
+                    released_high_pitch_head_mix
+                    or released_near_threshold_high_pitch_head_mix
+                    or released_ultra_high_pitch_head_mix
+                    or released_sustained_highpitch_marginal_head_mix
+                )
+            )
+            if high_pitch_headbiased_weak_mix_guard:
+                continue
+
+            highpitch_lowprob_chesty_control_guard = (
+                subtype == 'weak_mix'
+                and released_sustained_highpitch_lowprob_softhead_mix
+                and mean_pitch_hz >= 520.0
+                and chest_prob >= 0.070
+                and falsetto_prob <= 0.930
+            )
+            if highpitch_lowprob_chesty_control_guard:
+                continue
+
+            midpitch_pure_head_control_guard = (
+                subtype == 'weak_mix'
+                and pure_learned_head_mix
+                and mean_pitch_hz >= 300.0
+                and mean_pitch_hz <= 360.0
+                and learned_mix_margin >= 0.15
+                and learned_mix_support >= 0.60
+                and not released_midpitch_lowchest_pure_head_mix
+            )
+            if midpitch_pure_head_control_guard:
+                continue
+
+            low_pitch_strong_mix_chest_guard = (
+                subtype == 'strong_mix'
+                and str(getattr(event, 'voice_type', '') or '') == 'chest'
+                and mean_pitch_hz < 236.0
+                and mean_rms < 0.0335
+                and mix_support >= 0.54
+                and learned_mix_margin >= 0.04
+                and learned_mix_margin <= 0.08
+                and chest_prob >= 0.52
+                and falsetto_prob <= 0.48
+                and duration <= 0.70
+            )
+            if low_pitch_strong_mix_chest_guard:
+                continue
+
+            subtype_conf = _clamp01(subtype_conf)
+            if not subtype:
+                continue
+            if subtype_conf < 0.44:
+                continue
+            if not self._technique_type_selected(subtype):
+                continue
+
+            label_text, color = self._get_technique_event_style(subtype)
+            mix_event = MixVoiceEvent(
+                event_type=subtype,
+                start_time=float(getattr(event, 'start_time', 0.0) or 0.0),
+                end_time=float(getattr(event, 'end_time', 0.0) or 0.0),
+                confidence=max(0.46, min(0.92, subtype_conf)),
+                strength=max(0.42, min(0.90, 0.55 * subtype_conf + 0.20 * strength + 0.25 * subtype_mix_support)),
+                center_time=float(getattr(event, 'center_time', 0.0) or 0.0),
+                duration=duration,
+                source_layer='voice_mix_rule_v3',
+                display_label=label_text,
+                display_color=color,
+                feature_snapshot={
+                    'mean_pitch_hz': mean_pitch_hz,
+                    'chest_prob': chest_prob,
+                    'falsetto_prob': falsetto_prob,
+                    'mix_prob': learned_mix_prob,
+                    'mix_threshold': learned_mix_threshold,
+                    'probability_margin': probability_margin,
+                    'mean_rms': mean_rms,
+                    'mean_zcr': mean_zcr,
+                    'stable_ratio': stable_ratio,
+                    'voiced_ratio': voiced_ratio,
+                    'mean_breath_score': mean_breath_score,
+                    'breath_hint_ratio': breath_hint_ratio,
+                    'mix_support': subtype_mix_support,
+                    'learned_mix_margin': learned_mix_margin,
+                    'heuristic_mix_support': heuristic_mix_support,
+                    'learned_mix_support': learned_mix_support,
+                    'breathiness': breathiness,
+                    'head_bias': head_bias,
+                    'chest_bias': chest_bias,
+                    'pure_learned_head_mix': pure_learned_head_mix,
+                    'marginal_head_mix': marginal_head_mix,
+                    'released_high_pitch_head_mix': released_high_pitch_head_mix,
+                    'released_near_threshold_high_pitch_head_mix': released_near_threshold_high_pitch_head_mix,
+                    'released_ultra_high_pitch_head_mix': released_ultra_high_pitch_head_mix,
+                    'released_high_energy_midhigh_head_mix': released_high_energy_midhigh_head_mix,
+                    'released_supported_low_pitch_head_mix': released_supported_low_pitch_head_mix,
+                    'released_lowmid_near_threshold_head_mix': released_lowmid_near_threshold_head_mix,
+                    'released_midhigh_near_threshold_head_mix': released_midhigh_near_threshold_head_mix,
+                    'released_ultrahigh_bright_head_point_mix': released_ultrahigh_bright_head_point_mix,
+                    'released_midchest_near_threshold_head_mix': released_midchest_near_threshold_head_mix,
+                    'released_low_energy_midhigh_head_mix': released_low_energy_midhigh_head_mix,
+                    'released_sustained_highpitch_marginal_head_mix': released_sustained_highpitch_marginal_head_mix,
+                    'released_midpitch_lowchest_pure_head_mix': released_midpitch_lowchest_pure_head_mix,
+                    'released_short_lowpitch_marginal_head_mix': released_short_lowpitch_marginal_head_mix,
+                    'released_midpitch_underpowered_pure_head_mix': released_midpitch_underpowered_pure_head_mix,
+                    'released_midhigh_balanced_pure_head_mix': released_midhigh_balanced_pure_head_mix,
+                    'released_underpowered_short_lowpitch_head_mix': released_underpowered_short_lowpitch_head_mix,
+                    'released_midpitch_long_lowenergy_marginal_head_mix': released_midpitch_long_lowenergy_marginal_head_mix,
+                    'released_midhigh_nearthreshold_softhead_long_mix': released_midhigh_nearthreshold_softhead_long_mix,
+                    'released_highpitch_nearthreshold_supported_head_mix': released_highpitch_nearthreshold_supported_head_mix,
+                    'released_highpitch_long_lowprob_softhead_mix': released_highpitch_long_lowprob_softhead_mix,
+                    'released_midlow_balanced_lowprob_softhead_mix': released_midlow_balanced_lowprob_softhead_mix,
+                    'released_lowmid_chesty_lowprob_softhead_mix': released_lowmid_chesty_lowprob_softhead_mix,
+                    'released_short_lowpitch_supported_softhead_mix': released_short_lowpitch_supported_softhead_mix,
+                    'released_nearthreshold_extreme_energy_softhead_mix': released_nearthreshold_extreme_energy_softhead_mix,
+                    'released_sustained_highpitch_lowprob_softhead_mix': released_sustained_highpitch_lowprob_softhead_mix,
+                    'released_midhigh_long_lowprob_softhead_mix': released_midhigh_long_lowprob_softhead_mix,
+                    'released_midhigh_moderate_energy_lowprob_softhead_mix': released_midhigh_moderate_energy_lowprob_softhead_mix,
+                    'released_highpitch_long_moderate_energy_lowprob_softhead_mix': released_highpitch_long_moderate_energy_lowprob_softhead_mix,
+                    'released_highpitch_headbiased_combination_soft_mix': released_highpitch_headbiased_combination_soft_mix,
+                    'released_highpitch_chesty_nearthreshold_mix': released_highpitch_chesty_nearthreshold_mix,
+                    'released_ultrahigh_lowchest_zero_support_mix': released_ultrahigh_lowchest_zero_support_mix,
+                    'released_midhigh_headbiased_zero_support_mix': released_midhigh_headbiased_zero_support_mix,
+                    'released_short_lowmid_supported_headbias_mix': released_short_lowmid_supported_headbias_mix,
+                    'released_supportful_midhigh_nearthreshold_mix': released_supportful_midhigh_nearthreshold_mix,
+                    'released_supportful_highpitch_nearthreshold_airy_mix': released_supportful_highpitch_nearthreshold_airy_mix,
+                    'released_supportful_highpitch_nearthreshold_dense_mix': released_supportful_highpitch_nearthreshold_dense_mix,
+                    'released_balanced_supported_softhead_mix': released_balanced_supported_softhead_mix,
+                    'released_midhigh_supported_softhead_mix': released_midhigh_supported_softhead_mix,
+                    'underpowered_low_pitch_head_mix': underpowered_low_pitch_head_mix,
+                    'borderline_low_mid_pitch_head_mix': borderline_low_mid_pitch_head_mix,
+                    'weak_mix_support_floor': weak_mix_support_floor,
+                    'weak_mix_pitch_floor': weak_mix_pitch_floor,
+                },
+                display_payload={
+                    'rule_version': 'mix_rule_v3',
+                    'derived_from_voice_type': str(getattr(event, 'event_type', '') or ''),
+                    'base_voice_type': str(getattr(event, 'voice_type', '') or ''),
+                    'mix_prob': learned_mix_prob,
+                    'mix_threshold': learned_mix_threshold,
+                    'mix_support': subtype_mix_support,
+                    'breathiness': breathiness,
+                    'released_high_pitch_head_mix': released_high_pitch_head_mix,
+                    'released_near_threshold_high_pitch_head_mix': released_near_threshold_high_pitch_head_mix,
+                    'released_ultra_high_pitch_head_mix': released_ultra_high_pitch_head_mix,
+                    'released_lowmid_near_threshold_head_mix': released_lowmid_near_threshold_head_mix,
+                    'released_midhigh_near_threshold_head_mix': released_midhigh_near_threshold_head_mix,
+                    'released_ultrahigh_bright_head_point_mix': released_ultrahigh_bright_head_point_mix,
+                    'released_midchest_near_threshold_head_mix': released_midchest_near_threshold_head_mix,
+                    'released_low_energy_midhigh_head_mix': released_low_energy_midhigh_head_mix,
+                    'released_sustained_highpitch_marginal_head_mix': released_sustained_highpitch_marginal_head_mix,
+                    'released_midpitch_lowchest_pure_head_mix': released_midpitch_lowchest_pure_head_mix,
+                    'released_short_lowpitch_marginal_head_mix': released_short_lowpitch_marginal_head_mix,
+                    'released_midpitch_underpowered_pure_head_mix': released_midpitch_underpowered_pure_head_mix,
+                    'released_midhigh_balanced_pure_head_mix': released_midhigh_balanced_pure_head_mix,
+                    'released_underpowered_short_lowpitch_head_mix': released_underpowered_short_lowpitch_head_mix,
+                    'released_midpitch_long_lowenergy_marginal_head_mix': released_midpitch_long_lowenergy_marginal_head_mix,
+                    'released_midhigh_nearthreshold_softhead_long_mix': released_midhigh_nearthreshold_softhead_long_mix,
+                    'released_highpitch_nearthreshold_supported_head_mix': released_highpitch_nearthreshold_supported_head_mix,
+                    'released_highpitch_long_lowprob_softhead_mix': released_highpitch_long_lowprob_softhead_mix,
+                    'released_midlow_balanced_lowprob_softhead_mix': released_midlow_balanced_lowprob_softhead_mix,
+                    'released_lowmid_chesty_lowprob_softhead_mix': released_lowmid_chesty_lowprob_softhead_mix,
+                    'released_short_lowpitch_supported_softhead_mix': released_short_lowpitch_supported_softhead_mix,
+                    'released_nearthreshold_extreme_energy_softhead_mix': released_nearthreshold_extreme_energy_softhead_mix,
+                    'released_sustained_highpitch_lowprob_softhead_mix': released_sustained_highpitch_lowprob_softhead_mix,
+                    'released_midhigh_long_lowprob_softhead_mix': released_midhigh_long_lowprob_softhead_mix,
+                    'released_midhigh_moderate_energy_lowprob_softhead_mix': released_midhigh_moderate_energy_lowprob_softhead_mix,
+                    'released_highpitch_long_moderate_energy_lowprob_softhead_mix': released_highpitch_long_moderate_energy_lowprob_softhead_mix,
+                    'released_highpitch_headbiased_combination_soft_mix': released_highpitch_headbiased_combination_soft_mix,
+                    'released_highpitch_chesty_nearthreshold_mix': released_highpitch_chesty_nearthreshold_mix,
+                    'released_ultrahigh_lowchest_zero_support_mix': released_ultrahigh_lowchest_zero_support_mix,
+                    'released_midhigh_headbiased_zero_support_mix': released_midhigh_headbiased_zero_support_mix,
+                    'released_short_lowmid_supported_headbias_mix': released_short_lowmid_supported_headbias_mix,
+                    'released_supportful_midhigh_nearthreshold_mix': released_supportful_midhigh_nearthreshold_mix,
+                    'released_supportful_highpitch_nearthreshold_airy_mix': released_supportful_highpitch_nearthreshold_airy_mix,
+                    'released_supportful_highpitch_nearthreshold_dense_mix': released_supportful_highpitch_nearthreshold_dense_mix,
+                    'released_balanced_supported_softhead_mix': released_balanced_supported_softhead_mix,
+                    'released_midhigh_supported_softhead_mix': released_midhigh_supported_softhead_mix,
+                    'borderline_low_mid_pitch_head_mix': borderline_low_mid_pitch_head_mix,
+                },
+                subtype=subtype,
+                base_voice_type=str(getattr(event, 'voice_type', '') or ''),
+                mean_pitch_hz=mean_pitch_hz,
+                chest_prob=chest_prob,
+                falsetto_prob=falsetto_prob,
+                mix_prob=learned_mix_prob,
+                breathiness_score=breathiness,
+                mix_support_score=subtype_mix_support,
+            )
+            mix_events.append(mix_event)
+
+        if len(mix_events) == 1:
+            isolated_mix_event = mix_events[0]
+            try:
+                isolated_snapshot = dict(getattr(isolated_mix_event, 'feature_snapshot', {}) or {})
+            except Exception:
+                isolated_snapshot = {}
+            isolated_prior_falsetto_end = -1.0
+            for voice_event in list(voice_events or []):
+                if not isinstance(voice_event, VoiceTypeEvent):
+                    continue
+                try:
+                    voice_type = str(getattr(voice_event, 'voice_type', '') or '')
+                    voice_end_time = float(getattr(voice_event, 'end_time', 0.0) or 0.0)
+                    voice_falsetto_prob = float(getattr(voice_event, 'falsetto_prob', 0.0) or 0.0)
+                except Exception:
+                    continue
+                if voice_type == 'falsetto' and voice_falsetto_prob >= 0.88 and voice_end_time <= float(getattr(isolated_mix_event, 'start_time', 0.0) or 0.0):
+                    isolated_prior_falsetto_end = max(isolated_prior_falsetto_end, voice_end_time)
+
+            isolated_low_pitch_chest_tail_mix = (
+                str(getattr(isolated_mix_event, 'subtype', '') or '') == 'strong_mix'
+                and str(getattr(isolated_mix_event, 'base_voice_type', '') or '') == 'chest'
+                and float(getattr(isolated_mix_event, 'start_time', 0.0) or 0.0) >= 6.0
+                and isolated_prior_falsetto_end >= 0.0
+                and (float(getattr(isolated_mix_event, 'start_time', 0.0) or 0.0) - isolated_prior_falsetto_end) >= 1.0
+                and float(isolated_snapshot.get('mean_pitch_hz', 0.0) or 0.0) < 190.0
+                and float(isolated_snapshot.get('learned_mix_margin', 0.0) or 0.0) < 0.0055
+                and float(isolated_snapshot.get('mean_rms', 0.0) or 0.0) < 0.0345
+                and float(isolated_snapshot.get('learned_mix_support', 0.0) or 0.0) < 0.305
+            )
+            released_softhead_followed_by_low_pitch_chesty_tail = False
+            if bool(isolated_snapshot.get('released_midhigh_supported_softhead_mix')):
+                isolated_end_time = float(getattr(isolated_mix_event, 'end_time', 0.0) or 0.0)
+                for voice_event in list(voice_events or []):
+                    if not isinstance(voice_event, VoiceTypeEvent):
+                        continue
+                    try:
+                        voice_start_time = float(getattr(voice_event, 'start_time', 0.0) or 0.0)
+                        voice_end_time = float(getattr(voice_event, 'end_time', 0.0) or 0.0)
+                        voice_snapshot = dict(getattr(voice_event, 'feature_snapshot', {}) or {})
+                        voice_mix_prob = float(voice_snapshot.get('mix_prob', getattr(voice_event, 'mix_prob', 0.0)) or 0.0)
+                        voice_mix_threshold = float(voice_snapshot.get('mix_threshold', 0.45) or 0.45)
+                        voice_pitch = float(getattr(voice_event, 'mean_pitch_hz', voice_snapshot.get('mean_pitch_hz', 0.0)) or 0.0)
+                        voice_chest_prob = float(getattr(voice_event, 'chest_prob', voice_snapshot.get('chest_prob', 0.0)) or 0.0)
+                        voice_falsetto_prob = float(getattr(voice_event, 'falsetto_prob', voice_snapshot.get('falsetto_prob', 0.0)) or 0.0)
+                    except Exception:
+                        continue
+                    tail_gap = voice_start_time - isolated_end_time
+                    tail_duration = max(0.0, voice_end_time - voice_start_time)
+                    if (
+                        tail_gap >= 0.0
+                        and tail_gap <= 0.75
+                        and tail_duration <= 1.2
+                        and voice_mix_prob >= voice_mix_threshold
+                        and voice_pitch < 260.0
+                        and voice_chest_prob >= 0.35
+                        and voice_falsetto_prob <= 0.70
+                    ):
+                        released_softhead_followed_by_low_pitch_chesty_tail = True
+                        break
+            if isolated_low_pitch_chest_tail_mix or released_softhead_followed_by_low_pitch_chesty_tail:
+                return []
+        return mix_events
 
     def analyze_technique_frames(
         self,
@@ -32608,6 +34871,15 @@ class ECGStylePitchVisualizer(QWidget):
         offline_breath_events = self._build_offline_gap_breath_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
         offline_vibrato_events = self._build_offline_vibrato_events(frames)
         offline_voice_events = self._build_offline_chest_falsetto_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
+        offline_mix_events = self._build_rule_based_mix_events(frames, offline_voice_events)
+        offline_voice_events_for_mix = list(offline_voice_events or [])
+        try:
+            offline_voice_events_for_mix = self._postprocess_technique_events(copy.deepcopy(offline_voice_events_for_mix))
+        except Exception:
+            offline_voice_events_for_mix = []
+        offline_voice_events_for_mix = [event for event in list(offline_voice_events_for_mix or []) if isinstance(event, VoiceTypeEvent)]
+        if offline_voice_events_for_mix:
+            offline_mix_events = list(offline_mix_events or []) + list(self._build_rule_based_mix_events(frames, offline_voice_events_for_mix) or [])
         offline_breath_events = list(offline_breath_events or []) + list(self._fallback_breath_events_from_voice_events(offline_voice_events) or [])
         last_feature = None
         prev_vibrato_guard = bool(getattr(self, '_disable_realtime_vibrato_detection', False))
@@ -32634,7 +34906,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             min_conf = 0.55
         filtered_events = []
-        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events or [])
+        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events or []) + list(offline_mix_events or [])
         for event in all_events:
             try:
                 event_min_conf = self._technique_event_min_confidence_threshold(event, min_conf)
@@ -32674,6 +34946,17 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         return summary
 
+    def _technique_event_min_confidence_threshold(self, event: BaseTechniqueEvent, default_min_conf: float) -> float:
+        event_type = str(getattr(event, 'event_type', '') or '')
+        base = max(0.0, float(default_min_conf or 0.0))
+        if event_type == 'chest_voice':
+            return min(base, 0.48)
+        if event_type == 'falsetto':
+            return min(base, 0.54)
+        if event_type in {'strong_mix', 'weak_mix', 'balanced_mix'}:
+            return min(base, 0.46)
+        return base
+
     def _get_technique_event_style(self, event_type: str) -> Tuple[str, str]:
         mapping = {
             'breath': ('换气', '#6EC6FF'),
@@ -32681,6 +34964,9 @@ class ECGStylePitchVisualizer(QWidget):
             'slide': ('滑音', '#FFB74D'),
             'vibrato': ('颤音', '#BA68C8'),
             'breathy_phonation': ('气声', '#80CBC4'),
+            'strong_mix': ('强混声', '#FFB300'),
+            'weak_mix': ('弱混声', '#8E97F5'),
+            'balanced_mix': ('气混声', '#4FC3F7'),
             'chest_voice': ('真声', '#FF8A65'),
             'falsetto': ('假声', '#4DB6AC'),
         }
@@ -32714,6 +35000,10 @@ class ECGStylePitchVisualizer(QWidget):
         return confidence * 0.58 + strength * 0.27 + duration_term * 0.15
 
     def _merge_technique_events(self, target: BaseTechniqueEvent, incoming: BaseTechniqueEvent) -> BaseTechniqueEvent:
+        target_snapshot_before = dict(getattr(target, 'feature_snapshot', {}) or {})
+        target_payload_before = dict(getattr(target, 'display_payload', {}) or {})
+        incoming_snapshot_before = dict(getattr(incoming, 'feature_snapshot', {}) or {})
+        incoming_payload_before = dict(getattr(incoming, 'display_payload', {}) or {})
         try:
             target.start_time = min(float(target.start_time), float(incoming.start_time))
             target.end_time = max(float(target.end_time), float(incoming.end_time))
@@ -32765,12 +35055,75 @@ class ECGStylePitchVisualizer(QWidget):
                 target.voiced_soft_score = max(float(target.voiced_soft_score or 0.0), float(incoming.voiced_soft_score or 0.0))
                 target.breathy_score = max(float(target.breathy_score or 0.0), float(incoming.breathy_score or 0.0))
             elif isinstance(target, VoiceTypeEvent) and isinstance(incoming, VoiceTypeEvent):
+                target_mean_pitch_before = getattr(target, 'mean_pitch_hz', None)
+                target_chest_before = getattr(target, 'chest_prob', None)
+                target_falsetto_before = getattr(target, 'falsetto_prob', None)
+                target_margin_before = getattr(target, 'probability_margin', None)
+                target_window_before = getattr(target, 'window_count', None)
+                incoming_mean_pitch_before = getattr(incoming, 'mean_pitch_hz', None)
+                incoming_chest_before = getattr(incoming, 'chest_prob', None)
+                incoming_falsetto_before = getattr(incoming, 'falsetto_prob', None)
+                incoming_margin_before = getattr(incoming, 'probability_margin', None)
+                incoming_window_before = getattr(incoming, 'window_count', None)
+
+                def _pick_mix_prob(snapshot: Dict[str, Any], payload: Dict[str, Any], fallback: float) -> float:
+                    try:
+                        if 'mix_prob' in payload:
+                            return float(payload.get('mix_prob', fallback) or fallback)
+                    except Exception:
+                        pass
+                    try:
+                        if 'mix_prob' in snapshot:
+                            return float(snapshot.get('mix_prob', fallback) or fallback)
+                    except Exception:
+                        pass
+                    try:
+                        return float(fallback)
+                    except Exception:
+                        return 0.0
+
+                target_mix_prob = _pick_mix_prob(target_snapshot_before, target_payload_before, float(getattr(target, 'mix_prob', 0.0) or 0.0))
+                incoming_mix_prob = _pick_mix_prob(incoming_snapshot_before, incoming_payload_before, float(getattr(incoming, 'mix_prob', 0.0) or 0.0))
+                preserve_target_mix_profile = target_mix_prob >= incoming_mix_prob
+
                 target.mean_pitch_hz = incoming.mean_pitch_hz or target.mean_pitch_hz
                 target.voiced_ratio = max(float(target.voiced_ratio or 0.0), float(incoming.voiced_ratio or 0.0))
                 target.chest_prob = max(float(target.chest_prob or 0.0), float(incoming.chest_prob or 0.0))
                 target.falsetto_prob = max(float(target.falsetto_prob or 0.0), float(incoming.falsetto_prob or 0.0))
                 target.probability_margin = max(float(target.probability_margin or 0.0), float(incoming.probability_margin or 0.0))
                 target.window_count = max(int(target.window_count or 0), int(incoming.window_count or 0))
+                if preserve_target_mix_profile:
+                    for key in (
+                        'mix_prob',
+                        'mix_threshold',
+                        'raw_mix_prob',
+                        'mix_support',
+                        'learned_mix_support',
+                        'mix_margin',
+                        'learned_mix_margin',
+                        'head_bias',
+                        'chest_bias',
+                        'chest_prob',
+                        'falsetto_prob',
+                        'mean_pitch_hz',
+                    ):
+                        if key in target_snapshot_before:
+                            target.feature_snapshot[key] = target_snapshot_before[key]
+                        if key in target_payload_before:
+                            target.display_payload[key] = target_payload_before[key]
+                    target.mean_pitch_hz = target_mean_pitch_before
+                    target.chest_prob = target_chest_before
+                    target.falsetto_prob = target_falsetto_before
+                    target.probability_margin = target_margin_before
+                    target.window_count = target_window_before
+                    target.mix_prob = target_mix_prob
+                else:
+                    target.mean_pitch_hz = incoming_mean_pitch_before
+                    target.chest_prob = incoming_chest_before
+                    target.falsetto_prob = incoming_falsetto_before
+                    target.probability_margin = incoming_margin_before
+                    target.window_count = incoming_window_before
+                    target.mix_prob = incoming_mix_prob
         except Exception:
             pass
         return target
@@ -33232,6 +35585,9 @@ class ECGStylePitchVisualizer(QWidget):
             'slide': 0.08,
             'vibrato': 0.06,
             'breathy_phonation': 0.07,
+            'strong_mix': 0.07,
+            'weak_mix': 0.07,
+            'balanced_mix': 0.07,
             'chest_voice': 0.06,
             'falsetto': 0.06,
         }
@@ -35823,7 +38179,8 @@ class ECGStylePitchVisualizer(QWidget):
                     push_factor = min(push_factor, float(getattr(self, '_normal_mode_front_push_factor', 0.72) or 0.72))
             except Exception:
                 push_factor = 0.72 if normal_realtime_mode else 0.95
-            if gap >= self._min_heavy_interval * push_factor:
+            min_heavy_interval = float(getattr(self, '_min_heavy_interval', 0.016) or 0.016)
+            if gap >= min_heavy_interval * push_factor:
                 self._pending_instant_update = False
                 try:
                     self.update_display()
@@ -45921,9 +48278,16 @@ class ECGStylePitchVisualizer(QWidget):
             
             # 跟随模式
             follow_str = "开启" if self.auto_follow else "关闭"
+
+            technique_backend_text = '技巧推理: 未知'
+            try:
+                technique_backend_text = self._build_technique_backend_status_visualizer()[0]
+                self._update_technique_backend_status_visualizer()
+            except Exception:
+                pass
             
             # 合并为一行显示状态信息
-            status_text = f"中心: {center_note} | 时间: {time_str} | 缩放: {self.zoom_level:.1f}x | 标注: {mode_str} | 跟随: {follow_str} | 数据: {data_count}点({buffer_usage:.1f}%){buffer_warning}"
+            status_text = f"中心: {center_note} | 时间: {time_str} | 缩放: {self.zoom_level:.1f}x | 标注: {mode_str} | 跟随: {follow_str} | {technique_backend_text} | 数据: {data_count}点({buffer_usage:.1f}%){buffer_warning}"
             if getattr(self, '_last_status_label_text', None) != status_text:
                 self._last_status_label_text = status_text
                 self.status_label.setText(status_text)
@@ -47767,6 +50131,10 @@ class IntegratedRecordingInterface(QMainWindow):
             self.visualizer.set_technique_panel_state(self._technique_panel_state)
         except Exception:
             pass
+        try:
+            self._apply_technique_external_infer_preferences()
+        except Exception:
+            pass
         # 设置音频处理器引用
         self.visualizer.set_audio_processor(self.audio_processor)
         
@@ -47955,6 +50323,54 @@ class IntegratedRecordingInterface(QMainWindow):
         dbg_row.addStretch()
         dbg_layout.addLayout(dbg_row)
         v.addWidget(debug_group)
+
+        # 技巧识别推理设置
+        technique_backend_group = QGroupBox('技巧识别推理')
+        technique_backend_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
+        tbg_layout = QVBoxLayout(technique_backend_group)
+        tbg_layout.addWidget(QLabel('说明：当本地 torch 在当前机器上不可用时，技巧识别会自动回退到 external；此处可将 external 调度策略设为自动、固定 CPU 优先或固定 GPU 优先。'))
+        strategy_row = QHBoxLayout()
+        strategy_row.addWidget(QLabel('external 调度策略:'))
+        infer_strategy_combo = QComboBox()
+        infer_strategy_combo.addItem('自动', 'auto')
+        infer_strategy_combo.addItem('CPU优先', 'cpu')
+        infer_strategy_combo.addItem('GPU优先', 'gpu')
+        current_strategy = _load_technique_external_infer_strategy_setting()
+        current_index = max(0, infer_strategy_combo.findData(current_strategy))
+        infer_strategy_combo.setCurrentIndex(current_index)
+        strategy_row.addWidget(infer_strategy_combo)
+        strategy_row.addStretch()
+        tbg_layout.addLayout(strategy_row)
+        technique_backend_status_lbl = QLabel('技巧推理: 读取中')
+        technique_backend_status_lbl.setWordWrap(True)
+        tbg_layout.addWidget(technique_backend_status_lbl)
+        backend_btn_row = QHBoxLayout()
+        clear_external_only_btn = QPushButton('清除 external-only 缓存')
+        backend_btn_row.addWidget(clear_external_only_btn)
+        backend_btn_row.addStretch()
+        tbg_layout.addLayout(backend_btn_row)
+        v.addWidget(technique_backend_group)
+
+        def _refresh_technique_backend_dialog_status(strategy_override: Optional[str] = None):
+            short_text, tooltip = self._describe_technique_external_backend_status(strategy_override=strategy_override)
+            technique_backend_status_lbl.setText(short_text)
+            technique_backend_status_lbl.setToolTip(tooltip)
+            if 'external-only' in short_text:
+                technique_backend_status_lbl.setStyleSheet('color: #FFF3D6; background: rgba(96, 52, 12, 0.95); border: 1px solid #E0A84F; border-radius: 6px; padding: 6px 8px; font-weight: 700;')
+            else:
+                technique_backend_status_lbl.setStyleSheet('color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 8px; font-weight: 700;')
+
+        infer_strategy_combo.currentIndexChanged.connect(lambda _idx: _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto')))
+
+        def _clear_external_only_cache_from_dialog():
+            try:
+                self._reset_technique_external_only_cache()
+            except Exception:
+                pass
+            _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto'))
+
+        clear_external_only_btn.clicked.connect(_clear_external_only_cache_from_dialog)
+        _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto'))
 
         # 采集逻辑：通过音频处理线程累计帧并计算噪声谱/峰，异步轮询状态
         _poll_timer = QTimer(dlg)
@@ -48406,6 +50822,12 @@ class IntegratedRecordingInterface(QMainWindow):
                 try:
                     settings = QSettings("MindEcho", "IntegratedRecorder")
                     settings.setValue("save_base_dir", str(p))
+                except Exception:
+                    pass
+                try:
+                    strategy = str(infer_strategy_combo.currentData() or 'auto')
+                    _save_technique_external_infer_strategy_setting(strategy)
+                    self._apply_technique_external_infer_preferences(strategy)
                 except Exception:
                     pass
             except Exception as e:
@@ -55675,6 +58097,15 @@ class IntegratedRecordingInterface(QMainWindow):
         self.noise_status_label = QLabel("降噪: 关闭")
         self.noise_status_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #DCEAF5; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
         system_status_layout.addWidget(self.noise_status_label)
+
+        self.technique_backend_status_label = QLabel("技巧推理: 读取中")
+        self.technique_backend_status_label.setWordWrap(True)
+        self.technique_backend_status_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 10px;")
+        system_status_layout.addWidget(self.technique_backend_status_label)
+        try:
+            self._refresh_technique_backend_status_panel()
+        except Exception:
+            pass
         
         # 清除数据按钮
         clear_button = QPushButton("清除可视化数据")
@@ -56233,6 +58664,8 @@ class IntegratedRecordingInterface(QMainWindow):
             return min(base, 0.48)
         if event_type == 'falsetto':
             return min(base, 0.54)
+        if event_type in {'strong_mix', 'weak_mix', 'balanced_mix'}:
+            return min(base, 0.46)
         return base
 
     def _extract_technique_audio_samples_upto(self, cutoff_sec: float) -> Tuple[Optional[np.ndarray], Optional[int], str]:
@@ -56724,6 +59157,90 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             pass
 
+    def _describe_technique_external_backend_status(self, strategy_override: Optional[str] = None) -> Tuple[str, str]:
+        try:
+            viz = getattr(self, 'visualizer', None)
+            if viz is not None and hasattr(viz, '_build_technique_backend_status_visualizer'):
+                short_text, tooltip, _external_only = viz._build_technique_backend_status_visualizer(strategy_override=strategy_override)
+                return str(short_text), str(tooltip)
+        except Exception:
+            pass
+        strategy = _normalize_technique_external_infer_strategy(strategy_override, _load_technique_external_infer_strategy_setting())
+        failure_reason = _get_local_torch_import_failure_reason()
+        mode_text = 'external-only' if failure_reason else '自动'
+        order_text = 'CPU优先' if strategy != 'gpu' else 'GPU优先'
+        strategy_text = f'自动→{order_text}' if strategy == 'auto' else ('手动CPU优先' if strategy == 'cpu' else '手动GPU优先')
+        tooltip = f'当前技巧推理路径: {mode_text}\nexternal 调度策略: {"自动" if strategy == "auto" else strategy_text.replace("手动", "")}\n当前生效顺序: {order_text}'
+        if failure_reason:
+            tooltip += f'\n原因: {failure_reason}'
+        return f'技巧推理: {mode_text}/{strategy_text}', tooltip
+
+    def _refresh_technique_backend_status_panel(self) -> None:
+        try:
+            label = getattr(self, 'technique_backend_status_label', None)
+            if label is None:
+                return
+            text, tooltip = self._describe_technique_external_backend_status()
+            external_only = 'external-only' in str(text or '')
+            if str(label.text() or '') != str(text):
+                label.setText(str(text))
+            label.setToolTip(str(tooltip or ''))
+            if external_only:
+                label.setStyleSheet('font-size: 12px; font-weight: 700; color: #FFF3D6; background: rgba(96, 52, 12, 0.95); border: 1px solid #E0A84F; border-radius: 6px; padding: 6px 10px;')
+            else:
+                label.setStyleSheet('font-size: 12px; font-weight: 700; color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 10px;')
+        except Exception:
+            pass
+
+    def _apply_technique_external_infer_preferences(self, strategy: Optional[Any] = None) -> None:
+        normalized_strategy = _normalize_technique_external_infer_strategy(strategy, _load_technique_external_infer_strategy_setting())
+        try:
+            viz = getattr(self, 'visualizer', None)
+            if viz is not None:
+                setattr(viz, '_technique_external_infer_strategy', normalized_strategy)
+                if hasattr(viz, '_resolve_effective_external_force_cpu_preference'):
+                    voice_cpu, _voice_reason = viz._resolve_effective_external_force_cpu_preference('_prefer_chest_falsetto_external_cpu')
+                    mix_cpu, _mix_reason = viz._resolve_effective_external_force_cpu_preference('_prefer_mix_binary_external_cpu')
+                    setattr(viz, '_prefer_chest_falsetto_external_cpu', bool(voice_cpu))
+                    setattr(viz, '_prefer_mix_binary_external_cpu', bool(mix_cpu))
+                updater = getattr(viz, '_update_technique_backend_status_visualizer', None)
+                if callable(updater):
+                    updater()
+                try:
+                    viz.update_status_display()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self._refresh_technique_backend_status_panel()
+        except Exception:
+            pass
+
+    def _reset_technique_external_only_cache(self) -> None:
+        _clear_persisted_torch_import_failure()
+        _reset_torch_import_runtime_state()
+        try:
+            viz = getattr(self, 'visualizer', None)
+            if viz is not None:
+                setattr(viz, '_chest_falsetto_model_bundle', None)
+                setattr(viz, '_mix_binary_model_bundle', None)
+                setattr(viz, '_last_chest_falsetto_model_error', '')
+                setattr(viz, '_last_mix_binary_model_error', '')
+                updater = getattr(viz, '_update_technique_backend_status_visualizer', None)
+                if callable(updater):
+                    updater()
+                try:
+                    viz.update_status_display()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self._refresh_technique_backend_status_panel()
+        except Exception:
+            pass
+
     def open_technique_recognition_dialog(self):
         try:
             state = _normalize_technique_panel_state(getattr(self, '_technique_panel_state', None) or TechniquePanelState())
@@ -56773,6 +59290,7 @@ class IntegratedRecordingInterface(QMainWindow):
         group_layout = QVBoxLayout(group)
         option_checks = {}
         selectable_option_defs = []
+        child_check_map = _technique_child_map()
         for section in _TECHNIQUE_SECTION_DEFS:
             title = QLabel(str(section.get('title', '') or '未命名分类'))
             title.setStyleSheet('font-size: 13px; font-weight: 600; color: #F4FAFF; margin-top: 6px;')
@@ -56781,16 +59299,42 @@ class IntegratedRecordingInterface(QMainWindow):
                 value = str(item.get('key', '') or '')
                 label = str(item.get('label', '') or value)
                 implemented = bool(item.get('implemented', False))
-                chk = QCheckBox(label if implemented else f'{label}（待开发）')
+                parent_key = str(item.get('parent_key', '') or '')
+                chk_label = label
+                if value == 'mix_voice':
+                    chk_label = '混声（启用后可选择强混/弱混/平衡混）'
+                chk = QCheckBox(chk_label if implemented else f'{label}（待开发）')
                 chk.setChecked(implemented and value in selected_types)
-                chk.setEnabled(implemented)
+                parent_enabled = True
+                if parent_key:
+                    parent_enabled = parent_key in selected_types
+                chk.setEnabled(implemented and parent_enabled)
                 if not implemented:
                     chk.setStyleSheet('QCheckBox:disabled { color: #6F8598; }')
                 group_layout.addWidget(chk)
                 if implemented:
                     option_checks[value] = chk
                     selectable_option_defs.append((value, label))
-        dev_note = QLabel('当前已开放：换气、颤音、真声、假声。其它项目暂不参与识别和标注，后续可逐项接入。')
+
+        def _refresh_technique_dependencies() -> None:
+            for parent_key, child_keys in child_check_map.items():
+                parent_chk = option_checks.get(parent_key)
+                parent_checked = bool(parent_chk.isChecked()) if parent_chk is not None else False
+                for child_key in child_keys:
+                    child_chk = option_checks.get(child_key)
+                    if child_chk is None:
+                        continue
+                    child_chk.setEnabled(parent_checked)
+                    if not parent_checked:
+                        child_chk.setChecked(False)
+
+        for parent_key in child_check_map.keys():
+            parent_chk = option_checks.get(parent_key)
+            if parent_chk is not None:
+                parent_chk.toggled.connect(_refresh_technique_dependencies)
+        _refresh_technique_dependencies()
+
+        dev_note = QLabel('当前已开放：换气、颤音、真声、假声；混声与混声细分类已接入选择联动，识别结果将跟随后续轻量模型训练接入。')
         dev_note.setWordWrap(True)
         dev_note.setStyleSheet('color: #9FB5C9; font-size: 12px; margin-top: 4px;')
         group_layout.addWidget(dev_note)
@@ -61815,6 +64359,10 @@ class IntegratedRecordingInterface(QMainWindow):
     def update_status_display(self):
         """更新状态显示"""
         try:
+            try:
+                self._refresh_technique_backend_status_panel()
+            except Exception:
+                pass
             try:
                 self._refresh_runtime_perf_summary()
             except Exception:

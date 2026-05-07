@@ -1,0 +1,13 @@
+dataset/raw/**
+dataset/processed/*.zip
+dataset/processed/*.7z
+dataset/curated/**/audio/**
+lightweight_training/cache/**
+lightweight_training/artifacts/*.pt
+lightweight_training/artifacts/*.pth
+lightweight_training/artifacts/*.ckpt
+lightweight_training/artifacts/*.bin
+lightweight_training/artifacts/*.zip
+
+!lightweight_training/artifacts/.gitkeep
+!lightweight_training/reports/.gitkeep

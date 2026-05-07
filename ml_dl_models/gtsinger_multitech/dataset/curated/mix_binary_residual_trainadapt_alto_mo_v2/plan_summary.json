@@ -1,0 +1,65 @@
+{
+  "base_split": "mix_binary_residual_trainadapt_v1",
+  "warm_start_artifact": "mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_residual_trainadapt_v1",
+  "training_increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_alto_mo_v2\\training_increment_manifest.csv",
+  "selection_focus": "Alto-1 directed second-round adaptation for remaining 默 positives",
+  "selected_targets": [
+    "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0001",
+    "Chinese#ZH-Alto-1#Pharyngeal#默#Control_Group#0003"
+  ],
+  "selected_anchor_positives": [
+    "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000"
+  ],
+  "selected_alto_guard_negatives": [
+    "Chinese#ZH-Alto-1#Pharyngeal#听海#Control_Group#0002",
+    "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0008",
+    "Chinese#ZH-Alto-1#Pharyngeal#我好想你#Control_Group#0010",
+    "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0004",
+    "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0008",
+    "Chinese#ZH-Alto-1#Pharyngeal#你就不要想起我#Control_Group#0008",
+    "Chinese#ZH-Alto-1#Pharyngeal#小半#Control_Group#0007",
+    "Chinese#ZH-Alto-1#Pharyngeal#失落沙洲#Control_Group#0004"
+  ],
+  "repeat_config": {
+    "target_positive_repeat": 12,
+    "anchor_positive_repeat": 4,
+    "alto_guard_negative_repeat": 3
+  },
+  "counts": {
+    "v1_train": 3118,
+    "v2_train": 3170,
+    "v1_validation": 381,
+    "v2_test": 362,
+    "v1_increment_unique": 12,
+    "v2_increment_unique": 11,
+    "removed_from_test_union": 16
+  },
+  "binary_role_counts": {
+    "v1_train": {
+      "breathy_group": 396,
+      "control_negative": 654,
+      "positive_mix": 1163,
+      "falsetto_group": 622,
+      "other_negative": 283
+    },
+    "v2_train": {
+      "breathy_group": 396,
+      "control_negative": 678,
+      "positive_mix": 1191,
+      "falsetto_group": 622,
+      "other_negative": 283
+    },
+    "v2_test": {
+      "breathy_group": 41,
+      "control_negative": 67,
+      "positive_mix": 139,
+      "falsetto_group": 79,
+      "other_negative": 36
+    }
+  },
+  "rationale": [
+    "Continue from v1 augmented training set to preserve first-round gains while focusing extra capacity on the two remaining 默 positives.",
+    "Only Alto-1 rows are injected in round 2 to avoid pushing unrelated Tenor behavior again.",
+    "Test excludes the union of v1 and v2 injected rows seen by the warm-start branch."
+  ]
+}

@@ -1,0 +1,37 @@
+﻿{
+    "base_split":  "mix_binary_residual_trainadapt_chongbai0000_v1",
+    "warm_start_artifact":  "mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+    "training_increment_manifest":  "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_trainadapt_chongbai0000_microonly_v1\\training_increment_manifest.csv",
+    "selection_focus":  "0000-only increment-only micro-tune",
+    "selected_targets":  [
+                             "Chinese#ZH-Alto-1#Pharyngeal#崇拜#Control_Group#0000"
+                         ],
+    "repeat_config":  {
+                          "target_positive_repeat":  20,
+                          "alto_guard_negative_repeat":  3
+                      },
+    "counts":  {
+                   "microonly_train":  38,
+                   "validation":  381,
+                   "test":  371,
+                   "increment_unique":  7
+               },
+    "binary_role_counts":  {
+                               "microonly_train":  {
+                                                       "control_negative":  18,
+                                                       "positive_mix":  20
+                                                   },
+                               "test":  {
+                                            "breathy_group":  41,
+                                            "falsetto_group":  79,
+                                            "control_negative":  73,
+                                            "other_negative":  36,
+                                            "positive_mix":  142
+                                        }
+                           },
+    "rationale":  [
+                      "Switch to a true increment-only train manifest so the 0000-focused residual probe finishes quickly in the current environment.",
+                      "Keep validation and test identical to the non-leaky chongbai0000_v1 split so only the train-side scope changes.",
+                      "This branch is intended to answer whether an extremely local warm-start can lift 崇拜/0000 at all before spending more time on heavier full-core adaptation."
+                  ]
+}

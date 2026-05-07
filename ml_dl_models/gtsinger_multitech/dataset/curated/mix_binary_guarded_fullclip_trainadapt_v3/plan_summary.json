@@ -1,0 +1,157 @@
+{
+  "base_train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\train_manifest.csv",
+  "increment_train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_residual_pharyngeal_048_052_v1\\guarded_calibration_manifest.csv",
+  "validation_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\validation_manifest.csv",
+  "test_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\test_manifest.csv",
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_guarded_fullclip_trainadapt_v3",
+  "repeat_config": {
+    "positive_repeat": 10,
+    "control_negative_repeat": 2,
+    "other_role_repeat": 1
+  },
+  "test_filter": {
+    "exclude_increment_items_from_test": true,
+    "excluded_item_name_count": 22
+  },
+  "rationale": [
+    "Append the provided increment manifest onto the stable base core train manifest instead of training on the increment-only slice.",
+    "Keep validation unchanged so global model selection remains comparable while frozen GUI runtime remains the real acceptance gate.",
+    "Preserve increment row multiplicity as-is so any upstream weighting choice remains explicit in the selected increment manifest itself.",
+    "When requested, filter increment item_names from the copied test split to avoid direct train-test leakage in trainadapt experiments."
+  ],
+  "counts": {
+    "base_train_rows": 3054,
+    "increment_unique_rows": 22,
+    "increment_weighted_rows": 76,
+    "augmented_train_rows": 3130,
+    "validation_rows": 381,
+    "base_test_rows": 378,
+    "output_test_rows": 356
+  },
+  "split_summary": {
+    "base_train": {
+      "items": 3054,
+      "labels": {
+        "0": 1923,
+        "1": 1131
+      },
+      "binary_roles": {
+        "breathy_group": 396,
+        "control_negative": 622,
+        "positive_mix": 1131,
+        "falsetto_group": 622,
+        "other_negative": 283
+      },
+      "groups": {
+        "Breathy_Group": 396,
+        "Control_Group": 847,
+        "Falsetto_Group": 710,
+        "Glissando_Group": 4,
+        "Mixed_Voice_Group": 810,
+        "Pharyngeal_Group": 277,
+        "Vibrato_Group": 10
+      }
+    },
+    "increment_train": {
+      "items": 22,
+      "labels": {
+        "1": 4,
+        "0": 18
+      },
+      "binary_roles": {
+        "positive_mix": 4,
+        "control_negative": 18
+      },
+      "groups": {
+        "Control_Group": 22
+      }
+    },
+    "weighted_increment_train": {
+      "items": 76,
+      "labels": {
+        "1": 40,
+        "0": 36
+      },
+      "binary_roles": {
+        "positive_mix": 40,
+        "control_negative": 36
+      },
+      "groups": {
+        "Control_Group": 76
+      }
+    },
+    "augmented_train": {
+      "items": 3130,
+      "labels": {
+        "0": 1959,
+        "1": 1171
+      },
+      "binary_roles": {
+        "breathy_group": 396,
+        "control_negative": 658,
+        "positive_mix": 1171,
+        "falsetto_group": 622,
+        "other_negative": 283
+      },
+      "groups": {
+        "Breathy_Group": 396,
+        "Control_Group": 923,
+        "Falsetto_Group": 710,
+        "Glissando_Group": 4,
+        "Mixed_Voice_Group": 810,
+        "Pharyngeal_Group": 277,
+        "Vibrato_Group": 10
+      }
+    },
+    "validation": {
+      "items": 381,
+      "labels": {
+        "0": 240,
+        "1": 141
+      },
+      "binary_roles": {
+        "breathy_group": 49,
+        "control_negative": 78,
+        "positive_mix": 141,
+        "falsetto_group": 78,
+        "other_negative": 35
+      },
+      "groups": {
+        "Breathy_Group": 49,
+        "Control_Group": 112,
+        "Falsetto_Group": 85,
+        "Mixed_Voice_Group": 99,
+        "Pharyngeal_Group": 35,
+        "Vibrato_Group": 1
+      }
+    },
+    "test": {
+      "items": 356,
+      "labels": {
+        "0": 217,
+        "1": 139
+      },
+      "binary_roles": {
+        "breathy_group": 41,
+        "control_negative": 61,
+        "positive_mix": 139,
+        "falsetto_group": 79,
+        "other_negative": 36
+      },
+      "groups": {
+        "Breathy_Group": 41,
+        "Control_Group": 82,
+        "Falsetto_Group": 87,
+        "Glissando_Group": 2,
+        "Mixed_Voice_Group": 109,
+        "Pharyngeal_Group": 33,
+        "Vibrato_Group": 2
+      }
+    }
+  },
+  "manifests": {
+    "train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_guarded_fullclip_trainadapt_v3\\train_manifest.csv",
+    "validation_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_guarded_fullclip_trainadapt_v3\\validation_manifest.csv",
+    "test_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_guarded_fullclip_trainadapt_v3\\test_manifest.csv"
+  }
+}

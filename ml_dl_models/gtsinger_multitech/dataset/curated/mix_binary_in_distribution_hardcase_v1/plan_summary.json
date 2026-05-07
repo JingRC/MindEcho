@@ -1,0 +1,99 @@
+{
+  "train_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\train_manifest.csv",
+  "artifact_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu",
+  "output_dir": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_in_distribution_hardcase_v1",
+  "negative_roles": [
+    "control_negative"
+  ],
+  "selection_config": {
+    "positive_keep_count": 24,
+    "negative_keep_count": 24,
+    "max_per_singer": 12,
+    "max_per_song": 4,
+    "max_per_singer_song": 2,
+    "eval_window_count": 3,
+    "eval_window_aggregation": "mean",
+    "eval_window_consistency_penalty": 0.0,
+    "eval_window_support_threshold": 0.4,
+    "eval_window_min_support_windows": 2,
+    "eval_window_high_support_threshold": 0.55,
+    "eval_window_min_high_support_windows": 1,
+    "score_batch_size": 16,
+    "device": "auto"
+  },
+  "counts": {
+    "train_rows": 3054,
+    "scored_positive_pool": 1131,
+    "scored_negative_pool": 622,
+    "selected_positive_rows": 24,
+    "selected_negative_rows": 24,
+    "increment_rows": 48
+  },
+  "rationale": [
+    "Mine hard positives from the original train split by selecting low-score positive_mix rows under the current stable artifact.",
+    "Mine hard negatives from the original train split by selecting high-score in-distribution negative rows, instead of injecting guarded test-side samples into training.",
+    "Apply simple singer and song caps so the increment is not dominated by a single local pocket of the train distribution."
+  ],
+  "summaries": {
+    "selected_positives": {
+      "items": 24,
+      "binary_roles": {
+        "positive_mix": 24
+      },
+      "groups": {
+        "Falsetto_Group": 10,
+        "Control_Group": 3,
+        "Mixed_Voice_Group": 10,
+        "Pharyngeal_Group": 1
+      },
+      "singers": {
+        "ZH-Tenor-1": 12,
+        "ZH-Alto-1": 12
+      },
+      "mix_prob_min": 0.061777,
+      "mix_prob_mean": 0.161693,
+      "mix_prob_max": 0.276984
+    },
+    "selected_negatives": {
+      "items": 24,
+      "binary_roles": {
+        "control_negative": 24
+      },
+      "groups": {
+        "Control_Group": 24
+      },
+      "singers": {
+        "ZH-Tenor-1": 12,
+        "ZH-Alto-1": 12
+      },
+      "mix_prob_min": 0.541902,
+      "mix_prob_mean": 0.666334,
+      "mix_prob_max": 0.843655
+    },
+    "increment_rows": {
+      "items": 48,
+      "binary_roles": {
+        "positive_mix": 24,
+        "control_negative": 24
+      },
+      "groups": {
+        "Falsetto_Group": 10,
+        "Control_Group": 27,
+        "Mixed_Voice_Group": 10,
+        "Pharyngeal_Group": 1
+      },
+      "singers": {
+        "ZH-Tenor-1": 24,
+        "ZH-Alto-1": 24
+      },
+      "mix_prob_min": 0.061777,
+      "mix_prob_mean": 0.414013,
+      "mix_prob_max": 0.843655
+    }
+  },
+  "manifests": {
+    "training_increment_manifest": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_in_distribution_hardcase_v1\\training_increment_manifest.csv",
+    "hard_positive_preview": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_in_distribution_hardcase_v1\\hard_positive_preview.csv",
+    "hard_negative_preview": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_in_distribution_hardcase_v1\\hard_negative_preview.csv"
+  }
+}

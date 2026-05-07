@@ -1,0 +1,5 @@
+epoch,stage,train_loss,train_acc,val_loss,val_acc,val_balanced_acc,val_macro_f1,val_mix_f1,val_mix_precision,val_mix_recall,val_mixed_group_positive_rate,val_control_group_positive_rate,val_breathy_group_positive_rate,val_falsetto_group_positive_rate,val_positive_mix_rate,val_control_negative_rate,val_breathy_negative_rate,val_falsetto_negative_rate,val_selection_score,val_threshold_constraints_ok,val_threshold,lr
+1,finetune,0.416972,0.821072,0.626379,0.670461,0.674842,0.670458,0.669565,0.728994,0.619095,0.940959,0.327827,0.073529,0.483395,0.619095,0.229508,0.067669,0.483395,0.628475,False,0.7,2e-05
+2,finetune,0.418189,0.81527,0.613321,0.699729,0.701463,0.6994,0.709339,0.742042,0.679397,0.944649,0.386277,0.066176,0.494465,0.679397,0.236066,0.06015,0.494465,0.671536,False,0.675,1.707e-05
+3,finetune,0.412819,0.822697,0.650337,0.681301,0.681463,0.680454,0.696907,0.715344,0.679397,0.948339,0.410419,0.080882,0.542435,0.679397,0.295082,0.075188,0.542435,0.611083,False,0.7,1e-05
+4,finetune,0.411836,0.826874,0.625907,0.705691,0.704933,0.704441,0.723664,0.73299,0.714573,0.95203,0.45108,0.066176,0.490775,0.714573,0.314754,0.06015,0.490775,0.661069,False,0.675,2.93e-06

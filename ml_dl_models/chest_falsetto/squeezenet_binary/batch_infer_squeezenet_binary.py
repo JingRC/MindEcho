@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -25,11 +26,32 @@ def build_model(checkpoint_path: Path, device: torch.device):
     model = models.squeezenet1_1(weights=None)
     model.classifier[1] = torch.nn.Conv2d(512, 2, kernel_size=1)
     model.num_classes = 2
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+    except RuntimeError as exc:
+        exc_text = str(exc or '')
+        if device.type != 'cpu' and ('device_count() is 0' in exc_text or 'Attempting to deserialize object on CUDA device' in exc_text):
+            device = torch.device('cpu')
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+        else:
+            raise
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
     model.eval()
     return model
+
+
+def resolve_device() -> torch.device:
+    force_cpu = str(os.environ.get('MIND_ECHO_FORCE_CPU', '') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    hidden_cuda = str(os.environ.get('CUDA_VISIBLE_DEVICES', '') or '').strip() == '' and 'CUDA_VISIBLE_DEVICES' in os.environ
+    if force_cpu or hidden_cuda:
+        return torch.device('cpu')
+    try:
+        if torch.cuda.is_available() and int(torch.cuda.device_count()) > 0:
+            return torch.device('cuda')
+    except Exception:
+        pass
+    return torch.device('cpu')
 
 
 def hz_to_mel(value_hz: float) -> float:
@@ -129,7 +151,7 @@ def main():
     windows = np.asarray(payload['windows'], dtype=np.float32)
     sample_rate = int(np.asarray(payload['sample_rate']).reshape(-1)[0])
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = resolve_device()
     model = build_model(Path(args.checkpoint), device)
     batch = build_batch_from_windows(windows, sample_rate=sample_rate, image_size=args.image_size)
     result = predict_windows(model, batch, device)

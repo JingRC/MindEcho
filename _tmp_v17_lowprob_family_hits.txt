@@ -1,0 +1,2 @@
+﻿flag released_midlow_balanced_lowprob_softhead_mix
+flag released_lowmid_chesty_lowprob_softhead_mix

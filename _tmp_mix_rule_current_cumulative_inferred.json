@@ -1,0 +1,41 @@
+{
+  "baseline_after_dualpath": {
+    "positive_hits": 49,
+    "positive_total": 143,
+    "control_false_positive": 8,
+    "control_total": 79
+  },
+  "applied_patches": [
+    {
+      "name": "released_sustained_highpitch_marginal_head_mix",
+      "delta_positive": 4,
+      "delta_control": 0
+    },
+    {
+      "name": "released_midpitch_lowchest_pure_head_mix",
+      "delta_positive": 10,
+      "delta_control": 0
+    },
+    {
+      "name": "released_short_lowpitch_marginal_head_mix",
+      "delta_positive": 4,
+      "delta_control": 0
+    },
+    {
+      "name": "released_midpitch_lowchest_pure_head_mix_duration_relax",
+      "delta_positive": 1,
+      "delta_control": 0
+    },
+    {
+      "name": "released_underpowered_short_lowpitch_head_mix",
+      "delta_positive": 1,
+      "delta_control": 0
+    }
+  ],
+  "current_inferred": {
+    "positive_hits": 69,
+    "positive_total": 143,
+    "control_false_positive": 8,
+    "control_total": 79
+  }
+}

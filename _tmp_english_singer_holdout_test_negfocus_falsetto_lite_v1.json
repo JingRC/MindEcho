@@ -1,0 +1,127 @@
+{
+  "manifest": "ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\test_manifest.csv",
+  "groups": [
+    "Mixed_Voice_Group",
+    "Falsetto_Group",
+    "Breathy_Group",
+    "Control_Group"
+  ],
+  "eval_window_count_override": 0,
+  "eval_window_aggregation_override": "",
+  "eval_window_consistency_penalty_override": null,
+  "eval_window_support_threshold_override": null,
+  "eval_window_min_support_windows_override": null,
+  "eval_window_high_support_threshold_override": null,
+  "eval_window_min_high_support_windows_override": null,
+  "artifacts": {
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h0f4_proxy_english_singer_holdout_negfocus_falsetto_lite_v1": {
+      "threshold": 0.75,
+      "backbone_name": "efficientnet_b0",
+      "image_size": 256,
+      "sample_rate": 22050,
+      "n_fft": 1024,
+      "hop_length": 256,
+      "eval_window_count": 3,
+      "eval_window_aggregation": "mean",
+      "eval_window_consistency_penalty": 0.0,
+      "eval_window_support_threshold": 0.4,
+      "eval_window_min_support_windows": 2,
+      "eval_window_high_support_threshold": 0.55,
+      "eval_window_min_high_support_windows": 1,
+      "overall": {
+        "sample_count": 1727,
+        "acc": 0.473654,
+        "balanced_acc": 0.546091,
+        "mix_f1": 0.177376,
+        "mix_precision": 0.960784,
+        "mix_recall": 0.097707,
+        "predicted_positive_rate": 0.059062,
+        "avg_mix_prob": 0.370819
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 245,
+          "acc": 0.089796,
+          "balanced_acc": 0.535417,
+          "mix_f1": 0.132296,
+          "mix_precision": 1.0,
+          "mix_recall": 0.070833,
+          "predicted_positive_rate": 0.069388,
+          "avg_mix_prob": 0.451723
+        },
+        "Falsetto_Group": {
+          "sample_count": 245,
+          "acc": 0.995918,
+          "balanced_acc": 0.995918,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.004082,
+          "avg_mix_prob": 0.264359
+        },
+        "Breathy_Group": {
+          "sample_count": 122,
+          "acc": 0.868852,
+          "balanced_acc": 0.5,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.0,
+          "avg_mix_prob": 0.395009
+        },
+        "Control_Group": {
+          "sample_count": 741,
+          "acc": 0.358974,
+          "balanced_acc": 0.514301,
+          "mix_f1": 0.07767,
+          "mix_precision": 0.869565,
+          "mix_recall": 0.04065,
+          "predicted_positive_rate": 0.031039,
+          "avg_mix_prob": 0.333754
+        }
+      },
+      "binary_roles": {
+        "positive_mix": {
+          "sample_count": 1003,
+          "acc": 0.097707,
+          "balanced_acc": 0.097707,
+          "mix_f1": 0.17802,
+          "mix_precision": 1.0,
+          "mix_recall": 0.097707,
+          "predicted_positive_rate": 0.097707,
+          "avg_mix_prob": 0.441171
+        },
+        "control_negative": {
+          "sample_count": 249,
+          "acc": 0.987952,
+          "balanced_acc": 0.987952,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.012048,
+          "avg_mix_prob": 0.25796
+        },
+        "falsetto_group": {
+          "sample_count": 245,
+          "acc": 0.995918,
+          "balanced_acc": 0.995918,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.004082,
+          "avg_mix_prob": 0.264359
+        },
+        "breathy_group": {
+          "sample_count": 106,
+          "acc": 1.0,
+          "balanced_acc": 1.0,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.0,
+          "avg_mix_prob": 0.383133
+        }
+      }
+    }
+  }
+}

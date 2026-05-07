@@ -1,0 +1,342 @@
+{
+  "artifact_dir": "artifacts\\mix_binary_hardneg_v2_3win_guarded_gpu",
+  "focus_roles": [
+    "control_negative",
+    "breathy_group",
+    "falsetto_group"
+  ],
+  "cluster_count": 6,
+  "artifact_info": {
+    "backbone_name": "squeezenet11",
+    "image_size": 224,
+    "sample_rate": 22050,
+    "sample_secs": 2.4,
+    "n_fft": 1024,
+    "hop_length": 256,
+    "n_mels": 128,
+    "eval_window_count": 3,
+    "eval_window_aggregation": "mean",
+    "known_groups": [
+      "Breathy_Group",
+      "Control_Group",
+      "Falsetto_Group"
+    ],
+    "known_languages": [
+      "Chinese"
+    ]
+  },
+  "pca_dim": 32,
+  "embedding_weight": 1.0,
+  "metadata_weight": 0.5,
+  "mix_prob_weight": 0.35,
+  "splits": {
+    "train": {
+      "focus_sample_count": 1640,
+      "focus_binary_roles": {
+        "breathy_group": 396,
+        "control_negative": 622,
+        "falsetto_group": 622
+      },
+      "clusters": {
+        "cluster_00": {
+          "sample_count": 214,
+          "binary_roles": {
+            "breathy_group": 3,
+            "control_negative": 202,
+            "falsetto_group": 9
+          },
+          "groups": {
+            "Breathy_Group": 3,
+            "Control_Group": 202,
+            "Falsetto_Group": 9
+          },
+          "mix_prob_mean": 0.293327,
+          "mix_prob_min": 0.076298,
+          "mix_prob_max": 0.590775
+        },
+        "cluster_01": {
+          "sample_count": 266,
+          "binary_roles": {
+            "breathy_group": 138,
+            "control_negative": 18,
+            "falsetto_group": 110
+          },
+          "groups": {
+            "Breathy_Group": 138,
+            "Control_Group": 18,
+            "Falsetto_Group": 110
+          },
+          "mix_prob_mean": 0.136574,
+          "mix_prob_min": 0.05309,
+          "mix_prob_max": 0.360846
+        },
+        "cluster_02": {
+          "sample_count": 178,
+          "binary_roles": {
+            "breathy_group": 82,
+            "control_negative": 66,
+            "falsetto_group": 30
+          },
+          "groups": {
+            "Breathy_Group": 82,
+            "Control_Group": 66,
+            "Falsetto_Group": 30
+          },
+          "mix_prob_mean": 0.567103,
+          "mix_prob_min": 0.284263,
+          "mix_prob_max": 0.857655
+        },
+        "cluster_03": {
+          "sample_count": 254,
+          "binary_roles": {
+            "breathy_group": 4,
+            "control_negative": 221,
+            "falsetto_group": 29
+          },
+          "groups": {
+            "Breathy_Group": 4,
+            "Control_Group": 221,
+            "Falsetto_Group": 29
+          },
+          "mix_prob_mean": 0.363295,
+          "mix_prob_min": 0.134594,
+          "mix_prob_max": 0.661696
+        },
+        "cluster_04": {
+          "sample_count": 391,
+          "binary_roles": {
+            "breathy_group": 120,
+            "control_negative": 5,
+            "falsetto_group": 266
+          },
+          "groups": {
+            "Breathy_Group": 120,
+            "Control_Group": 5,
+            "Falsetto_Group": 266
+          },
+          "mix_prob_mean": 0.246289,
+          "mix_prob_min": 0.075711,
+          "mix_prob_max": 0.547658
+        },
+        "cluster_05": {
+          "sample_count": 337,
+          "binary_roles": {
+            "breathy_group": 49,
+            "control_negative": 110,
+            "falsetto_group": 178
+          },
+          "groups": {
+            "Breathy_Group": 49,
+            "Control_Group": 110,
+            "Falsetto_Group": 178
+          },
+          "mix_prob_mean": 0.23201,
+          "mix_prob_min": 0.067178,
+          "mix_prob_max": 0.549528
+        }
+      }
+    },
+    "validation": {
+      "focus_sample_count": 205,
+      "focus_binary_roles": {
+        "breathy_group": 49,
+        "control_negative": 78,
+        "falsetto_group": 78
+      },
+      "clusters": {
+        "cluster_00": {
+          "sample_count": 25,
+          "binary_roles": {
+            "breathy_group": 1,
+            "control_negative": 22,
+            "falsetto_group": 2
+          },
+          "groups": {
+            "Breathy_Group": 1,
+            "Control_Group": 22,
+            "Falsetto_Group": 2
+          },
+          "mix_prob_mean": 0.300735,
+          "mix_prob_min": 0.168828,
+          "mix_prob_max": 0.427564
+        },
+        "cluster_01": {
+          "sample_count": 41,
+          "binary_roles": {
+            "breathy_group": 27,
+            "control_negative": 3,
+            "falsetto_group": 11
+          },
+          "groups": {
+            "Breathy_Group": 27,
+            "Control_Group": 3,
+            "Falsetto_Group": 11
+          },
+          "mix_prob_mean": 0.133193,
+          "mix_prob_min": 0.053599,
+          "mix_prob_max": 0.260876
+        },
+        "cluster_02": {
+          "sample_count": 17,
+          "binary_roles": {
+            "breathy_group": 4,
+            "control_negative": 10,
+            "falsetto_group": 3
+          },
+          "groups": {
+            "Breathy_Group": 4,
+            "Control_Group": 10,
+            "Falsetto_Group": 3
+          },
+          "mix_prob_mean": 0.560614,
+          "mix_prob_min": 0.390629,
+          "mix_prob_max": 0.782311
+        },
+        "cluster_03": {
+          "sample_count": 34,
+          "binary_roles": {
+            "control_negative": 27,
+            "falsetto_group": 7
+          },
+          "groups": {
+            "Control_Group": 27,
+            "Falsetto_Group": 7
+          },
+          "mix_prob_mean": 0.38258,
+          "mix_prob_min": 0.175932,
+          "mix_prob_max": 0.642051
+        },
+        "cluster_04": {
+          "sample_count": 45,
+          "binary_roles": {
+            "breathy_group": 14,
+            "falsetto_group": 31
+          },
+          "groups": {
+            "Breathy_Group": 14,
+            "Falsetto_Group": 31
+          },
+          "mix_prob_mean": 0.249971,
+          "mix_prob_min": 0.088469,
+          "mix_prob_max": 0.447934
+        },
+        "cluster_05": {
+          "sample_count": 43,
+          "binary_roles": {
+            "breathy_group": 3,
+            "control_negative": 16,
+            "falsetto_group": 24
+          },
+          "groups": {
+            "Breathy_Group": 3,
+            "Control_Group": 16,
+            "Falsetto_Group": 24
+          },
+          "mix_prob_mean": 0.268532,
+          "mix_prob_min": 0.075695,
+          "mix_prob_max": 0.509491
+        }
+      }
+    },
+    "test": {
+      "focus_sample_count": 199,
+      "focus_binary_roles": {
+        "breathy_group": 41,
+        "control_negative": 79,
+        "falsetto_group": 79
+      },
+      "clusters": {
+        "cluster_00": {
+          "sample_count": 27,
+          "binary_roles": {
+            "control_negative": 23,
+            "falsetto_group": 4
+          },
+          "groups": {
+            "Control_Group": 23,
+            "Falsetto_Group": 4
+          },
+          "mix_prob_mean": 0.27953,
+          "mix_prob_min": 0.121378,
+          "mix_prob_max": 0.471656
+        },
+        "cluster_01": {
+          "sample_count": 23,
+          "binary_roles": {
+            "breathy_group": 10,
+            "control_negative": 3,
+            "falsetto_group": 10
+          },
+          "groups": {
+            "Breathy_Group": 10,
+            "Control_Group": 3,
+            "Falsetto_Group": 10
+          },
+          "mix_prob_mean": 0.1434,
+          "mix_prob_min": 0.067446,
+          "mix_prob_max": 0.313611
+        },
+        "cluster_02": {
+          "sample_count": 22,
+          "binary_roles": {
+            "breathy_group": 10,
+            "control_negative": 9,
+            "falsetto_group": 3
+          },
+          "groups": {
+            "Breathy_Group": 10,
+            "Control_Group": 9,
+            "Falsetto_Group": 3
+          },
+          "mix_prob_mean": 0.575482,
+          "mix_prob_min": 0.109812,
+          "mix_prob_max": 0.819406
+        },
+        "cluster_03": {
+          "sample_count": 36,
+          "binary_roles": {
+            "control_negative": 33,
+            "falsetto_group": 3
+          },
+          "groups": {
+            "Control_Group": 33,
+            "Falsetto_Group": 3
+          },
+          "mix_prob_mean": 0.390287,
+          "mix_prob_min": 0.224198,
+          "mix_prob_max": 0.668451
+        },
+        "cluster_04": {
+          "sample_count": 56,
+          "binary_roles": {
+            "breathy_group": 17,
+            "falsetto_group": 39
+          },
+          "groups": {
+            "Breathy_Group": 17,
+            "Falsetto_Group": 39
+          },
+          "mix_prob_mean": 0.246029,
+          "mix_prob_min": 0.093467,
+          "mix_prob_max": 0.47498
+        },
+        "cluster_05": {
+          "sample_count": 35,
+          "binary_roles": {
+            "breathy_group": 4,
+            "control_negative": 11,
+            "falsetto_group": 20
+          },
+          "groups": {
+            "Breathy_Group": 4,
+            "Control_Group": 11,
+            "Falsetto_Group": 20
+          },
+          "mix_prob_mean": 0.245591,
+          "mix_prob_min": 0.074004,
+          "mix_prob_max": 0.472774
+        }
+      }
+    }
+  }
+}

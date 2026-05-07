@@ -1,0 +1,127 @@
+{
+  "manifest": "ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\validation_manifest.csv",
+  "groups": [
+    "Mixed_Voice_Group",
+    "Falsetto_Group",
+    "Breathy_Group",
+    "Control_Group"
+  ],
+  "eval_window_count_override": 0,
+  "eval_window_aggregation_override": "",
+  "eval_window_consistency_penalty_override": null,
+  "eval_window_support_threshold_override": null,
+  "eval_window_min_support_windows_override": null,
+  "eval_window_high_support_threshold_override": null,
+  "eval_window_min_high_support_windows_override": null,
+  "artifacts": {
+    "mix_binary_efficientnet_b0_img256_mel160_mean3_h0f4_proxy_english_singer_holdout_negfocus_falsetto_lite_v1": {
+      "threshold": 0.75,
+      "backbone_name": "efficientnet_b0",
+      "image_size": 256,
+      "sample_rate": 22050,
+      "n_fft": 1024,
+      "hop_length": 256,
+      "eval_window_count": 3,
+      "eval_window_aggregation": "mean",
+      "eval_window_consistency_penalty": 0.0,
+      "eval_window_support_threshold": 0.4,
+      "eval_window_min_support_windows": 2,
+      "eval_window_high_support_threshold": 0.55,
+      "eval_window_min_high_support_windows": 1,
+      "overall": {
+        "sample_count": 1845,
+        "acc": 0.662331,
+        "balanced_acc": 0.670304,
+        "mix_f1": 0.645014,
+        "mix_precision": 0.744737,
+        "mix_recall": 0.568844,
+        "predicted_positive_rate": 0.411924,
+        "avg_mix_prob": 0.61113
+      },
+      "groups": {
+        "Mixed_Voice_Group": {
+          "sample_count": 271,
+          "acc": 0.918819,
+          "balanced_acc": 0.918819,
+          "mix_f1": 0.957692,
+          "mix_precision": 1.0,
+          "mix_recall": 0.918819,
+          "predicted_positive_rate": 0.918819,
+          "avg_mix_prob": 0.891061
+        },
+        "Falsetto_Group": {
+          "sample_count": 271,
+          "acc": 0.557196,
+          "balanced_acc": 0.557196,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.442804,
+          "avg_mix_prob": 0.602081
+        },
+        "Breathy_Group": {
+          "sample_count": 136,
+          "acc": 0.948529,
+          "balanced_acc": 0.64787,
+          "mix_f1": 0.222222,
+          "mix_precision": 0.166667,
+          "mix_recall": 0.333333,
+          "predicted_positive_rate": 0.044118,
+          "avg_mix_prob": 0.205022
+        },
+        "Control_Group": {
+          "sample_count": 787,
+          "acc": 0.532402,
+          "balanced_acc": 0.588157,
+          "mix_f1": 0.471264,
+          "mix_precision": 0.766355,
+          "mix_recall": 0.340249,
+          "predicted_positive_rate": 0.271919,
+          "avg_mix_prob": 0.579369
+        }
+      },
+      "binary_roles": {
+        "positive_mix": {
+          "sample_count": 995,
+          "acc": 0.568844,
+          "balanced_acc": 0.568844,
+          "mix_f1": 0.725176,
+          "mix_precision": 1.0,
+          "mix_recall": 0.568844,
+          "predicted_positive_rate": 0.568844,
+          "avg_mix_prob": 0.738531
+        },
+        "control_negative": {
+          "sample_count": 305,
+          "acc": 0.836066,
+          "balanced_acc": 0.836066,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.163934,
+          "avg_mix_prob": 0.481742
+        },
+        "falsetto_group": {
+          "sample_count": 271,
+          "acc": 0.557196,
+          "balanced_acc": 0.557196,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.442804,
+          "avg_mix_prob": 0.602081
+        },
+        "breathy_group": {
+          "sample_count": 133,
+          "acc": 0.962406,
+          "balanced_acc": 0.962406,
+          "mix_f1": 0.0,
+          "mix_precision": 0.0,
+          "mix_recall": 0.0,
+          "predicted_positive_rate": 0.037594,
+          "avg_mix_prob": 0.199773
+        }
+      }
+    }
+  }
+}

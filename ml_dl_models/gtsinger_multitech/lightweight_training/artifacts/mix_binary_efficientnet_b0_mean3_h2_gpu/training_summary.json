@@ -1,0 +1,232 @@
+{
+  "device": "cuda",
+  "task": "mix_binary_crossentropy",
+  "backbone_name": "efficientnet_b0",
+  "augment_profile": "safe",
+  "image_size": 224,
+  "sample_rate": 22050,
+  "sample_secs": 2.4,
+  "eval_window_count": 3,
+  "eval_window_aggregation": "mean",
+  "eval_window_consistency_penalty": 0.0,
+  "eval_window_support_threshold": 0.4,
+  "eval_window_min_support_windows": 2,
+  "eval_window_high_support_threshold": 0.55,
+  "eval_window_min_high_support_windows": 1,
+  "n_fft": 1024,
+  "hop_length": 256,
+  "n_mels": 128,
+  "best_epoch": 2,
+  "class_weight_mode": "none",
+  "weighted_sampler": false,
+  "sample_weight_mode": "class_balanced",
+  "loss_weight_mode": "none",
+  "selection_metric": "balanced_acc",
+  "best_threshold": 0.5,
+  "best_val_score": 0.695257,
+  "best_val_selection_score": 0.695257,
+  "best_val_metrics": {
+    "acc": 0.682415,
+    "balanced_acc": 0.695257,
+    "macro_f1": 0.676849,
+    "mix_f1": 0.634441,
+    "mix_precision": 0.552632,
+    "mix_recall": 0.744681
+  },
+  "best_val_group_rates": {
+    "Mixed_Voice_Group": 0.727273,
+    "Control_Group": 0.508929,
+    "Breathy_Group": 0.285714,
+    "Falsetto_Group": 0.223529
+  },
+  "best_val_binary_role_rates": {
+    "positive_mix": 0.744681,
+    "control_negative": 0.371795,
+    "breathy_group": 0.285714,
+    "falsetto_group": 0.192308
+  },
+  "best_val_threshold_constraints_ok": false,
+  "validation_threshold_constraints": {
+    "min_positive_mix_rate": 0.65,
+    "max_control_negative_rate": 0.24,
+    "max_breathy_negative_rate": 0.07,
+    "max_falsetto_negative_rate": 0.1
+  },
+  "best_val_acc": 0.682415,
+  "test_acc": 0.642857,
+  "test_loss": 0.651017,
+  "test_metrics": {
+    "acc": 0.642857,
+    "balanced_acc": 0.658012,
+    "macro_f1": 0.639402,
+    "mix_f1": 0.604106,
+    "mix_precision": 0.520202,
+    "mix_recall": 0.72028
+  },
+  "duration_sec": 162.956,
+  "split_summary": {
+    "train": {
+      "items": 3054,
+      "labels": {
+        "0": 1923,
+        "1": 1131
+      },
+      "binary_roles": {
+        "breathy_group": 396,
+        "control_negative": 622,
+        "positive_mix": 1131,
+        "falsetto_group": 622,
+        "other_negative": 283
+      },
+      "groups": {
+        "Breathy_Group": 396,
+        "Control_Group": 847,
+        "Falsetto_Group": 710,
+        "Glissando_Group": 4,
+        "Mixed_Voice_Group": 810,
+        "Pharyngeal_Group": 277,
+        "Vibrato_Group": 10
+      }
+    },
+    "validation": {
+      "items": 381,
+      "labels": {
+        "0": 240,
+        "1": 141
+      },
+      "binary_roles": {
+        "breathy_group": 49,
+        "control_negative": 78,
+        "positive_mix": 141,
+        "falsetto_group": 78,
+        "other_negative": 35
+      },
+      "groups": {
+        "Breathy_Group": 49,
+        "Control_Group": 112,
+        "Falsetto_Group": 85,
+        "Mixed_Voice_Group": 99,
+        "Pharyngeal_Group": 35,
+        "Vibrato_Group": 1
+      }
+    },
+    "test": {
+      "items": 378,
+      "labels": {
+        "0": 235,
+        "1": 143
+      },
+      "binary_roles": {
+        "breathy_group": 41,
+        "control_negative": 79,
+        "positive_mix": 143,
+        "falsetto_group": 79,
+        "other_negative": 36
+      },
+      "groups": {
+        "Breathy_Group": 41,
+        "Control_Group": 104,
+        "Falsetto_Group": 87,
+        "Glissando_Group": 2,
+        "Mixed_Voice_Group": 109,
+        "Pharyngeal_Group": 33,
+        "Vibrato_Group": 2
+      }
+    }
+  },
+  "confusion_matrix": [
+    [
+      140,
+      95
+    ],
+    [
+      40,
+      103
+    ]
+  ],
+  "classification_report": {
+    "non_mix": {
+      "precision": 0.7777777777777778,
+      "recall": 0.5957446808510638,
+      "f1-score": 0.6746987951807228,
+      "support": 235.0
+    },
+    "mix": {
+      "precision": 0.5202020202020202,
+      "recall": 0.7202797202797203,
+      "f1-score": 0.6041055718475073,
+      "support": 143.0
+    },
+    "accuracy": 0.6428571428571429,
+    "macro avg": {
+      "precision": 0.648989898989899,
+      "recall": 0.6580122005653921,
+      "f1-score": 0.639402183514115,
+      "support": 378.0
+    },
+    "weighted avg": {
+      "precision": 0.6803350970017635,
+      "recall": 0.6428571428571429,
+      "f1-score": 0.6479928932319139,
+      "support": 378.0
+    }
+  },
+  "test_mix_probability": {
+    "mean": 0.512349,
+    "min": 0.209266,
+    "max": 0.799489
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "stage": "head",
+      "train_loss": 0.654935,
+      "train_acc": 0.620825,
+      "val_loss": 0.598139,
+      "val_acc": 0.682415,
+      "val_balanced_acc": 0.661613,
+      "val_macro_f1": 0.660885,
+      "val_mix_f1": 0.575439,
+      "val_mix_precision": 0.569444,
+      "val_mix_recall": 0.58156,
+      "val_mixed_group_positive_rate": 0.545455,
+      "val_control_group_positive_rate": 0.392857,
+      "val_breathy_group_positive_rate": 0.244898,
+      "val_falsetto_group_positive_rate": 0.129412,
+      "val_positive_mix_rate": 0.58156,
+      "val_control_negative_rate": 0.230769,
+      "val_breathy_negative_rate": 0.244898,
+      "val_falsetto_negative_rate": 0.128205,
+      "val_selection_score": 0.661613,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.35,
+      "lr": 0.001
+    },
+    {
+      "epoch": 2,
+      "stage": "head",
+      "train_loss": 0.646763,
+      "train_acc": 0.639817,
+      "val_loss": 0.617663,
+      "val_acc": 0.682415,
+      "val_balanced_acc": 0.695257,
+      "val_macro_f1": 0.676849,
+      "val_mix_f1": 0.634441,
+      "val_mix_precision": 0.552632,
+      "val_mix_recall": 0.744681,
+      "val_mixed_group_positive_rate": 0.727273,
+      "val_control_group_positive_rate": 0.508929,
+      "val_breathy_group_positive_rate": 0.285714,
+      "val_falsetto_group_positive_rate": 0.223529,
+      "val_positive_mix_rate": 0.744681,
+      "val_control_negative_rate": 0.371795,
+      "val_breathy_negative_rate": 0.285714,
+      "val_falsetto_negative_rate": 0.192308,
+      "val_selection_score": 0.695257,
+      "val_threshold_constraints_ok": false,
+      "val_threshold": 0.5,
+      "lr": 0.0005
+    }
+  ],
+  "checkpoint": "artifacts\\mix_binary_efficientnet_b0_mean3_h2_gpu\\best_mix_binary_squeezenet.pt"
+}

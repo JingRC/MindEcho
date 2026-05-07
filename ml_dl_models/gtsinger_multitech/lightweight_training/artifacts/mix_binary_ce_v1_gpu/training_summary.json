@@ -1,0 +1,253 @@
+{
+  "device": "cuda",
+  "task": "mix_binary_crossentropy",
+  "augment_profile": "safe",
+  "sample_secs": 2.4,
+  "n_mels": 128,
+  "best_epoch": 5,
+  "best_val_acc": 0.671916,
+  "test_acc": 0.656085,
+  "test_loss": 0.616107,
+  "duration_sec": 920.325,
+  "split_summary": {
+    "train": {
+      "items": 3054,
+      "labels": {
+        "0": 1923,
+        "1": 1131
+      },
+      "binary_roles": {
+        "breathy_group": 396,
+        "control_negative": 622,
+        "positive_mix": 1131,
+        "falsetto_group": 622,
+        "other_negative": 283
+      },
+      "groups": {
+        "Breathy_Group": 396,
+        "Control_Group": 847,
+        "Falsetto_Group": 710,
+        "Glissando_Group": 4,
+        "Mixed_Voice_Group": 810,
+        "Pharyngeal_Group": 277,
+        "Vibrato_Group": 10
+      }
+    },
+    "validation": {
+      "items": 381,
+      "labels": {
+        "0": 240,
+        "1": 141
+      },
+      "binary_roles": {
+        "breathy_group": 49,
+        "control_negative": 78,
+        "positive_mix": 141,
+        "falsetto_group": 78,
+        "other_negative": 35
+      },
+      "groups": {
+        "Breathy_Group": 49,
+        "Control_Group": 112,
+        "Falsetto_Group": 85,
+        "Mixed_Voice_Group": 99,
+        "Pharyngeal_Group": 35,
+        "Vibrato_Group": 1
+      }
+    },
+    "test": {
+      "items": 378,
+      "labels": {
+        "0": 235,
+        "1": 143
+      },
+      "binary_roles": {
+        "breathy_group": 41,
+        "control_negative": 79,
+        "positive_mix": 143,
+        "falsetto_group": 79,
+        "other_negative": 36
+      },
+      "groups": {
+        "Breathy_Group": 41,
+        "Control_Group": 104,
+        "Falsetto_Group": 87,
+        "Glissando_Group": 2,
+        "Mixed_Voice_Group": 109,
+        "Pharyngeal_Group": 33,
+        "Vibrato_Group": 2
+      }
+    }
+  },
+  "confusion_matrix": [
+    [
+      232,
+      3
+    ],
+    [
+      127,
+      16
+    ]
+  ],
+  "classification_report": {
+    "non_mix": {
+      "precision": 0.6462395543175488,
+      "recall": 0.9872340425531915,
+      "f1-score": 0.7811447811447811,
+      "support": 235.0
+    },
+    "mix": {
+      "precision": 0.8421052631578947,
+      "recall": 0.11188811188811189,
+      "f1-score": 0.19753086419753085,
+      "support": 143.0
+    },
+    "accuracy": 0.656084656084656,
+    "macro avg": {
+      "precision": 0.7441724087377217,
+      "recall": 0.5495610772206517,
+      "f1-score": 0.489337822671156,
+      "support": 378.0
+    },
+    "weighted avg": {
+      "precision": 0.720336899196304,
+      "recall": 0.656084656084656,
+      "f1-score": 0.5603596220880172,
+      "support": 378.0
+    }
+  },
+  "test_mix_probability": {
+    "mean": 0.282901,
+    "min": 0.059375,
+    "max": 0.585145
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "stage": "head",
+      "train_loss": 0.673412,
+      "train_acc": 0.626392,
+      "val_loss": 0.629534,
+      "val_acc": 0.635171,
+      "lr": 0.001
+    },
+    {
+      "epoch": 2,
+      "stage": "head",
+      "train_loss": 0.639067,
+      "train_acc": 0.642764,
+      "val_loss": 0.617253,
+      "val_acc": 0.653543,
+      "lr": 0.00093301
+    },
+    {
+      "epoch": 3,
+      "stage": "head",
+      "train_loss": 0.624564,
+      "train_acc": 0.6611,
+      "val_loss": 0.615755,
+      "val_acc": 0.661417,
+      "lr": 0.00075
+    },
+    {
+      "epoch": 4,
+      "stage": "head",
+      "train_loss": 0.618101,
+      "train_acc": 0.669614,
+      "val_loss": 0.610049,
+      "val_acc": 0.666667,
+      "lr": 0.0005
+    },
+    {
+      "epoch": 5,
+      "stage": "head",
+      "train_loss": 0.625028,
+      "train_acc": 0.656189,
+      "val_loss": 0.60952,
+      "val_acc": 0.671916,
+      "lr": 0.00025
+    },
+    {
+      "epoch": 6,
+      "stage": "head",
+      "train_loss": 0.616976,
+      "train_acc": 0.667976,
+      "val_loss": 0.609789,
+      "val_acc": 0.671916,
+      "lr": 6.699e-05
+    },
+    {
+      "epoch": 7,
+      "stage": "finetune",
+      "train_loss": 0.671706,
+      "train_acc": 0.622462,
+      "val_loss": 0.654983,
+      "val_acc": 0.627297,
+      "lr": 0.0002
+    },
+    {
+      "epoch": 8,
+      "stage": "finetune",
+      "train_loss": 0.648915,
+      "train_acc": 0.638507,
+      "val_loss": 0.634772,
+      "val_acc": 0.629921,
+      "lr": 0.00019239
+    },
+    {
+      "epoch": 9,
+      "stage": "finetune",
+      "train_loss": 0.6275,
+      "train_acc": 0.641126,
+      "val_loss": 0.710484,
+      "val_acc": 0.629921,
+      "lr": 0.00017071
+    },
+    {
+      "epoch": 10,
+      "stage": "finetune",
+      "train_loss": 0.63737,
+      "train_acc": 0.64833,
+      "val_loss": 0.622912,
+      "val_acc": 0.629921,
+      "lr": 0.00013827
+    },
+    {
+      "epoch": 11,
+      "stage": "finetune",
+      "train_loss": 0.615761,
+      "train_acc": 0.653569,
+      "val_loss": 0.612023,
+      "val_acc": 0.629921,
+      "lr": 0.0001
+    },
+    {
+      "epoch": 12,
+      "stage": "finetune",
+      "train_loss": 0.610032,
+      "train_acc": 0.672888,
+      "val_loss": 0.616343,
+      "val_acc": 0.637795,
+      "lr": 6.173e-05
+    },
+    {
+      "epoch": 13,
+      "stage": "finetune",
+      "train_loss": 0.593513,
+      "train_acc": 0.692534,
+      "val_loss": 0.600947,
+      "val_acc": 0.664042,
+      "lr": 2.929e-05
+    },
+    {
+      "epoch": 14,
+      "stage": "finetune",
+      "train_loss": 0.587789,
+      "train_acc": 0.698428,
+      "val_loss": 0.607481,
+      "val_acc": 0.664042,
+      "lr": 7.61e-06
+    }
+  ],
+  "checkpoint": "d:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\lightweight_training\\artifacts\\mix_binary_ce_v1_gpu\\best_mix_binary_squeezenet.pt"
+}
