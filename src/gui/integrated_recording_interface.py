@@ -182,6 +182,23 @@ def _save_technique_external_infer_strategy_setting(strategy: str) -> None:
         pass
 
 
+def _git_lfs_pointer_audio_error(path: Union[str, Path]) -> str:
+    try:
+        file_path = Path(path)
+    except Exception:
+        return ''
+    try:
+        head = file_path.read_bytes()[:256]
+    except Exception:
+        return ''
+    if not head.startswith(b'version https://git-lfs.github.com/spec/v1'):
+        return ''
+    return (
+        f"无法读取音频文件: {file_path.name} 当前是 Git LFS 占位文件，不是真实音频内容。"
+        "请先执行 git lfs pull 拉取真实音频，或重新导出该文件后再分析。"
+    )
+
+
 def _normalize_torch_runtime_key(value: str) -> str:
     text = str(value or '').strip()
     if not text:
@@ -1003,9 +1020,9 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '混声技术（Mix Voice）',
         'items': (
-            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'parent_key': 'mix_voice'},
-            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'parent_key': 'mix_voice'},
-            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'parent_key': 'mix_voice'},
+            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'parent_key': 'mix_voice', 'default_selected': True},
+            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'parent_key': 'mix_voice', 'default_selected': True},
+            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'parent_key': 'mix_voice', 'default_selected': True},
         ),
     },
     {
@@ -1021,7 +1038,7 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '音色与动态控制技巧',
         'items': (
-            {'key': 'mix_voice', 'label': '混声', 'implemented': True},
+            {'key': 'mix_voice', 'label': '混声', 'implemented': True, 'default_selected': True},
             {'key': 'breathy_phonation', 'label': '气声', 'implemented': False},
             {'key': 'falsetto', 'label': '假声', 'implemented': True},
             {'key': 'chest_voice', 'label': '真声', 'implemented': True},
@@ -22521,14 +22538,6 @@ class ECGStylePitchVisualizer(QWidget):
         """)
         controls_row2_layout.addWidget(self.technique_recognition_btn)
 
-        self.technique_backend_label = QLabel('技巧推理: 自动/CPU优先')
-        self.technique_backend_label.setToolTip('显示当前技巧识别推理模式与 external 调度顺序')
-        self.technique_backend_label.setStyleSheet(
-            'color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
-        )
-        controls_row2_layout.addWidget(self.technique_backend_label)
-        self._update_technique_backend_status_visualizer()
-        
         # 清除按钮
         clear_btn = QPushButton("清除")
         clear_btn.clicked.connect(self.clear_data)
@@ -33135,7 +33144,8 @@ class ECGStylePitchVisualizer(QWidget):
             'relaxed_used': False,
             'reason': '',
         }
-        if not (self._technique_type_selected('chest_voice') or self._technique_type_selected('falsetto')):
+        mix_types_selected = any(self._technique_type_selected(name) for name in ('strong_mix', 'weak_mix', 'balanced_mix'))
+        if not (self._technique_type_selected('chest_voice') or self._technique_type_selected('falsetto') or mix_types_selected):
             self._last_voice_type_debug['reason'] = 'not_selected'
             return []
         if audio_samples is None or sample_rate is None:
@@ -33375,7 +33385,7 @@ class ECGStylePitchVisualizer(QWidget):
                     self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
                 all_predictions.append(record)
                 event_type = str(record.get('event_type', '') or '')
-                if not self._technique_type_selected(event_type):
+                if not (self._technique_type_selected(event_type) or mix_types_selected):
                     continue
                 if not self._voice_prediction_record_accepted(record, relaxed=False):
                     continue
@@ -33387,7 +33397,7 @@ class ECGStylePitchVisualizer(QWidget):
             relaxed_predictions = []
             for record in all_predictions:
                 event_type = str(record.get('event_type', '') or '')
-                if not self._technique_type_selected(event_type):
+                if not (self._technique_type_selected(event_type) or mix_types_selected):
                     continue
                 if not self._voice_prediction_record_accepted(record, relaxed=True):
                     continue
@@ -34870,7 +34880,9 @@ class ECGStylePitchVisualizer(QWidget):
             return summary
         offline_breath_events = self._build_offline_gap_breath_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
         offline_vibrato_events = self._build_offline_vibrato_events(frames)
+        voice_types_selected = any(self._technique_type_selected(name) for name in ('chest_voice', 'falsetto'))
         offline_voice_events = self._build_offline_chest_falsetto_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
+        offline_voice_events_for_output = list(offline_voice_events or []) if voice_types_selected else []
         offline_mix_events = self._build_rule_based_mix_events(frames, offline_voice_events)
         offline_voice_events_for_mix = list(offline_voice_events or [])
         try:
@@ -34906,7 +34918,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             min_conf = 0.55
         filtered_events = []
-        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events or []) + list(offline_mix_events or [])
+        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events_for_output or []) + list(offline_mix_events or [])
         for event in all_events:
             try:
                 event_min_conf = self._technique_event_min_confidence_threshold(event, min_conf)
@@ -34919,8 +34931,8 @@ class ECGStylePitchVisualizer(QWidget):
         if not filtered_events:
             if self._offline_local_file_source_kind(frames) == 'local_file_onepass':
                 filtered_events = self._fallback_local_file_onepass_events(all_events)
-            elif offline_voice_events:
-                filtered_events = self._fallback_normal_voice_events(offline_voice_events)
+            elif offline_voice_events_for_output:
+                filtered_events = self._fallback_normal_voice_events(offline_voice_events_for_output)
         self._technique_events = deque(filtered_events, maxlen=240)
         counts = {}
         duration = 0.0
@@ -50324,54 +50336,6 @@ class IntegratedRecordingInterface(QMainWindow):
         dbg_layout.addLayout(dbg_row)
         v.addWidget(debug_group)
 
-        # 技巧识别推理设置
-        technique_backend_group = QGroupBox('技巧识别推理')
-        technique_backend_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
-        tbg_layout = QVBoxLayout(technique_backend_group)
-        tbg_layout.addWidget(QLabel('说明：当本地 torch 在当前机器上不可用时，技巧识别会自动回退到 external；此处可将 external 调度策略设为自动、固定 CPU 优先或固定 GPU 优先。'))
-        strategy_row = QHBoxLayout()
-        strategy_row.addWidget(QLabel('external 调度策略:'))
-        infer_strategy_combo = QComboBox()
-        infer_strategy_combo.addItem('自动', 'auto')
-        infer_strategy_combo.addItem('CPU优先', 'cpu')
-        infer_strategy_combo.addItem('GPU优先', 'gpu')
-        current_strategy = _load_technique_external_infer_strategy_setting()
-        current_index = max(0, infer_strategy_combo.findData(current_strategy))
-        infer_strategy_combo.setCurrentIndex(current_index)
-        strategy_row.addWidget(infer_strategy_combo)
-        strategy_row.addStretch()
-        tbg_layout.addLayout(strategy_row)
-        technique_backend_status_lbl = QLabel('技巧推理: 读取中')
-        technique_backend_status_lbl.setWordWrap(True)
-        tbg_layout.addWidget(technique_backend_status_lbl)
-        backend_btn_row = QHBoxLayout()
-        clear_external_only_btn = QPushButton('清除 external-only 缓存')
-        backend_btn_row.addWidget(clear_external_only_btn)
-        backend_btn_row.addStretch()
-        tbg_layout.addLayout(backend_btn_row)
-        v.addWidget(technique_backend_group)
-
-        def _refresh_technique_backend_dialog_status(strategy_override: Optional[str] = None):
-            short_text, tooltip = self._describe_technique_external_backend_status(strategy_override=strategy_override)
-            technique_backend_status_lbl.setText(short_text)
-            technique_backend_status_lbl.setToolTip(tooltip)
-            if 'external-only' in short_text:
-                technique_backend_status_lbl.setStyleSheet('color: #FFF3D6; background: rgba(96, 52, 12, 0.95); border: 1px solid #E0A84F; border-radius: 6px; padding: 6px 8px; font-weight: 700;')
-            else:
-                technique_backend_status_lbl.setStyleSheet('color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 8px; font-weight: 700;')
-
-        infer_strategy_combo.currentIndexChanged.connect(lambda _idx: _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto')))
-
-        def _clear_external_only_cache_from_dialog():
-            try:
-                self._reset_technique_external_only_cache()
-            except Exception:
-                pass
-            _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto'))
-
-        clear_external_only_btn.clicked.connect(_clear_external_only_cache_from_dialog)
-        _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto'))
-
         # 采集逻辑：通过音频处理线程累计帧并计算噪声谱/峰，异步轮询状态
         _poll_timer = QTimer(dlg)
         _poll_timer.setInterval(120)
@@ -58098,15 +58062,6 @@ class IntegratedRecordingInterface(QMainWindow):
         self.noise_status_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #DCEAF5; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
         system_status_layout.addWidget(self.noise_status_label)
 
-        self.technique_backend_status_label = QLabel("技巧推理: 读取中")
-        self.technique_backend_status_label.setWordWrap(True)
-        self.technique_backend_status_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 10px;")
-        system_status_layout.addWidget(self.technique_backend_status_label)
-        try:
-            self._refresh_technique_backend_status_panel()
-        except Exception:
-            pass
-        
         # 清除数据按钮
         clear_button = QPushButton("清除可视化数据")
         clear_button.clicked.connect(self.visualizer.clear_data)
@@ -58863,7 +58818,7 @@ class IntegratedRecordingInterface(QMainWindow):
             selected_types = set(_normalize_technique_selection(getattr(getattr(self, '_technique_panel_state', None), 'selected_types', []) or []))
         except Exception:
             selected_types = set()
-        if selected_types.intersection({'chest_voice', 'falsetto'}):
+        if selected_types.intersection({'chest_voice', 'falsetto', 'strong_mix', 'weak_mix', 'balanced_mix'}):
             try:
                 raw_audio = getattr(self, 'audio_buffer', None)
                 if raw_audio is None or (hasattr(raw_audio, '__len__') and len(raw_audio) <= 0):
@@ -59028,7 +58983,7 @@ class IntegratedRecordingInterface(QMainWindow):
             elif analysis_mode == 'paused_realtime_session':
                 source_prefix = f'暂停前片段 {resolved_duration:.1f}s，'
             voice_status_suffix = ''
-            if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
+            if selected_types.intersection({'chest_voice', 'falsetto', 'strong_mix', 'weak_mix', 'balanced_mix'}) and voice_debug:
                 reason = self._format_voice_type_debug_reason(str(voice_debug.get('reason', '') or ''))
                 try:
                     candidate_windows = int(voice_debug.get('candidate_windows', 0) or 0)
@@ -59038,9 +58993,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     candidate_windows = 0
                     predicted_windows = 0
                     accepted_windows = 0
-                voice_status_suffix = (
-                    f"，真假声候选 {candidate_windows} / 模型 {predicted_windows} / 通过 {accepted_windows}"
-                )
+                voice_status_suffix = f"，声区候选 {candidate_windows} / 模型 {predicted_windows} / 通过 {accepted_windows}"
                 if reason:
                     voice_status_suffix += f"，原因 {reason}"
             if event_count > 0:
@@ -59128,10 +59081,10 @@ class IntegratedRecordingInterface(QMainWindow):
                         msg = '已完成当前已播放片段的技巧识别。\n当前主唱曲线未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
                     else:
                         msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
-                    if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
+                    if selected_types.intersection({'chest_voice', 'falsetto', 'strong_mix', 'weak_mix', 'balanced_mix'}) and voice_debug:
                         reason = self._format_voice_type_debug_reason(str(voice_debug.get('reason', '') or ''))
                         if reason:
-                            msg += f'\n真假声调试: {reason}'
+                            msg += f'\n声区调试: {reason}'
                         try:
                             msg += (
                                 f"\n候选窗口: {int(voice_debug.get('candidate_windows', 0) or 0)}"
@@ -59278,7 +59231,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         selected_types = set(selected_types)
 
-        intro = QLabel('技巧识别会按当前已开放的项目做普通模式曲线分区标注。录音完成后可分析整段；本地实时分析暂停时分析当前已播放片段；一次性绘制模式下优先分析整段音频。当前可用项目为“换气”“颤音”和“真假声区间”，其它技巧先按分类展示为待开发。')
+        intro = QLabel('技巧识别会按当前已开放的项目做普通模式曲线分区标注。录音完成后可分析整段；本地实时分析暂停时分析当前已播放片段；一次性绘制模式下优先分析整段音频。当前已开放“换气”“颤音”“真声/假声”和“混声（强混/弱混/平衡混）”。')
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -59334,7 +59287,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 parent_chk.toggled.connect(_refresh_technique_dependencies)
         _refresh_technique_dependencies()
 
-        dev_note = QLabel('当前已开放：换气、颤音、真声、假声；混声与混声细分类已接入选择联动，识别结果将跟随后续轻量模型训练接入。')
+        dev_note = QLabel('当前已开放：换气、颤音、真声、假声、混声（强混/弱混/平衡混）；若只看混声，可直接勾选混声分类，无需额外勾选真声/假声。')
         dev_note.setWordWrap(True)
         dev_note.setStyleSheet('color: #9FB5C9; font-size: 12px; margin-top: 4px;')
         group_layout.addWidget(dev_note)
@@ -67460,12 +67413,20 @@ class _LocalFileRealtimeController(QObject):
         import tempfile
         from pathlib import Path
 
+        lfs_error = _git_lfs_pointer_audio_error(path)
+        if lfs_error:
+            raise RuntimeError(lfs_error)
+
+        suffix = str(Path(path).suffix or '').lower()
+        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4', '.opus', '.flac'}
+        last_error = None
+
         try:
             import soundfile as sf
             data, sr = sf.read(path, always_2d=True)
             return data.astype(np.float32), int(sr)
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         try:
             import torchaudio
@@ -67474,8 +67435,8 @@ class _LocalFileRealtimeController(QObject):
             if arr.ndim == 1:
                 arr = arr[None, :]
             return arr.T.astype(np.float32), int(sr)
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         try:
             import librosa
@@ -67485,8 +67446,8 @@ class _LocalFileRealtimeController(QObject):
             else:
                 data = y.T
             return data.astype(np.float32), int(sr)
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         try:
             ff = cls._find_ffmpeg_executable()
@@ -67504,13 +67465,18 @@ class _LocalFileRealtimeController(QObject):
                         tmpdir.rmdir()
                     except Exception:
                         pass
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         try:
             return cls._read_wave_pcm(path)
-        except Exception as e:
-            raise RuntimeError(f"无法读取音频文件: {e}")
+        except Exception as exc:
+            root_error = last_error if last_error is not None else exc
+            if compressed_hint:
+                raise RuntimeError(
+                    f"无法读取音频文件: {Path(path).name} 不是标准 PCM WAV，当前环境缺少可用解码器。建议安装 ffmpeg，或先转换为 WAV/FLAC 后重试。原始错误: {root_error}"
+                )
+            raise RuntimeError(f"无法读取音频文件: {root_error}")
 
     @staticmethod
     def _resample_linear(x, sr_in: int, sr_out: int):
@@ -69809,13 +69775,21 @@ class _OnePassPitchWorker(QThread):
         import tempfile
         from pathlib import Path
 
+        lfs_error = _git_lfs_pointer_audio_error(path)
+        if lfs_error:
+            raise RuntimeError(lfs_error)
+
+        suffix = str(Path(path).suffix or '').lower()
+        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4', '.opus', '.flac'}
+        last_error = None
+
         # 1) soundfile
         try:
             import soundfile as sf
             data, sr = sf.read(path, always_2d=True)
             return data.astype(np.float32), int(sr)
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         # 2) torchaudio
         try:
@@ -69825,8 +69799,8 @@ class _OnePassPitchWorker(QThread):
             if arr.ndim == 1:
                 arr = arr[None, :]
             return arr.T.astype(np.float32), int(sr)
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         # 3) librosa/audioread
         try:
@@ -69837,8 +69811,8 @@ class _OnePassPitchWorker(QThread):
             else:
                 data = y.T
             return data.astype(np.float32), int(sr)
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         # 4) ffmpeg 转临时 WAV，再用标准 wave 读取
         try:
@@ -69857,14 +69831,19 @@ class _OnePassPitchWorker(QThread):
                         tmpdir.rmdir()
                     except Exception:
                         pass
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
         # 5) 最后只按 PCM WAV 读
         try:
             return self._read_wave_pcm(path)
-        except Exception as e:
-            raise RuntimeError(f"无法读取音频文件: {e}")
+        except Exception as exc:
+            root_error = last_error if last_error is not None else exc
+            if compressed_hint:
+                raise RuntimeError(
+                    f"无法读取音频文件: {Path(path).name} 不是标准 PCM WAV，当前环境缺少可用解码器。建议安装 ffmpeg，或先转换为 WAV/FLAC 后重试。原始错误: {root_error}"
+                )
+            raise RuntimeError(f"无法读取音频文件: {root_error}")
 
     def _collect_realtime_like_points(self, audio, sr: int, frame_window: int, frame_hop: int, *, progress_range: tuple[int, int] = (0, 100), status_text: str = "正在按实时分析链逐帧解析音高…", track_mode_override: str | None = None):
         from collections import deque as _deque
@@ -71423,33 +71402,9 @@ class _OnePassPlaybackController(QObject):
             return
         import numpy as np
         try:
-            import soundfile as sf
-            data, sr = sf.read(self.file_path, always_2d=True)
-        except Exception:
-            try:
-                import subprocess
-                import tempfile
-                from pathlib import Path
-
-                ff = _OnePassPitchWorker._find_ffmpeg_executable()
-                if ff:
-                    tmpdir = Path(tempfile.mkdtemp(prefix='onepass_playback_'))
-                    wav_path = tmpdir / 'decoded.wav'
-                    try:
-                        cmd = [ff, '-y', '-i', str(self.file_path), '-ac', '2', '-ar', str(int(self.sr)), '-f', 'wav', str(wav_path)]
-                        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        data, sr = _OnePassPitchWorker._read_wave_pcm(str(wav_path))
-                    finally:
-                        try:
-                            for p in tmpdir.glob('*'):
-                                p.unlink(missing_ok=True)
-                            tmpdir.rmdir()
-                        except Exception:
-                            pass
-                else:
-                    data, sr = _OnePassPitchWorker._read_wave_pcm(str(self.file_path))
-            except Exception as e:
-                raise RuntimeError(f"无法读取音频文件: {e}")
+            data, sr = _LocalFileRealtimeController._decode_audio_path(str(self.file_path))
+        except Exception as exc:
+            raise RuntimeError(str(exc))
         if data.ndim == 2 and data.shape[1] > 1:
             data = data.mean(axis=1)
         else:
@@ -72604,8 +72559,12 @@ class _VocalSeparationWorker(QThread):
                 except Exception:
                     pass
 
+        lfs_error = _git_lfs_pointer_audio_error(path)
+        if lfs_error:
+            raise RuntimeError(lfs_error)
+
         suffix = str(Path(path).suffix or '').lower()
-        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4'}
+        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4', '.flac'}
         last_error = None
         # 1) 首选 soundfile（支持常见 WAV/FLAC/OGG Vorbis 等）
         try:
