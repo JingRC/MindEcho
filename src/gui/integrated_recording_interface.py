@@ -9413,9 +9413,9 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     lfm_diag_enabled = True
                 try:
-                    lfm_layered_enabled = bool(getattr(host, '_lfm_layered_stability_enabled', True)) if host is not None else True
+                    lfm_layered_enabled = bool(getattr(host, '_lfm_layered_stability_enabled', False)) if host is not None else False
                 except Exception:
-                    lfm_layered_enabled = True
+                    lfm_layered_enabled = False
             if lfm_active and lfm_diag_enabled:
                 try:
                     if (not hasattr(self, '_lfm_parse_diag')) or (getattr(self, '_lfm_parse_diag', None) is None):
@@ -9891,7 +9891,7 @@ class IntegratedAudioProcessor(QThread):
                 lfm_active = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
                 if viz is not None and hasattr(viz, 'display_mode'):
                     lead_bias_enabled = (viz.display_mode.currentText() == "普通模式")
-                if lfm_active:
+                if lfm_active and lfm_layered_enabled:
                     lead_bias_enabled = True
             except Exception:
                 lead_bias_enabled = False
@@ -33029,6 +33029,7 @@ class ECGStylePitchVisualizer(QWidget):
         mean_pitch_hz = float(record.get('mean_pitch_hz', 0.0) or 0.0)
         voiced_ratio = float(record.get('voiced_ratio', 0.0) or 0.0)
         stable_ratio = float(record.get('stable_ratio', 0.0) or 0.0)
+        mean_rms = float(record.get('mean_rms', 0.0) or 0.0)
         confidence = float(record.get('confidence', 0.0) or 0.0)
         probability_margin = float(record.get('probability_margin', 0.0) or 0.0)
         if event_type == 'chest_voice':
@@ -33040,6 +33041,26 @@ class ECGStylePitchVisualizer(QWidget):
                 if relaxed:
                     return confidence >= 0.50 and probability_margin >= 0.018 and voiced_ratio >= 0.17
                 return confidence >= 0.53 and probability_margin >= 0.030 and voiced_ratio >= 0.20 and stable_ratio >= 0.04
+            if mean_pitch_hz > 0.0 and mean_pitch_hz < 430.0:
+                if relaxed:
+                    return confidence >= 0.50 and probability_margin >= 0.014 and voiced_ratio >= 0.18 and stable_ratio >= 0.05 and mean_rms >= 0.00028
+                return confidence >= 0.52 and probability_margin >= 0.020 and voiced_ratio >= 0.22 and stable_ratio >= 0.07 and mean_rms >= 0.00034
+            if mean_pitch_hz > 0.0 and mean_pitch_hz < 520.0:
+                if relaxed:
+                    return confidence >= 0.52 and probability_margin >= 0.016 and voiced_ratio >= 0.22 and stable_ratio >= 0.06 and mean_rms >= 0.00036
+                return confidence >= 0.55 and probability_margin >= 0.024 and voiced_ratio >= 0.26 and stable_ratio >= 0.09 and mean_rms >= 0.00045
+        if event_type == 'falsetto':
+            supportful_mid_high = bool(
+                mean_pitch_hz >= 300.0
+                and mean_pitch_hz <= 460.0
+                and voiced_ratio >= 0.58
+                and stable_ratio >= 0.14
+                and mean_rms >= 0.00042
+            )
+            if supportful_mid_high:
+                if relaxed:
+                    return confidence >= 0.54 and probability_margin >= 0.035
+                return confidence >= 0.60 and probability_margin >= 0.10
         return self._voice_prediction_accepted(confidence, probability_margin, relaxed=relaxed)
 
     def _apply_voice_type_context_priors(
@@ -33074,6 +33095,27 @@ class ECGStylePitchVisualizer(QWidget):
             and voiced_ratio <= 0.46
             and stable_ratio <= 0.20
         )
+        supportful_mid_high = bool(
+            mean_pitch_hz >= 320.0
+            and mean_pitch_hz <= 520.0
+            and voiced_ratio >= 0.58
+            and stable_ratio >= 0.14
+            and mean_rms >= 0.00042
+            and mean_zcr <= 0.16
+        )
+        dense_high_register = bool(
+            mean_pitch_hz >= 360.0
+            and mean_pitch_hz <= 560.0
+            and voiced_ratio >= 0.68
+            and stable_ratio >= 0.24
+            and mean_rms >= 0.00082
+            and mean_zcr <= 0.14
+        )
+        airy_high_register = bool(
+            mean_pitch_hz >= 360.0
+            and mean_rms <= 0.00045
+            and stable_ratio < 0.18
+        )
 
         # 低音区默认更应保守地判为真声，避免把轻薄真声误判为假声。
         if mean_pitch_hz > 0.0:
@@ -33085,10 +33127,26 @@ class ECGStylePitchVisualizer(QWidget):
                 chest_bias += 0.22
             elif mean_pitch_hz < 340.0:
                 chest_bias += 0.10
+            elif mean_pitch_hz < 430.0:
+                chest_bias += 0.05 if supportful_mid_high else 0.01
+            elif mean_pitch_hz < 520.0:
+                if dense_high_register:
+                    chest_bias += 0.10
+                    falsetto_bias -= 0.05
+                elif supportful_mid_high:
+                    chest_bias += 0.06
+                    falsetto_bias -= 0.02
+                elif airy_high_register:
+                    falsetto_bias += 0.02
             elif mean_pitch_hz >= 520.0:
-                falsetto_bias += 0.04
-            elif mean_pitch_hz >= 420.0:
-                falsetto_bias += 0.02
+                if dense_high_register:
+                    chest_bias += 0.05
+                    falsetto_bias -= 0.03
+                elif supportful_mid_high:
+                    chest_bias += 0.03
+                    falsetto_bias += 0.01
+                else:
+                    falsetto_bias += 0.04
 
         if mean_pitch_hz < 300.0:
             if voiced_ratio >= 0.56 and stable_ratio >= 0.14:
@@ -33097,13 +33155,21 @@ class ECGStylePitchVisualizer(QWidget):
                 chest_bias += 0.05
         if mean_pitch_hz < 320.0 and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
             chest_bias += 0.08
-        if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18:
+        if supportful_mid_high:
+            chest_bias += 0.04
+            falsetto_bias -= 0.03
+        if dense_high_register:
+            chest_bias += 0.05
+            falsetto_bias -= 0.04
+        if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18 and not supportful_mid_high:
             falsetto_bias += 0.03
         if breath_like:
             chest_bias += 0.06
             falsetto_bias -= 0.10
         if mean_pitch_hz < 340.0 and mean_zcr >= 0.12 and stable_ratio < 0.12:
             falsetto_bias -= 0.05
+        if mean_pitch_hz >= 320.0 and mean_pitch_hz <= 460.0 and supportful_mid_high and chest_prob >= max(0.26, falsetto_prob * 0.62):
+            force_chest = True
 
         adjusted_chest = chest_prob + chest_bias
         adjusted_falsetto = max(0.0, falsetto_prob + falsetto_bias)
@@ -34554,6 +34620,18 @@ class ECGStylePitchVisualizer(QWidget):
             if borderline_low_mid_pitch_head_mix:
                 continue
 
+            supportful_midhigh_mix_bridge = bool(
+                mean_pitch_hz >= 300.0
+                and mean_pitch_hz <= 520.0
+                and voiced_ratio >= 0.58
+                and stable_ratio >= 0.18
+                and confidence >= 0.52
+                and learned_mix_prob >= max(0.22, learned_mix_threshold - 0.10)
+                and mix_support >= 0.18
+                and chest_prob >= 0.10
+                and falsetto_prob >= 0.44
+            )
+
             subtype = ''
             subtype_conf = 0.0
             subtype_mix_support = mix_support
@@ -34589,6 +34667,16 @@ class ECGStylePitchVisualizer(QWidget):
                 )
                 if released_short_lowmid_supported_headbias_mix:
                     subtype_conf = max(subtype_conf, 0.60)
+            elif supportful_midhigh_mix_bridge and head_bias >= 0.26 and weak_mix_support >= max(0.16, weak_mix_support_floor * 0.72) and mean_pitch_hz >= max(260.0, weak_mix_pitch_floor - 40.0):
+                subtype = 'weak_mix'
+                subtype_mix_support = max(weak_mix_support, mix_support)
+                subtype_conf = (
+                    0.36 * subtype_mix_support
+                    + 0.18 * max(head_bias, chest_bias * 0.72)
+                    + 0.16 * pitch_support
+                    + 0.14 * stable_support
+                    + 0.16 * confidence
+                )
 
             low_pitch_chesty_mix_guard = (
                 subtype in ('weak_mix', 'strong_mix')
@@ -35288,6 +35376,27 @@ class ECGStylePitchVisualizer(QWidget):
                 if mean_pitch_hz > 0.0 and mean_pitch_hz < 300.0:
                     return duration >= 0.24 and voiced_ratio >= 0.30 and confidence >= 0.64 and strength >= 0.56 and prob_margin >= 0.16 and window_count >= 3
             return duration >= 0.18 and voiced_ratio >= 0.24 and confidence >= 0.54 and strength >= 0.50 and (window_count >= 2 or strong_single)
+        if event_type in ('strong_mix', 'weak_mix', 'balanced_mix'):
+            source_kind = ''
+            try:
+                source_kind = str(getattr(event, 'display_payload', {}).get('source_kind', '') or '')
+            except Exception:
+                source_kind = ''
+            try:
+                mix_support = float(getattr(event, 'mix_support_score', 0.0) or 0.0)
+            except Exception:
+                mix_support = 0.0
+            try:
+                mix_prob = float(getattr(event, 'mix_prob', 0.0) or 0.0)
+            except Exception:
+                mix_prob = 0.0
+            try:
+                mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
+            except Exception:
+                mean_pitch_hz = 0.0
+            if source_kind == 'local_file_onepass':
+                return duration >= 0.12 and confidence >= 0.46 and strength >= 0.42 and mix_support >= 0.10 and (mix_prob > 0.0 or mean_pitch_hz >= 220.0)
+            return duration >= 0.14 and confidence >= 0.48 and strength >= 0.44 and mix_support >= 0.12 and (mix_prob > 0.0 or mean_pitch_hz >= 220.0)
         return duration >= 0.10 and confidence >= 0.58
 
     def _technique_event_spacing(self, event_type: str) -> float:
@@ -35329,6 +35438,14 @@ class ECGStylePitchVisualizer(QWidget):
                     continue
             elif event_type in ('chest_voice', 'falsetto'):
                 if duration < 0.10 or max(confidence, strength) < 0.44:
+                    continue
+            elif event_type in ('strong_mix', 'weak_mix', 'balanced_mix'):
+                mix_support = 0.0
+                try:
+                    mix_support = float(getattr(event, 'mix_support_score', 0.0) or 0.0)
+                except Exception:
+                    mix_support = 0.0
+                if duration < 0.10 or max(confidence, strength) < 0.42 or mix_support < 0.10:
                     continue
             else:
                 continue
@@ -58317,6 +58434,20 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             onepass_payload = {}
         try:
+            raw_records = list(onepass_payload.get('raw_pitch_records', []) or [])
+        except Exception:
+            raw_records = []
+        for rec in raw_records:
+            try:
+                if len(rec) >= 4:
+                    records.append((float(rec[0]), float(rec[1]), float(rec[2]), rec[3]))
+                elif len(rec) >= 2:
+                    records.append((float(rec[0]), float(rec[1]), 1.0, None))
+            except Exception:
+                continue
+        if records:
+            return records
+        try:
             cached_records = list(onepass_payload.get('pitch_records', []) or [])
         except Exception:
             cached_records = []
@@ -58331,7 +58462,7 @@ class IntegratedRecordingInterface(QMainWindow):
         if records:
             return records
         try:
-            segments = list(onepass_payload.get('segments', []) or [])
+            segments = list(onepass_payload.get('display_segments', onepass_payload.get('segments', [])) or [])
         except Exception:
             segments = []
         for seg in segments:
@@ -67984,7 +68115,7 @@ class _LocalFilePanel(QDialog):
         self.main_diag_cb.stateChanged.connect(self._on_mainparse_style_changed)
         main_row.addWidget(self.main_diag_cb)
         self.main_stable_cb = QCheckBox("分层稳态")
-        self.main_stable_cb.setChecked(bool(getattr(self.ifc, '_lfm_layered_stability_enabled', True)))
+        self.main_stable_cb.setChecked(bool(getattr(self.ifc, '_lfm_layered_stability_enabled', False)))
         self.main_stable_cb.stateChanged.connect(self._on_mainparse_style_changed)
         main_row.addWidget(self.main_stable_cb)
         main_row.addWidget(QLabel("中高平滑"))
@@ -68476,9 +68607,9 @@ class _LocalFilePanel(QDialog):
         except Exception:
             diag_enabled = True
         try:
-            layered_enabled = bool(self.main_stable_cb.isChecked()) if hasattr(self, 'main_stable_cb') else True
+            layered_enabled = bool(self.main_stable_cb.isChecked()) if hasattr(self, 'main_stable_cb') else False
         except Exception:
-            layered_enabled = True
+            layered_enabled = False
         try:
             mid_blend = float(self.main_blend_slider.value()) / 100.0 if hasattr(self, 'main_blend_slider') else 0.22
         except Exception:
@@ -68546,7 +68677,7 @@ class _LocalFilePanel(QDialog):
         except Exception:
             pass
         try:
-            self.main_stable_cb.setChecked(True)
+            self.main_stable_cb.setChecked(False)
         except Exception:
             pass
         try:
@@ -69904,7 +70035,7 @@ class _OnePassPitchWorker(QThread):
             i = 0
             while i + frame_window <= n:
                 if self._cancel:
-                    return None, None
+                    return None, None, None
                 frame = audio[i:i+frame_window]
                 try:
                     ap._lfm_forced_global_time = float(i) / float(sr)
@@ -69952,6 +70083,7 @@ class _OnePassPitchWorker(QThread):
             except Exception:
                 pass
 
+        raw_pitch_records = []
         times = []
         y_vals = []
         for payload in payloads:
@@ -69964,11 +70096,19 @@ class _OnePassPitchWorker(QThread):
                 t = payload.get('global_time', None)
                 if t is None:
                     continue
-                times.append(float(t))
-                y_vals.append(self._hz_to_pitch_y(freq))
+                t_val = float(t)
+                y_val = self._hz_to_pitch_y(freq)
+                try:
+                    conf_val = max(0.0, min(1.0, float(payload.get('confidence', 0.0) or 0.0)))
+                except Exception:
+                    conf_val = 0.0
+                note_info = payload.get('note_info') or payload.get('note')
+                times.append(t_val)
+                y_vals.append(y_val)
+                raw_pitch_records.append((t_val, y_val, conf_val, note_info))
             except Exception:
                 continue
-        return times, y_vals
+        return raw_pitch_records, times, y_vals
 
     def run(self):
         try:
@@ -70046,7 +70186,7 @@ class _OnePassPitchWorker(QThread):
                 octave_lo, octave_hi = (-2, 2)
             use_service = bool(getattr(self.ifc, 'pitch_service', None)) and _PITCH_SERVICE_AVAILABLE
             n = len(audio)
-            times, y_vals = self._collect_realtime_like_points(
+            raw_pitch_records, times, y_vals = self._collect_realtime_like_points(
                 audio,
                 int(sr),
                 frame_window,
@@ -70057,7 +70197,7 @@ class _OnePassPitchWorker(QThread):
             )
             if self._cancel:
                 return
-            if times is None or y_vals is None:
+            if raw_pitch_records is None or times is None or y_vals is None:
                 return
             # 轻量去尖刺：3点中值滤波（仅作用于已采样点，不改变趋势），贴近实时观感
             if onepass_cfg['enable_median_spike_filter'] and len(y_vals) >= 3:
@@ -70252,6 +70392,8 @@ class _OnePassPitchWorker(QThread):
                     overlay_packets = []
             self.progress.emit(100)
             self.finished_ok.emit({
+                'raw_pitch_records': list(raw_pitch_records or []),
+                'display_segments': segments,
                 'segments': segments,
                 'duration': total_s,
                 'overlay_packets': overlay_packets,
@@ -71164,9 +71306,9 @@ def _ifc_start_offline_onepass(self, file_path: str):
         try:
             prog.set_message("绘制中…")
             prog.set_progress(100)
-            segs = payload.get('segments', [])
+            segs = payload.get('display_segments', payload.get('segments', []))
             dur = float(payload.get('duration', 0.0) or 0.0)
-            pitch_records = []
+            display_pitch_records = []
             for seg in list(segs or []):
                 try:
                     seg_times = list(seg[0] or [])
@@ -71175,14 +71317,29 @@ def _ifc_start_offline_onepass(self, file_path: str):
                     continue
                 for t_val, p_val in zip(seg_times, seg_pitches):
                     try:
-                        pitch_records.append((float(t_val), float(p_val), 1.0, None))
+                        display_pitch_records.append((float(t_val), float(p_val), 1.0, None))
                     except Exception:
                         continue
             try:
-                self._onepass_analysis_payload = dict(payload or {})
-                self._onepass_analysis_payload['pitch_records'] = list(pitch_records)
+                raw_pitch_records = list(payload.get('raw_pitch_records', []) or [])
             except Exception:
-                self._onepass_analysis_payload = {'segments': segs, 'duration': dur, 'pitch_records': list(pitch_records)}
+                raw_pitch_records = []
+            if not raw_pitch_records:
+                raw_pitch_records = list(display_pitch_records)
+            try:
+                self._onepass_analysis_payload = dict(payload or {})
+                self._onepass_analysis_payload['display_segments'] = list(segs or [])
+                self._onepass_analysis_payload['segments'] = list(segs or [])
+                self._onepass_analysis_payload['pitch_records'] = list(display_pitch_records)
+                self._onepass_analysis_payload['raw_pitch_records'] = list(raw_pitch_records)
+            except Exception:
+                self._onepass_analysis_payload = {
+                    'display_segments': segs,
+                    'segments': segs,
+                    'duration': dur,
+                    'pitch_records': list(display_pitch_records),
+                    'raw_pitch_records': list(raw_pitch_records),
+                }
             # 设置时间轴为完整音频时长
             _apply_full_duration_axis(self.visualizer, dur)
             # 一次性绘制时间线：允许 UI 统一时间轴读取 visualizer.current_global_time
@@ -71207,10 +71364,10 @@ def _ifc_start_offline_onepass(self, file_path: str):
             self.visualizer.draw_segmented_pitch_line(segs)
             try:
                 if hasattr(self.visualizer, '_pitch_store'):
-                    times = [float(rec[0]) for rec in pitch_records]
-                    pitches = [float(rec[1]) for rec in pitch_records]
-                    confs = [float(rec[2]) for rec in pitch_records]
-                    notes = [rec[3] for rec in pitch_records]
+                    times = [float(rec[0]) for rec in display_pitch_records]
+                    pitches = [float(rec[1]) for rec in display_pitch_records]
+                    confs = [float(rec[2]) for rec in display_pitch_records]
+                    notes = [rec[3] for rec in display_pitch_records]
                     self.visualizer._pitch_store.rebuild(times, pitches, confs, notes)
                     if hasattr(self.visualizer, '_refresh_time_bins'):
                         self.visualizer._refresh_time_bins()
