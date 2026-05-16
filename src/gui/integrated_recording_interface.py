@@ -9642,6 +9642,23 @@ class IntegratedAudioProcessor(QThread):
 
             processed_audio = _proc_audio
             original_rms = np.sqrt(np.mean(_proc_audio ** 2))
+            # ── 全局 RMS 滑动窗口（Minimum Statistics，所有帧参与）──
+            # 无论帧被前置过滤拦截还是通过，都参与噪声底板估计，
+            # 确保门控的噪声底板不会因为前置过滤而"饿死"。
+            if not hasattr(self, '_gate_rms_window'):
+                self._gate_rms_window = deque(maxlen=90)  # ~3s @ 30fps
+                self._gate_rms_window_fill = 0
+            self._gate_rms_window.append(float(original_rms))
+            self._gate_rms_window_fill = min(self._gate_rms_window_fill + 1, 90)
+            if self._gate_rms_window_fill >= 25:
+                _rms_sorted = sorted(self._gate_rms_window)
+                _p5_idx = max(0, len(_rms_sorted) // 20)
+                _global_nf = float(_rms_sorted[_p5_idx])
+                if _global_nf > 0.015:
+                    _global_nf = 0.015
+            else:
+                _global_nf = 0.003
+            self._gate_noise_floor = _global_nf
             if not fast_path and self.noise_processor and self.noise_processor.noise_reduction_mode != "关闭":
                 try:
                     processed_audio = self.noise_processor.process_audio(audio_data)
@@ -9693,7 +9710,7 @@ class IntegratedAudioProcessor(QThread):
             breath_rms_threshold = float(getattr(self, '_breath_rms_threshold', 0.0025))  # 环境噪音档位可覆盖
             # 进一步放宽静音阈值，减少安静高音被直接判无音高
             # 蓝牙语音/HFP输入通常电平很低，进一步降低阈值
-            min_voice_rms = float(getattr(self, '_min_voice_rms_override', (0.00028 if _bt_voice else 0.00022)))
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', (0.00038 if _bt_voice else 0.0018)))
 
             # 若 RMS 极低，直接判定无音高（不更新平滑状态）
             if audio_rms < min_voice_rms:
@@ -38111,28 +38128,14 @@ class ECGStylePitchVisualizer(QWidget):
                             self._vg_onset_buf = []  # list of dicts (buffered frames before进入voiced)
                         if not hasattr(self, '_vg_tail_buf'):
                             self._vg_tail_buf = []   # list of dicts (buffered frames pending退出voiced)
-                        # ── 自适应噪声底板估计 ──
-                        # 在 silent 状态下，用慢速指数平均跟踪环境底噪 RMS，
-                        # 使门控阈值能自适应安静/嘈杂环境，避免环境噪声误触发。
-                        if not hasattr(self, '_gate_noise_floor'):
-                            self._gate_noise_floor = 0.0005  # 初始底噪（极安静）
-                            self._gate_noise_floor_samples = 0
-                        if self._voice_gate_state == 'silent':
-                            # 仅在 silent 且 RMS 不剧烈波动时更新底板（排除突发瞬态）
-                            prev_nf = float(getattr(self, '_gate_noise_floor', 0.0005))
-                            ratio_to_prev = audio_rms / max(prev_nf, 1e-8)
-                            if ratio_to_prev < 8.0:
-                                alpha = 0.02 if self._gate_noise_floor_samples < 50 else 0.005
-                                self._gate_noise_floor = (1.0 - alpha) * prev_nf + alpha * audio_rms
-                                self._gate_noise_floor_samples += 1
-                                # 硬上限：底噪不应超过 0.008（超过说明环境已不是”安静”）
-                                if self._gate_noise_floor > 0.008:
-                                    self._gate_noise_floor = 0.008
-                        noise_floor = float(getattr(self, '_gate_noise_floor', 0.0005))
+                        # ── 读取全局噪声底板（由主处理循环在每帧前置更新）──
+                        # 使用 Minimum Statistics 方法（P5 百分位，3s 窗口），
+                        # 所有帧（含被前置过滤拦截的静音帧）均参与估计。
+                        noise_floor = float(getattr(self, '_gate_noise_floor', 0.003))
                         # ── 自适应阈值 ──
-                        # 进入阈值：底噪 × 3.0，最低 0.003（安静环境仍有足够灵敏度）
-                        # 退出阈值：底噪 × 2.0，最低 0.0015
-                        _nf_enter_mul = float(getattr(self, '_noise_gate_nf_enter_mul', 3.0))
+                        # 进入阈值：底噪 × 3.5，最低 0.003（安静环境仍有足够灵敏度）
+                        # 退出阈值：底噪 × 2.0，最低 0.0015（滞回避免频繁切换）
+                        _nf_enter_mul = float(getattr(self, '_noise_gate_nf_enter_mul', 3.5))
                         _nf_exit_mul = float(getattr(self, '_noise_gate_nf_exit_mul', 2.0))
                         rms_enter_base = max(noise_floor * _nf_enter_mul, 0.0030)
                         rms_exit_base = max(noise_floor * _nf_exit_mul, 0.0015)
@@ -38144,19 +38147,36 @@ class ECGStylePitchVisualizer(QWidget):
                             rms_enter = rms_enter_base
                         if rms_exit <= 0.0011:
                             rms_exit = rms_exit_base
-                        conf_hi = float(getattr(self, '_noise_gate_conf_high', 0.65))
-                        conf_lo = float(getattr(self, '_noise_gate_conf_low', 0.45))
-                        need_voiced_consec = int(getattr(self, '_noise_gate_min_consecutive_voiced', 3))
+                        conf_hi = float(getattr(self, '_noise_gate_conf_high', 0.75))
+                        conf_lo = float(getattr(self, '_noise_gate_conf_low', 0.38))
+                        need_voiced_consec = int(getattr(self, '_noise_gate_min_consecutive_voiced', 4))
                         need_silent_consec = int(getattr(self, '_noise_gate_min_consecutive_silent', 2))
-                        onset_hold = float(getattr(self, '_noise_gate_onset_hold_s', 0.18))
+                        onset_hold = float(getattr(self, '_noise_gate_onset_hold_s', 0.25))
                         tail_hold = float(getattr(self, '_noise_gate_tail_hold_s', 0.10))
+                        # ── 置信度时序平滑（5帧中值滤波）──
+                        # 噪声 CMNDF 置信度帧间波动剧烈(0.3→0.7→0.4→0.6)，
+                        # 真实信号置信度稳定(0.82→0.85→0.80→0.86)。
+                        # 中值滤波后噪声平滑置信度 < 0.55，真实信号维持 > 0.75。
+                        if not hasattr(self, '_gate_conf_history'):
+                            self._gate_conf_history = deque(maxlen=5)
+                        self._gate_conf_history.append(float(confidence))
+                        _conf_list = list(self._gate_conf_history)
+                        _conf_list.sort()
+                        conf_smoothed = float(_conf_list[len(_conf_list) // 2])
                         # ── 帧分类 ──
-                        # voiced_like: RMS 超进入阈值，或置信度很高（处理极弱但稳定的声源）
-                        voiced_like = (audio_rms >= rms_enter) or (confidence >= conf_hi)
-                        # silent_like: RMS 是主判据；低置信度时更宽松
-                        # 当 RMS 低于退出阈值即可视为静音，不必同时要求低置信度
-                        # （噪声环境下 pitch 检测可能对纯噪声给出中等置信度的随机 f0）
-                        silent_like = (audio_rms <= rms_exit)
+                        # voiced_like: 两条路径，都必须有最低置信度保证周期性
+                        # 路径1 (正常): RMS超阈值 + 至少微弱周期性 (conf>=0.45)
+                        #    → 拒绝键盘/椅子/车声等无周期环境响动
+                        # 路径2 (弱唱): 高置信度 + RMS明显高于底噪
+                        #    → 捕获极弱但稳定的清唱
+                        voiced_like = (audio_rms >= rms_enter and conf_smoothed >= 0.45) or (
+                            conf_smoothed >= conf_hi and audio_rms >= noise_floor * 2.2
+                        )
+                        # silent_like: RMS 低于退出阈值；或低平滑置信度且 RMS 不算太高
+                        # conf_lo 加速退出：噪声平滑置信度通常 < 0.38
+                        silent_like = (audio_rms <= rms_exit) or (
+                            conf_smoothed <= conf_lo and audio_rms <= rms_enter * 0.85
+                        )
                         # 深静音：RMS 极低，立即断线，不经过尾部缓冲
                         deep_silent = (audio_rms <= noise_floor * 1.3)
                         state = getattr(self, '_voice_gate_state', 'silent')
@@ -38176,12 +38196,46 @@ class ECGStylePitchVisualizer(QWidget):
                             if voiced_like:
                                 self._gate_consec_voiced = int(getattr(self, '_gate_consec_voiced', 0)) + 1
                                 self._vg_onset_buf.append(cur_pkt)
+                                # ── 音高一致性早期拒绝 ──
+                                # 噪声即使突破门控，帧间音高值剧烈跳跃（150→400→280Hz）
+                                # 真实人声/乐器相邻帧音高变化 < 2 半音
+                                # 若缓冲内音高跨度 > 5 半音 → 噪声伪触发，立即清空
+                                if len(self._vg_onset_buf) >= 4:
+                                    _ofreqs = [p['frequency'] for p in self._vg_onset_buf if p.get('frequency', 0) > 0]
+                                    if len(_ofreqs) >= 3:
+                                        _of_min = min(_ofreqs)
+                                        _of_max = max(_ofreqs)
+                                        if _of_min > 0 and _of_max > 0:
+                                            _span_semi = 12.0 * np.log2(_of_max / _of_min)
+                                            if _span_semi > 5.0:
+                                                self._gate_consec_voiced = 0
+                                                self._vg_onset_buf.clear()
+                                                self.current_pitch_active = False
+                                                try: self.update_guides()
+                                                except Exception: pass
+                                                return
                             else:
                                 self._gate_consec_voiced = 0
                                 self._vg_onset_buf.clear()
-                            # 检查触发进入
+                            # 检查触发进入（含音高一致性最终校验）
                             buf_dur = (self._vg_onset_buf[-1]['timestamp'] - self._vg_onset_buf[0]['timestamp']) if self._vg_onset_buf else 0.0
                             if (self._gate_consec_voiced >= max(1, need_voiced_consec)) and (buf_dur >= onset_hold):
+                                # 最终音高一致性确认
+                                _ffreqs = [p['frequency'] for p in self._vg_onset_buf if p.get('frequency', 0) > 0]
+                                _pitch_ok = True
+                                if len(_ffreqs) >= 3:
+                                    _f_min = min(_ffreqs)
+                                    _f_max = max(_ffreqs)
+                                    if _f_min > 0 and _f_max > 0:
+                                        _f_span = 12.0 * np.log2(_f_max / _f_min)
+                                        _pitch_ok = (_f_span <= 5.0)
+                                if not _pitch_ok:
+                                    self._gate_consec_voiced = 0
+                                    self._vg_onset_buf.clear()
+                                    self.current_pitch_active = False
+                                    try: self.update_guides()
+                                    except Exception: pass
+                                    return
                                 self._voice_gate_state = 'voiced'
                                 self._gate_consec_silent = 0
                                 # 回放onset缓冲（含当前帧）
