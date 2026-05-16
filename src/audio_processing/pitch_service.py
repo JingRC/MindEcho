@@ -80,25 +80,28 @@ class PitchDetectionService:
 
     # -------- 检测入口 --------
     def detect(self, frame: np.ndarray) -> Tuple[float, float]:
-        """返回 (f0_raw, confidence)，失败返回 (0.0, 0.0)。"""
+        """返回 (f0_raw, confidence)，失败返回 (0.0, 0.0)。
+
+        confidence 基于 YIN CMNDF 谷深：深谷→高置信度(≈1.0)，浅谷→低置信度(≈0.0)。
+        该值用于 VAD/噪声门控的静音判别，拒绝噪声环境下的伪周期检测。
+        """
         try:
-            f0 = self._yin_detect(frame)
+            f0, conf = self._yin_detect(frame)
             if f0 <= 0:
                 return 0.0, 0.0
-            # 简单置信度：占位（0.75）
-            conf = 0.75
             return float(f0), float(conf)
         except Exception:
             return 0.0, 0.0
 
     # -------- 内部：YIN（FFT-CMNDF） --------
-    def _yin_detect(self, audio_data: np.ndarray) -> float:
+    def _yin_detect(self, audio_data: np.ndarray):
+        """返回 (f0, confidence)。f0<=0 表示检测失败。"""
         try:
             x_in = np.asarray(audio_data, dtype=np.float64)
             if x_in.ndim > 1:
                 x_in = x_in.reshape(-1)
             if x_in.size < 64:
-                return 0.0
+                return 0.0, 0.0
             sr = float(self.cfg.sample_rate)
             # 使用全长作为分析窗口（调用方负责确保帧窗足够）
             x = x_in
@@ -119,7 +122,7 @@ class PitchDetectionService:
             tau_min = int(max(2, np.floor(sr / max(ui_max_f, 1.0))))
             tau_max = int(min(N - 3, np.ceil(sr / max(ui_min_f, 50.0))))
             if tau_max <= tau_min + 2:
-                return 0.0
+                return 0.0, 0.0
 
             # FFT自相关 -> 差分近似 d(tau) = 2*(r(0)-r(tau))
             nfft = 1 << (2 * N - 1).bit_length()
@@ -162,7 +165,7 @@ class PitchDetectionService:
                 cand_tau = int(np.argmin(cmndf[tau_min:tau_max + 1]) + tau_min)
 
             if not (tau_min <= cand_tau <= tau_max):
-                return 0.0
+                return 0.0, 0.0
 
             # 抛物线插值（在CMNDF曲线）
             if 1 < cand_tau < cmndf.size - 1:
@@ -173,10 +176,14 @@ class PitchDetectionService:
                 off = 0.0
             tau_hat = float(cand_tau) + float(np.clip(off, -1.0, 1.0))
             if tau_hat <= 1e-6:
-                return 0.0
+                return 0.0, 0.0
             f0 = float(sr / tau_hat)
             if not (ui_min_f <= f0 <= ui_max_f * 1.02):
-                return 0.0
-            return f0
+                return 0.0, 0.0
+            # 置信度：来自 CMNDF 谷深
+            # cmndf 值近 0 → 强周期性 → 高置信；近 1 → 弱/无周期 → 低置信
+            cmndf_val = float(cmndf[cand_tau])
+            conf = float(np.clip(1.0 - cmndf_val, 0.0, 1.0))
+            return f0, conf
         except Exception:
-            return 0.0
+            return 0.0, 0.0

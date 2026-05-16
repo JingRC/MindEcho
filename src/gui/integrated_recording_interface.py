@@ -4616,6 +4616,17 @@ class IntegratedAudioProcessor(QThread):
             else:
                 # 回退：全局最小
                 cand_tau = int(np.argmin(cmndf[tau_min:tau_max + 1]) + tau_min)
+                # 高频自适应：短周期(高频)时CMNDF谷值偏浅，阈值可能过严
+                # 若全局最小对应高频(>500Hz)，用放宽阈值重搜以提高命中率
+                _f0_global = float(sr / max(cand_tau, 1))
+                if _f0_global > 500.0 and cand_tau >= tau_min:
+                    _relaxed_thr = float(yin_thr * 1.35)
+                    _below2 = np.where(search < _relaxed_thr)[0]
+                    if _below2.size > 0:
+                        _s0 = tau_min + int(_below2[0])
+                        _s1 = min(tau_max, _s0 + 8)
+                        _loc = int(np.argmin(cmndf[_s0:_s1 + 1]))
+                        cand_tau = _s0 + _loc
             if not (tau_min <= cand_tau <= tau_max):
                 return 0.0
             # 抛物线插值（在CMNDF曲线）
@@ -4625,7 +4636,9 @@ class IntegratedAudioProcessor(QThread):
                 off = 0.0 if abs(denom_q) < 1e-12 else 0.5 * (y1 - y3) / denom_q
             else:
                 off = 0.0
-            tau_hat = float(cand_tau) + float(np.clip(off, -1.0, 1.0))
+            # 短周期(高频)时插值可靠性降低，适当收紧偏移范围
+            _max_off = 0.5 if cand_tau < 60 else 1.0
+            tau_hat = float(cand_tau) + float(np.clip(off, -_max_off, _max_off))
             if tau_hat <= 1e-6:
                 return 0.0
             f0 = float(sr / tau_hat)
@@ -10339,8 +10352,21 @@ class IntegratedAudioProcessor(QThread):
                 # 快速路径：跳过颤音检测
                 vibrato_info = {'has_vibrato': False}
                 
-                # 简单置信度占位：后续可从检测器返回值改造
-                confidence = 0.9 if raw_frequency > 0 else 0.0
+                # 置信度：优先使用 pitch_service 返回的 CMNDF 谷深置信度，
+                # 否则基于 RMS 和 raw_frequency 估算（噪声环境下自动降低）
+                try:
+                    _svc_conf = float(conf)
+                except Exception:
+                    _svc_conf = -1.0
+                if _svc_conf > 0.0:
+                    confidence = float(np.clip(_svc_conf, 0.0, 1.0))
+                elif raw_frequency > 0:
+                    # 回退估计：基于 RMS 相对参考水平（≈0.015 为清晰人声）估算
+                    # 噪声 RMS 低 → 低置信；强信号 RMS 高 → 中等置信
+                    _rms_ratio = float(np.clip(audio_rms / 0.015, 0.0, 1.0))
+                    confidence = float(np.clip(_rms_ratio * 0.55 + 0.12, 0.05, 0.70))
+                else:
+                    confidence = 0.0
 
                 # Phase1: 使用 PitchFrame 抽象（仍向外发 dict 保持兼容）
                 frame = PitchFrame(
@@ -11044,7 +11070,8 @@ class IntegratedAudioProcessor(QThread):
         )
 
         # 仅在候选较低、且 2f 在范围内时考虑上修
-        if allow_upward_refine and (cand <= 480.0) and (f2 >= min_f) and (f2 <= max_f * 1.02):
+        # 上限放宽至600Hz以覆盖中高音区(C5-D6)的八度修正
+        if allow_upward_refine and (cand <= 600.0) and (f2 >= min_f) and (f2 <= max_f * 1.02):
             cond_spec_strong = (s2 > s1 * (1.30 if cand >= 170.0 else 1.40) and s2 > s3 * 0.85)
             cond_spec_moderate = (s2 > s1 * (1.16 if low_rms else 1.22) and s2 > 0.0)
             if allow_up_by_temporal:
@@ -11179,7 +11206,7 @@ class IntegratedAudioProcessor(QThread):
 
             # 在非常可能低八度的场景中，允许迭代x2上修（最多到4f），以覆盖 C3->C5 这类误判
             try:
-                if allow_iterative_up and refined > 0 and refined <= 520.0:
+                if allow_iterative_up and refined > 0 and refined <= 620.0:
                     # 依据谱域支持与时间连续性，做至多一次额外上修
                     f2 = refined * 2.0
                     f4 = refined * 4.0
@@ -11504,6 +11531,21 @@ class IntegratedAudioProcessor(QThread):
                         octave_prox = abs(np.log2(max(f_cand*2,1e-6) / max(last_stable,1e-6))) * 12.0
                         temporal = max(0.0, 1.0 - (min(semitone, octave_prox) / 3.0))
                         score += 0.20 * temporal
+                    # ACF一致性守护：若频谱方法(非ACF)的输出与ACF差异>2.5半音
+                    # 且非简单谐波关系，则很可能是共振峰干扰，给予适度惩罚
+                    if name != "acf":
+                        for n_acf, f_acf, s_acf, _ in candidates:
+                            if n_acf == "acf" and s_acf > 0.005 and f_acf > 0:
+                                ratio = max(f_cand, f_acf) / max(min(f_cand, f_acf), 1e-6)
+                                # 仅八度/五度关系视为合法谐波偏离，三度及以下很可能是检测误差
+                                harmonic_set = [1.0, 2.0, 3.0, 1.5, 0.5, 1.0/3.0, 2.0/3.0]
+                                is_harmonic = any(abs(ratio - hr) < 0.045 * hr for hr in harmonic_set)
+                                semitone_diff = abs(np.log2(ratio)) * 12.0
+                                if not is_harmonic and semitone_diff > 2.5 and s_acf > 0.008:
+                                    score -= 0.10
+                                elif not is_harmonic and semitone_diff > 2.0:
+                                    score -= 0.05
+                                break
                     # 低八度惩罚：当存在明显更高的SHS候选时（如4f更合理），对过低频率施加轻惩罚
                     for n2, f2cand, s2, _ in candidates:
                         if n2 == "shs" and f2cand > f_cand * 1.9 and f2cand < f_cand * 4.2:
@@ -38069,18 +38111,54 @@ class ECGStylePitchVisualizer(QWidget):
                             self._vg_onset_buf = []  # list of dicts (buffered frames before进入voiced)
                         if not hasattr(self, '_vg_tail_buf'):
                             self._vg_tail_buf = []   # list of dicts (buffered frames pending退出voiced)
-                        # 阈值（可配置）
-                        rms_enter = float(getattr(self, '_noise_gate_rms_enter', 0.0020))
-                        rms_exit = float(getattr(self, '_noise_gate_rms_exit', 0.0010))
+                        # ── 自适应噪声底板估计 ──
+                        # 在 silent 状态下，用慢速指数平均跟踪环境底噪 RMS，
+                        # 使门控阈值能自适应安静/嘈杂环境，避免环境噪声误触发。
+                        if not hasattr(self, '_gate_noise_floor'):
+                            self._gate_noise_floor = 0.0005  # 初始底噪（极安静）
+                            self._gate_noise_floor_samples = 0
+                        if self._voice_gate_state == 'silent':
+                            # 仅在 silent 且 RMS 不剧烈波动时更新底板（排除突发瞬态）
+                            prev_nf = float(getattr(self, '_gate_noise_floor', 0.0005))
+                            ratio_to_prev = audio_rms / max(prev_nf, 1e-8)
+                            if ratio_to_prev < 8.0:
+                                alpha = 0.02 if self._gate_noise_floor_samples < 50 else 0.005
+                                self._gate_noise_floor = (1.0 - alpha) * prev_nf + alpha * audio_rms
+                                self._gate_noise_floor_samples += 1
+                                # 硬上限：底噪不应超过 0.008（超过说明环境已不是”安静”）
+                                if self._gate_noise_floor > 0.008:
+                                    self._gate_noise_floor = 0.008
+                        noise_floor = float(getattr(self, '_gate_noise_floor', 0.0005))
+                        # ── 自适应阈值 ──
+                        # 进入阈值：底噪 × 3.0，最低 0.003（安静环境仍有足够灵敏度）
+                        # 退出阈值：底噪 × 2.0，最低 0.0015
+                        _nf_enter_mul = float(getattr(self, '_noise_gate_nf_enter_mul', 3.0))
+                        _nf_exit_mul = float(getattr(self, '_noise_gate_nf_exit_mul', 2.0))
+                        rms_enter_base = max(noise_floor * _nf_enter_mul, 0.0030)
+                        rms_exit_base = max(noise_floor * _nf_exit_mul, 0.0015)
+                        # 允许外部覆盖（向后兼容）
+                        rms_enter = float(getattr(self, '_noise_gate_rms_enter', rms_enter_base))
+                        rms_exit = float(getattr(self, '_noise_gate_rms_exit', rms_exit_base))
+                        # 若外部未显式设置（仍为旧默认值 0.002/0.001），则使用自适应值
+                        if rms_enter <= 0.0021:
+                            rms_enter = rms_enter_base
+                        if rms_exit <= 0.0011:
+                            rms_exit = rms_exit_base
                         conf_hi = float(getattr(self, '_noise_gate_conf_high', 0.65))
                         conf_lo = float(getattr(self, '_noise_gate_conf_low', 0.45))
                         need_voiced_consec = int(getattr(self, '_noise_gate_min_consecutive_voiced', 3))
-                        need_silent_consec = int(getattr(self, '_noise_gate_min_consecutive_silent', 3))
+                        need_silent_consec = int(getattr(self, '_noise_gate_min_consecutive_silent', 2))
                         onset_hold = float(getattr(self, '_noise_gate_onset_hold_s', 0.18))
-                        tail_hold = float(getattr(self, '_noise_gate_tail_hold_s', 0.18))
-                        # 判定本帧是否“可视为有声/无声”
+                        tail_hold = float(getattr(self, '_noise_gate_tail_hold_s', 0.10))
+                        # ── 帧分类 ──
+                        # voiced_like: RMS 超进入阈值，或置信度很高（处理极弱但稳定的声源）
                         voiced_like = (audio_rms >= rms_enter) or (confidence >= conf_hi)
-                        silent_like = (audio_rms <= rms_exit) and (confidence <= conf_lo)
+                        # silent_like: RMS 是主判据；低置信度时更宽松
+                        # 当 RMS 低于退出阈值即可视为静音，不必同时要求低置信度
+                        # （噪声环境下 pitch 检测可能对纯噪声给出中等置信度的随机 f0）
+                        silent_like = (audio_rms <= rms_exit)
+                        # 深静音：RMS 极低，立即断线，不经过尾部缓冲
+                        deep_silent = (audio_rms <= noise_floor * 1.3)
                         state = getattr(self, '_voice_gate_state', 'silent')
                         # 将当前帧封装（供缓冲/回放）
                         cur_pkt = {
@@ -38119,7 +38197,18 @@ class ECGStylePitchVisualizer(QWidget):
                             except Exception: pass
                             return
                         else:
-                            # 已在 voiced：开始检测退出静音的“尾部缓冲”
+                            # 已在 voiced：检测退出静音
+                            # 深静音快速通道：RMS 极低时直接退出，不等尾部缓冲
+                            if deep_silent:
+                                self._voice_gate_state = 'silent'
+                                self._gate_consec_voiced = 0
+                                self._gate_consec_silent = 0
+                                self._vg_onset_buf.clear()
+                                self._vg_tail_buf.clear()
+                                self.current_pitch_active = False
+                                try: self.update_guides()
+                                except Exception: pass
+                                return
                             if silent_like:
                                 self._gate_consec_silent = int(getattr(self, '_gate_consec_silent', 0)) + 1
                                 self._vg_tail_buf.append(cur_pkt)
