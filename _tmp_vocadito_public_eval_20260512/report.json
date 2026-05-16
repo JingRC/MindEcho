@@ -1,0 +1,1608 @@
+{
+  "dataset": "vocadito",
+  "dataset_root": "D:\\Data\\vocadito_public_20260512\\extracted",
+  "manifest": "",
+  "selected_track_count": 40,
+  "success_count": 40,
+  "error_count": 0,
+  "settings": {
+    "audio_mode": "auto",
+    "annotation_format": "",
+    "tolerance_cents": 50.0,
+    "max_align_gap": 0.05
+  },
+  "aggregate": {
+    "micro": {
+      "raw_pitch_accuracy": 0.265,
+      "raw_chroma_accuracy": 0.311824,
+      "gross_pitch_error": 0.731885,
+      "voicing_recall": 0.988383,
+      "voicing_precision": 0.684159,
+      "voicing_f1": 0.808603,
+      "voicing_false_alarm": 0.88713
+    },
+    "macro": {
+      "raw_pitch_accuracy": 0.272071,
+      "raw_chroma_accuracy": 0.319415,
+      "gross_pitch_error": 0.722705,
+      "voicing_recall": 0.986805,
+      "voicing_precision": 0.679639,
+      "voicing_f1": 0.803007,
+      "voicing_false_alarm": 0.901607
+    },
+    "counts": {
+      "reference_voiced": 92966,
+      "reference_unvoiced": 47816,
+      "estimate_voiced": 134305,
+      "shared_voiced": 91886,
+      "voiced_hits": 91886,
+      "false_alarms": 42419,
+      "raw_pitch_hits": 24636,
+      "raw_chroma_hits": 28989,
+      "gross_pitch_errors": 67250
+    }
+  },
+  "tracks": [
+    {
+      "track_id": "vocadito_1",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_1.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_1_f0.csv",
+      "reference_frame_count": 5722,
+      "estimate_frame_count": 1522,
+      "reference_duration_s": 33.21034,
+      "estimate_duration_s": 33.172594,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 3642,
+        "reference_unvoiced": 2080,
+        "estimate_voiced": 5127,
+        "shared_voiced": 3582,
+        "voiced_hits": 3582,
+        "false_alarms": 1545,
+        "raw_pitch_hits": 2128,
+        "raw_chroma_hits": 2146,
+        "gross_pitch_errors": 1454
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.584294,
+        "raw_chroma_accuracy": 0.589237,
+        "gross_pitch_error": 0.405918,
+        "voicing_recall": 0.983526,
+        "voicing_precision": 0.698654,
+        "voicing_f1": 0.816969,
+        "voicing_false_alarm": 0.742788
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 33.21225,
+        "frame_count": 1522,
+        "elapsed_s": 6.29343
+      }
+    },
+    {
+      "track_id": "vocadito_10",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_10.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_10_f0.csv",
+      "reference_frame_count": 1568,
+      "estimate_frame_count": 484,
+      "reference_duration_s": 9.096417,
+      "estimate_duration_s": 9.043031,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1180,
+        "reference_unvoiced": 388,
+        "estimate_voiced": 1533,
+        "shared_voiced": 1180,
+        "voiced_hits": 1180,
+        "false_alarms": 353,
+        "raw_pitch_hits": 221,
+        "raw_chroma_hits": 289,
+        "gross_pitch_errors": 959
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.187288,
+        "raw_chroma_accuracy": 0.244915,
+        "gross_pitch_error": 0.812712,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.769733,
+        "voicing_f1": 0.869886,
+        "voicing_false_alarm": 0.909794
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 9.097823,
+        "frame_count": 484,
+        "elapsed_s": 2.336102
+      }
+    },
+    {
+      "track_id": "vocadito_11",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_11.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_11_f0.csv",
+      "reference_frame_count": 2237,
+      "estimate_frame_count": 696,
+      "reference_duration_s": 12.979955,
+      "estimate_duration_s": 12.953531,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1707,
+        "reference_unvoiced": 530,
+        "estimate_voiced": 2209,
+        "shared_voiced": 1707,
+        "voiced_hits": 1707,
+        "false_alarms": 502,
+        "raw_pitch_hits": 236,
+        "raw_chroma_hits": 522,
+        "gross_pitch_errors": 1471
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.138254,
+        "raw_chroma_accuracy": 0.3058,
+        "gross_pitch_error": 0.861746,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.772748,
+        "voicing_f1": 0.871808,
+        "voicing_false_alarm": 0.94717
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 12.98399,
+        "frame_count": 696,
+        "elapsed_s": 2.825488
+      }
+    },
+    {
+      "track_id": "vocadito_12",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_12.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_12_f0.csv",
+      "reference_frame_count": 2611,
+      "estimate_frame_count": 792,
+      "reference_duration_s": 15.15102,
+      "estimate_duration_s": 15.130969,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1941,
+        "reference_unvoiced": 670,
+        "estimate_voiced": 2536,
+        "shared_voiced": 1941,
+        "voiced_hits": 1941,
+        "false_alarms": 595,
+        "raw_pitch_hits": 681,
+        "raw_chroma_hits": 783,
+        "gross_pitch_errors": 1260
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.35085,
+        "raw_chroma_accuracy": 0.4034,
+        "gross_pitch_error": 0.64915,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.765379,
+        "voicing_f1": 0.867099,
+        "voicing_false_alarm": 0.88806
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 15.15349,
+        "frame_count": 792,
+        "elapsed_s": 3.653835
+      }
+    },
+    {
+      "track_id": "vocadito_13",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_13.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_13_f0.csv",
+      "reference_frame_count": 3852,
+      "estimate_frame_count": 1220,
+      "reference_duration_s": 22.355011,
+      "estimate_duration_s": 22.329844,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2527,
+        "reference_unvoiced": 1325,
+        "estimate_voiced": 3852,
+        "shared_voiced": 2527,
+        "voiced_hits": 2527,
+        "false_alarms": 1325,
+        "raw_pitch_hits": 581,
+        "raw_chroma_hits": 808,
+        "gross_pitch_errors": 1946
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.229917,
+        "raw_chroma_accuracy": 0.319747,
+        "gross_pitch_error": 0.770083,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.656023,
+        "voicing_f1": 0.792287,
+        "voicing_false_alarm": 1.0
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 22.36,
+        "frame_count": 1220,
+        "elapsed_s": 5.271017
+      }
+    },
+    {
+      "track_id": "vocadito_14",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_14.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_14_f0.csv",
+      "reference_frame_count": 2102,
+      "estimate_frame_count": 629,
+      "reference_duration_s": 12.196281,
+      "estimate_duration_s": 12.175875,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1428,
+        "reference_unvoiced": 674,
+        "estimate_voiced": 2032,
+        "shared_voiced": 1395,
+        "voiced_hits": 1395,
+        "false_alarms": 637,
+        "raw_pitch_hits": 634,
+        "raw_chroma_hits": 698,
+        "gross_pitch_errors": 761
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.443978,
+        "raw_chroma_accuracy": 0.488796,
+        "gross_pitch_error": 0.54552,
+        "voicing_recall": 0.976891,
+        "voicing_precision": 0.686516,
+        "voicing_f1": 0.806358,
+        "voicing_false_alarm": 0.945104
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 12.197823,
+        "frame_count": 629,
+        "elapsed_s": 3.757013
+      }
+    },
+    {
+      "track_id": "vocadito_15",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_15.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_15_f0.csv",
+      "reference_frame_count": 3494,
+      "estimate_frame_count": 1058,
+      "reference_duration_s": 20.276825,
+      "estimate_duration_s": 20.241281,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2314,
+        "reference_unvoiced": 1180,
+        "estimate_voiced": 3396,
+        "shared_voiced": 2294,
+        "voiced_hits": 2294,
+        "false_alarms": 1102,
+        "raw_pitch_hits": 521,
+        "raw_chroma_hits": 619,
+        "gross_pitch_errors": 1773
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.225151,
+        "raw_chroma_accuracy": 0.267502,
+        "gross_pitch_error": 0.772886,
+        "voicing_recall": 0.991357,
+        "voicing_precision": 0.675501,
+        "voicing_f1": 0.803503,
+        "voicing_false_alarm": 0.933898
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 20.28,
+        "frame_count": 1058,
+        "elapsed_s": 6.109917
+      }
+    },
+    {
+      "track_id": "vocadito_16",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_16.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_16_f0.csv",
+      "reference_frame_count": 2977,
+      "estimate_frame_count": 809,
+      "reference_duration_s": 17.275646,
+      "estimate_duration_s": 17.197312,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1877,
+        "reference_unvoiced": 1100,
+        "estimate_voiced": 2707,
+        "shared_voiced": 1766,
+        "voiced_hits": 1766,
+        "false_alarms": 941,
+        "raw_pitch_hits": 705,
+        "raw_chroma_hits": 746,
+        "gross_pitch_errors": 1061
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.375599,
+        "raw_chroma_accuracy": 0.397443,
+        "gross_pitch_error": 0.600793,
+        "voicing_recall": 0.940863,
+        "voicing_precision": 0.652383,
+        "voicing_f1": 0.770506,
+        "voicing_false_alarm": 0.855455
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 17.277146,
+        "frame_count": 809,
+        "elapsed_s": 5.162494
+      }
+    },
+    {
+      "track_id": "vocadito_17",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_17.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_17_f0.csv",
+      "reference_frame_count": 4060,
+      "estimate_frame_count": 1215,
+      "reference_duration_s": 23.562449,
+      "estimate_duration_s": 23.529656,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 3303,
+        "reference_unvoiced": 757,
+        "estimate_voiced": 3908,
+        "shared_voiced": 3303,
+        "voiced_hits": 3303,
+        "false_alarms": 605,
+        "raw_pitch_hits": 738,
+        "raw_chroma_hits": 818,
+        "gross_pitch_errors": 2565
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.223433,
+        "raw_chroma_accuracy": 0.247654,
+        "gross_pitch_error": 0.776567,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.845189,
+        "voicing_f1": 0.9161,
+        "voicing_false_alarm": 0.799207
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 23.568,
+        "frame_count": 1215,
+        "elapsed_s": 7.410362
+      }
+    },
+    {
+      "track_id": "vocadito_18",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_18.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_18_f0.csv",
+      "reference_frame_count": 5020,
+      "estimate_frame_count": 1192,
+      "reference_duration_s": 29.135238,
+      "estimate_duration_s": 29.106562,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2241,
+        "reference_unvoiced": 2779,
+        "estimate_voiced": 3980,
+        "shared_voiced": 2212,
+        "voiced_hits": 2212,
+        "false_alarms": 1768,
+        "raw_pitch_hits": 859,
+        "raw_chroma_hits": 921,
+        "gross_pitch_errors": 1353
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.383311,
+        "raw_chroma_accuracy": 0.410977,
+        "gross_pitch_error": 0.611664,
+        "voicing_recall": 0.987059,
+        "voicing_precision": 0.555779,
+        "voicing_f1": 0.71114,
+        "voicing_false_alarm": 0.6362
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 29.138823,
+        "frame_count": 1192,
+        "elapsed_s": 8.159327
+      }
+    },
+    {
+      "track_id": "vocadito_19",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_19.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_19_f0.csv",
+      "reference_frame_count": 5253,
+      "estimate_frame_count": 1609,
+      "reference_duration_s": 30.4878,
+      "estimate_duration_s": 30.461906,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 3352,
+        "reference_unvoiced": 1901,
+        "estimate_voiced": 5140,
+        "shared_voiced": 3340,
+        "voiced_hits": 3340,
+        "false_alarms": 1800,
+        "raw_pitch_hits": 625,
+        "raw_chroma_hits": 1059,
+        "gross_pitch_errors": 2715
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.186456,
+        "raw_chroma_accuracy": 0.315931,
+        "gross_pitch_error": 0.812874,
+        "voicing_recall": 0.99642,
+        "voicing_precision": 0.649805,
+        "voicing_f1": 0.786623,
+        "voicing_false_alarm": 0.94687
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 30.49349,
+        "frame_count": 1609,
+        "elapsed_s": 9.406866
+      }
+    },
+    {
+      "track_id": "vocadito_2",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_2.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_2_f0.csv",
+      "reference_frame_count": 6066,
+      "estimate_frame_count": 1806,
+      "reference_duration_s": 35.207256,
+      "estimate_duration_s": 34.972313,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 4570,
+        "reference_unvoiced": 1496,
+        "estimate_voiced": 5806,
+        "shared_voiced": 4560,
+        "voiced_hits": 4560,
+        "false_alarms": 1246,
+        "raw_pitch_hits": 9,
+        "raw_chroma_hits": 147,
+        "gross_pitch_errors": 4551
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.001969,
+        "raw_chroma_accuracy": 0.032166,
+        "gross_pitch_error": 0.998026,
+        "voicing_recall": 0.997812,
+        "voicing_precision": 0.785394,
+        "voicing_f1": 0.878951,
+        "voicing_false_alarm": 0.832888
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 35.208,
+        "frame_count": 1806,
+        "elapsed_s": 10.835264
+      }
+    },
+    {
+      "track_id": "vocadito_20",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_20.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_20_f0.csv",
+      "reference_frame_count": 1502,
+      "estimate_frame_count": 450,
+      "reference_duration_s": 8.713288,
+      "estimate_duration_s": 8.687531,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 938,
+        "reference_unvoiced": 564,
+        "estimate_voiced": 1444,
+        "shared_voiced": 919,
+        "voiced_hits": 919,
+        "false_alarms": 525,
+        "raw_pitch_hits": 126,
+        "raw_chroma_hits": 161,
+        "gross_pitch_errors": 793
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.134328,
+        "raw_chroma_accuracy": 0.171642,
+        "gross_pitch_error": 0.862894,
+        "voicing_recall": 0.979744,
+        "voicing_precision": 0.636427,
+        "voicing_f1": 0.77162,
+        "voicing_false_alarm": 0.930851
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 8.71349,
+        "frame_count": 450,
+        "elapsed_s": 4.190826
+      }
+    },
+    {
+      "track_id": "vocadito_21",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_21.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_21_f0.csv",
+      "reference_frame_count": 3790,
+      "estimate_frame_count": 1180,
+      "reference_duration_s": 21.995102,
+      "estimate_duration_s": 21.974344,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2972,
+        "reference_unvoiced": 818,
+        "estimate_voiced": 3740,
+        "shared_voiced": 2949,
+        "voiced_hits": 2949,
+        "false_alarms": 791,
+        "raw_pitch_hits": 1,
+        "raw_chroma_hits": 337,
+        "gross_pitch_errors": 2948
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.000336,
+        "raw_chroma_accuracy": 0.113392,
+        "gross_pitch_error": 0.999661,
+        "voicing_recall": 0.992261,
+        "voicing_precision": 0.788503,
+        "voicing_f1": 0.878725,
+        "voicing_false_alarm": 0.966993
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 22.0,
+        "frame_count": 1180,
+        "elapsed_s": 7.713834
+      }
+    },
+    {
+      "track_id": "vocadito_22",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_22.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_22_f0.csv",
+      "reference_frame_count": 3159,
+      "estimate_frame_count": 877,
+      "reference_duration_s": 18.332154,
+      "estimate_duration_s": 18.30825,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1800,
+        "reference_unvoiced": 1359,
+        "estimate_voiced": 2894,
+        "shared_voiced": 1760,
+        "voiced_hits": 1760,
+        "false_alarms": 1134,
+        "raw_pitch_hits": 587,
+        "raw_chroma_hits": 652,
+        "gross_pitch_errors": 1173
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.326111,
+        "raw_chroma_accuracy": 0.362222,
+        "gross_pitch_error": 0.666477,
+        "voicing_recall": 0.977778,
+        "voicing_precision": 0.608155,
+        "voicing_f1": 0.749893,
+        "voicing_false_alarm": 0.834437
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 18.33349,
+        "frame_count": 877,
+        "elapsed_s": 6.362656
+      }
+    },
+    {
+      "track_id": "vocadito_23",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_23.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_23_f0.csv",
+      "reference_frame_count": 3108,
+      "estimate_frame_count": 884,
+      "reference_duration_s": 18.0361,
+      "estimate_duration_s": 17.997187,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1966,
+        "reference_unvoiced": 1142,
+        "estimate_voiced": 2902,
+        "shared_voiced": 1914,
+        "voiced_hits": 1914,
+        "false_alarms": 988,
+        "raw_pitch_hits": 337,
+        "raw_chroma_hits": 564,
+        "gross_pitch_errors": 1577
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.171414,
+        "raw_chroma_accuracy": 0.286877,
+        "gross_pitch_error": 0.823929,
+        "voicing_recall": 0.97355,
+        "voicing_precision": 0.659545,
+        "voicing_f1": 0.78636,
+        "voicing_false_alarm": 0.865149
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 18.037823,
+        "frame_count": 884,
+        "elapsed_s": 7.798144
+      }
+    },
+    {
+      "track_id": "vocadito_24",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_24.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_24_f0.csv",
+      "reference_frame_count": 2543,
+      "estimate_frame_count": 794,
+      "reference_duration_s": 14.756281,
+      "estimate_duration_s": 14.731031,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1642,
+        "reference_unvoiced": 901,
+        "estimate_voiced": 2519,
+        "shared_voiced": 1621,
+        "voiced_hits": 1621,
+        "false_alarms": 898,
+        "raw_pitch_hits": 75,
+        "raw_chroma_hits": 274,
+        "gross_pitch_errors": 1546
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.045676,
+        "raw_chroma_accuracy": 0.16687,
+        "gross_pitch_error": 0.953732,
+        "voicing_recall": 0.987211,
+        "voicing_precision": 0.643509,
+        "voicing_f1": 0.77914,
+        "voicing_false_alarm": 0.99667
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 14.757823,
+        "frame_count": 794,
+        "elapsed_s": 6.697696
+      }
+    },
+    {
+      "track_id": "vocadito_25",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_25.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_25_f0.csv",
+      "reference_frame_count": 2526,
+      "estimate_frame_count": 749,
+      "reference_duration_s": 14.657596,
+      "estimate_duration_s": 14.5755,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1704,
+        "reference_unvoiced": 822,
+        "estimate_voiced": 2413,
+        "shared_voiced": 1701,
+        "voiced_hits": 1701,
+        "false_alarms": 712,
+        "raw_pitch_hits": 575,
+        "raw_chroma_hits": 590,
+        "gross_pitch_errors": 1126
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.337441,
+        "raw_chroma_accuracy": 0.346244,
+        "gross_pitch_error": 0.661964,
+        "voicing_recall": 0.998239,
+        "voicing_precision": 0.704932,
+        "voicing_f1": 0.82633,
+        "voicing_false_alarm": 0.86618
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 14.657823,
+        "frame_count": 749,
+        "elapsed_s": 6.062961
+      }
+    },
+    {
+      "track_id": "vocadito_26",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_26.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_26_f0.csv",
+      "reference_frame_count": 2215,
+      "estimate_frame_count": 613,
+      "reference_duration_s": 12.852245,
+      "estimate_duration_s": 12.753562,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1465,
+        "reference_unvoiced": 750,
+        "estimate_voiced": 2035,
+        "shared_voiced": 1444,
+        "voiced_hits": 1444,
+        "false_alarms": 591,
+        "raw_pitch_hits": 585,
+        "raw_chroma_hits": 619,
+        "gross_pitch_errors": 859
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.399317,
+        "raw_chroma_accuracy": 0.422526,
+        "gross_pitch_error": 0.594875,
+        "voicing_recall": 0.985666,
+        "voicing_precision": 0.709582,
+        "voicing_f1": 0.825143,
+        "voicing_false_alarm": 0.788
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 12.857823,
+        "frame_count": 613,
+        "elapsed_s": 5.485611
+      }
+    },
+    {
+      "track_id": "vocadito_27",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_27.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_27_f0.csv",
+      "reference_frame_count": 2415,
+      "estimate_frame_count": 714,
+      "reference_duration_s": 14.013243,
+      "estimate_duration_s": 13.975594,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1455,
+        "reference_unvoiced": 960,
+        "estimate_voiced": 2298,
+        "shared_voiced": 1455,
+        "voiced_hits": 1455,
+        "false_alarms": 843,
+        "raw_pitch_hits": 775,
+        "raw_chroma_hits": 791,
+        "gross_pitch_errors": 680
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.532646,
+        "raw_chroma_accuracy": 0.543643,
+        "gross_pitch_error": 0.467354,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.633159,
+        "voicing_f1": 0.77538,
+        "voicing_false_alarm": 0.878125
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 14.017823,
+        "frame_count": 714,
+        "elapsed_s": 7.672721
+      }
+    },
+    {
+      "track_id": "vocadito_28",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_28.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_28_f0.csv",
+      "reference_frame_count": 2222,
+      "estimate_frame_count": 653,
+      "reference_duration_s": 12.89288,
+      "estimate_duration_s": 12.864656,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1514,
+        "reference_unvoiced": 708,
+        "estimate_voiced": 2118,
+        "shared_voiced": 1488,
+        "voiced_hits": 1488,
+        "false_alarms": 630,
+        "raw_pitch_hits": 362,
+        "raw_chroma_hits": 365,
+        "gross_pitch_errors": 1126
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.239102,
+        "raw_chroma_accuracy": 0.241083,
+        "gross_pitch_error": 0.75672,
+        "voicing_recall": 0.982827,
+        "voicing_precision": 0.70255,
+        "voicing_f1": 0.819383,
+        "voicing_false_alarm": 0.889831
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 12.897823,
+        "frame_count": 653,
+        "elapsed_s": 7.349824
+      }
+    },
+    {
+      "track_id": "vocadito_29",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_29.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_29_f0.csv",
+      "reference_frame_count": 2566,
+      "estimate_frame_count": 802,
+      "reference_duration_s": 14.889796,
+      "estimate_duration_s": 14.864344,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1820,
+        "reference_unvoiced": 746,
+        "estimate_voiced": 2551,
+        "shared_voiced": 1820,
+        "voiced_hits": 1820,
+        "false_alarms": 731,
+        "raw_pitch_hits": 916,
+        "raw_chroma_hits": 925,
+        "gross_pitch_errors": 904
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.503297,
+        "raw_chroma_accuracy": 0.508242,
+        "gross_pitch_error": 0.496703,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.713446,
+        "voicing_f1": 0.832761,
+        "voicing_false_alarm": 0.979893
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 14.89349,
+        "frame_count": 802,
+        "elapsed_s": 6.986644
+      }
+    },
+    {
+      "track_id": "vocadito_3",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_3.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_3_f0.csv",
+      "reference_frame_count": 3745,
+      "estimate_frame_count": 974,
+      "reference_duration_s": 21.733878,
+      "estimate_duration_s": 21.529969,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2206,
+        "reference_unvoiced": 1539,
+        "estimate_voiced": 3293,
+        "shared_voiced": 2087,
+        "voiced_hits": 2087,
+        "false_alarms": 1206,
+        "raw_pitch_hits": 1372,
+        "raw_chroma_hits": 1394,
+        "gross_pitch_errors": 715
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.62194,
+        "raw_chroma_accuracy": 0.631913,
+        "gross_pitch_error": 0.342597,
+        "voicing_recall": 0.946056,
+        "voicing_precision": 0.633769,
+        "voicing_f1": 0.759047,
+        "voicing_false_alarm": 0.783626
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 21.736323,
+        "frame_count": 974,
+        "elapsed_s": 8.71713
+      }
+    },
+    {
+      "track_id": "vocadito_30",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_30.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_30_f0.csv",
+      "reference_frame_count": 2243,
+      "estimate_frame_count": 655,
+      "reference_duration_s": 13.014785,
+      "estimate_duration_s": 12.97575,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1222,
+        "reference_unvoiced": 1021,
+        "estimate_voiced": 2128,
+        "shared_voiced": 1222,
+        "voiced_hits": 1222,
+        "false_alarms": 906,
+        "raw_pitch_hits": 62,
+        "raw_chroma_hits": 134,
+        "gross_pitch_errors": 1160
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.050736,
+        "raw_chroma_accuracy": 0.109656,
+        "gross_pitch_error": 0.949264,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.574248,
+        "voicing_f1": 0.729552,
+        "voicing_false_alarm": 0.887365
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 13.017823,
+        "frame_count": 655,
+        "elapsed_s": 8.045505
+      }
+    },
+    {
+      "track_id": "vocadito_31",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_31.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_31_f0.csv",
+      "reference_frame_count": 2418,
+      "estimate_frame_count": 756,
+      "reference_duration_s": 14.030658,
+      "estimate_duration_s": 13.997813,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1404,
+        "reference_unvoiced": 1014,
+        "estimate_voiced": 2394,
+        "shared_voiced": 1401,
+        "voiced_hits": 1401,
+        "false_alarms": 993,
+        "raw_pitch_hits": 212,
+        "raw_chroma_hits": 309,
+        "gross_pitch_errors": 1189
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.150997,
+        "raw_chroma_accuracy": 0.220085,
+        "gross_pitch_error": 0.84868,
+        "voicing_recall": 0.997863,
+        "voicing_precision": 0.585213,
+        "voicing_f1": 0.737757,
+        "voicing_false_alarm": 0.97929
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 14.03349,
+        "frame_count": 756,
+        "elapsed_s": 8.01154
+      }
+    },
+    {
+      "track_id": "vocadito_32",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_32.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_32_f0.csv",
+      "reference_frame_count": 4313,
+      "estimate_frame_count": 1340,
+      "reference_duration_s": 25.031111,
+      "estimate_duration_s": 24.996094,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2654,
+        "reference_unvoiced": 1659,
+        "estimate_voiced": 4255,
+        "shared_voiced": 2654,
+        "voiced_hits": 2654,
+        "false_alarms": 1601,
+        "raw_pitch_hits": 917,
+        "raw_chroma_hits": 1010,
+        "gross_pitch_errors": 1737
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.345516,
+        "raw_chroma_accuracy": 0.380558,
+        "gross_pitch_error": 0.654484,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.623737,
+        "voicing_f1": 0.768273,
+        "voicing_false_alarm": 0.965039
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 25.03349,
+        "frame_count": 1340,
+        "elapsed_s": 10.112202
+      }
+    },
+    {
+      "track_id": "vocadito_33",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_33.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_33_f0.csv",
+      "reference_frame_count": 5168,
+      "estimate_frame_count": 1469,
+      "reference_duration_s": 29.994376,
+      "estimate_duration_s": 29.973094,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 3373,
+        "reference_unvoiced": 1795,
+        "estimate_voiced": 4819,
+        "shared_voiced": 3273,
+        "voiced_hits": 3273,
+        "false_alarms": 1546,
+        "raw_pitch_hits": 1053,
+        "raw_chroma_hits": 1262,
+        "gross_pitch_errors": 2220
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.312185,
+        "raw_chroma_accuracy": 0.374148,
+        "gross_pitch_error": 0.678277,
+        "voicing_recall": 0.970353,
+        "voicing_precision": 0.679187,
+        "voicing_f1": 0.799072,
+        "voicing_false_alarm": 0.861281
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 30.0,
+        "frame_count": 1469,
+        "elapsed_s": 11.935638
+      }
+    },
+    {
+      "track_id": "vocadito_34",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_34.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_34_f0.csv",
+      "reference_frame_count": 4282,
+      "estimate_frame_count": 1355,
+      "reference_duration_s": 24.851156,
+      "estimate_duration_s": 24.818344,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 3138,
+        "reference_unvoiced": 1144,
+        "estimate_voiced": 4282,
+        "shared_voiced": 3138,
+        "voiced_hits": 3138,
+        "false_alarms": 1144,
+        "raw_pitch_hits": 767,
+        "raw_chroma_hits": 979,
+        "gross_pitch_errors": 2371
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.244423,
+        "raw_chroma_accuracy": 0.311982,
+        "gross_pitch_error": 0.755577,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.732835,
+        "voicing_f1": 0.845822,
+        "voicing_false_alarm": 1.0
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 24.85349,
+        "frame_count": 1355,
+        "elapsed_s": 11.031717
+      }
+    },
+    {
+      "track_id": "vocadito_35",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_35.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_35_f0.csv",
+      "reference_frame_count": 2378,
+      "estimate_frame_count": 749,
+      "reference_duration_s": 13.798458,
+      "estimate_duration_s": 13.775625,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1654,
+        "reference_unvoiced": 724,
+        "estimate_voiced": 2378,
+        "shared_voiced": 1654,
+        "voiced_hits": 1654,
+        "false_alarms": 724,
+        "raw_pitch_hits": 414,
+        "raw_chroma_hits": 473,
+        "gross_pitch_errors": 1240
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.250302,
+        "raw_chroma_accuracy": 0.285973,
+        "gross_pitch_error": 0.749698,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.695542,
+        "voicing_f1": 0.820437,
+        "voicing_false_alarm": 1.0
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 13.8,
+        "frame_count": 749,
+        "elapsed_s": 7.111851
+      }
+    },
+    {
+      "track_id": "vocadito_36",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_36.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_36_f0.csv",
+      "reference_frame_count": 4010,
+      "estimate_frame_count": 1265,
+      "reference_duration_s": 23.2722,
+      "estimate_duration_s": 23.240813,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2612,
+        "reference_unvoiced": 1398,
+        "estimate_voiced": 4010,
+        "shared_voiced": 2612,
+        "voiced_hits": 2612,
+        "false_alarms": 1398,
+        "raw_pitch_hits": 630,
+        "raw_chroma_hits": 765,
+        "gross_pitch_errors": 1982
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.241194,
+        "raw_chroma_accuracy": 0.292879,
+        "gross_pitch_error": 0.758806,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.651372,
+        "voicing_f1": 0.788886,
+        "voicing_false_alarm": 1.0
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 23.277823,
+        "frame_count": 1265,
+        "elapsed_s": 12.736583
+      }
+    },
+    {
+      "track_id": "vocadito_37",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_37.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_37_f0.csv",
+      "reference_frame_count": 6673,
+      "estimate_frame_count": 2029,
+      "reference_duration_s": 38.730884,
+      "estimate_duration_s": 38.705062,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 5106,
+        "reference_unvoiced": 1567,
+        "estimate_voiced": 6487,
+        "shared_voiced": 5093,
+        "voiced_hits": 5093,
+        "false_alarms": 1394,
+        "raw_pitch_hits": 1199,
+        "raw_chroma_hits": 1240,
+        "gross_pitch_errors": 3894
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.234822,
+        "raw_chroma_accuracy": 0.242852,
+        "gross_pitch_error": 0.764579,
+        "voicing_recall": 0.997454,
+        "voicing_precision": 0.785109,
+        "voicing_f1": 0.878634,
+        "voicing_false_alarm": 0.889598
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 38.73601,
+        "frame_count": 2029,
+        "elapsed_s": 18.749385
+      }
+    },
+    {
+      "track_id": "vocadito_38",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_38.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_38_f0.csv",
+      "reference_frame_count": 4796,
+      "estimate_frame_count": 1443,
+      "reference_duration_s": 27.834921,
+      "estimate_duration_s": 27.684562,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2463,
+        "reference_unvoiced": 2333,
+        "estimate_voiced": 4634,
+        "shared_voiced": 2434,
+        "voiced_hits": 2434,
+        "false_alarms": 2200,
+        "raw_pitch_hits": 194,
+        "raw_chroma_hits": 445,
+        "gross_pitch_errors": 2240
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.078766,
+        "raw_chroma_accuracy": 0.180674,
+        "gross_pitch_error": 0.920296,
+        "voicing_recall": 0.988226,
+        "voicing_precision": 0.525248,
+        "voicing_f1": 0.685924,
+        "voicing_false_alarm": 0.942992
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 27.84,
+        "frame_count": 1443,
+        "elapsed_s": 13.366583
+      }
+    },
+    {
+      "track_id": "vocadito_39",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_39.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_39_f0.csv",
+      "reference_frame_count": 5458,
+      "estimate_frame_count": 1700,
+      "reference_duration_s": 31.677823,
+      "estimate_duration_s": 31.617281,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 3951,
+        "reference_unvoiced": 1507,
+        "estimate_voiced": 5394,
+        "shared_voiced": 3951,
+        "voiced_hits": 3951,
+        "false_alarms": 1443,
+        "raw_pitch_hits": 627,
+        "raw_chroma_hits": 787,
+        "gross_pitch_errors": 3324
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.158694,
+        "raw_chroma_accuracy": 0.19919,
+        "gross_pitch_error": 0.841306,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.732481,
+        "voicing_f1": 0.845586,
+        "voicing_false_alarm": 0.957532
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 31.68,
+        "frame_count": 1700,
+        "elapsed_s": 14.000959
+      }
+    },
+    {
+      "track_id": "vocadito_4",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_4.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_4_f0.csv",
+      "reference_frame_count": 3180,
+      "estimate_frame_count": 1006,
+      "reference_duration_s": 18.454059,
+      "estimate_duration_s": 18.419344,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2463,
+        "reference_unvoiced": 717,
+        "estimate_voiced": 3180,
+        "shared_voiced": 2463,
+        "voiced_hits": 2463,
+        "false_alarms": 717,
+        "raw_pitch_hits": 275,
+        "raw_chroma_hits": 422,
+        "gross_pitch_errors": 2188
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.111652,
+        "raw_chroma_accuracy": 0.171336,
+        "gross_pitch_error": 0.888348,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.774528,
+        "voicing_f1": 0.87294,
+        "voicing_false_alarm": 1.0
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 18.45601,
+        "frame_count": 1006,
+        "elapsed_s": 9.107692
+      }
+    },
+    {
+      "track_id": "vocadito_40",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_40.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_40_f0.csv",
+      "reference_frame_count": 3201,
+      "estimate_frame_count": 972,
+      "reference_duration_s": 18.575964,
+      "estimate_duration_s": 18.552656,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2042,
+        "reference_unvoiced": 1159,
+        "estimate_voiced": 3116,
+        "shared_voiced": 2042,
+        "voiced_hits": 2042,
+        "false_alarms": 1074,
+        "raw_pitch_hits": 317,
+        "raw_chroma_hits": 399,
+        "gross_pitch_errors": 1725
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.15524,
+        "raw_chroma_accuracy": 0.195397,
+        "gross_pitch_error": 0.84476,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.655327,
+        "voicing_f1": 0.79178,
+        "voicing_false_alarm": 0.926661
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 18.577823,
+        "frame_count": 972,
+        "elapsed_s": 13.101845
+      }
+    },
+    {
+      "track_id": "vocadito_5",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_5.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_5_f0.csv",
+      "reference_frame_count": 4003,
+      "estimate_frame_count": 1238,
+      "reference_duration_s": 23.231565,
+      "estimate_duration_s": 23.129719,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2895,
+        "reference_unvoiced": 1108,
+        "estimate_voiced": 3935,
+        "shared_voiced": 2855,
+        "voiced_hits": 2855,
+        "false_alarms": 1080,
+        "raw_pitch_hits": 1959,
+        "raw_chroma_hits": 2051,
+        "gross_pitch_errors": 896
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.676684,
+        "raw_chroma_accuracy": 0.708463,
+        "gross_pitch_error": 0.313835,
+        "voicing_recall": 0.986183,
+        "voicing_precision": 0.72554,
+        "voicing_f1": 0.836018,
+        "voicing_false_alarm": 0.974729
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 23.232,
+        "frame_count": 1238,
+        "elapsed_s": 14.265349
+      }
+    },
+    {
+      "track_id": "vocadito_6",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_6.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_6_f0.csv",
+      "reference_frame_count": 4106,
+      "estimate_frame_count": 1306,
+      "reference_duration_s": 23.829478,
+      "estimate_duration_s": 23.796281,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2813,
+        "reference_unvoiced": 1293,
+        "estimate_voiced": 4106,
+        "shared_voiced": 2813,
+        "voiced_hits": 2813,
+        "false_alarms": 1293,
+        "raw_pitch_hits": 616,
+        "raw_chroma_hits": 659,
+        "gross_pitch_errors": 2197
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.218983,
+        "raw_chroma_accuracy": 0.234269,
+        "gross_pitch_error": 0.781017,
+        "voicing_recall": 1.0,
+        "voicing_precision": 0.685095,
+        "voicing_f1": 0.813123,
+        "voicing_false_alarm": 1.0
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 23.832,
+        "frame_count": 1306,
+        "elapsed_s": 17.386605
+      }
+    },
+    {
+      "track_id": "vocadito_7",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_7.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_7_f0.csv",
+      "reference_frame_count": 3354,
+      "estimate_frame_count": 918,
+      "reference_duration_s": 19.464127,
+      "estimate_duration_s": 19.419187,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1996,
+        "reference_unvoiced": 1358,
+        "estimate_voiced": 3058,
+        "shared_voiced": 1923,
+        "voiced_hits": 1923,
+        "false_alarms": 1135,
+        "raw_pitch_hits": 142,
+        "raw_chroma_hits": 202,
+        "gross_pitch_errors": 1781
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.071142,
+        "raw_chroma_accuracy": 0.101202,
+        "gross_pitch_error": 0.926157,
+        "voicing_recall": 0.963427,
+        "voicing_precision": 0.628842,
+        "voicing_f1": 0.760981,
+        "voicing_false_alarm": 0.835788
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 19.467344,
+        "frame_count": 918,
+        "elapsed_s": 10.950347
+      }
+    },
+    {
+      "track_id": "vocadito_8",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_8.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_8_f0.csv",
+      "reference_frame_count": 2936,
+      "estimate_frame_count": 732,
+      "reference_duration_s": 17.037642,
+      "estimate_duration_s": 17.019562,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 1545,
+        "reference_unvoiced": 1391,
+        "estimate_voiced": 2519,
+        "shared_voiced": 1418,
+        "voiced_hits": 1418,
+        "false_alarms": 1101,
+        "raw_pitch_hits": 1006,
+        "raw_chroma_hits": 1007,
+        "gross_pitch_errors": 412
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.651133,
+        "raw_chroma_accuracy": 0.65178,
+        "gross_pitch_error": 0.29055,
+        "voicing_recall": 0.917799,
+        "voicing_precision": 0.562922,
+        "voicing_f1": 0.697835,
+        "voicing_false_alarm": 0.791517
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 17.041635,
+        "frame_count": 732,
+        "elapsed_s": 15.220657
+      }
+    },
+    {
+      "track_id": "vocadito_9",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_9.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_9_f0.csv",
+      "reference_frame_count": 3510,
+      "estimate_frame_count": 953,
+      "reference_duration_s": 20.369705,
+      "estimate_duration_s": 20.307938,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2071,
+        "reference_unvoiced": 1439,
+        "estimate_voiced": 3177,
+        "shared_voiced": 1975,
+        "voiced_hits": 1975,
+        "false_alarms": 1202,
+        "raw_pitch_hits": 597,
+        "raw_chroma_hits": 617,
+        "gross_pitch_errors": 1378
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.288267,
+        "raw_chroma_accuracy": 0.297924,
+        "gross_pitch_error": 0.697722,
+        "voicing_recall": 0.953646,
+        "voicing_precision": 0.621656,
+        "voicing_f1": 0.752668,
+        "voicing_false_alarm": 0.835302
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 20.37501,
+        "frame_count": 953,
+        "elapsed_s": 13.788803
+      }
+    }
+  ],
+  "errors": []
+}

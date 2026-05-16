@@ -223,6 +223,12 @@ def decode_audio_for_analysis(module, ui, worker, wav_path: str):
 
 
 def count_pitch_records(onepass_payload: dict) -> int:
+    try:
+        raw_pitch_records = list(onepass_payload.get('raw_pitch_records', []) or [])
+    except Exception:
+        raw_pitch_records = []
+    if raw_pitch_records:
+        return int(len(raw_pitch_records))
     total = 0
     for segment in list(onepass_payload.get('segments', []) or []):
         try:
@@ -233,9 +239,32 @@ def count_pitch_records(onepass_payload: dict) -> int:
 
 
 def run_integrated_analysis(app, ui, onepass_payload: dict, audio: np.ndarray, sample_rate: int):
+    try:
+        raw_pitch_records = list(onepass_payload.get('raw_pitch_records', []) or [])
+    except Exception:
+        raw_pitch_records = []
+    try:
+        pitch_payloads = list(onepass_payload.get('pitch_payloads', []) or [])
+    except Exception:
+        pitch_payloads = []
+    pitch_records = []
+    for segment in list(onepass_payload.get('segments', []) or []):
+        try:
+            seg_times = list(segment[0] or [])
+            seg_pitches = list(segment[1] or [])
+        except Exception:
+            continue
+        for t_val, p_val in zip(seg_times, seg_pitches):
+            try:
+                pitch_records.append((float(t_val), float(p_val), 1.0, None))
+            except Exception:
+                continue
     ui._onepass_analysis_payload = {
         'segments': list(onepass_payload.get('segments', []) or []),
         'duration': float(onepass_payload.get('duration', 0.0) or 0.0),
+        'pitch_records': list(pitch_records),
+        'raw_pitch_records': list(raw_pitch_records),
+        'pitch_payloads': list(pitch_payloads),
     }
     ui._in_onepass_mode = True
     ui._onepass_playback = SimpleNamespace(

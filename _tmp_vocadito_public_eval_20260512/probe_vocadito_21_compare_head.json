@@ -1,0 +1,4072 @@
+{
+  "targets": [
+    {
+      "repo_root": "D:\\-MindEcho-main_headprobe\\src",
+      "track_id": "vocadito_21",
+      "wav_path": "D:\\Data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_21.wav",
+      "has_refine_method": false,
+      "window_summaries": [
+        {
+          "label": "w0_0_1_5",
+          "start_s": 0.0,
+          "end_s": 1.5,
+          "frame_count": 67,
+          "branch_counts": {
+            "resolved_frames_only": 67
+          },
+          "error_summary": {
+            "pre_median_cents": 1403.893796,
+            "post_median_cents": 1403.893796,
+            "post_better": 0,
+            "pre_better": 0,
+            "same": 37,
+            "changed": 0
+          }
+        },
+        {
+          "label": "w6_0_7_5",
+          "start_s": 6.0,
+          "end_s": 7.5,
+          "frame_count": 65,
+          "branch_counts": {
+            "resolved_frames_only": 65
+          },
+          "error_summary": {
+            "pre_median_cents": 1200.639935,
+            "post_median_cents": 1200.639935,
+            "post_better": 0,
+            "pre_better": 0,
+            "same": 43,
+            "changed": 0
+          }
+        },
+        {
+          "label": "w9_0_10_5",
+          "start_s": 9.0,
+          "end_s": 10.5,
+          "frame_count": 67,
+          "branch_counts": {
+            "resolved_frames_only": 67
+          },
+          "error_summary": {
+            "pre_median_cents": 1222.47205,
+            "post_median_cents": 1222.47205,
+            "post_better": 0,
+            "pre_better": 0,
+            "same": 64,
+            "changed": 0
+          }
+        },
+        {
+          "label": "w20_5_22_0",
+          "start_s": 20.5,
+          "end_s": 22.0,
+          "frame_count": 67,
+          "branch_counts": {
+            "resolved_frames_only": 67
+          },
+          "error_summary": {
+            "pre_median_cents": 2379.743537,
+            "post_median_cents": 2379.743537,
+            "post_better": 0,
+            "pre_better": 0,
+            "same": 52,
+            "changed": 0
+          }
+        }
+      ],
+      "frames": [
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.022219,
+          "payload_index": 0,
+          "pre_refine_display": 130.812783,
+          "post_refine_display": 130.812783,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 130.812783,
+          "payload_detected_frequency": 130.812783,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.044437,
+          "payload_index": 1,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.066656,
+          "payload_index": 2,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.088875,
+          "payload_index": 3,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.111094,
+          "payload_index": 4,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.133313,
+          "payload_index": 5,
+          "pre_refine_display": 174.614116,
+          "post_refine_display": 174.614116,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 174.614116,
+          "payload_detected_frequency": 174.614116,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.155531,
+          "payload_index": 6,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.17775,
+          "payload_index": 7,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.199969,
+          "payload_index": 8,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.222188,
+          "payload_index": 9,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.244406,
+          "payload_index": 10,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.266625,
+          "payload_index": 11,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.288844,
+          "payload_index": 12,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.311063,
+          "payload_index": 13,
+          "pre_refine_display": 554.365262,
+          "post_refine_display": 554.365262,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 554.365262,
+          "payload_detected_frequency": 554.365262,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.333281,
+          "payload_index": 14,
+          "pre_refine_display": 622.253967,
+          "post_refine_display": 622.253967,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 622.253967,
+          "payload_detected_frequency": 622.253967,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.3555,
+          "payload_index": 15,
+          "pre_refine_display": 622.253967,
+          "post_refine_display": 622.253967,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 622.253967,
+          "payload_detected_frequency": 622.253967,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.377719,
+          "payload_index": 16,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.399938,
+          "payload_index": 17,
+          "pre_refine_display": 554.365262,
+          "post_refine_display": 554.365262,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 554.365262,
+          "payload_detected_frequency": 554.365262,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.422156,
+          "payload_index": 18,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.444375,
+          "payload_index": 19,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.466594,
+          "payload_index": 20,
+          "pre_refine_display": 523.251131,
+          "post_refine_display": 523.251131,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 523.251131,
+          "payload_detected_frequency": 523.251131,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.488812,
+          "payload_index": 21,
+          "pre_refine_display": 587.329536,
+          "post_refine_display": 587.329536,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 587.329536,
+          "payload_detected_frequency": 587.329536,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.511031,
+          "payload_index": 22,
+          "pre_refine_display": 523.251131,
+          "post_refine_display": 523.251131,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 523.251131,
+          "payload_detected_frequency": 523.251131,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.53325,
+          "payload_index": 23,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.555469,
+          "payload_index": 24,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.577688,
+          "payload_index": 25,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.599906,
+          "payload_index": 26,
+          "pre_refine_display": 220.0,
+          "post_refine_display": 220.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 220.0,
+          "payload_detected_frequency": 220.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.622125,
+          "payload_index": 27,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.644344,
+          "payload_index": 28,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.666562,
+          "payload_index": 29,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.688781,
+          "payload_index": 30,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.711,
+          "payload_index": 31,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.733219,
+          "payload_index": 32,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.755437,
+          "payload_index": 33,
+          "pre_refine_display": 207.652349,
+          "post_refine_display": 207.652349,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 207.652349,
+          "payload_detected_frequency": 207.652349,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.777656,
+          "payload_index": 34,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.799875,
+          "payload_index": 35,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.822094,
+          "payload_index": 36,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.844313,
+          "payload_index": 37,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.866531,
+          "payload_index": 38,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.88875,
+          "payload_index": 39,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.910969,
+          "payload_index": 40,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.933187,
+          "payload_index": 41,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.955406,
+          "payload_index": 42,
+          "pre_refine_display": 146.832384,
+          "post_refine_display": 146.832384,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 146.832384,
+          "payload_detected_frequency": 146.832384,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.977625,
+          "payload_index": 43,
+          "pre_refine_display": 146.832384,
+          "post_refine_display": 146.832384,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 146.832384,
+          "payload_detected_frequency": 146.832384,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 0.999844,
+          "payload_index": 44,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.022063,
+          "payload_index": 45,
+          "pre_refine_display": 391.995436,
+          "post_refine_display": 391.995436,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 391.995436,
+          "payload_detected_frequency": 391.995436,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.044281,
+          "payload_index": 46,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.0665,
+          "payload_index": 47,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.088719,
+          "payload_index": 48,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.110937,
+          "payload_index": 49,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.133156,
+          "payload_index": 50,
+          "pre_refine_display": 293.664768,
+          "post_refine_display": 293.664768,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 293.664768,
+          "payload_detected_frequency": 293.664768,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.155375,
+          "payload_index": 51,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.177594,
+          "payload_index": 52,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.199812,
+          "payload_index": 53,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.222031,
+          "payload_index": 54,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.24425,
+          "payload_index": 55,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.266469,
+          "payload_index": 56,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.288687,
+          "payload_index": 57,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.310906,
+          "payload_index": 58,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.333125,
+          "payload_index": 59,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.355344,
+          "payload_index": 60,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.377563,
+          "payload_index": 61,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.399781,
+          "payload_index": 62,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.422,
+          "payload_index": 63,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.444219,
+          "payload_index": 64,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.466438,
+          "payload_index": 65,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w0_0_1_5",
+          "timeline_time": 1.488656,
+          "payload_index": 66,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.021281,
+          "payload_index": 258,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.0435,
+          "payload_index": 259,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.065719,
+          "payload_index": 260,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.087937,
+          "payload_index": 261,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.110156,
+          "payload_index": 262,
+          "pre_refine_display": 220.0,
+          "post_refine_display": 220.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 220.0,
+          "payload_detected_frequency": 220.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.132375,
+          "payload_index": 263,
+          "pre_refine_display": 146.832384,
+          "post_refine_display": 146.832384,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 146.832384,
+          "payload_detected_frequency": 146.832384,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.154594,
+          "payload_index": 264,
+          "pre_refine_display": 155.563492,
+          "post_refine_display": 155.563492,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 155.563492,
+          "payload_detected_frequency": 155.563492,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.176812,
+          "payload_index": 265,
+          "pre_refine_display": 164.813778,
+          "post_refine_display": 164.813778,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 164.813778,
+          "payload_detected_frequency": 164.813778,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.199031,
+          "payload_index": 266,
+          "pre_refine_display": 391.995436,
+          "post_refine_display": 391.995436,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 391.995436,
+          "payload_detected_frequency": 391.995436,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.22125,
+          "payload_index": 267,
+          "pre_refine_display": 293.664768,
+          "post_refine_display": 293.664768,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 293.664768,
+          "payload_detected_frequency": 293.664768,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.243469,
+          "payload_index": 268,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.265688,
+          "payload_index": 269,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.287906,
+          "payload_index": 270,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.310125,
+          "payload_index": 271,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.332344,
+          "payload_index": 272,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.354563,
+          "payload_index": 273,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.376781,
+          "payload_index": 274,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.399,
+          "payload_index": 275,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.421219,
+          "payload_index": 276,
+          "pre_refine_display": 391.995436,
+          "post_refine_display": 391.995436,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 391.995436,
+          "payload_detected_frequency": 391.995436,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.443437,
+          "payload_index": 277,
+          "pre_refine_display": 391.995436,
+          "post_refine_display": 391.995436,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 391.995436,
+          "payload_detected_frequency": 391.995436,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.465656,
+          "payload_index": 278,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.487875,
+          "payload_index": 279,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.510094,
+          "payload_index": 280,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.532312,
+          "payload_index": 281,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.554531,
+          "payload_index": 282,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.57675,
+          "payload_index": 283,
+          "pre_refine_display": 293.664768,
+          "post_refine_display": 293.664768,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 293.664768,
+          "payload_detected_frequency": 293.664768,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.598969,
+          "payload_index": 284,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.621187,
+          "payload_index": 285,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.643406,
+          "payload_index": 286,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.665625,
+          "payload_index": 287,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.687844,
+          "payload_index": 288,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.710063,
+          "payload_index": 289,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.732281,
+          "payload_index": 290,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.7545,
+          "payload_index": 291,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.776719,
+          "payload_index": 292,
+          "pre_refine_display": 155.563492,
+          "post_refine_display": 155.563492,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 155.563492,
+          "payload_detected_frequency": 155.563492,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.798938,
+          "payload_index": 293,
+          "pre_refine_display": 155.563492,
+          "post_refine_display": 155.563492,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 155.563492,
+          "payload_detected_frequency": 155.563492,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.821156,
+          "payload_index": 294,
+          "pre_refine_display": 155.563492,
+          "post_refine_display": 155.563492,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 155.563492,
+          "payload_detected_frequency": 155.563492,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.843375,
+          "payload_index": 295,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.865594,
+          "payload_index": 296,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.887812,
+          "payload_index": 297,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.910031,
+          "payload_index": 298,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.93225,
+          "payload_index": 299,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.954469,
+          "payload_index": 300,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.976687,
+          "payload_index": 301,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 6.998906,
+          "payload_index": 302,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.021125,
+          "payload_index": 303,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.043344,
+          "payload_index": 304,
+          "pre_refine_display": 220.0,
+          "post_refine_display": 220.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 220.0,
+          "payload_detected_frequency": 220.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.065563,
+          "payload_index": 305,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.087781,
+          "payload_index": 306,
+          "pre_refine_display": 311.126984,
+          "post_refine_display": 311.126984,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 311.126984,
+          "payload_detected_frequency": 311.126984,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.11,
+          "payload_index": 307,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.154438,
+          "payload_index": 308,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.176656,
+          "payload_index": 309,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.198875,
+          "payload_index": 310,
+          "pre_refine_display": 164.813778,
+          "post_refine_display": 164.813778,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 164.813778,
+          "payload_detected_frequency": 164.813778,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.221094,
+          "payload_index": 311,
+          "pre_refine_display": 164.813778,
+          "post_refine_display": 164.813778,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 164.813778,
+          "payload_detected_frequency": 164.813778,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.243313,
+          "payload_index": 312,
+          "pre_refine_display": 164.813778,
+          "post_refine_display": 164.813778,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 164.813778,
+          "payload_detected_frequency": 164.813778,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.265531,
+          "payload_index": 313,
+          "pre_refine_display": 174.614116,
+          "post_refine_display": 174.614116,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 174.614116,
+          "payload_detected_frequency": 174.614116,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.28775,
+          "payload_index": 314,
+          "pre_refine_display": 174.614116,
+          "post_refine_display": 174.614116,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 174.614116,
+          "payload_detected_frequency": 174.614116,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.309969,
+          "payload_index": 315,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.332187,
+          "payload_index": 316,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.354406,
+          "payload_index": 317,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.376625,
+          "payload_index": 318,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.398844,
+          "payload_index": 319,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.421062,
+          "payload_index": 320,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.443281,
+          "payload_index": 321,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w6_0_7_5",
+          "timeline_time": 7.4655,
+          "payload_index": 322,
+          "pre_refine_display": 391.995436,
+          "post_refine_display": 391.995436,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 391.995436,
+          "payload_detected_frequency": 391.995436,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.020812,
+          "payload_index": 391,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.043031,
+          "payload_index": 392,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.06525,
+          "payload_index": 393,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.087469,
+          "payload_index": 394,
+          "pre_refine_display": 293.664768,
+          "post_refine_display": 293.664768,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 293.664768,
+          "payload_detected_frequency": 293.664768,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.109687,
+          "payload_index": 395,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.131906,
+          "payload_index": 396,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.154125,
+          "payload_index": 397,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.176344,
+          "payload_index": 398,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.198562,
+          "payload_index": 399,
+          "pre_refine_display": 523.251131,
+          "post_refine_display": 523.251131,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 523.251131,
+          "payload_detected_frequency": 523.251131,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.220781,
+          "payload_index": 400,
+          "pre_refine_display": 587.329536,
+          "post_refine_display": 587.329536,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 587.329536,
+          "payload_detected_frequency": 587.329536,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.243,
+          "payload_index": 401,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.265219,
+          "payload_index": 402,
+          "pre_refine_display": 391.995436,
+          "post_refine_display": 391.995436,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 391.995436,
+          "payload_detected_frequency": 391.995436,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.287437,
+          "payload_index": 403,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.309656,
+          "payload_index": 404,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.331875,
+          "payload_index": 405,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.354094,
+          "payload_index": 406,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.376312,
+          "payload_index": 407,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.398531,
+          "payload_index": 408,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.42075,
+          "payload_index": 409,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.442969,
+          "payload_index": 410,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.465188,
+          "payload_index": 411,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.487406,
+          "payload_index": 412,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.509625,
+          "payload_index": 413,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.531844,
+          "payload_index": 414,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.554063,
+          "payload_index": 415,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.576281,
+          "payload_index": 416,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.5985,
+          "payload_index": 417,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.620719,
+          "payload_index": 418,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.642938,
+          "payload_index": 419,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.665156,
+          "payload_index": 420,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.687375,
+          "payload_index": 421,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.709594,
+          "payload_index": 422,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.731813,
+          "payload_index": 423,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.754031,
+          "payload_index": 424,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.77625,
+          "payload_index": 425,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.798469,
+          "payload_index": 426,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.820688,
+          "payload_index": 427,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.842906,
+          "payload_index": 428,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.865125,
+          "payload_index": 429,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.887344,
+          "payload_index": 430,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.909562,
+          "payload_index": 431,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.931781,
+          "payload_index": 432,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.954,
+          "payload_index": 433,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.976219,
+          "payload_index": 434,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 9.998437,
+          "payload_index": 435,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.020656,
+          "payload_index": 436,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.042875,
+          "payload_index": 437,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.065094,
+          "payload_index": 438,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.087312,
+          "payload_index": 439,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.109531,
+          "payload_index": 440,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.13175,
+          "payload_index": 441,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.153969,
+          "payload_index": 442,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.176187,
+          "payload_index": 443,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.198406,
+          "payload_index": 444,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.220625,
+          "payload_index": 445,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.242844,
+          "payload_index": 446,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.265063,
+          "payload_index": 447,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.287281,
+          "payload_index": 448,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.3095,
+          "payload_index": 449,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.331719,
+          "payload_index": 450,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.353938,
+          "payload_index": 451,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.376156,
+          "payload_index": 452,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.398375,
+          "payload_index": 453,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.420594,
+          "payload_index": 454,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.442813,
+          "payload_index": 455,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.465031,
+          "payload_index": 456,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w9_0_10_5",
+          "timeline_time": 10.48725,
+          "payload_index": 457,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.507906,
+          "payload_index": 877,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.530125,
+          "payload_index": 878,
+          "pre_refine_display": 698.456463,
+          "post_refine_display": 698.456463,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 698.456463,
+          "payload_detected_frequency": 698.456463,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.552344,
+          "payload_index": 879,
+          "pre_refine_display": 698.456463,
+          "post_refine_display": 698.456463,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 698.456463,
+          "payload_detected_frequency": 698.456463,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.574562,
+          "payload_index": 880,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.596781,
+          "payload_index": 881,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.619,
+          "payload_index": 882,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.641219,
+          "payload_index": 883,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.663438,
+          "payload_index": 884,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.685656,
+          "payload_index": 885,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.707875,
+          "payload_index": 886,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.730094,
+          "payload_index": 887,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.752312,
+          "payload_index": 888,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.774531,
+          "payload_index": 889,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.79675,
+          "payload_index": 890,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.818969,
+          "payload_index": 891,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.841188,
+          "payload_index": 892,
+          "pre_refine_display": 174.614116,
+          "post_refine_display": 174.614116,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 174.614116,
+          "payload_detected_frequency": 174.614116,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.863406,
+          "payload_index": 893,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.885625,
+          "payload_index": 894,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.907844,
+          "payload_index": 895,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.930062,
+          "payload_index": 896,
+          "pre_refine_display": 554.365262,
+          "post_refine_display": 554.365262,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 554.365262,
+          "payload_detected_frequency": 554.365262,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.952281,
+          "payload_index": 897,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.9745,
+          "payload_index": 898,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 20.996719,
+          "payload_index": 899,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.018937,
+          "payload_index": 900,
+          "pre_refine_display": 369.994423,
+          "post_refine_display": 369.994423,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 369.994423,
+          "payload_detected_frequency": 369.994423,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.041156,
+          "payload_index": 901,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.063375,
+          "payload_index": 902,
+          "pre_refine_display": 293.664768,
+          "post_refine_display": 293.664768,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 293.664768,
+          "payload_detected_frequency": 293.664768,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.085594,
+          "payload_index": 903,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.107813,
+          "payload_index": 904,
+          "pre_refine_display": 261.625565,
+          "post_refine_display": 261.625565,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 261.625565,
+          "payload_detected_frequency": 261.625565,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.130031,
+          "payload_index": 905,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.15225,
+          "payload_index": 906,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.174469,
+          "payload_index": 907,
+          "pre_refine_display": 466.163762,
+          "post_refine_display": 466.163762,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 466.163762,
+          "payload_detected_frequency": 466.163762,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.196687,
+          "payload_index": 908,
+          "pre_refine_display": 587.329536,
+          "post_refine_display": 587.329536,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 587.329536,
+          "payload_detected_frequency": 587.329536,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.218906,
+          "payload_index": 909,
+          "pre_refine_display": 622.253967,
+          "post_refine_display": 622.253967,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 622.253967,
+          "payload_detected_frequency": 622.253967,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.241125,
+          "payload_index": 910,
+          "pre_refine_display": 622.253967,
+          "post_refine_display": 622.253967,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 622.253967,
+          "payload_detected_frequency": 622.253967,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.263344,
+          "payload_index": 911,
+          "pre_refine_display": 493.883301,
+          "post_refine_display": 493.883301,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 493.883301,
+          "payload_detected_frequency": 493.883301,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.285563,
+          "payload_index": 912,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.307781,
+          "payload_index": 913,
+          "pre_refine_display": 554.365262,
+          "post_refine_display": 554.365262,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 554.365262,
+          "payload_detected_frequency": 554.365262,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.33,
+          "payload_index": 914,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.352219,
+          "payload_index": 915,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.374437,
+          "payload_index": 916,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.396656,
+          "payload_index": 917,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.418875,
+          "payload_index": 918,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.441094,
+          "payload_index": 919,
+          "pre_refine_display": 440.0,
+          "post_refine_display": 440.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 440.0,
+          "payload_detected_frequency": 440.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.463313,
+          "payload_index": 920,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.485531,
+          "payload_index": 921,
+          "pre_refine_display": 415.304698,
+          "post_refine_display": 415.304698,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 415.304698,
+          "payload_detected_frequency": 415.304698,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.50775,
+          "payload_index": 922,
+          "pre_refine_display": 207.652349,
+          "post_refine_display": 207.652349,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 207.652349,
+          "payload_detected_frequency": 207.652349,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.529969,
+          "payload_index": 923,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.552187,
+          "payload_index": 924,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.574406,
+          "payload_index": 925,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.596625,
+          "payload_index": 926,
+          "pre_refine_display": 587.329536,
+          "post_refine_display": 587.329536,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 587.329536,
+          "payload_detected_frequency": 587.329536,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.618844,
+          "payload_index": 927,
+          "pre_refine_display": 659.255114,
+          "post_refine_display": 659.255114,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 659.255114,
+          "payload_detected_frequency": 659.255114,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.641063,
+          "payload_index": 928,
+          "pre_refine_display": 554.365262,
+          "post_refine_display": 554.365262,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 554.365262,
+          "payload_detected_frequency": 554.365262,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.663281,
+          "payload_index": 929,
+          "pre_refine_display": 523.251131,
+          "post_refine_display": 523.251131,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 523.251131,
+          "payload_detected_frequency": 523.251131,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.6855,
+          "payload_index": 930,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.707719,
+          "payload_index": 931,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.729937,
+          "payload_index": 932,
+          "pre_refine_display": 207.652349,
+          "post_refine_display": 207.652349,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 207.652349,
+          "payload_detected_frequency": 207.652349,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.752156,
+          "payload_index": 933,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.774375,
+          "payload_index": 934,
+          "pre_refine_display": 207.652349,
+          "post_refine_display": 207.652349,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 207.652349,
+          "payload_detected_frequency": 207.652349,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.796594,
+          "payload_index": 935,
+          "pre_refine_display": 220.0,
+          "post_refine_display": 220.0,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 220.0,
+          "payload_detected_frequency": 220.0,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.818812,
+          "payload_index": 936,
+          "pre_refine_display": 246.941651,
+          "post_refine_display": 246.941651,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 246.941651,
+          "payload_detected_frequency": 246.941651,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.841031,
+          "payload_index": 937,
+          "pre_refine_display": 195.997718,
+          "post_refine_display": 195.997718,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 195.997718,
+          "payload_detected_frequency": 195.997718,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.86325,
+          "payload_index": 938,
+          "pre_refine_display": 184.997211,
+          "post_refine_display": 184.997211,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 184.997211,
+          "payload_detected_frequency": 184.997211,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.885469,
+          "payload_index": 939,
+          "pre_refine_display": 329.627557,
+          "post_refine_display": 329.627557,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 329.627557,
+          "payload_detected_frequency": 329.627557,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.907688,
+          "payload_index": 940,
+          "pre_refine_display": 277.182631,
+          "post_refine_display": 277.182631,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 277.182631,
+          "payload_detected_frequency": 277.182631,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.929906,
+          "payload_index": 941,
+          "pre_refine_display": 349.228231,
+          "post_refine_display": 349.228231,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 349.228231,
+          "payload_detected_frequency": 349.228231,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.952125,
+          "payload_index": 942,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        },
+        {
+          "track_id": "",
+          "window_label": "w20_5_22_0",
+          "timeline_time": 21.974344,
+          "payload_index": 943,
+          "pre_refine_display": 233.081881,
+          "post_refine_display": 233.081881,
+          "released_to_unvoiced": false,
+          "payload_display_frequency": 233.081881,
+          "payload_detected_frequency": 233.081881,
+          "payload_raw_frequency": 0.0,
+          "branch_info": {
+            "stage": "resolved_frames_only"
+          }
+        }
+      ]
+    }
+  ]
+}

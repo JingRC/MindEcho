@@ -1,0 +1,230 @@
+# MindEcho AI 声乐教练 - 课程大纲
+# 按难度分级：入门(beginner) → 初级(elementary) → 中级(intermediate) → 高级(advanced)
+
+version: "1.0"
+last_updated: "2026-05-15"
+
+stages:
+  - id: stage-0
+    name: "入门认知"
+    level: beginner
+    description: "建立对歌唱的基本认知，了解自己的声音"
+    prerequisites: []
+    estimated_weeks: 2
+    modules:
+      - id: mod-0-1
+        title: "认识你的嗓音"
+        knowledge_refs: ["anatomy-001", "anatomy-002", "mechanism-001"]
+        goals:
+          - "了解发声器官的基本结构（声带、喉、共鸣腔）"
+          - "理解声音是如何产生的（动力-声源-滤波器模型）"
+          - "录下自己的声音并建立'听自己'的习惯"
+      - id: mod-0-2
+        title: "姿势与呼吸初体验"
+        knowledge_refs: ["breathing-001", "posture-001"]
+        goals:
+          - "掌握正确的歌唱站姿（头-肩-髋-膝对齐）"
+          - "感受腹式呼吸和胸式呼吸的区别"
+          - "完成 5 分钟基础呼吸练习"
+
+  - id: stage-1
+    name: "呼吸与气息基础"
+    level: elementary
+    description: "建立正确的呼吸方法和气息支持（appoggio）"
+    prerequisites: ["stage-0"]
+    estimated_weeks: 3
+    modules:
+      - id: mod-1-1
+        title: "腹式呼吸与横膈膜控制"
+        knowledge_refs: ["breathing-001", "breathing-002", "breathing-003"]
+        goals:
+          - "熟练腹式呼吸（吸气时腹部扩张、肋骨侧向打开）"
+          - "理解 appoggio（气息支持）的概念"
+          - "完成持续吐气练习（/s/ /f/ 辅音）"
+      - id: mod-1-2
+        title: "气息与发声的协调"
+        knowledge_refs: ["breathing-004", "phonation-001"]
+        goals:
+          - "掌握平稳起音（balanced onset）"
+          - "感受气息流动和声带闭合的配合"
+          - "完成'蜡烛测试'——歌唱时火焰不应晃动"
+      - id: mod-1-3
+        title: "乐句呼吸规划"
+        knowledge_refs: ["breathing-005", "practice-003"]
+        goals:
+          - "学会在乐谱上标记呼吸点"
+          - "掌握快速换气（catch breath）"
+          - "唱完一首简单歌曲并有意识地管理呼吸"
+
+  - id: stage-2
+    name: "发声与共鸣基础"
+    level: elementary
+    description: "建立正确的发声习惯和基础共鸣感"
+    prerequisites: ["stage-1"]
+    estimated_weeks: 4
+    modules:
+      - id: mod-2-1
+        title: "自然声区的开发（胸声）"
+        knowledge_refs: ["registration-001", "registration-002"]
+        goals:
+          - "找到舒适的自然说话音域"
+          - "在胸声区稳定、无挤压地发声"
+          - "完成 5 度音阶练习（do-sol）"
+      - id: mod-2-2
+        title: "头声与假声的初步体验"
+        knowledge_refs: ["registration-003", "registration-004"]
+        goals:
+          - "区分胸声、头声、假声的生理感受"
+          - "安全地进入头声区（用 /u/ 或 /i/ 元音）"
+          - "完成下行滑音练习（头声→胸声）"
+      - id: mod-2-3
+        title: "共鸣感知与 SOVT 练习"
+        knowledge_refs: ["resonance-001", "resonance-002", "resonance-003"]
+        goals:
+          - "感受面罩共鸣（masque）的振动感"
+          - "掌握唇颤音（lip trill）、哼鸣（humming）等 SOVT 练习"
+          - "区分口腔共鸣和鼻腔共鸣"
+      - id: mod-2-4
+        title: "元音统一与咬字"
+        knowledge_refs: ["resonance-004", "articulation-001"]
+        goals:
+          - "五个基本元音（a/e/i/o/u）的统一共鸣"
+          - "辅音快速清晰而不影响连奏（legato）"
+          - "完成元音转换练习"
+
+  - id: stage-3
+    name: "音准与节奏训练"
+    level: intermediate
+    description: "提高音准精确度和节奏稳定性"
+    prerequisites: ["stage-2"]
+    estimated_weeks: 4
+    modules:
+      - id: mod-3-1
+        title: "音准精确度训练"
+        knowledge_refs: ["pitch-001", "pitch-002", "practice-001"]
+        goals:
+          - "在 MindEcho 中达到 90%+ 音准命中率（±25 音分内）"
+          - "无伴奏清唱保持音准稳定"
+          - "识别并纠正自己的音准偏差模式（偏高/偏低）"
+      - id: mod-3-2
+        title: "音程与音阶训练"
+        knowledge_refs: ["theory-001", "practice-002"]
+        goals:
+          - "准确唱出大小调音阶"
+          - "掌握常用音程跳跃（三度、五度、八度）"
+          - "完成视唱练耳基础练习"
+      - id: mod-3-3
+        title: "节奏精准与律动感"
+        knowledge_refs: ["rhythm-001", "rhythm-002"]
+        goals:
+          - "在 MindEcho 中保持节奏稳定（偏差 < 50ms）"
+          - "掌握常用拍号和节奏型"
+          - "跟伴奏演唱时节奏同步"
+
+  - id: stage-4
+    name: "换声区与混声开发"
+    level: intermediate
+    description: "攻克换声区，建立流畅的混声"
+    prerequisites: ["stage-3"]
+    estimated_weeks: 6
+    modules:
+      - id: mod-4-1
+        title: "认识你的换声区"
+        knowledge_refs: ["registration-005", "registration-006"]
+        goals:
+          - "找到自己的第一换声点和第二换声点"
+          - "用 MindEcho 观察换声区音高曲线的异常"
+          - "理解换声区的声音覆盖（copertura）技术"
+      - id: mod-4-2
+        title: "混声建立（上）——弱混声"
+        knowledge_refs: ["registration-007", "technique-mix-001"]
+        goals:
+          - "在换声区维持弱音量、稳定的混声"
+          - "完成 messa di voce（渐强渐弱）练习"
+          - "用 /u/ 和 /i/ 元音下行穿越换声区"
+      - id: mod-4-3
+        title: "混声建立（下）——强混声"
+        knowledge_refs: ["technique-mix-002", "technique-mix-003"]
+        goals:
+          - "在中高音区用强混声唱出力量感"
+          - "区分强混声和挤压胸声"
+          - "完成元音修饰（aggiustamento）练习"
+      - id: mod-4-4
+        title: "声区统一与音色一致性"
+        knowledge_refs: ["registration-008", "resonance-005"]
+        goals:
+          - "从低到高无缝过渡，无明显声区断裂"
+          - "所有元音在全音域保持统一音色"
+          - "用 MindEcho 对比自己与专业歌手的音色连续性"
+
+  - id: stage-5
+    name: "技巧精修"
+    level: advanced
+    description: "掌握各类声乐技巧，丰富音乐表现力"
+    prerequisites: ["stage-4"]
+    estimated_weeks: 8
+    modules:
+      - id: mod-5-1
+        title: "颤音开发与控制"
+        knowledge_refs: ["technique-vibrato-001", "technique-vibrato-002", "technique-vibrato-003"]
+        goals:
+          - "产生自然、均匀的颤音（5-7Hz 速率）"
+          - "区分健康颤音与抖声（tremolo）/摇声（wobble）"
+          - "能按风格需求控制颤音的开/关、快/慢"
+      - id: mod-5-2
+        title: "滑音与装饰音"
+        knowledge_refs: ["technique-slide-001", "technique-slide-002"]
+        goals:
+          - "掌握上滑音（scoop）和下滑音（fall-off）"
+          - "在合适的风格位置使用滑音而不滥用"
+          - "完成倚音（appoggiatura）和波音（mordent）等装饰音"
+      - id: mod-5-3
+        title: "气声与气混声"
+        knowledge_refs: ["technique-breathy-001", "technique-breathy-002"]
+        goals:
+          - "有控制地使用气声风格（不损伤声带）"
+          - "在气声和正常发声之间自如切换"
+          - "理解气声在不同风格（爵士、R&B、流行）中的运用"
+      - id: mod-5-4
+        title: "咽音与 Twang"
+        knowledge_refs: ["technique-twang-001", "technique-pharyngeal-001"]
+        goals:
+          - "掌握 AES（杓会厌括约肌）收窄技术"
+          - "产生明亮的'歌手共振峰'（singer's formant）"
+          - "安全地使用咽音增强穿透力"
+      - id: mod-5-5
+        title: "Belt 技术（高阶）"
+        knowledge_refs: ["technique-belt-001", "technique-belt-002"]
+        goals:
+          - "安全地在中高音区使用 Belt"
+          - "区分 Belt 和喊叫"
+          - "在音乐剧/摇滚风格中应用 Belt"
+
+  - id: stage-6
+    name: "艺术表现与进阶"
+    level: advanced
+    description: "发展个人风格，综合运用技巧进行艺术表达"
+    prerequisites: ["stage-5"]
+    estimated_weeks: ongoing
+    modules:
+      - id: mod-6-1
+        title: "动态与情感表达"
+        knowledge_refs: ["expression-001", "expression-002"]
+        goals:
+          - "控制从 pp（很弱）到 ff（很强）的完整动态范围"
+          - "用音色变化传达不同情绪"
+          - "完成一首歌曲的完整艺术处理"
+      - id: mod-6-2
+        title: "风格化演唱"
+        knowledge_refs: ["style-001", "style-002", "style-003"]
+        goals:
+          - "理解流行、R&B、摇滚、爵士、音乐剧的演唱风格差异"
+          - "用 MindEcho 对比同一首歌不同歌手的处理方式"
+          - "找到适合自己的个人风格定位"
+      - id: mod-6-3
+        title: "舞台表现与录音技巧"
+        knowledge_refs: ["performance-001", "recording-001"]
+        goals:
+          - "掌握基本的舞台表演技巧（台风、麦克风使用）"
+          - "理解录音和现场演唱的差异"
+          - "完成一次完整的作品录制与自我评估"

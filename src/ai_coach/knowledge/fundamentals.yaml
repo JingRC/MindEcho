@@ -1,0 +1,690 @@
+# MindEcho AI 声乐教练 - 基础知识库：呼吸、姿势、发声、共鸣、声区
+# Schema: 每一条目包含 id, title, category, level, tags, related, content{summary, theory, practice, common_mistakes, criteria, exercises[], faq[]}
+
+version: "1.0"
+entries:
+
+  # ============================================================
+  # 解剖与生理 (anatomy)
+  # ============================================================
+
+  - id: anatomy-001
+    title: "发声器官总览"
+    category: anatomy
+    level: beginner
+    tags: [声带, 喉, 共鸣腔, 解剖]
+    related: [anatomy-002, mechanism-001]
+    content:
+      summary: "了解唱歌涉及的三大系统：动力系统（呼吸）、声源系统（声带）、滤波系统（共鸣腔）。"
+      theory: |
+        歌唱是三个子系统协同工作的结果：
+        1. 动力系统（Power）：呼吸系统——肺、横膈膜、肋间肌、腹肌。提供气流和声门下压力。
+        2. 声源系统（Source）：喉部——声带（真声带）、假声带、杓状软骨等。将气流转化为声波。
+        3. 滤波系统（Filter）：声道——咽腔、口腔、鼻腔、软腭、舌、唇等。塑造音色和元音。
+        这就是声学上的"动力-声源-滤波器模型"（Power-Source-Filter Model）。
+      common_mistakes:
+        - "只关注喉咙，忽视呼吸和共鸣"
+        - "认为唱歌只是'嗓子好'，不理解全身协调的重要性"
+      criteria: "能说出三大系统的名称和作用。"
+
+  - id: anatomy-002
+    title: "声带结构与工作原理"
+    category: anatomy
+    level: beginner
+    tags: [声带, 喉, 伯努利效应, 肌弹力-空气动力理论]
+    related: [anatomy-001, mechanism-001, registration-001]
+    content:
+      theory: |
+        声带（真声带/Vocal Folds）位于喉部（Larynx），由两层结构组成：
+        - 体层（Body）：甲杓肌（TA muscle），控制厚度和质量
+        - 覆层（Cover）：粘膜上皮和固有层浅层，控制边缘振动
+
+        发声原理：根据肌弹力-空气动力理论（Myoelastic-Aerodynamic Theory）：
+        1. 声带闭合（内收）
+        2. 肺内气压升高产生声门下压力
+        3. 气流冲开声带 → 伯努利效应 + 组织弹性使声带重新闭合
+        4. 循环往复产生周期性振动 → 声波
+
+        音高由声带的长度、张力和质量共同决定：
+        - 高音：声带拉长变薄（环甲肌 CT 主导）
+        - 低音：声带缩短变厚（甲杓肌 TA 主导）
+
+  # ============================================================
+  # 姿势 (posture)
+  # ============================================================
+
+  - id: posture-001
+    title: "歌唱的正确站姿"
+    category: posture
+    level: beginner
+    tags: [姿势, 体态, 对齐]
+    related: [breathing-001]
+    content:
+      summary: "一个好的歌唱姿势是'高贵的、轴向的'——脊柱对齐，身体放松而积极。"
+      theory: |
+        正确的歌唱姿势（Richard Miller 称之为"noble and axial posture"）：
+        1. 双脚与肩同宽，重心略前倾（前脚掌受力）
+        2. 膝盖微松（不锁死）
+        3. 骨盆中立位（不过度前倾或后倾）
+        4. 脊柱自然延展（像被一根线从头顶向上拉）
+        5. 肩膀放松下沉（不是向后拉）
+        6. 头部平衡（下巴与地面平行，不过度上抬或下压）
+        7. 胸部自然打开（靠脊柱延展，不是挺胸）
+      common_mistakes:
+        - "挺胸导致背部紧张"
+        - "下巴上扬导致喉部抬高、声道变窄"
+        - "膝盖锁死影响血液循环和呼吸"
+        - "驼背含胸压迫肺部"
+      criteria: "侧面观察时，耳朵-肩膀-髋关节-脚踝在一条直线上。"
+      exercises:
+        - name: "身体扫描练习"
+          steps:
+            - "闭眼站立，从脚底开始逐部位感受紧张"
+            - "有意识地放松每个紧张的部位"
+            - "保持放松状态，睁眼维持姿势"
+          duration: "3 分钟"
+
+  # ============================================================
+  # 呼吸 (breathing)
+  # ============================================================
+
+  - id: breathing-001
+    title: "腹式呼吸基础"
+    category: breathing
+    level: elementary
+    tags: [呼吸, 横膈膜, 腹式呼吸]
+    related: [breathing-002, posture-001]
+    content:
+      summary: "腹式呼吸（横膈膜呼吸）是歌唱的基础。吸气时腹部和肋骨侧向扩张，而非抬肩。"
+      theory: |
+        横膈膜（Diaphragm）是主要的吸气肌肉，位于胸腔和腹腔之间。
+
+        正确的吸气过程：
+        1. 横膈膜收缩下降 → 胸腔容积增大 → 肺被动扩张 → 空气进入
+        2. 肋骨侧向打开（外肋间肌作用）
+        3. 腹部因内脏被横膈膜下推而自然膨出（不是故意鼓肚子）
+
+        错误的锁骨式呼吸（Clavicular Breathing）：
+        - 肩膀明显上抬
+        - 胸上部膨胀但腹部未动
+        - 吸气浅、量少、导致颈部和喉部紧张
+      common_mistakes:
+        - "故意鼓肚子（腹部应是被动推出，不是主动向外顶）"
+        - "吸气时肩膀明显上抬"
+        - "吸气太多导致身体僵硬（'tanking up'）"
+      criteria: "平躺，手放腹部。吸气时手被腹部推起，呼气时手下降。肩膀不动。"
+      exercises:
+        - name: "平躺呼吸感知"
+          steps:
+            - "平躺，双膝弯曲，一手放腹部一手放胸口"
+            - "缓慢吸气，感受腹部手的上升（胸口手尽量不动）"
+            - "缓慢吐气，感受腹部手的回落"
+            - "重复 10 次"
+          duration: "5 分钟"
+        - name: "四拍呼吸法"
+          steps:
+            - "吸气 4 拍 → 保持 4 拍 → 吐气 4 拍 → 保持 4 拍"
+            - "逐渐增加到 6 拍、8 拍"
+            - "全程保持肩膀和胸部放松"
+          duration: "5 分钟"
+
+  - id: breathing-002
+    title: "Appoggio —— 气息支持"
+    category: breathing
+    level: elementary
+    tags: [呼吸, appoggio, 气息支持, 气息控制]
+    related: [breathing-001, breathing-003, breathing-004]
+    content:
+      summary: "Appoggio 是意大利美声学派的核心概念，意为'倚靠'——通过吸气肌群和呼气肌群的协调对抗，实现对气息的精确控制。"
+      theory: |
+        Appoggio 的本质是"吸气和呼气的对抗平衡"：
+        - 呼气时不是让肋骨和腹部立即塌陷
+        - 而是在缓慢释放气息的同时，保持肋骨的扩张感和腹壁的支撑感
+        - 这被称为"在吸气的姿势上歌唱"（singing on the gesture of inhalation）
+
+        关键感受：
+        - 肋骨持续向外的扩张感
+        - 腹壁（特别是下腹部和侧腹）的稳定支撑
+        - 背部也有参与感（"用背唱歌"）
+        - 喉部完全放松，不受力
+      common_mistakes:
+        - "把 appoggio 理解为'用力顶肚子'（那是 push，不是 support）"
+        - "呼气时整个躯干立即塌陷"
+        - "屏住呼吸（锁气）而不是控制释放"
+        - "过分紧张腹肌导致声音僵硬"
+      criteria: "唱一个 8-10 秒的持续音，音量和音高稳定，无抖动。肩部和喉部不紧张。"
+      exercises:
+        - name: "嘶音控制练习"
+          steps:
+            - "深吸气，感受肋骨扩张"
+            - "用 /s/（嘶音）稳定地吐气，保持肋骨不塌陷"
+            - "目标：匀速吐气 20-30 秒"
+            - "进阶：用 /f/、/θ/（th）等辅音"
+          duration: "5-10 分钟"
+
+  - id: breathing-003
+    title: "快速换气与乐句呼吸"
+    category: breathing
+    level: intermediate
+    tags: [呼吸, 换气, 乐句, catch-breath]
+    related: [breathing-002, breathing-005]
+    content:
+      summary: "在歌唱中需要根据乐句长度和音乐表达来规划呼吸。快速换气（catch breath）是在短暂间隙中补充气息的关键技术。"
+      theory: |
+        乐句呼吸规划原则：
+        1. 先分析乐句长度，标记需要呼吸的位置
+        2. 优先在标点符号处（逗号、句号）呼吸
+        3. 长乐句需要提前吸足但不过量
+        4. 快速换气：利用短暂的休止符或切分间隙，只做快速、放松的补吸气
+
+        快速换气要点：
+        - 保持张嘴和喉部放松（像打哈欠的前半段）
+        - 腹部和肋骨快速释放并重新扩张
+        - 不抬肩、不紧张
+        - 吸气声音应该很轻或无声
+      common_mistakes:
+        - "在词的中间换气（破坏乐句连贯性）"
+        - "快速换气时肩膀明显上抬"
+        - "换气声音过响（吸入杂音）"
+        - "吸气不足导致乐句末尾气息枯竭"
+      exercises:
+        - name: "标记呼吸计划"
+          steps:
+            - "选一首歌的歌词，像朗读句子一样自然呼吸"
+            - "在歌词上标记呼吸位置"
+            - "先念词、再加旋律，按标记呼吸"
+          duration: "10 分钟"
+
+  - id: breathing-004
+    title: "起音技术（Onset）"
+    category: breathing
+    level: elementary
+    tags: [起音, 声带闭合, 气息协调]
+    related: [breathing-002, phonation-001]
+    content:
+      summary: "起音是气息和声带闭合协调的瞬间。三种起音方式：平衡起音（理想）、气声起音（风格化）、硬起音（需慎用）。"
+      theory: |
+        三种起音类型（Estill Voice Training 中的 True Vocal Folds: Onset/Offset Control）：
+
+        1. 平衡起音（Balanced/Smooth Onset）：气息和声带闭合同步发生。最健康、最常用的起音方式。声音干净、不费力。
+
+        2. 气声起音（Aspirate/Breathy Onset）：气息先于声带闭合流出。产生气声效果。适合特定风格（爵士、抒情流行），但长期过度使用可能导致声带闭合不全。
+
+        3. 硬起音（Glottal Onset）：声带先于气息闭合，气流突然冲开。产生果断、有冲击力的效果。偶尔使用可以，长期使用可能导致声带损伤。
+      common_mistakes:
+        - "习惯性硬起音（每天说话和唱歌都用硬起音，损伤声带）"
+        - "气声起音过多导致声带闭合习惯性不足"
+      criteria: "能分别演示三种起音方式，并默认使用平衡起音。"
+      exercises:
+        - name: "平衡起音练习"
+          steps:
+            - "用 /ha/ 音节在舒适音高上轻声起音（气声起音）"
+            - "逐渐减少气息声，直到声音变干净（过渡到平衡起音）"
+            - "在不同音高和元音上重复"
+          duration: "5 分钟"
+
+  - id: breathing-005
+    title: "气息压力与动态控制"
+    category: breathing
+    level: intermediate
+    tags: [气息, 动态, 强弱, 声门下压力]
+    related: [breathing-002, expression-001]
+    content:
+      summary: "通过调节声门下压力和声带闭合的配合来控制音量（动态），从 pp 到 ff。"
+      theory: |
+        动态（音量）控制的三个关键因素：
+        1. 声门下压力（Subglottal Pressure）：气流推力。越大则音量越大（但需声带配合）
+        2. 声带闭合力度（Medial Compression）：闭合越紧，声音越强。过高则导致挤压
+        3. 共鸣腔形态：声道形状影响声音的投射效率
+
+        弱音（piano/pianissimo）：
+        - 减少声门下压力但不减少声带闭合
+        - 需要更高水平的控制力
+        - 好的弱音比强音更难
+
+        强音（forte/fortissimo）：
+        - 增加声门下压力同时增加声带闭合力
+        - 关键是保持喉部放松（不强推）
+        - 善用共鸣放大而非单纯用力
+      common_mistakes:
+        - "唱弱音时气息不足导致声音发虚"
+        - "唱强音时喉部用力（喊叫而非歌唱）"
+        - "音量变化时音高不稳定"
+      exercises:
+        - name: "Messa di Voce（渐强渐弱）"
+          steps:
+            - "在一个舒适音高上，从一个很轻但干净的音开始"
+            - "逐渐增加到最强，再逐渐减弱到最轻"
+            - "全过程保持：音高稳定、音色一致、喉部放松"
+          duration: "10 分钟"
+
+  # ============================================================
+  # 发声 (phonation)
+  # ============================================================
+
+  - id: phonation-001
+    title: "声带闭合与声门控制"
+    category: phonation
+    level: elementary
+    tags: [发声, 声带闭合, 声门]
+    related: [anatomy-002, breathing-004]
+    content:
+      summary: "声带闭合（Glottal Closure）是发声效率的核心。闭合不全导致气声，闭合过度导致挤压。理想状态是'开放喉咙，闭合声带'。"
+      theory: |
+        声门闭合的三个关键维度：
+        1. 闭合程度：从完全打开（呼吸）→ 不完全闭合（气声）→ 理想闭合（正常发声）→ 过度闭合（挤压）
+        2. 闭合时长占振动周期的比例（Closed Quotient）：闭合相越长，声音越明亮、越有力量
+        3. 闭合的对称性和均匀性：影响声音的纯净度
+
+        EVT 身体-覆盖模型（Body-Cover）的四种状态：
+        - Thick（厚）：TA 主导，声带体层质量大，闭合相长 → "胸声"感
+        - Thin（薄）：CT 主导，声带拉长变薄，闭合相短 → "头声"感
+        - Stiff（僵硬）：声带整体刚性增加 → 假声
+        - Slack（松弛）：声带整体松弛 → 气泡音/低音
+      criteria: "能用平衡闭合发出干净、不费力的持续音。能自觉区分正常发声、气声和挤压感的区别。"
+      common_mistakes:
+        - "习惯性的声带闭合不全（漏气）导致声音发虚、续航短"
+        - "过度闭合导致声音挤压、易疲劳、音域受限"
+
+  - id: mechanism-001
+    title: "声音产生的物理原理"
+    category: theory
+    level: beginner
+    tags: [声学, 伯努利效应, 肌弹力-空气动力理论, 共振峰]
+    related: [anatomy-001, anatomy-002, resonance-001]
+    content:
+      summary: "声音由声带振动产生基频，经声道共鸣修饰形成最终的歌声。理解基本原理有助于更聪明地练习。"
+      theory: |
+        声音产生链：
+        1. 直流气流（肺）→ 2. 交流声波（声带振动）→ 3. 频谱整形（声道共鸣）
+
+        基频（Fundamental Frequency / F0）：声带每秒振动的次数 = 我们感知到的音高
+
+        谐波（Harmonics）：基频的整数倍频率（2×F0, 3×F0, 4×F0...）。谐波的存在和相对强度决定了音色。
+
+        共振峰（Formants）：声道（喉到唇）的共振频率。共振峰不随音高改变（声道形状不变时），但通过改变舌位、唇形、喉位来调整。
+        - F1：与舌位高低相关（开口度）
+        - F2：与舌位前后相关
+        - 歌手共振峰（Singer's Formant）：F3-F5 的能量集中（约 2800-3200Hz），使声音能穿透乐队
+
+        基频和共振峰的相互作用是歌唱科学的核心。当 F0 接近或超过一个共振峰时，需要进行元音修饰（aggiustamento）。
+
+  # ============================================================
+  # 共鸣 (resonance)
+  # ============================================================
+
+  - id: resonance-001
+    title: "共鸣的基本原理"
+    category: resonance
+    level: elementary
+    tags: [共鸣, 共振, 声道, 共振峰]
+    related: [mechanism-001, resonance-002]
+    content:
+      summary: "共鸣是声波在声道中被放大和修饰的过程。'你的身体不是音响，声道才是真正的共鸣箱。'"
+      theory: |
+        两种共鸣感：
+        1. 声学共鸣（Acoustic Resonance）：声道中的空气柱对特定频率的放大。这是真实的声音放大机制。
+        2. 交感振动（Sympathetic Vibration）：声波在骨头和组织中传导带来的振动感（如面部的嗡嗡感）。这是有用的感受线索，但不是声音放大的来源。
+
+        主要共鸣腔：
+        - 咽腔（Pharynx）：最重要的共鸣腔，分为喉咽、口咽、鼻咽
+        - 口腔（Oral Cavity）：元音的主要塑造者
+        - 鼻腔（Nasal Cavity）：仅用于鼻辅音（m, n, ng），元音不应有鼻音
+
+        '面罩共鸣'（Masque/Mask）：一种将声音'放在前面'的感觉——在颧骨、鼻梁区域感受到振动。这是一个有用的意象，不是声音真的从脸上出来。
+      common_mistakes:
+        - "过度追求鼻腔共鸣导致鼻音过重"
+        - "以为'胸腔共鸣'是胸腔里的空气在共鸣（胸腔感受到的振动是交感振动）"
+        - "喉音过重——声音堵在喉咙里没有向前送出"
+
+  - id: resonance-002
+    title: "SOVT 半阻塞声道练习"
+    category: resonance
+    level: elementary
+    tags: [共鸣, SOVT, 唇颤音, 哼鸣, 练习]
+    related: [resonance-001, resonance-003]
+    content:
+      summary: "SOVT（Semi-Occluded Vocal Tract）是最高效的声乐练习之一。通过部分阻塞声道出口来平衡声门下和声门上的压力，促进高效发声和共鸣。"
+      theory: |
+        SOVT 的工作原理：
+        1. 通过部分阻塞唇/口腔出口，增加声道内压力
+        2. 这种压力反馈帮助声带以更小的力实现更高效的振动
+        3. 减少声带碰撞力，降低损伤风险
+        4. 促进共鸣的均匀分布
+
+        常见 SOVT 练习（按阻力从大到小排列）：
+        - 吸管发声（Straw Phonation）：最有效，阻力最大
+        - 唇颤音（Lip Trill/Bubble）：兼顾呼吸控制和共鸣
+        - 舌颤音（Tongue Trill/Rolled R）
+        - 哼鸣（Humming）：闭口，声音从鼻子出来
+        - 浊辅音摩擦：/v/ /z/ /ð/
+      criteria: "能完成 5 个音的唇颤音上行和下行，音高稳定，不中断。"
+      exercises:
+        - name: "吸管发声练习"
+          steps:
+            - "嘴唇含一根细吸管（约 5mm 直径）"
+            - "通过吸管发 /u/ 音，做 5 度音阶上行和下行"
+            - "感受声音的均匀感和共鸣的集中感"
+            - "去掉吸管，尝试维持同样的共鸣感唱同样的音"
+          duration: "5 分钟"
+        - name: "唇颤音滑动"
+          steps:
+            - "放松嘴唇做 brrrr 声"
+            - "从低到高滑动再滑回来（像救护车警笛）"
+            - "全程保持唇颤不断、呼吸稳定"
+          duration: "3 分钟"
+
+  - id: resonance-003
+    title: "歌手共振峰与投射"
+    category: resonance
+    level: advanced
+    tags: [共鸣, 歌手共振峰, squillo, 穿透力, twang]
+    related: [resonance-001, technique-twang-001]
+    content:
+      summary: "歌手共振峰（Singer's Formant）是约 2800-3200Hz 的频谱能量集中，使声音能穿透交响乐队的伴奏被听众听到。"
+      theory: |
+        歌手共振峰产生的关键是：杓会厌括约肌（AES）适度收窄 + 喉位控制。
+
+        - Squillo（意大利语'铃声'）：歌剧歌手声音中的那种锐利、穿透性的光彩
+        - Ring/Ping：更口语化的描述，指声音的'芯'或'亮心'
+        - 这种高频能量集中不是靠用力，而是靠精确的共鸣腔形态
+
+        实现方法（循序渐进）：
+        1. 先通过'鸭子叫'或'猫咪叫'找到 AES 收窄的感觉（Twang）
+        2. 将这种收窄感融入正常歌唱中，保持喉部放松
+        3. 不应该感到任何不适或挤压——如果感到喉咙紧张，说明用错了力
+      common_mistakes:
+        - "用喉咙挤压来获得亮度（会导致声带损伤）"
+        - "过度 Twang 导致声音刺耳"
+        - "误以为'大声'就是'有穿透力'"
+
+  - id: resonance-004
+    title: "元音修饰与统一"
+    category: resonance
+    level: intermediate
+    tags: [共鸣, 元音, 修饰, aggiustamento]
+    related: [resonance-001, registration-005]
+    content:
+      summary: "元音修饰（Vowel Modification/Aggiustamento）是在不同音高上微调元音发音以维持最佳共鸣和舒适度的技术。"
+      theory: |
+        当音高超出某个元音的第一共振峰（F1）时，需要调整元音：
+        - 高音区：所有元音趋向 /u/（oo）方向——口腔空间更大
+        - 换声区：元音略微圆润化，如 /a/ → /ɔ/，/e/ → /ɛ/
+
+        这不是把元音唱错，而是微调发音位置使声音保持在最佳的声道形态。
+
+        基本原则：
+        - 前元音（/i/ /e/ /ɛ/ /a/）在高音区往 /y/ /ø/ 方向靠
+        - 后元音（/u/ /o/ /ɔ/）变化相对小
+        - 元音的统一（Vowel Unification）：所有元音保持相近的共鸣品质，不因元音变化而改变声音位置
+      exercises:
+        - name: "五元音连线"
+          steps:
+            - "在同一音高上唱 a-e-i-o-u 五个元音"
+            - "尽量保持声音的'位置'和共鸣感不变"
+            - "逐渐往高音区移动"
+          duration: "5 分钟"
+
+  - id: resonance-005
+    title: "喉位与音色控制"
+    category: resonance
+    level: intermediate
+    tags: [共鸣, 喉位, 音色, 明暗]
+    related: [resonance-001, technique-twang-001]
+    content:
+      summary: "喉头（Larynx）的垂直位置影响声道的长度和形状，从而影响音色——高喉位产生明亮音色，低喉位产生暗暖音色。"
+      theory: |
+        三个喉位（EVT 分类）：
+        1. 高喉位（High Larynx）：声道缩短，音色明亮、尖锐。适合 Belt、流行亮音。
+        2. 中喉位（Mid/Neutral Larynx）：自然说话位置。适合大多数歌唱场景。
+        3. 低喉位（Low Larynx）：声道延长，音色暗、暖、圆润。适合古典/歌剧演唱、Sob Quality。
+
+        关键原则：
+        - 喉位本身没有'正确'或'错误'——取决于风格需求
+        - 但喉位应能自由移动，不应锁死在某一位置
+        - 打哈欠的感觉可以降低喉位
+        - 高喉位唱歌时更需要确保喉部不紧张
+      common_mistakes:
+        - "强行下压喉头（导致舌根紧张、声音空洞）"
+        - "高音时喉头不自觉地飙升（导致声音被卡住——这是最常见的歌唱问题之一）"
+
+  # ============================================================
+  # 声区与换声 (registration)
+  # ============================================================
+
+  - id: registration-001
+    title: "声区概述：胸声、混声、头声"
+    category: registration
+    level: elementary
+    tags: [声区, 胸声, 头声, 混声, 换声]
+    related: [registration-002, registration-003, registration-007]
+    content:
+      summary: "声区（Register）是一系列连续的、由相同发声机制产生的音高。主要声区：胸声（M1）、头声（M2）、混声（M1/M2混合）。"
+      theory: |
+        声区分类（基于喉部生理机制）：
+
+        M1（胸声/模态声/重机制）：
+        - TA 肌（甲杓肌）主导
+        - 声带厚，接触面积大，闭合相长
+        - 声音饱满、有力、泛音丰富
+        - 通常用于中低音区
+
+        M2（头声/假声/轻机制）：
+        - CT 肌（环甲肌）主导
+        - 声带拉长变薄，接触面积小，闭合相短
+        - 声音轻、空灵、柔和
+        - 通常用于高音区
+
+        Mix（混声/M1-M2过渡）：
+        - TA 和 CT 协同工作
+        - 在换声区实现无缝过渡
+        - 兼具力量和灵活性
+      criteria: "能区分自己唱胸声和头声时的身体感觉差异。能找到自己的自然换声区域。"
+
+  - id: registration-002
+    title: "胸声开发"
+    category: registration
+    level: elementary
+    tags: [声区, 胸声, TA肌, 低中音区]
+    related: [registration-001, registration-007]
+    content:
+      summary: "胸声是大多数人最自然的声音，接近说话声音。胸声开发的目标是在不挤压的前提下获得饱满、稳定的中低音。"
+      theory: |
+        健康的胸声特征：
+        - 声带保持厚接触状态
+        - 声音饱满但不压迫
+        - 喉部放松，喉位中性或略低
+        - 有丰富的低频泛音
+
+        胸声常见问题：
+        - 胸声拉扯（Chest-Pulling）：试图把胸声的'重量'带到高音区 → 换声区声带卡顿
+        - 胸声过重：声带过度闭合，声音沉闷、音域受限
+        - 胸声过轻：气流过多，声音发虚、没有根基
+      common_mistakes:
+        - "用'喊'的方式唱胸声（喉部挤压）"
+        - "胸声太重导致换声区断裂"
+        - "胸声不给力，声音虚飘、音准偏低"
+      exercises:
+        - name: "五度下行胸声稳定练习"
+          steps:
+            - "在舒适中低音区，用 /a/ 或 /ɛ/ 元音唱 so-fa-mi-re-do"
+            - "保持声音饱满但不压迫，像说话一样自然"
+            - "逐渐半音下行扩展低音范围"
+          duration: "5 分钟"
+
+  - id: registration-003
+    title: "头声与假声"
+    category: registration
+    level: elementary
+    tags: [声区, 头声, 假声, CT肌, 高音区]
+    related: [registration-001, registration-004]
+    content:
+      summary: "头声和假声都属于 M2 机制（轻机制），但头声的声带闭合更完整，声音更集中；假声的声带闭合不完全，声音更飘、气声更多。"
+      theory: |
+        头声（Head Voice） vs 假声（Falsetto）的区别：
+
+        头声：
+        - 声带仍有较好的闭合（可产生闭合相）
+        - 声音有'芯'、集中、有穿透力
+        - 可以被加力变成更强健的声音
+        - 是古典和大多数风格中使用的正常高音
+
+        假声（Falsetto）：
+        - 声带边缘振动，闭合不完全，有明显缝隙
+        - 声音气声多、空灵、'假'的感觉
+        - 无法被加力（加大音量就会断裂到胸声）
+        - 主要用于特殊风格效果或作为过渡训练工具
+
+        男性通常更容易先找到假声（因为与说话模式差异大），再从头声过渡到混声。
+        女性一般更容易从头声入手。
+      exercises:
+        - name: "下行滑音——从头声到胸声"
+          steps:
+            - "从舒适的高音区用 /u/ 发头声"
+            - "缓慢下滑一个八度到胸声区，尽量保持声音的连续性"
+            - "注意不要断裂，如果断裂了说明某些音高需要更多注意"
+          duration: "5 分钟"
+
+  - id: registration-004
+    title: "假声的声学与生理特性"
+    category: registration
+    level: intermediate
+    tags: [声区, 假声, falsetto, 声带]
+    related: [registration-003, registration-001]
+    content:
+      summary: "深入了解假声的生理机制，区分健康使用和过度依赖假声的区别。"
+      theory: |
+        假声的声学特征（EVT 框架）：
+        - 声带体层（Body）和覆层（Cover）都处于僵硬状态
+        - 声带被拉伸得很长、很薄
+        - 闭合相（Closed Phase）极小甚至完全消失
+        - 因此产生带有不同程度气声感的音色
+
+        假声在声乐训练中的价值：
+        - 帮助找到轻机制的感觉（特别是对男性歌手）
+        - 假声→头声→混声的训练路径是经典的教学方法
+        - 在无损伤风险的情况下探索高音区
+
+        假声的局限性：
+        - 音量上限有限（无法做大动态）
+        - 音色选择有限（始终带气感）
+        - 长期仅用假声唱歌可能弱化声带闭合能力
+      common_mistakes:
+        - "永远只用假声唱高音（逃避混声训练）"
+        - "试图用力'推'假声（假声无法通过加大压力变强，只会断裂）"
+
+  - id: registration-005
+    title: "换声区（Passaggio）详解"
+    category: registration
+    level: intermediate
+    tags: [声区, 换声区, passaggio, 换声点]
+    related: [registration-001, registration-006, registration-007]
+    content:
+      summary: "Passaggio（意大利语'通道'）是声区之间的过渡音域。男性有两个明显的换声点，女性通常有一个主要的换声区域。顺利通过换声区是声乐训练的核心课题。"
+      theory: |
+        换声点参考位置（因人而异）：
+
+        男性（以男高音为例）：
+        - Primo Passaggio（第一换声点）：约 E4-G4，胸声→混声
+        - Secondo Passaggio（第二换声点）：约 F#4-A#4，混声→头声
+        - 男中音和男低音各低一个大二度到小三度
+
+        女性（以女高音为例）：
+        - Primo Passaggio：约 Eb4-G4（通常不如男性明显）
+        - Secondo Passaggio：约 F5-A5
+
+        换声区歌唱的核心原则：
+        1. 元音修饰（aggiustamento）——稍圆润化元音
+        2. 动态控制——过换声区时略微减力
+        3. 气息持续流动——不因紧张而屏息
+        4. 喉位稳定——避免喉位随音高飙升
+        5. 心理接受——不'害怕'换声区的到来
+      common_mistakes:
+        - "在换声区加大音量硬推（越推越卡）"
+        - "换声区声音突然变虚（逃避式换声）"
+        - "喉位随音高急剧升高（卡喉）"
+        - "元音不变导致声音'散掉'或'破掉'"
+
+  - id: registration-006
+    title: "声音覆盖技术（Copertura）"
+    category: registration
+    level: intermediate
+    tags: [声区, 换声区, 覆盖, copertura, 古典]
+    related: [registration-005, resonance-004]
+    content:
+      summary: "Copertura（意大利语'覆盖'）是古典声乐中通过换声区的核心技术——在高音区略微圆润化元音并降低喉位，保护声音不被'撑破'。"
+      theory: |
+        Copertura 操作要点：
+        1. 接近换声区时，元音向 /o/ 或 /u/ 方向略微靠拢
+        2. 喉位稍下降（自然的，不是强力下压）
+        3. 软腭抬高，增加咽腔空间
+        4. 这是一种'遮盖'或'暗化'声音的技术
+
+        示例：
+        - /a/（啊）在高音区接近 /ɔ/（哦）的感觉
+        - /e/（诶）在高音区接近 /ø/（类似德语的 ö）
+
+        这与流行唱法中保持元音'敞开'（Open-Throat）的理念形成对比。
+        不同风格对该技术的应用程度不同——古典>音乐剧>流行。
+      common_mistakes:
+        - "过度覆盖导致声音闷暗、咬字不清"
+        - "覆盖时机不对（太早或太晚）"
+        - "把覆盖等同于'向后吞声音'"
+
+  - id: registration-007
+    title: "混声建立方法"
+    category: registration
+    level: intermediate
+    tags: [声区, 混声, mix-voice, 强弱混声]
+    related: [registration-001, registration-005, technique-mix-001, technique-mix-002, technique-mix-003]
+    content:
+      summary: "混声（Mixed Voice）是声乐训练的终极目标之一——在胸声和头声之间建立无缝的过渡，使全音域听感统一、表现力不受声区限制。"
+      theory: |
+        混声不是一种'第三种声区'，而是 M1（胸声）和 M2（头声）之间平滑过渡的能力。
+
+        建立混声的三个阶段：
+
+        第一阶段：找到轻机制（头声）
+        - 用 /u/ 或 /i/ 在换声区附近开始，感受头声的轻、集中感
+        - 下行滑音进入胸声区，让声音自然增厚而不是强行切换
+
+        第二阶段：平衡过渡
+        - 在换声区做渐强渐弱练习（messa di voce）
+        - 感受从轻机制逐渐增加到重机制，再减回轻机制
+
+        第三阶段：按需混合
+        - 强混声（Chest-Dominant Mix）：TA 偏多，声音有力，用于摇滚/Belt/高能量段落
+        - 弱混声（Head-Dominant Mix）：CT 偏多，声音柔美，用于抒情段落
+      exercises:
+        - name: "混声滑音桥"
+          steps:
+            - "用 /u/ 从头声区（如 C5）缓慢下行滑音到胸声区（如 C4）"
+            - "全程保持声音不断（像画一条连续的线）"
+            - "反复练习，找到那个'没有断裂'的感觉"
+          duration: "10 分钟"
+        - name: "换声区半音桥"
+          steps:
+            - "从换声区下方全音开始，半音半音向上"
+            - "每步都确认声音没有突然变轻或变紧"
+            - "录音回听，用 MindEcho 检查音高连续性"
+          duration: "10 分钟"
+
+  - id: registration-008
+    title: "声区统一的终极目标"
+    category: registration
+    level: advanced
+    tags: [声区, 统一, 全音域, 音色一致]
+    related: [registration-007, resonance-004]
+    content:
+      summary: "声区统一（Registration Unification）是高级歌唱技术的标志——从最低到最高音，听者感知不到声区切换。"
+      theory: |
+        声区统一的三个标志：
+        1. 音色一致性：全音域内音色没有突然的变化（断裂、翻色）
+        2. 动态可控性：全音域内可以自由做出强弱变化
+        3. 元音统一性：全音域内所有元音保持相近的共鸣品质
+
+        评估方法：
+        - 录制自己从未训练的最低音到最高音的滑音
+        - 在 MindEcho 中观察音高曲线——突然的跳跃或音色改变（谐波结构变化）可能意味着声区切换
+        - 请教师或同伴盲听——他们能听出哪里'变掉了'
+      criteria: "从最低到最高自然音域，做滑音时听不到明显的声区断裂或音色突变。"

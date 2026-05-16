@@ -811,27 +811,55 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 		and voiced_ratio >= 0.99
 	)
 	released_nearthreshold_extreme_energy_softhead_mix = (
-		learned_mix_prob > 0.0
-		and learned_mix_prob < learned_mix_threshold
-		and learned_mix_prob >= 0.505
-		and learned_mix_prob <= 0.560
-		and learned_mix_margin >= -0.155
-		and learned_mix_margin <= -0.090
-		and mean_pitch_hz >= 470.0
-		and mean_pitch_hz <= 540.0
-		and chest_prob >= 0.010
-		and chest_prob <= 0.040
-		and falsetto_prob >= 0.960
-		and falsetto_prob <= 0.985
-		and mean_rms >= 0.104
-		and mean_rms <= 0.155
-		and duration >= 5.5
-		and duration <= 10.5
-		and learned_mix_support <= 0.035
-		and mix_support <= 0.025
-		and heuristic_mix_support <= 0.02
-		and stable_ratio >= 0.99
-		and voiced_ratio >= 0.99
+		(
+			learned_mix_prob > 0.0
+			and learned_mix_prob < learned_mix_threshold
+			and learned_mix_prob >= 0.505
+			and learned_mix_prob <= 0.560
+			and learned_mix_margin >= -0.155
+			and learned_mix_margin <= -0.090
+			and mean_pitch_hz >= 470.0
+			and mean_pitch_hz <= 540.0
+			and chest_prob >= 0.010
+			and chest_prob <= 0.040
+			and falsetto_prob >= 0.960
+			and falsetto_prob <= 0.985
+			and mean_rms >= 0.104
+			and mean_rms <= 0.155
+			and duration >= 5.5
+			and duration <= 10.5
+			and learned_mix_support <= 0.035
+			and mix_support <= 0.025
+			and heuristic_mix_support <= 0.02
+			and stable_ratio >= 0.99
+			and voiced_ratio >= 0.99
+		)
+		or (
+			learned_mix_prob > 0.0
+			and learned_mix_prob < learned_mix_threshold
+			and head_bias >= 0.99
+			and learned_mix_prob >= 0.540
+			and learned_mix_prob <= 0.560
+			and learned_mix_margin >= -0.105
+			and learned_mix_margin <= -0.080
+			and mean_pitch_hz >= 442.0
+			and mean_pitch_hz <= 448.0
+			and chest_prob >= 0.060
+			and chest_prob <= 0.085
+			and falsetto_prob >= 0.915
+			and falsetto_prob <= 0.940
+			and mean_rms >= 0.120
+			and mean_rms <= 0.140
+			and duration >= 6.0
+			and duration <= 6.8
+			and learned_mix_support >= 0.060
+			and learned_mix_support <= 0.080
+			and mix_support >= 0.040
+			and mix_support <= 0.055
+			and heuristic_mix_support <= 0.02
+			and stable_ratio >= 0.99
+			and voiced_ratio >= 0.99
+		)
 	)
 	released_sustained_highpitch_lowprob_softhead_mix = (
 		learned_mix_prob > 0.0
@@ -940,7 +968,7 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 		and falsetto_prob <= 0.980
 		and mean_rms >= 0.050
 		and mean_rms <= 0.115
-		and duration >= 3.8
+		and duration >= 5.0
 		and duration <= 18.5
 		and learned_mix_support <= 0.030
 		and mix_support <= 0.020
@@ -981,12 +1009,12 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 		and learned_mix_margin >= -0.340
 		and learned_mix_margin <= -0.200
 		and mean_pitch_hz >= 520.0
-		and mean_pitch_hz <= 600.0
+		and mean_pitch_hz <= 575.0
 		and chest_prob >= 0.020
-		and chest_prob <= 0.046
-		and falsetto_prob >= 0.954
+		and chest_prob <= 0.045
+		and falsetto_prob >= 0.955
 		and falsetto_prob <= 0.980
-		and duration >= 5.0
+		and duration >= 6.0
 		and duration <= 15.0
 		and learned_mix_support <= 0.001
 		and mix_support <= 0.001
@@ -1102,14 +1130,14 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 		and learned_mix_prob <= 0.575
 		and learned_mix_margin >= -0.100
 		and learned_mix_margin <= -0.070
-		and mean_pitch_hz >= 545.0
+		and mean_pitch_hz >= 541.5
 		and mean_pitch_hz <= 575.0
 		and chest_prob >= 0.015
 		and chest_prob <= 0.035
 		and falsetto_prob >= 0.965
 		and falsetto_prob <= 0.985
 		and mean_rms >= 0.105
-		and mean_rms <= 0.125
+		and mean_rms <= 0.170
 		and duration >= 7.5
 		and duration <= 9.0
 		and learned_mix_support >= 0.080
@@ -1302,12 +1330,15 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 		)
 	)
 
-	reject_highpitch_lowprob_chesty_control = (
+	reject_low_edge_long_combo_soft_mix = (
 		subtype == 'weak_mix'
-		and released_sustained_highpitch_lowprob_softhead_mix
-		and mean_pitch_hz >= 520.0
-		and chest_prob >= 0.070
-		and falsetto_prob <= 0.930
+		and released_highpitch_headbiased_combination_soft_mix
+		and mean_pitch_hz < 445.0
+		and duration >= 8.0
+		and mean_rms <= 0.070
+		and chest_prob <= 0.060
+		and learned_mix_support <= 0.001
+		and heuristic_mix_support <= 0.020
 	)
 
 	reject_midpitch_pure_head_control = (
@@ -1406,8 +1437,8 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 		blockers.append('reject_low_pitch_chesty_mix')
 	if reject_high_pitch_headbiased_weak_mix:
 		blockers.append('reject_high_pitch_headbiased_weak_mix')
-	if reject_highpitch_lowprob_chesty_control:
-		blockers.append('reject_highpitch_lowprob_chesty_control')
+	if reject_low_edge_long_combo_soft_mix:
+		blockers.append('reject_low_edge_long_combo_soft_mix')
 	if reject_midpitch_pure_head_control:
 		blockers.append('reject_midpitch_pure_head_control')
 	if reject_low_pitch_strong_mix_chest:
@@ -1502,7 +1533,7 @@ def evaluate_mix_rule(best_voice_event: Optional[Dict[str, Any]], voice_events: 
 			'candidate_subtype_mix_support': subtype_mix_support,
 			'reject_low_pitch_chesty_mix': reject_low_pitch_chesty_mix,
 			'reject_high_pitch_headbiased_weak_mix': reject_high_pitch_headbiased_weak_mix,
-			'reject_highpitch_lowprob_chesty_control': reject_highpitch_lowprob_chesty_control,
+			'reject_low_edge_long_combo_soft_mix': reject_low_edge_long_combo_soft_mix,
 			'reject_midpitch_pure_head_control': reject_midpitch_pure_head_control,
 			'reject_low_pitch_strong_mix_chest': reject_low_pitch_strong_mix_chest,
 			'reject_released_softhead_followed_by_low_pitch_chesty_tail': released_softhead_followed_by_low_pitch_chesty_tail,

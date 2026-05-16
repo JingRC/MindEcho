@@ -1,0 +1,1437 @@
+{
+  "models": {
+    "current_binary_checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_binary.pt",
+    "reference_four_class_checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\reference_model\\squeezenet1_1_mel_2024-07-30_15-40-44\\save.pt"
+  },
+  "config": {
+    "target_sample_rate": 22050,
+    "window_s": 0.64,
+    "hop_s": 0.16,
+    "dataset_per_class": 8
+  },
+  "labeled_dataset_summary": {
+    "sample_count": 32,
+    "current_binary_accuracy": 0.5,
+    "reference_binary_accuracy": 0.5,
+    "reference_gender_accuracy": 0.65625,
+    "reference_four_class_accuracy": 0.3125,
+    "per_class": {
+      "m_chest": {
+        "count": 8,
+        "current_binary_correct": 0,
+        "reference_binary_correct": 8,
+        "reference_gender_correct": 8,
+        "reference_four_correct": 8
+      },
+      "f_chest": {
+        "count": 8,
+        "current_binary_correct": 0,
+        "reference_binary_correct": 8,
+        "reference_gender_correct": 2,
+        "reference_four_correct": 2
+      },
+      "m_falsetto": {
+        "count": 8,
+        "current_binary_correct": 8,
+        "reference_binary_correct": 0,
+        "reference_gender_correct": 6,
+        "reference_four_correct": 0
+      },
+      "f_falsetto": {
+        "count": 8,
+        "current_binary_correct": 8,
+        "reference_binary_correct": 0,
+        "reference_gender_correct": 5,
+        "reference_four_correct": 0
+      }
+    }
+  },
+  "labeled_dataset_results": [
+    {
+      "sample_name": "audio/0001_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.004700051620602608,
+        "falsetto_prob": 0.9952999353408813,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9428688287734985,
+          "f_chest": 0.05602877959609032,
+          "m_falsetto": 0.0010845756623893976,
+          "f_falsetto": 1.7838792700786144e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9988976120948792,
+          "falsetto": 0.0011024144478142262,
+          "male": 0.9439533948898315,
+          "female": 0.05604662001132965
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0093_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5000453514739229,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.004584101028740406,
+        "falsetto_prob": 0.9954159259796143,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.6987574100494385,
+          "f_chest": 0.30030718445777893,
+          "m_falsetto": 0.0008228333899751306,
+          "f_falsetto": 0.00011253407865297049
+        },
+        "collapsed_probs": {
+          "chest": 0.999064564704895,
+          "falsetto": 0.0009353674831800163,
+          "male": 0.6995802521705627,
+          "female": 0.30041971802711487
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0166_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5000226757369615,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.00738364877179265,
+        "falsetto_prob": 0.9926163554191589,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9618164300918579,
+          "f_chest": 0.03711512312293053,
+          "m_falsetto": 0.0010576116619631648,
+          "f_falsetto": 1.0853805179067422e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9989315271377563,
+          "falsetto": 0.0010684654116630554,
+          "male": 0.9628740549087524,
+          "female": 0.037125978618860245
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0219_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0037650777958333492,
+        "falsetto_prob": 0.9962349534034729,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.837498664855957,
+          "f_chest": 0.1613025963306427,
+          "m_falsetto": 0.0011335391318425536,
+          "f_falsetto": 6.520959141198546e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9988012313842773,
+          "falsetto": 0.0011987487087026238,
+          "male": 0.8386322259902954,
+          "female": 0.16136780381202698
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0686_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.006733753718435764,
+        "falsetto_prob": 0.993266224861145,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9790419936180115,
+          "f_chest": 0.020079027861356735,
+          "m_falsetto": 0.000874249788466841,
+          "f_falsetto": 4.690687546826666e-06
+        },
+        "collapsed_probs": {
+          "chest": 0.9991210103034973,
+          "falsetto": 0.0008789404528215528,
+          "male": 0.9799162149429321,
+          "female": 0.0200837180018425
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0739_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0010161956306546926,
+        "falsetto_prob": 0.9989838004112244,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9724318981170654,
+          "f_chest": 0.0261536855250597,
+          "m_falsetto": 0.0014049266465008259,
+          "f_falsetto": 9.486881936027203e-06
+        },
+        "collapsed_probs": {
+          "chest": 0.99858558177948,
+          "falsetto": 0.0014144135639071465,
+          "male": 0.9738368391990662,
+          "female": 0.026163171976804733
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0812_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.006734123919159174,
+        "falsetto_prob": 0.9932658672332764,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.8846833109855652,
+          "f_chest": 0.11432842165231705,
+          "m_falsetto": 0.0009516366990283132,
+          "f_falsetto": 3.6735760659212247e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.999011754989624,
+          "falsetto": 0.000988372485153377,
+          "male": 0.8856349587440491,
+          "female": 0.11436516046524048
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/1250_m_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.4999546485260771,
+      "ground_truth_four": "m_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.008395484648644924,
+        "falsetto_prob": 0.9916045069694519,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9758702516555786,
+          "f_chest": 0.023165734484791756,
+          "m_falsetto": 0.0009580959449522197,
+          "f_falsetto": 5.955520464340225e-06
+        },
+        "collapsed_probs": {
+          "chest": 0.9990360140800476,
+          "falsetto": 0.0009640514617785811,
+          "male": 0.9768283367156982,
+          "female": 0.023171689361333847
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0041_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5007256235827664,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.001978747546672821,
+        "falsetto_prob": 0.9980212450027466,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9817495346069336,
+          "f_chest": 0.016900377348065376,
+          "m_falsetto": 0.0013444580836221576,
+          "f_falsetto": 5.601085831585806e-06
+        },
+        "collapsed_probs": {
+          "chest": 0.9986498951911926,
+          "falsetto": 0.0013500591740012169,
+          "male": 0.9830939769744873,
+          "female": 0.016905978322029114
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0317_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.005687901750206947,
+        "falsetto_prob": 0.994312047958374,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9848314523696899,
+          "f_chest": 0.014131066389381886,
+          "m_falsetto": 0.0010338271968066692,
+          "f_falsetto": 3.6574033401848283e-06
+        },
+        "collapsed_probs": {
+          "chest": 0.9989625215530396,
+          "falsetto": 0.001037484616972506,
+          "male": 0.9858652949333191,
+          "female": 0.0141347236931324
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0435_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0020425256807357073,
+        "falsetto_prob": 0.9979574680328369,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.0007700853748247027,
+          "f_chest": 0.9989848732948303,
+          "m_falsetto": 7.352540478677838e-07,
+          "f_falsetto": 0.0002442118711769581
+        },
+        "collapsed_probs": {
+          "chest": 0.9997549653053284,
+          "falsetto": 0.00024494712124578655,
+          "male": 0.0007708206539973617,
+          "female": 0.9992290735244751
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/0553_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0025129595305770636,
+        "falsetto_prob": 0.9974870681762695,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9866020083427429,
+          "f_chest": 0.012543565593659878,
+          "m_falsetto": 0.000851797463838011,
+          "f_falsetto": 2.730506366788177e-06
+        },
+        "collapsed_probs": {
+          "chest": 0.9991455674171448,
+          "falsetto": 0.0008545279852114618,
+          "male": 0.987453818321228,
+          "female": 0.01254629623144865
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0859_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.006233255844563246,
+        "falsetto_prob": 0.9937667846679688,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.8026613593101501,
+          "f_chest": 0.19624358415603638,
+          "m_falsetto": 0.0010189367458224297,
+          "f_falsetto": 7.619102689204738e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9989049434661865,
+          "falsetto": 0.0010951277799904346,
+          "male": 0.8036803007125854,
+          "female": 0.19631977379322052
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0995_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.001917629619129002,
+        "falsetto_prob": 0.9980823993682861,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.001161254826001823,
+          "f_chest": 0.9986971020698547,
+          "m_falsetto": 5.805287628390943e-07,
+          "f_falsetto": 0.0001410584955010563
+        },
+        "collapsed_probs": {
+          "chest": 0.9998583793640137,
+          "falsetto": 0.00014163902960717678,
+          "male": 0.0011618353892117739,
+          "female": 0.9988381862640381
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": true,
+        "reference_four_correct": true
+      }
+    },
+    {
+      "sample_name": "audio/1113_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0004752061504404992,
+        "falsetto_prob": 0.9995248317718506,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9770305156707764,
+          "f_chest": 0.02078245021402836,
+          "m_falsetto": 0.002176320878788829,
+          "f_falsetto": 1.0674060831661336e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9978129863739014,
+          "falsetto": 0.0021869949996471405,
+          "male": 0.9792068600654602,
+          "female": 0.0207931250333786
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/1270_f_chest.wav",
+      "window_count": 1,
+      "duration_s": 0.4998185941043084,
+      "ground_truth_four": "f_chest",
+      "ground_truth_binary": "chest",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0014213366666808724,
+        "falsetto_prob": 0.998578667640686,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9549927115440369,
+          "f_chest": 0.04254704713821411,
+          "m_falsetto": 0.002434058580547571,
+          "f_falsetto": 2.6151854399358854e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.997539758682251,
+          "falsetto": 0.0024602103512734175,
+          "male": 0.9574267864227295,
+          "female": 0.042573198676109314
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": false,
+        "reference_binary_correct": true,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0021_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0019961344078183174,
+        "falsetto_prob": 0.9980039000511169,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.15810821950435638,
+          "f_chest": 0.8412231206893921,
+          "m_falsetto": 0.0002516944950912148,
+          "f_falsetto": 0.0004169341118540615
+        },
+        "collapsed_probs": {
+          "chest": 0.9993313550949097,
+          "falsetto": 0.0006686286069452763,
+          "male": 0.15835991501808167,
+          "female": 0.841640055179596
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0113_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0001697498228168115,
+        "falsetto_prob": 0.9998302459716797,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.48904410004615784,
+          "f_chest": 0.5102263689041138,
+          "m_falsetto": 0.0005415661726146936,
+          "f_falsetto": 0.00018795138748828322
+        },
+        "collapsed_probs": {
+          "chest": 0.9992704391479492,
+          "falsetto": 0.0007295175455510616,
+          "male": 0.48958566784858704,
+          "female": 0.5104143023490906
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0186_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.004617291036993265,
+        "falsetto_prob": 0.9953827261924744,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9449807405471802,
+          "f_chest": 0.05313922464847565,
+          "m_falsetto": 0.001853442401625216,
+          "f_falsetto": 2.6602749130688608e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9981199502944946,
+          "falsetto": 0.0018800451653078198,
+          "male": 0.9468342065811157,
+          "female": 0.053165826946496964
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0239_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.006664121989160776,
+        "falsetto_prob": 0.9933358430862427,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.6559234261512756,
+          "f_chest": 0.343222439289093,
+          "m_falsetto": 0.0007320310105569661,
+          "f_falsetto": 0.0001220782578457147
+        },
+        "collapsed_probs": {
+          "chest": 0.9991458654403687,
+          "falsetto": 0.0008541092975065112,
+          "male": 0.6566554307937622,
+          "female": 0.343344509601593
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0706_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5000453514739229,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0005353461601771414,
+        "falsetto_prob": 0.9994646906852722,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.7963833212852478,
+          "f_chest": 0.20229502022266388,
+          "m_falsetto": 0.0012282864190638065,
+          "f_falsetto": 9.340705582872033e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9986783266067505,
+          "falsetto": 0.001321693416684866,
+          "male": 0.7976115942001343,
+          "female": 0.20238842070102692
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0759_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0003715844650287181,
+        "falsetto_prob": 0.9996284246444702,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.8119083046913147,
+          "f_chest": 0.18660517036914825,
+          "m_falsetto": 0.001392648322507739,
+          "f_falsetto": 9.391894127475098e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9985134601593018,
+          "falsetto": 0.0014865673147141933,
+          "male": 0.8133009672164917,
+          "female": 0.18669909238815308
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0832_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.009175121784210205,
+        "falsetto_prob": 0.9908248782157898,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.8561668395996094,
+          "f_chest": 0.1427689641714096,
+          "m_falsetto": 0.0010134089970961213,
+          "f_falsetto": 5.0810736865969375e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9989358186721802,
+          "falsetto": 0.001064219744876027,
+          "male": 0.8571802377700806,
+          "female": 0.14281977713108063
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/1260_m_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5007709750566893,
+      "ground_truth_four": "m_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "male",
+      "current_binary": {
+        "chest_prob": 0.0017076738877221942,
+        "falsetto_prob": 0.9982922673225403,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.7743838429450989,
+          "f_chest": 0.22367118299007416,
+          "m_falsetto": 0.0017976600211113691,
+          "f_falsetto": 0.00014736327284481376
+        },
+        "collapsed_probs": {
+          "chest": 0.9980550408363342,
+          "falsetto": 0.0019450233085080981,
+          "male": 0.7761815190315247,
+          "female": 0.22381854057312012
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0042_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0028774533420801163,
+        "falsetto_prob": 0.997122585773468,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.0754668340086937,
+          "f_chest": 0.9237610697746277,
+          "m_falsetto": 0.00016822174075059593,
+          "f_falsetto": 0.0006037630373612046
+        },
+        "collapsed_probs": {
+          "chest": 0.9992278814315796,
+          "falsetto": 0.000771984807215631,
+          "male": 0.07563505321741104,
+          "female": 0.9243648052215576
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0318_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0007500072824768722,
+        "falsetto_prob": 0.9992499947547913,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9666042327880859,
+          "f_chest": 0.031833820044994354,
+          "m_falsetto": 0.00154908187687397,
+          "f_falsetto": 1.2807102393708192e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9984380602836609,
+          "falsetto": 0.0015618889592587948,
+          "male": 0.9681532979011536,
+          "female": 0.031846627593040466
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0434_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0018975830171257257,
+        "falsetto_prob": 0.9981024861335754,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.059447433799505234,
+          "f_chest": 0.9382010102272034,
+          "m_falsetto": 0.00047235898091457784,
+          "f_falsetto": 0.0018792761256918311
+        },
+        "collapsed_probs": {
+          "chest": 0.9976484179496765,
+          "falsetto": 0.0023516351357102394,
+          "male": 0.05991979315876961,
+          "female": 0.9400802850723267
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0550_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0017132326029241085,
+        "falsetto_prob": 0.998286783695221,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 8.275573782157153e-05,
+          "f_chest": 0.9997101426124573,
+          "m_falsetto": 7.589571282551333e-08,
+          "f_falsetto": 0.00020700549066532403
+        },
+        "collapsed_probs": {
+          "chest": 0.9997928738594055,
+          "falsetto": 0.0002070813934551552,
+          "male": 8.283163333544508e-05,
+          "female": 0.9999171495437622
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0884_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0008017263608053327,
+        "falsetto_prob": 0.9991982579231262,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.276767373085022,
+          "f_chest": 0.721621572971344,
+          "m_falsetto": 0.0009139400790445507,
+          "f_falsetto": 0.0006971038528718054
+        },
+        "collapsed_probs": {
+          "chest": 0.998388946056366,
+          "falsetto": 0.001611043931916356,
+          "male": 0.2776813209056854,
+          "female": 0.7223186492919922
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/0994_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.0019145336700603366,
+        "falsetto_prob": 0.9980854988098145,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.0010403512278571725,
+          "f_chest": 0.9986581802368164,
+          "m_falsetto": 1.2281349199838587e-06,
+          "f_falsetto": 0.0003002216690219939
+        },
+        "collapsed_probs": {
+          "chest": 0.9996985197067261,
+          "falsetto": 0.0003014497924596071,
+          "male": 0.0010415794095024467,
+          "female": 0.99895840883255
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": true,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/1110_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.001002589357085526,
+        "falsetto_prob": 0.9989973902702332,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.9678635597229004,
+          "f_chest": 0.03091271035373211,
+          "m_falsetto": 0.0012136318255215883,
+          "f_falsetto": 1.0083126653626096e-05
+        },
+        "collapsed_probs": {
+          "chest": 0.9987762570381165,
+          "falsetto": 0.0012237149057909846,
+          "male": 0.9690771698951721,
+          "female": 0.030922792851924896
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    },
+    {
+      "sample_name": "audio/1280_f_falsetto.wav",
+      "window_count": 1,
+      "duration_s": 0.5013151927437641,
+      "ground_truth_four": "f_falsetto",
+      "ground_truth_binary": "falsetto",
+      "ground_truth_gender": "female",
+      "current_binary": {
+        "chest_prob": 0.00048696206067688763,
+        "falsetto_prob": 0.9995130300521851,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.8210353255271912,
+          "f_chest": 0.1729932725429535,
+          "m_falsetto": 0.00568147748708725,
+          "f_falsetto": 0.00028999170172028244
+        },
+        "collapsed_probs": {
+          "chest": 0.9940285682678223,
+          "falsetto": 0.005971468985080719,
+          "male": 0.8267167806625366,
+          "female": 0.17328326404094696
+        },
+        "predicted_four": "m_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "male",
+        "window_top_class_counts": {
+          "m_chest": 1
+        }
+      },
+      "matches": {
+        "current_binary_correct": true,
+        "reference_binary_correct": false,
+        "reference_gender_correct": false,
+        "reference_four_correct": false
+      }
+    }
+  ],
+  "example_summary": {
+    "sample_count": 0,
+    "current_binary_accuracy": 0.0,
+    "reference_binary_accuracy": 0.0,
+    "reference_gender_accuracy": 0.0,
+    "reference_four_class_accuracy": 0.0,
+    "per_class": {
+      "m_chest": {
+        "count": 0,
+        "current_binary_correct": 0,
+        "reference_binary_correct": 0,
+        "reference_gender_correct": 0,
+        "reference_four_correct": 0
+      },
+      "f_chest": {
+        "count": 0,
+        "current_binary_correct": 0,
+        "reference_binary_correct": 0,
+        "reference_gender_correct": 0,
+        "reference_four_correct": 0
+      },
+      "m_falsetto": {
+        "count": 0,
+        "current_binary_correct": 0,
+        "reference_binary_correct": 0,
+        "reference_gender_correct": 0,
+        "reference_four_correct": 0
+      },
+      "f_falsetto": {
+        "count": 0,
+        "current_binary_correct": 0,
+        "reference_binary_correct": 0,
+        "reference_gender_correct": 0,
+        "reference_four_correct": 0
+      }
+    }
+  },
+  "example_results": [],
+  "skipped_examples": [
+    {
+      "path": "ml_dl_models\\chest_falsetto\\reference_model\\examples\\f_chest.wav",
+      "reason": "git_lfs_pointer:D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\reference_model\\examples\\f_chest.wav"
+    },
+    {
+      "path": "ml_dl_models\\chest_falsetto\\reference_model\\examples\\f_falsetto.wav",
+      "reason": "git_lfs_pointer:D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\reference_model\\examples\\f_falsetto.wav"
+    },
+    {
+      "path": "ml_dl_models\\chest_falsetto\\reference_model\\examples\\m_chest.wav",
+      "reason": "git_lfs_pointer:D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\reference_model\\examples\\m_chest.wav"
+    },
+    {
+      "path": "ml_dl_models\\chest_falsetto\\reference_model\\examples\\m_falsetto.wav",
+      "reason": "git_lfs_pointer:D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\reference_model\\examples\\m_falsetto.wav"
+    }
+  ],
+  "unlabeled_results": {
+    "female_lead_libai": {
+      "sample_name": "female_lead_libai",
+      "window_count": 1672,
+      "duration_s": 267.94666666666666,
+      "ground_truth_four": null,
+      "ground_truth_binary": "",
+      "ground_truth_gender": "",
+      "current_binary": {
+        "chest_prob": 0.054143212735652924,
+        "falsetto_prob": 0.9458571672439575,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.08172010630369186,
+          "f_chest": 0.8794030547142029,
+          "m_falsetto": 0.015876708552241325,
+          "f_falsetto": 0.023000486195087433
+        },
+        "collapsed_probs": {
+          "chest": 0.9611231684684753,
+          "falsetto": 0.03887719660997391,
+          "male": 0.09759681671857834,
+          "female": 0.9024035334587097
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1561,
+          "m_falsetto": 12,
+          "m_chest": 90,
+          "f_falsetto": 9
+        }
+      }
+    },
+    "male_lead_wuju": {
+      "sample_name": "male_lead_wuju",
+      "window_count": 1654,
+      "duration_s": 265.1066666666667,
+      "ground_truth_four": null,
+      "ground_truth_binary": "",
+      "ground_truth_gender": "",
+      "current_binary": {
+        "chest_prob": 0.12508200109004974,
+        "falsetto_prob": 0.874917209148407,
+        "predicted_binary": "falsetto"
+      },
+      "reference_four_class": {
+        "mean_probs": {
+          "m_chest": 0.1145189180970192,
+          "f_chest": 0.8183082342147827,
+          "m_falsetto": 0.025769347324967384,
+          "f_falsetto": 0.04140578210353851
+        },
+        "collapsed_probs": {
+          "chest": 0.9328271746635437,
+          "falsetto": 0.06717512756586075,
+          "male": 0.14028826355934143,
+          "female": 0.8597140312194824
+        },
+        "predicted_four": "f_chest",
+        "predicted_binary": "chest",
+        "predicted_gender": "female",
+        "window_top_class_counts": {
+          "f_chest": 1509,
+          "m_chest": 145
+        }
+      }
+    },
+    "dry_mic_phrase": {
+      "missing": true,
+      "path": "D:\\-MindEcho-main\\recordings\\recording_20260202_113327.wav",
+      "reason": "git_lfs_pointer:D:\\-MindEcho-main\\recordings\\recording_20260202_113327.wav"
+    },
+    "dry_mic_short": {
+      "missing": true,
+      "path": "D:\\-MindEcho-main\\recordings\\recording_20260202_104455.wav",
+      "reason": "git_lfs_pointer:D:\\-MindEcho-main\\recordings\\recording_20260202_104455.wav"
+    }
+  }
+}

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+
+<defs>
+  <!-- 身体渐变 -->
+  <radialGradient id="bodyGrad" cx="50%" cy="40%" r="60%">
+    <stop offset="0%" stop-color="#A78BFA"/>
+    <stop offset="100%" stop-color="#7C5CFC"/>
+  </radialGradient>
+
+  <!-- 肚皮渐变 -->
+  <radialGradient id="bellyGrad" cx="50%" cy="30%" r="50%">
+    <stop offset="0%" stop-color="#FFFFFF"/>
+    <stop offset="100%" stop-color="#E8E0FF"/>
+  </radialGradient>
+
+  <!-- 阴影滤镜 -->
+  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000000" flood-opacity="0.2"/>
+  </filter>
+
+  <!-- 发光滤镜 -->
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="3" result="blur"/>
+    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+
+<!-- 阴影 -->
+<ellipse cx="200" cy="385" rx="70" ry="12" fill="#00000015"/>
+<!-- 脚 -->
+<ellipse cx="165" cy="375" rx="22" ry="14" fill="#5B3FD9"/>
+<ellipse cx="235" cy="375" rx="22" ry="14" fill="#5B3FD9"/>
+<!-- 身体 -->
+<ellipse cx="200" cy="285" rx="85" ry="95" fill="url(#bodyGrad)" filter="url(#shadow)"/>
+<!-- 肚皮 -->
+<ellipse cx="200" cy="305" rx="55" ry="60" fill="url(#bellyGrad)"/>
+
+<!-- 头部 -->
+<ellipse cx="200" cy="160" rx="75" ry="65" fill="url(#bodyGrad)"/>
+
+<!-- 耳机头梁 -->
+<path d="M145 100 Q 200 45 255 100" stroke="#3D3D5C" stroke-width="7" fill="none" stroke-linecap="round"/>
+<!-- 左耳罩 -->
+<rect x="118" y="120" width="28" height="45" rx="14" fill="#FF6B9D"/>
+<rect x="122" y="124" width="20" height="37" rx="10" fill="#3D3D5C"/>
+<!-- 右耳罩 -->
+<rect x="254" y="120" width="28" height="45" rx="14" fill="#FF6B9D"/>
+<rect x="258" y="124" width="20" height="37" rx="10" fill="#3D3D5C"/>
+
+<ellipse cx="178" cy="150" rx="12" ry="14" fill="#1A1A2E"/>
+<ellipse cx="222" cy="150" rx="12" ry="14" fill="#1A1A2E"/>
+<circle cx="183" cy="145" r="5" fill="#FFFFFF"/>
+<circle cx="227" cy="145" r="5" fill="#FFFFFF"/>
+<circle cx="175" cy="153" r="2" fill="#FFFFFF"/>
+<circle cx="219" cy="153" r="2" fill="#FFFFFF"/>
+
+<circle cx="160" cy="162" r="10" fill="#FF6B9D" opacity="0.35"/>
+<circle cx="240" cy="162" r="10" fill="#FF6B9D" opacity="0.35"/>
+
+<path d="M165 190 Q200 200 235 190" stroke="#FF6B9D" stroke-width="10" fill="none" stroke-linecap="round"/>
+<path d="M228 188 Q240 220 235 240 Q230 220 225 210" fill="#FF6B9D"/>
+
+<circle cx="200" cy="175" r="9" fill="#5B3FD9"/>
+
+<!-- 麦克风手柄 -->
+<rect x="268" y="270" width="10" height="55" rx="5" fill="#3D3D5C" transform="rotate(15 273 297)"/>
+<!-- 麦克风头 -->
+<ellipse cx="278" cy="265" rx="14" ry="18" fill="#FFD93D" transform="rotate(15 278 265)" filter="url(#glow)"/>
+<!-- 麦克风网格 -->
+<ellipse cx="278" cy="265" rx="10" ry="13" fill="none" stroke="#3D3D5C" stroke-width="2" transform="rotate(15 278 265)"/>
+<!-- 手臂 -->
+<path d="M260 250 Q275 245 278 260" stroke="#7C5CFC" stroke-width="14" fill="none" stroke-linecap="round"/>
+
+<text x="260" y="80" font-size="28" font-weight="bold" fill="#FFD93D" filter="url(#glow)">!</text>
+<text x="285" y="65" font-size="20" font-weight="bold" fill="#FFD93D" opacity="0.6">!</text>
+
+</svg>

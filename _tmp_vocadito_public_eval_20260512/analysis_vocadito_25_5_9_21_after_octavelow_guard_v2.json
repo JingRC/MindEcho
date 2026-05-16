@@ -1,0 +1,851 @@
+{
+  "report_path": "D:\\-MindEcho-main\\_tmp_vocadito_public_eval_20260512\\report_vocadito_25_5_9_21_after_octavelow_guard_v2.json",
+  "dataset": "vocadito",
+  "dataset_root": "D:\\data\\vocadito_public_20260512\\extracted",
+  "thresholds": {
+    "average_pitch_midi_tertiles": [
+      57.0,
+      60.0
+    ],
+    "slide_ratio_80c_tertiles": [
+      0.000593,
+      0.001362
+    ],
+    "voiced_rms_dbfs_tertiles": [
+      -28.874438,
+      -21.887042
+    ],
+    "low_score_rpa_cutoff": 0.296932
+  },
+  "summary": {
+    "track_count": 4,
+    "low_score_track_count": 1,
+    "micro": {
+      "raw_pitch_accuracy": 0.336134,
+      "raw_chroma_accuracy": 0.591682,
+      "gross_pitch_error": 0.654735,
+      "voicing_recall": 0.973553,
+      "voicing_precision": 0.754582,
+      "voicing_f1": 0.850195,
+      "voicing_false_alarm": 0.729162
+    },
+    "macro": {
+      "raw_pitch_accuracy": 0.327004,
+      "raw_chroma_accuracy": 0.606216,
+      "gross_pitch_error": 0.66345,
+      "voicing_recall": 0.972662,
+      "voicing_precision": 0.7476,
+      "voicing_f1": 0.844099,
+      "voicing_false_alarm": 0.739061
+    }
+  },
+  "group_summaries": {
+    "language": [
+      {
+        "group": "French",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.266432,
+        "mean_raw_chroma_accuracy": 0.676643,
+        "mean_gross_pitch_error": 0.731995,
+        "mean_voicing_f1": 0.83675,
+        "mean_voicing_false_alarm": 0.791971,
+        "mean_average_pitch_midi": 60.0,
+        "mean_slide_ratio_80c": 0.000593,
+        "mean_voiced_rms_dbfs": -28.874438,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_25",
+            "raw_pitch_accuracy": 0.266432,
+            "language": "French"
+          }
+        ]
+      },
+      {
+        "group": "Tagalog",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.307098,
+        "mean_raw_chroma_accuracy": 0.651859,
+        "mean_gross_pitch_error": 0.670807,
+        "mean_voicing_f1": 0.761679,
+        "mean_voicing_false_alarm": 0.743572,
+        "mean_average_pitch_midi": 62.0,
+        "mean_slide_ratio_80c": 0.003937,
+        "mean_voiced_rms_dbfs": -37.525069,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_9",
+            "raw_pitch_accuracy": 0.307098,
+            "language": "Tagalog"
+          }
+        ]
+      },
+      {
+        "group": "English",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.320323,
+        "mean_raw_chroma_accuracy": 0.364065,
+        "mean_gross_pitch_error": 0.67663,
+        "mean_voicing_f1": 0.892256,
+        "mean_voicing_false_alarm": 0.834963,
+        "mean_average_pitch_midi": 50.0,
+        "mean_slide_ratio_80c": 0.001362,
+        "mean_voiced_rms_dbfs": -21.887042,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_21",
+            "raw_pitch_accuracy": 0.320323,
+            "language": "English"
+          }
+        ]
+      },
+      {
+        "group": "Catalan/Valencian",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.414162,
+        "mean_raw_chroma_accuracy": 0.732297,
+        "mean_gross_pitch_error": 0.57437,
+        "mean_voicing_f1": 0.88571,
+        "mean_voicing_false_alarm": 0.58574,
+        "mean_average_pitch_midi": 57.0,
+        "mean_slide_ratio_80c": 0.0,
+        "mean_voiced_rms_dbfs": -19.486682,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_5",
+            "raw_pitch_accuracy": 0.414162,
+            "language": "Catalan/Valencian"
+          }
+        ]
+      }
+    ],
+    "pitch_band": [
+      {
+        "group": "mid-pitch",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.266432,
+        "mean_raw_chroma_accuracy": 0.676643,
+        "mean_gross_pitch_error": 0.731995,
+        "mean_voicing_f1": 0.83675,
+        "mean_voicing_false_alarm": 0.791971,
+        "mean_average_pitch_midi": 60.0,
+        "mean_slide_ratio_80c": 0.000593,
+        "mean_voiced_rms_dbfs": -28.874438,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_25",
+            "raw_pitch_accuracy": 0.266432,
+            "language": "French"
+          }
+        ]
+      },
+      {
+        "group": "high-pitch",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.307098,
+        "mean_raw_chroma_accuracy": 0.651859,
+        "mean_gross_pitch_error": 0.670807,
+        "mean_voicing_f1": 0.761679,
+        "mean_voicing_false_alarm": 0.743572,
+        "mean_average_pitch_midi": 62.0,
+        "mean_slide_ratio_80c": 0.003937,
+        "mean_voiced_rms_dbfs": -37.525069,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_9",
+            "raw_pitch_accuracy": 0.307098,
+            "language": "Tagalog"
+          }
+        ]
+      },
+      {
+        "group": "low-pitch",
+        "track_count": 2,
+        "mean_raw_pitch_accuracy": 0.367243,
+        "mean_raw_chroma_accuracy": 0.548181,
+        "mean_gross_pitch_error": 0.6255,
+        "mean_voicing_f1": 0.888983,
+        "mean_voicing_false_alarm": 0.710352,
+        "mean_average_pitch_midi": 53.5,
+        "mean_slide_ratio_80c": 0.000681,
+        "mean_voiced_rms_dbfs": -20.686862,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_21",
+            "raw_pitch_accuracy": 0.320323,
+            "language": "English"
+          },
+          {
+            "track_id": "vocadito_5",
+            "raw_pitch_accuracy": 0.414162,
+            "language": "Catalan/Valencian"
+          }
+        ]
+      }
+    ],
+    "slide_band": [
+      {
+        "group": "slide-heavy",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.307098,
+        "mean_raw_chroma_accuracy": 0.651859,
+        "mean_gross_pitch_error": 0.670807,
+        "mean_voicing_f1": 0.761679,
+        "mean_voicing_false_alarm": 0.743572,
+        "mean_average_pitch_midi": 62.0,
+        "mean_slide_ratio_80c": 0.003937,
+        "mean_voiced_rms_dbfs": -37.525069,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_9",
+            "raw_pitch_accuracy": 0.307098,
+            "language": "Tagalog"
+          }
+        ]
+      },
+      {
+        "group": "moderate-slide",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.320323,
+        "mean_raw_chroma_accuracy": 0.364065,
+        "mean_gross_pitch_error": 0.67663,
+        "mean_voicing_f1": 0.892256,
+        "mean_voicing_false_alarm": 0.834963,
+        "mean_average_pitch_midi": 50.0,
+        "mean_slide_ratio_80c": 0.001362,
+        "mean_voiced_rms_dbfs": -21.887042,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_21",
+            "raw_pitch_accuracy": 0.320323,
+            "language": "English"
+          }
+        ]
+      },
+      {
+        "group": "stable",
+        "track_count": 2,
+        "mean_raw_pitch_accuracy": 0.340297,
+        "mean_raw_chroma_accuracy": 0.70447,
+        "mean_gross_pitch_error": 0.653182,
+        "mean_voicing_f1": 0.86123,
+        "mean_voicing_false_alarm": 0.688856,
+        "mean_average_pitch_midi": 58.5,
+        "mean_slide_ratio_80c": 0.000296,
+        "mean_voiced_rms_dbfs": -24.18056,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_25",
+            "raw_pitch_accuracy": 0.266432,
+            "language": "French"
+          },
+          {
+            "track_id": "vocadito_5",
+            "raw_pitch_accuracy": 0.414162,
+            "language": "Catalan/Valencian"
+          }
+        ]
+      }
+    ],
+    "energy_band": [
+      {
+        "group": "weak-energy",
+        "track_count": 2,
+        "mean_raw_pitch_accuracy": 0.286765,
+        "mean_raw_chroma_accuracy": 0.664251,
+        "mean_gross_pitch_error": 0.701401,
+        "mean_voicing_f1": 0.799214,
+        "mean_voicing_false_alarm": 0.767772,
+        "mean_average_pitch_midi": 61.0,
+        "mean_slide_ratio_80c": 0.002265,
+        "mean_voiced_rms_dbfs": -33.199753,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_25",
+            "raw_pitch_accuracy": 0.266432,
+            "language": "French"
+          },
+          {
+            "track_id": "vocadito_9",
+            "raw_pitch_accuracy": 0.307098,
+            "language": "Tagalog"
+          }
+        ]
+      },
+      {
+        "group": "mid-energy",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.320323,
+        "mean_raw_chroma_accuracy": 0.364065,
+        "mean_gross_pitch_error": 0.67663,
+        "mean_voicing_f1": 0.892256,
+        "mean_voicing_false_alarm": 0.834963,
+        "mean_average_pitch_midi": 50.0,
+        "mean_slide_ratio_80c": 0.001362,
+        "mean_voiced_rms_dbfs": -21.887042,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_21",
+            "raw_pitch_accuracy": 0.320323,
+            "language": "English"
+          }
+        ]
+      },
+      {
+        "group": "strong-energy",
+        "track_count": 1,
+        "mean_raw_pitch_accuracy": 0.414162,
+        "mean_raw_chroma_accuracy": 0.732297,
+        "mean_gross_pitch_error": 0.57437,
+        "mean_voicing_f1": 0.88571,
+        "mean_voicing_false_alarm": 0.58574,
+        "mean_average_pitch_midi": 57.0,
+        "mean_slide_ratio_80c": 0.0,
+        "mean_voiced_rms_dbfs": -19.486682,
+        "worst_tracks": [
+          {
+            "track_id": "vocadito_5",
+            "raw_pitch_accuracy": 0.414162,
+            "language": "Catalan/Valencian"
+          }
+        ]
+      }
+    ]
+  },
+  "low_score_profile": {
+    "rpa_cutoff": 0.296932,
+    "language": [
+      {
+        "group": "French",
+        "track_count": 1
+      }
+    ],
+    "pitch_band": [
+      {
+        "group": "mid-pitch",
+        "track_count": 1
+      }
+    ],
+    "slide_band": [
+      {
+        "group": "stable",
+        "track_count": 1
+      }
+    ],
+    "energy_band": [
+      {
+        "group": "weak-energy",
+        "track_count": 1
+      }
+    ]
+  },
+  "worst_tracks": [
+    {
+      "track_id": "vocadito_25",
+      "language": "French",
+      "average_pitch_midi": 60.0,
+      "pitch_band": "mid-pitch",
+      "slide_band": "stable",
+      "energy_band": "weak-energy",
+      "raw_pitch_accuracy": 0.266432,
+      "gross_pitch_error": 0.731995,
+      "voicing_f1": 0.83675,
+      "voicing_false_alarm": 0.791971
+    },
+    {
+      "track_id": "vocadito_9",
+      "language": "Tagalog",
+      "average_pitch_midi": 62.0,
+      "pitch_band": "high-pitch",
+      "slide_band": "slide-heavy",
+      "energy_band": "weak-energy",
+      "raw_pitch_accuracy": 0.307098,
+      "gross_pitch_error": 0.670807,
+      "voicing_f1": 0.761679,
+      "voicing_false_alarm": 0.743572
+    },
+    {
+      "track_id": "vocadito_21",
+      "language": "English",
+      "average_pitch_midi": 50.0,
+      "pitch_band": "low-pitch",
+      "slide_band": "moderate-slide",
+      "energy_band": "mid-energy",
+      "raw_pitch_accuracy": 0.320323,
+      "gross_pitch_error": 0.67663,
+      "voicing_f1": 0.892256,
+      "voicing_false_alarm": 0.834963
+    },
+    {
+      "track_id": "vocadito_5",
+      "language": "Catalan/Valencian",
+      "average_pitch_midi": 57.0,
+      "pitch_band": "low-pitch",
+      "slide_band": "stable",
+      "energy_band": "strong-energy",
+      "raw_pitch_accuracy": 0.414162,
+      "gross_pitch_error": 0.57437,
+      "voicing_f1": 0.88571,
+      "voicing_false_alarm": 0.58574
+    }
+  ],
+  "spotchecks": [
+    {
+      "track_id": "vocadito_25",
+      "language": "French",
+      "pitch_band": "mid-pitch",
+      "slide_band": "stable",
+      "energy_band": "weak-energy",
+      "raw_pitch_accuracy": 0.266432,
+      "gross_pitch_error": 0.731995,
+      "voicing_f1": 0.83675,
+      "voicing_false_alarm": 0.791971,
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 14.657823,
+        "frame_count": 641,
+        "elapsed_s": 4.955337
+      },
+      "windows": [
+        {
+          "start_s": 6.0,
+          "end_s": 7.5,
+          "reference_voiced_frames": 222,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 15.203859,
+          "voiced_rms_dbfs": -29.744196,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 222,
+            "reference_unvoiced": 36,
+            "estimate_voiced": 258,
+            "shared_voiced": 222,
+            "voiced_hits": 222,
+            "false_alarms": 36,
+            "raw_pitch_hits": 1,
+            "raw_chroma_hits": 142,
+            "gross_pitch_errors": 221
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.004505,
+            "raw_chroma_accuracy": 0.63964,
+            "gross_pitch_error": 0.995495,
+            "voicing_recall": 1.0,
+            "voicing_precision": 0.860465,
+            "voicing_f1": 0.925,
+            "voicing_false_alarm": 1.0,
+            "mean_abs_cents_error": 914.736205,
+            "median_est_ref_ratio": 0.509209
+          }
+        },
+        {
+          "start_s": 14.0,
+          "end_s": 15.5,
+          "reference_voiced_frames": 81,
+          "slide_ratio_80c": 0.012658,
+          "step_cents_p90": 22.583956,
+          "voiced_rms_dbfs": -32.741896,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 81,
+            "reference_unvoiced": 33,
+            "estimate_voiced": 106,
+            "shared_voiced": 77,
+            "voiced_hits": 77,
+            "false_alarms": 29,
+            "raw_pitch_hits": 6,
+            "raw_chroma_hits": 41,
+            "gross_pitch_errors": 71
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.074074,
+            "raw_chroma_accuracy": 0.506173,
+            "gross_pitch_error": 0.922078,
+            "voicing_recall": 0.950617,
+            "voicing_precision": 0.726415,
+            "voicing_f1": 0.823529,
+            "voicing_false_alarm": 0.878788,
+            "mean_abs_cents_error": 693.922341,
+            "median_est_ref_ratio": 0.5197
+          }
+        },
+        {
+          "start_s": 9.0,
+          "end_s": 10.5,
+          "reference_voiced_frames": 165,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 16.328959,
+          "voiced_rms_dbfs": -31.73806,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 165,
+            "reference_unvoiced": 93,
+            "estimate_voiced": 204,
+            "shared_voiced": 163,
+            "voiced_hits": 163,
+            "false_alarms": 41,
+            "raw_pitch_hits": 23,
+            "raw_chroma_hits": 142,
+            "gross_pitch_errors": 140
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.139394,
+            "raw_chroma_accuracy": 0.860606,
+            "gross_pitch_error": 0.858896,
+            "voicing_recall": 0.987879,
+            "voicing_precision": 0.79902,
+            "voicing_f1": 0.883469,
+            "voicing_false_alarm": 0.44086,
+            "mean_abs_cents_error": 976.086714,
+            "median_est_ref_ratio": 0.508009
+          }
+        }
+      ]
+    },
+    {
+      "track_id": "vocadito_9",
+      "language": "Tagalog",
+      "pitch_band": "high-pitch",
+      "slide_band": "slide-heavy",
+      "energy_band": "weak-energy",
+      "raw_pitch_accuracy": 0.307098,
+      "gross_pitch_error": 0.670807,
+      "voicing_f1": 0.761679,
+      "voicing_false_alarm": 0.743572,
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 20.37501,
+        "frame_count": 770,
+        "elapsed_s": 7.915152
+      },
+      "windows": [
+        {
+          "start_s": 12.0,
+          "end_s": 13.5,
+          "reference_voiced_frames": 156,
+          "slide_ratio_80c": 0.006579,
+          "step_cents_p90": 13.117475,
+          "voiced_rms_dbfs": -34.296894,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 156,
+            "reference_unvoiced": 102,
+            "estimate_voiced": 258,
+            "shared_voiced": 156,
+            "voiced_hits": 156,
+            "false_alarms": 102,
+            "raw_pitch_hits": 12,
+            "raw_chroma_hits": 119,
+            "gross_pitch_errors": 144
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.076923,
+            "raw_chroma_accuracy": 0.762821,
+            "gross_pitch_error": 0.923077,
+            "voicing_recall": 1.0,
+            "voicing_precision": 0.604651,
+            "voicing_f1": 0.753623,
+            "voicing_false_alarm": 1.0,
+            "mean_abs_cents_error": 881.250418,
+            "median_est_ref_ratio": 0.505997
+          }
+        },
+        {
+          "start_s": 3.5,
+          "end_s": 5.0,
+          "reference_voiced_frames": 120,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 17.618414,
+          "voiced_rms_dbfs": -36.405432,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 120,
+            "reference_unvoiced": 139,
+            "estimate_voiced": 246,
+            "shared_voiced": 120,
+            "voiced_hits": 120,
+            "false_alarms": 126,
+            "raw_pitch_hits": 11,
+            "raw_chroma_hits": 98,
+            "gross_pitch_errors": 109
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.091667,
+            "raw_chroma_accuracy": 0.816667,
+            "gross_pitch_error": 0.908333,
+            "voicing_recall": 1.0,
+            "voicing_precision": 0.487805,
+            "voicing_f1": 0.655738,
+            "voicing_false_alarm": 0.906475,
+            "mean_abs_cents_error": 1018.467122,
+            "median_est_ref_ratio": 0.503827
+          }
+        },
+        {
+          "start_s": 16.0,
+          "end_s": 17.5,
+          "reference_voiced_frames": 173,
+          "slide_ratio_80c": 0.011905,
+          "step_cents_p90": 17.283198,
+          "voiced_rms_dbfs": -36.358317,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 173,
+            "reference_unvoiced": 85,
+            "estimate_voiced": 220,
+            "shared_voiced": 170,
+            "voiced_hits": 170,
+            "false_alarms": 50,
+            "raw_pitch_hits": 19,
+            "raw_chroma_hits": 111,
+            "gross_pitch_errors": 151
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.109827,
+            "raw_chroma_accuracy": 0.641618,
+            "gross_pitch_error": 0.888235,
+            "voicing_recall": 0.982659,
+            "voicing_precision": 0.772727,
+            "voicing_f1": 0.86514,
+            "voicing_false_alarm": 0.588235,
+            "mean_abs_cents_error": 766.063196,
+            "median_est_ref_ratio": 0.508429
+          }
+        }
+      ]
+    },
+    {
+      "track_id": "vocadito_21",
+      "language": "English",
+      "pitch_band": "low-pitch",
+      "slide_band": "moderate-slide",
+      "energy_band": "mid-energy",
+      "raw_pitch_accuracy": 0.320323,
+      "gross_pitch_error": 0.67663,
+      "voicing_f1": 0.892256,
+      "voicing_false_alarm": 0.834963,
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 22.0,
+        "frame_count": 977,
+        "elapsed_s": 9.202366
+      },
+      "windows": [
+        {
+          "start_s": 20.5,
+          "end_s": 22.0,
+          "reference_voiced_frames": 201,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 22.208342,
+          "voiced_rms_dbfs": -24.15694,
+          "dominant_issue": "high-harmonic-lock",
+          "counts": {
+            "reference_voiced": 201,
+            "reference_unvoiced": 57,
+            "estimate_voiced": 237,
+            "shared_voiced": 201,
+            "voiced_hits": 201,
+            "false_alarms": 36,
+            "raw_pitch_hits": 7,
+            "raw_chroma_hits": 24,
+            "gross_pitch_errors": 194
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.034826,
+            "raw_chroma_accuracy": 0.119403,
+            "gross_pitch_error": 0.965174,
+            "voicing_recall": 1.0,
+            "voicing_precision": 0.848101,
+            "voicing_f1": 0.917808,
+            "voicing_false_alarm": 0.631579,
+            "mean_abs_cents_error": 1167.057448,
+            "median_est_ref_ratio": 2.018767
+          }
+        },
+        {
+          "start_s": 15.5,
+          "end_s": 17.0,
+          "reference_voiced_frames": 172,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 20.879049,
+          "voiced_rms_dbfs": -23.42683,
+          "dominant_issue": "over-voicing",
+          "counts": {
+            "reference_voiced": 172,
+            "reference_unvoiced": 86,
+            "estimate_voiced": 240,
+            "shared_voiced": 170,
+            "voiced_hits": 170,
+            "false_alarms": 70,
+            "raw_pitch_hits": 15,
+            "raw_chroma_hits": 15,
+            "gross_pitch_errors": 155
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.087209,
+            "raw_chroma_accuracy": 0.087209,
+            "gross_pitch_error": 0.911765,
+            "voicing_recall": 0.988372,
+            "voicing_precision": 0.708333,
+            "voicing_f1": 0.825243,
+            "voicing_false_alarm": 0.813953,
+            "mean_abs_cents_error": 777.822057,
+            "median_est_ref_ratio": 1.478806
+          }
+        },
+        {
+          "start_s": 1.5,
+          "end_s": 3.0,
+          "reference_voiced_frames": 205,
+          "slide_ratio_80c": 0.00495,
+          "step_cents_p90": 20.497711,
+          "voiced_rms_dbfs": -21.542974,
+          "dominant_issue": "over-voicing",
+          "counts": {
+            "reference_voiced": 205,
+            "reference_unvoiced": 53,
+            "estimate_voiced": 249,
+            "shared_voiced": 201,
+            "voiced_hits": 201,
+            "false_alarms": 48,
+            "raw_pitch_hits": 37,
+            "raw_chroma_hits": 43,
+            "gross_pitch_errors": 164
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.180488,
+            "raw_chroma_accuracy": 0.209756,
+            "gross_pitch_error": 0.81592,
+            "voicing_recall": 0.980488,
+            "voicing_precision": 0.807229,
+            "voicing_f1": 0.885463,
+            "voicing_false_alarm": 0.90566,
+            "mean_abs_cents_error": 639.387717,
+            "median_est_ref_ratio": 1.372085
+          }
+        }
+      ]
+    },
+    {
+      "track_id": "vocadito_5",
+      "language": "Catalan/Valencian",
+      "pitch_band": "low-pitch",
+      "slide_band": "stable",
+      "energy_band": "strong-energy",
+      "raw_pitch_accuracy": 0.414162,
+      "gross_pitch_error": 0.57437,
+      "voicing_f1": 0.88571,
+      "voicing_false_alarm": 0.58574,
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 23.232,
+        "frame_count": 997,
+        "elapsed_s": 10.667608
+      },
+      "windows": [
+        {
+          "start_s": 10.5,
+          "end_s": 12.0,
+          "reference_voiced_frames": 178,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 23.042358,
+          "voiced_rms_dbfs": -21.058152,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 178,
+            "reference_unvoiced": 81,
+            "estimate_voiced": 203,
+            "shared_voiced": 158,
+            "voiced_hits": 158,
+            "false_alarms": 45,
+            "raw_pitch_hits": 16,
+            "raw_chroma_hits": 129,
+            "gross_pitch_errors": 142
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.089888,
+            "raw_chroma_accuracy": 0.724719,
+            "gross_pitch_error": 0.898734,
+            "voicing_recall": 0.88764,
+            "voicing_precision": 0.778325,
+            "voicing_f1": 0.829396,
+            "voicing_false_alarm": 0.555556,
+            "mean_abs_cents_error": 902.665776,
+            "median_est_ref_ratio": 0.506977
+          }
+        },
+        {
+          "start_s": 2.5,
+          "end_s": 4.0,
+          "reference_voiced_frames": 187,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 24.752508,
+          "voiced_rms_dbfs": -19.546815,
+          "dominant_issue": "over-voicing",
+          "counts": {
+            "reference_voiced": 187,
+            "reference_unvoiced": 72,
+            "estimate_voiced": 232,
+            "shared_voiced": 183,
+            "voiced_hits": 183,
+            "false_alarms": 49,
+            "raw_pitch_hits": 19,
+            "raw_chroma_hits": 92,
+            "gross_pitch_errors": 164
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.101604,
+            "raw_chroma_accuracy": 0.491979,
+            "gross_pitch_error": 0.896175,
+            "voicing_recall": 0.97861,
+            "voicing_precision": 0.788793,
+            "voicing_f1": 0.873508,
+            "voicing_false_alarm": 0.680556,
+            "mean_abs_cents_error": 645.513254,
+            "median_est_ref_ratio": 0.94019
+          }
+        },
+        {
+          "start_s": 22.0,
+          "end_s": 23.5,
+          "reference_voiced_frames": 156,
+          "slide_ratio_80c": 0.0,
+          "step_cents_p90": 9.924673,
+          "voiced_rms_dbfs": -21.405866,
+          "dominant_issue": "octave-low",
+          "counts": {
+            "reference_voiced": 156,
+            "reference_unvoiced": 57,
+            "estimate_voiced": 184,
+            "shared_voiced": 153,
+            "voiced_hits": 153,
+            "false_alarms": 31,
+            "raw_pitch_hits": 28,
+            "raw_chroma_hits": 147,
+            "gross_pitch_errors": 125
+          },
+          "metrics": {
+            "raw_pitch_accuracy": 0.179487,
+            "raw_chroma_accuracy": 0.942308,
+            "gross_pitch_error": 0.816993,
+            "voicing_recall": 0.980769,
+            "voicing_precision": 0.831522,
+            "voicing_f1": 0.9,
+            "voicing_false_alarm": 0.54386,
+            "mean_abs_cents_error": 957.147757,
+            "median_est_ref_ratio": 0.506295
+          }
+        }
+      ]
+    }
+  ],
+  "spotcheck_issue_summary": [
+    {
+      "issue": "octave-low",
+      "track_count": 3
+    },
+    {
+      "issue": "high-harmonic-lock",
+      "track_count": 1
+    }
+  ]
+}

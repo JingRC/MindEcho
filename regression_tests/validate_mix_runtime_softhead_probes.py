@@ -92,6 +92,7 @@ def run_probe_group(manifest_path: Path, probe_items: tuple[str, ...]) -> dict:
             str(manifest_path),
             '--artifact',
             str(ARTIFACT_DIR),
+            '--fresh-runtime-per-sample',
             '--output',
             str(output_path),
         ]

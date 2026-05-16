@@ -1,0 +1,87 @@
+{
+  "dataset": "vocadito",
+  "dataset_root": "D:\\Data\\vocadito_public_20260512\\extracted",
+  "manifest": "",
+  "selected_track_count": 1,
+  "success_count": 1,
+  "error_count": 0,
+  "settings": {
+    "audio_mode": "auto",
+    "annotation_format": "",
+    "tolerance_cents": 50.0,
+    "max_align_gap": 0.05
+  },
+  "aggregate": {
+    "micro": {
+      "raw_pitch_accuracy": 0.196501,
+      "raw_chroma_accuracy": 0.302153,
+      "gross_pitch_error": 0.80163,
+      "voicing_recall": 0.990579,
+      "voicing_precision": 0.81169,
+      "voicing_f1": 0.892256,
+      "voicing_false_alarm": 0.834963
+    },
+    "macro": {
+      "raw_pitch_accuracy": 0.196501,
+      "raw_chroma_accuracy": 0.302153,
+      "gross_pitch_error": 0.80163,
+      "voicing_recall": 0.990579,
+      "voicing_precision": 0.81169,
+      "voicing_f1": 0.892256,
+      "voicing_false_alarm": 0.834963
+    },
+    "counts": {
+      "reference_voiced": 2972,
+      "reference_unvoiced": 818,
+      "estimate_voiced": 3627,
+      "shared_voiced": 2944,
+      "voiced_hits": 2944,
+      "false_alarms": 683,
+      "raw_pitch_hits": 584,
+      "raw_chroma_hits": 898,
+      "gross_pitch_errors": 2360
+    }
+  },
+  "tracks": [
+    {
+      "track_id": "vocadito_21",
+      "dataset_name": "vocadito",
+      "annotation_format": "time-hz",
+      "audio_mode": "auto",
+      "audio_path": "D:\\data\\vocadito_public_20260512\\extracted\\Audio\\vocadito_21.wav",
+      "annotation_path": "D:\\data\\vocadito_public_20260512\\extracted\\Annotations\\F0\\vocadito_21_f0.csv",
+      "reference_frame_count": 3790,
+      "estimate_frame_count": 977,
+      "reference_duration_s": 21.995102,
+      "estimate_duration_s": 21.974344,
+      "alignment_gap_s": 0.05,
+      "counts": {
+        "reference_voiced": 2972,
+        "reference_unvoiced": 818,
+        "estimate_voiced": 3627,
+        "shared_voiced": 2944,
+        "voiced_hits": 2944,
+        "false_alarms": 683,
+        "raw_pitch_hits": 584,
+        "raw_chroma_hits": 898,
+        "gross_pitch_errors": 2360
+      },
+      "metrics": {
+        "raw_pitch_accuracy": 0.196501,
+        "raw_chroma_accuracy": 0.302153,
+        "gross_pitch_error": 0.80163,
+        "voicing_recall": 0.990579,
+        "voicing_precision": 0.81169,
+        "voicing_f1": 0.892256,
+        "voicing_false_alarm": 0.834963
+      },
+      "runtime": {
+        "analysis_mode": "onepass_full_audio",
+        "duration_s": 22.0,
+        "frame_count": 977,
+        "elapsed_s": 7.584846
+      }
+    }
+  ],
+  "errors": []
+}

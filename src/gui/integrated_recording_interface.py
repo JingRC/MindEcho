@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QGroupBox, QHBoxLayout,
-    QSlider, QLabel, QPushButton, QMainWindow,
+    QSlider, QLabel, QPushButton, QMainWindow, QDockWidget,
     QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
     QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication,
     QDoubleSpinBox, QSizePolicy, QFormLayout, QAbstractSpinBox, QToolButton, QRadioButton, QButtonGroup
@@ -180,23 +180,6 @@ def _save_technique_external_infer_strategy_setting(strategy: str) -> None:
         settings.sync()
     except Exception:
         pass
-
-
-def _git_lfs_pointer_audio_error(path: Union[str, Path]) -> str:
-    try:
-        file_path = Path(path)
-    except Exception:
-        return ''
-    try:
-        head = file_path.read_bytes()[:256]
-    except Exception:
-        return ''
-    if not head.startswith(b'version https://git-lfs.github.com/spec/v1'):
-        return ''
-    return (
-        f"无法读取音频文件: {file_path.name} 当前是 Git LFS 占位文件，不是真实音频内容。"
-        "请先执行 git lfs pull 拉取真实音频，或重新导出该文件后再分析。"
-    )
 
 
 def _normalize_torch_runtime_key(value: str) -> str:
@@ -1020,9 +1003,9 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '混声技术（Mix Voice）',
         'items': (
-            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'parent_key': 'mix_voice', 'default_selected': True},
-            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'parent_key': 'mix_voice', 'default_selected': True},
-            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'parent_key': 'mix_voice', 'default_selected': True},
+            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'parent_key': 'mix_voice'},
+            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'parent_key': 'mix_voice'},
+            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'parent_key': 'mix_voice'},
         ),
     },
     {
@@ -1038,7 +1021,7 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '音色与动态控制技巧',
         'items': (
-            {'key': 'mix_voice', 'label': '混声', 'implemented': True, 'default_selected': True},
+            {'key': 'mix_voice', 'label': '混声', 'implemented': True},
             {'key': 'breathy_phonation', 'label': '气声', 'implemented': False},
             {'key': 'falsetto', 'label': '假声', 'implemented': True},
             {'key': 'chest_voice', 'label': '真声', 'implemented': True},
@@ -3773,31 +3756,121 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             return 999.0
 
-    def _pick_display_fundamental_candidate(self, reference_frequency: float, true_candidates: List[Dict[str, float]], last_display: float) -> float:
+    def _upper_harmonic_ratio_score(self, ratio: float) -> float:
+        try:
+            ratio = float(ratio or 0.0)
+        except Exception:
+            return 0.0
+        if ratio <= 1.0:
+            return 0.0
+        second_like = max(0.0, 1.0 - min(abs(ratio - 2.0), 0.60) / 0.60)
+        third_like = max(0.0, 1.0 - min(abs(ratio - 3.0), 0.82) / 0.82)
+        return float(max(second_like, third_like))
+
+    def _is_likely_upper_harmonic_ratio(self, ratio: float) -> bool:
+        try:
+            ratio = float(ratio or 0.0)
+        except Exception:
+            return False
+        return bool((1.72 <= ratio <= 2.60) or (2.72 <= ratio <= 3.38))
+
+    def _pick_display_fundamental_candidate(
+        self,
+        reference_frequency: float,
+        true_candidates: List[Dict[str, float]],
+        last_display: float,
+        audio_rms: float = 0.0,
+    ) -> float:
         try:
             ref = float(reference_frequency or 0.0)
             if ref <= 0 or not true_candidates:
                 return 0.0
-            best_freq = 0.0
-            best_score = -1e9
+            parsed_candidates: List[Tuple[float, float]] = []
             for cand in true_candidates:
                 try:
                     cand_freq = float(cand.get('frequency', 0.0) or 0.0)
                     cand_conf = float(cand.get('confidence', 0.55) or 0.55)
                 except Exception:
                     continue
+                if cand_freq <= 0.0:
+                    continue
+                parsed_candidates.append((cand_freq, max(0.0, min(cand_conf, 1.0))))
+            if not parsed_candidates:
+                return 0.0
+
+            def harmonic_order_support(ratio: float) -> float:
+                try:
+                    ratio = float(ratio or 0.0)
+                except Exception:
+                    return 0.0
+                if ratio <= 1.0:
+                    return 0.0
+                best_local = 0.0
+                for order in (2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0):
+                    tolerance = 0.24 if order <= 3.0 else min(0.82, 0.28 + 0.08 * (order - 4.0))
+                    score = max(0.0, 1.0 - min(abs(ratio - order), tolerance) / tolerance)
+                    if score > best_local:
+                        best_local = score
+                return float(best_local)
+
+            deep_lock_mode = bool(ref >= 420.0)
+            best_freq = 0.0
+            best_score = -1e9
+            for cand_freq, cand_conf in parsed_candidates:
                 if cand_freq <= 0.0 or cand_freq >= ref * 0.985:
                     continue
-                semi_gap = self._pitch_semitone_distance(ref, cand_freq)
-                if semi_gap < 4.5 or semi_gap > 13.8:
-                    continue
                 ratio = ref / max(cand_freq, 1e-9)
-                harmonic_like = max(0.0, 1.0 - min(abs(ratio - 2.0), 0.60) / 0.60)
-                octave_like = max(0.0, 1.0 - min(abs(semi_gap - 12.0), 6.5) / 6.5)
+                deep_candidate_mode = bool(deep_lock_mode and cand_freq <= 220.0 and ratio >= 4.4)
+                semi_gap = self._pitch_semitone_distance(ref, cand_freq)
+                max_gap = 36.5 if deep_candidate_mode else 20.8
+                if semi_gap < 4.5 or semi_gap > max_gap:
+                    continue
+                harmonic_like = self._upper_harmonic_ratio_score(ratio)
+                if deep_candidate_mode:
+                    harmonic_like = max(harmonic_like, harmonic_order_support(ratio))
+                if harmonic_like <= 0.0:
+                    continue
+                octave_like = max(
+                    max(0.0, 1.0 - min(abs(semi_gap - 12.0), 6.5) / 6.5),
+                    max(0.0, 1.0 - min(abs(semi_gap - 19.02), 3.8) / 3.8),
+                )
                 continuity = 0.0
                 if last_display > 0.0:
                     continuity = max(0.0, 1.0 - min(self._pitch_semitone_distance(cand_freq, last_display), 7.0) / 7.0)
-                score = (1.35 * cand_conf) + (0.55 * harmonic_like) + (0.32 * octave_like) + (0.70 * continuity)
+                ladder_support = 0.0
+                if deep_candidate_mode:
+                    for obs_freq, obs_conf in parsed_candidates:
+                        if obs_freq <= cand_freq * 1.04:
+                            continue
+                        support = harmonic_order_support(obs_freq / max(cand_freq, 1e-9))
+                        if support <= 0.0:
+                            continue
+                        ladder_support += support * max(0.35, obs_conf)
+                continuity_weight = 0.20 if deep_candidate_mode else 0.70
+                score = (1.35 * cand_conf) + (0.72 * harmonic_like) + (0.24 * octave_like) + (continuity_weight * continuity)
+                if ladder_support > 0.0:
+                    score += 0.32 * min(ladder_support, 3.2)
+                if deep_lock_mode and 70.0 <= (cand_freq * 0.5) <= 220.0:
+                    derived_freq = cand_freq * 0.5
+                    derived_ratio = ref / max(derived_freq, 1e-9)
+                    derived_support = harmonic_order_support(derived_ratio) if derived_ratio >= 4.4 else 0.0
+                    if derived_support > 0.0:
+                        if float(audio_rms or 0.0) <= 0.038 and derived_freq <= 120.0 and derived_ratio >= 4.7:
+                            continue
+                        ladder_support = 0.0
+                        for obs_freq, obs_conf in parsed_candidates:
+                            support = harmonic_order_support(obs_freq / max(derived_freq, 1e-9))
+                            if support <= 0.0:
+                                continue
+                            ladder_support += support * max(0.35, obs_conf)
+                        if ladder_support >= 1.45:
+                            derived_continuity = 0.0
+                            if last_display > 0.0:
+                                derived_continuity = max(0.0, 1.0 - min(self._pitch_semitone_distance(derived_freq, last_display), 18.0) / 18.0)
+                            derived_score = (1.05 * cand_conf) + (0.72 * derived_support) + (0.38 * min(ladder_support, 3.6)) + (0.12 * derived_continuity)
+                            if derived_score > best_score:
+                                best_score = derived_score
+                                best_freq = derived_freq
                 if score > best_score:
                     best_score = score
                     best_freq = cand_freq
@@ -3919,11 +3992,26 @@ class IntegratedAudioProcessor(QThread):
             max(float(raw_frequency or 0.0), float(display_frequency)),
             true_candidates,
             last_display,
+            audio_rms=float(audio_rms or 0.0),
         )
         if lower_candidate > 0.0:
             lower_gap = self._pitch_semitone_distance(display_frequency, lower_candidate)
             harmonic_ratio = max(float(raw_frequency or 0.0), float(display_frequency)) / max(float(lower_candidate), 1e-9)
-            harmonic_like = bool(1.72 <= harmonic_ratio <= 2.55)
+            harmonic_like = bool(self._is_likely_upper_harmonic_ratio(harmonic_ratio))
+            high_harmonic_like = bool(harmonic_ratio >= 2.72)
+            corroborated_subharmonic = False
+            if high_harmonic_like and true_candidates:
+                for cand in true_candidates:
+                    try:
+                        cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                    except Exception:
+                        continue
+                    if cand_freq <= 0.0 or abs(cand_freq - float(lower_candidate)) <= max(8.0, float(lower_candidate) * 0.08):
+                        continue
+                    ladder_ratio = cand_freq / max(float(lower_candidate), 1e-9)
+                    if 1.62 <= ladder_ratio <= 2.28:
+                        corroborated_subharmonic = True
+                        break
             raw_supports_display = bool(float(raw_frequency or 0.0) > 0.0 and self._pitch_semitone_distance(float(raw_frequency), display_frequency) <= 1.15)
             better_than_current = bool(
                 last_display > 0.0 and
@@ -3940,8 +4028,11 @@ class IntegratedAudioProcessor(QThread):
                     display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
                 elif weak_voice and lower_gap >= 5.6:
                     display_frequency = 0.50 * float(display_frequency) + 0.50 * float(lower_candidate)
-                elif harmonic_like and lower_gap >= 5.2 and (not raw_supports_display):
-                    display_frequency = 0.36 * float(display_frequency) + 0.64 * float(lower_candidate)
+                elif corroborated_subharmonic and lower_gap >= 8.4:
+                    display_frequency = 0.10 * float(display_frequency) + 0.90 * float(lower_candidate)
+                elif harmonic_like and lower_gap >= (8.6 if high_harmonic_like else 5.2) and (not raw_supports_display):
+                    lower_weight = 0.74 if high_harmonic_like else 0.64
+                    display_frequency = (1.0 - lower_weight) * float(display_frequency) + lower_weight * float(lower_candidate)
                 elif lower_matches_history and lower_gap >= 5.2 and (not raw_supports_display):
                     display_frequency = 0.28 * float(display_frequency) + 0.72 * float(lower_candidate)
                 elif better_than_current and lower_gap >= 6.0:
@@ -3983,13 +4074,18 @@ class IntegratedAudioProcessor(QThread):
         if lower_candidate > 0.0 and last_display > 0.0:
             lower_history_gap = self._pitch_semitone_distance(lower_candidate, last_display)
             current_history_gap = self._pitch_semitone_distance(display_frequency, last_display)
+            upper_harmonic_ratio = max(float(raw_frequency or 0.0), float(display_frequency)) / max(float(lower_candidate), 1e-9)
+            high_harmonic_like = bool(upper_harmonic_ratio >= 2.72)
             likely_harmonic_jump = bool(
-                current_history_gap >= 2.6
+                current_history_gap >= (4.8 if high_harmonic_like else 2.6)
                 and lower_history_gap + 0.35 < current_history_gap
-                and (1.76 <= (max(float(raw_frequency or 0.0), float(display_frequency)) / max(float(lower_candidate), 1e-9)) <= 2.60)
+                and self._is_likely_upper_harmonic_ratio(upper_harmonic_ratio)
             )
             if (not head_voice_guard) and likely_harmonic_jump and (weak_voice or onset_like or (not support_high_jump)) and (not very_high_supported_rise):
-                lower_weight = 0.76 if (weak_voice or (not support_high_jump)) else 0.66
+                if high_harmonic_like:
+                    lower_weight = 0.84 if (weak_voice or onset_like or (not support_high_jump)) else 0.74
+                else:
+                    lower_weight = 0.76 if (weak_voice or (not support_high_jump)) else 0.66
                 display_frequency = lower_weight * float(lower_candidate) + (1.0 - lower_weight) * float(display_frequency)
 
         if head_voice_guard and last_display >= 340.0 and display_frequency < last_display and (not onset_like):
@@ -9413,9 +9509,9 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     lfm_diag_enabled = True
                 try:
-                    lfm_layered_enabled = bool(getattr(host, '_lfm_layered_stability_enabled', False)) if host is not None else False
+                    lfm_layered_enabled = bool(getattr(host, '_lfm_layered_stability_enabled', True)) if host is not None else True
                 except Exception:
-                    lfm_layered_enabled = False
+                    lfm_layered_enabled = True
             if lfm_active and lfm_diag_enabled:
                 try:
                     if (not hasattr(self, '_lfm_parse_diag')) or (getattr(self, '_lfm_parse_diag', None) is None):
@@ -9891,7 +9987,7 @@ class IntegratedAudioProcessor(QThread):
                 lfm_active = bool(host is not None and getattr(host, '_lfm_ctrl', None) is not None)
                 if viz is not None and hasattr(viz, 'display_mode'):
                     lead_bias_enabled = (viz.display_mode.currentText() == "普通模式")
-                if lfm_active and lfm_layered_enabled:
+                if lfm_active:
                     lead_bias_enabled = True
             except Exception:
                 lead_bias_enabled = False
@@ -11446,7 +11542,7 @@ class IntegratedAudioProcessor(QThread):
             return 0
 
     def _extract_true_multi_candidates(self, audio_data: np.ndarray, min_f: float, max_f: float, *, include_freq: float = 0.0) -> List[Dict[str, float]]:
-        """从FFT中提取多个真实峰值候选（用于专业模式多主线显示）。"""
+        """从FFT中提取多个真实峰值候选，并在必要时补充低阶 subharmonic fallback。"""
         try:
             if audio_data is None:
                 return []
@@ -11482,8 +11578,6 @@ class IntegratedAudioProcessor(QThread):
             # 局部峰值
             peaks = (vm_s[1:-1] > vm_s[:-2]) & (vm_s[1:-1] >= vm_s[2:])
             idx = np.where(peaks)[0] + 1
-            if idx.size == 0:
-                return []
             vmax = float(np.max(vm_s)) if vm_s.size else 0.0
             try:
                 rel_thr = float(getattr(self, '_true_peak_rel_thr', 0.12))
@@ -11500,25 +11594,86 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 pass
             min_sep_ratio = 2 ** (min_sep_semi / 12.0)
+            def _append_candidate(bucket: List[Tuple[float, float]], cand_f: float, cand_score: float) -> None:
+                try:
+                    cand_f = float(cand_f)
+                    cand_score = float(cand_score)
+                except Exception:
+                    return
+                if cand_f <= 0.0 or cand_score <= 0.0:
+                    return
+                for bucket_index, (prev_f, prev_score) in enumerate(bucket):
+                    if (
+                        max(cand_f, 1e-6) / max(prev_f, 1e-6) < min_sep_ratio
+                        and max(prev_f, 1e-6) / max(cand_f, 1e-6) < min_sep_ratio
+                    ):
+                        if cand_score > float(prev_score):
+                            bucket[bucket_index] = (cand_f, cand_score)
+                        return
+                bucket.append((cand_f, cand_score))
             # 阈值过滤
             sel = [i for i in idx if vm_s[i] >= max(abs_thr, vmax * rel_thr)]
-            if not sel:
-                return []
             # 按能量排序
             sel.sort(key=lambda i: vm_s[i], reverse=True)
             picked = []
             for i in sel:
                 f = float(vf[i])
-                # 去重：半音内合并
-                if any(max(f, 1e-6) / max(pf, 1e-6) < min_sep_ratio and max(pf, 1e-6) / max(f, 1e-6) < min_sep_ratio for pf, _ in picked):
-                    continue
-                picked.append((f, float(vm_s[i])))
+                _append_candidate(picked, f, float(vm_s[i]))
                 if len(picked) >= max_peaks:
                     break
+
+            fallback_picked = []
+            include_support = 0.0
+            try:
+                if include_freq and include_freq > 0.0:
+                    include_support = float(self._harmonic_support(float(include_freq), freqs, mag))
+            except Exception:
+                include_support = 0.0
+            try:
+                if include_freq and include_freq > 0.0:
+                    for factor, support_floor in ((1.0, 0.0), (0.5, 0.34), (1.0 / 3.0, 0.28)):
+                        cand_f = float(include_freq) * float(factor)
+                        if cand_f < float(min_f) or cand_f > float(max_f):
+                            continue
+                        cand_support = float(self._harmonic_support(cand_f, freqs, mag))
+                        if cand_support <= 0.0:
+                            continue
+                        if include_support > 0.0 and factor < 1.0 and cand_support < include_support * support_floor:
+                            continue
+                        _append_candidate(fallback_picked, cand_f, cand_support)
+                hps_f, hps_s = self._hps_candidate_from_fft(freqs, mag, float(min_f), float(max_f), n_harm=4)
+                shs_f, shs_s = self._shs_candidate_from_fft(
+                    freqs,
+                    mag,
+                    float(min_f),
+                    float(max_f),
+                    top_k=max(8, max_peaks),
+                    max_harm=6,
+                )
+                _append_candidate(fallback_picked, hps_f, hps_s)
+                _append_candidate(fallback_picked, shs_f, shs_s)
+            except Exception:
+                fallback_picked = []
+
+            if fallback_picked:
+                fallback_cap = float(vmax * 1.15) if vmax > 0.0 else 0.0
+                if not picked:
+                    fallback_picked.sort(key=lambda item: item[1], reverse=True)
+                    picked = list(fallback_picked[:max_peaks])
+                else:
+                    for cand_f, cand_score in fallback_picked:
+                        if include_freq and include_freq > 0.0 and cand_f >= float(include_freq) * 0.985:
+                            continue
+                        cand_score_use = min(float(cand_score), fallback_cap) if fallback_cap > 0.0 else float(cand_score)
+                        _append_candidate(picked, cand_f, cand_score_use)
+                    picked.sort(key=lambda item: item[1], reverse=True)
+                    picked = picked[:max_peaks]
+
+            if not picked:
+                return []
             if include_freq and include_freq > 0:
                 f0 = float(include_freq)
-                if not any(max(f0, 1e-6) / max(pf, 1e-6) < min_sep_ratio and max(pf, 1e-6) / max(f0, 1e-6) < min_sep_ratio for pf, _ in picked):
-                    picked.append((f0, vmax))
+                _append_candidate(picked, f0, vmax if vmax > 0.0 else max(include_support, 1e-9))
             # 归一化置信度
             max_val = max([p[1] for p in picked] + [1e-9])
             out = []
@@ -11642,7 +11797,8 @@ class IntegratedAudioProcessor(QThread):
                 if last_stable > 0:
                     semi_hist = _semi(f, last_stable)
                     semi_oct = _semi(f * 2.0, last_stable)
-                    cont = max(0.0, 1.0 - min(semi_hist, semi_oct) / 7.0)
+                    semi_harm3 = _semi(f * 3.0, last_stable)
+                    cont = max(0.0, 1.0 - min(semi_hist, semi_oct, semi_harm3) / 7.0)
                     score += 0.95 * cont
 
                 # 主唱高音偏置：仅在近讲且候选高于raw时加分
@@ -11693,38 +11849,90 @@ class IntegratedAudioProcessor(QThread):
             top_f = float(scored_candidates[0][0]) if scored_candidates else float(chosen_f)
             second_f = float(scored_candidates[1][0]) if len(scored_candidates) > 1 else float(top_f)
             sep_ratio = float(max(top_f, second_f) / max(min(top_f, second_f), 1e-9)) if len(scored_candidates) > 1 else 1.0
+            if len(scored_candidates) >= 3:
+                harmonic_ladder = []
+                for cand_f, cand_score, cand_conf in scored_candidates[1:]:
+                    ratio_top_to_cand = float(top_f / max(float(cand_f), 1e-9)) if float(cand_f) > 0.0 else 0.0
+                    if not self._is_likely_upper_harmonic_ratio(ratio_top_to_cand):
+                        continue
+                    harmonic_ladder.append((float(cand_f), float(cand_score), float(cand_conf), float(ratio_top_to_cand)))
+                third_harmonic_candidates = [item for item in harmonic_ladder if float(item[3]) >= 2.72]
+                octave_candidates = [item for item in harmonic_ladder if 1.72 <= float(item[3]) <= 2.60]
+                if third_harmonic_candidates:
+                    lower_f, lower_score, lower_conf, lower_ratio = max(
+                        third_harmonic_candidates,
+                        key=lambda item: float(item[2]) + 0.18 * min(float(item[3]), 3.0) - 0.05 * abs(float(item[0]) - (float(top_f) / 3.0)),
+                    )
+                    corroborated = bool(
+                        octave_candidates
+                        or any(
+                            abs(float(item[0]) - float(lower_f) * 2.0) <= max(10.0, float(lower_f) * 0.16)
+                            for item in harmonic_ladder
+                            if float(item[0]) > float(lower_f)
+                        )
+                    )
+                    likely_third_harmonic_lock = bool(
+                        float(top_f) >= 360.0
+                        and 100.0 <= float(lower_f) <= 220.0
+                        and float(lower_conf) >= max(0.55, float(chosen_conf) - 0.35)
+                        and (corroborated or float(lower_score) >= float(top_score) - 0.60)
+                        and (not rising_transition)
+                    )
+                    if likely_third_harmonic_lock:
+                        chosen_f = 0.92 * float(lower_f) + 0.08 * float(chosen_f)
+                        chosen_conf = max(float(chosen_conf), float(lower_conf))
+                        top_f = float(chosen_f)
+                        top_score = max(float(top_score), float(lower_score))
+                        try:
+                            if hasattr(self, '_lfm_parse_diag'):
+                                self._lfm_parse_diag['sep_lower_third_harmonic_rescue'] = int(self._lfm_parse_diag.get('sep_lower_third_harmonic_rescue', 0)) + 1
+                        except Exception:
+                            pass
             if len(scored_candidates) >= 2:
-                base_ref = max(float(last_stable or 0.0), float(raw_frequency or 0.0))
+                history_ref = float(last_stable or 0.0) if float(last_stable or 0.0) > 0.0 else float(raw_frequency or 0.0)
                 octave_lower_candidates = []
                 for cand_f, cand_score, cand_conf in scored_candidates[1:]:
                     ratio_top_to_cand = float(top_f / max(float(cand_f), 1e-9)) if float(cand_f) > 0.0 else 0.0
-                    if ratio_top_to_cand < 1.72 or ratio_top_to_cand > 2.35:
+                    if not self._is_likely_upper_harmonic_ratio(ratio_top_to_cand):
                         continue
-                    lower_hist_gap = _semi(float(cand_f), max(float(base_ref), 1e-9)) if base_ref > 0.0 else 999.0
-                    top_hist_gap = _semi(float(top_f), max(float(base_ref), 1e-9)) if base_ref > 0.0 else 999.0
+                    lower_hist_gap = _semi(float(cand_f), max(float(history_ref), 1e-9)) if history_ref > 0.0 else 999.0
+                    top_hist_gap = _semi(float(top_f), max(float(history_ref), 1e-9)) if history_ref > 0.0 else 999.0
                     if lower_hist_gap > 3.2:
                         continue
                     if top_hist_gap + 0.45 < lower_hist_gap:
                         continue
-                    octave_lower_candidates.append((float(cand_f), float(cand_score), float(cand_conf), float(lower_hist_gap), float(top_hist_gap)))
+                    octave_lower_candidates.append(
+                        (
+                            float(cand_f),
+                            float(cand_score),
+                            float(cand_conf),
+                            float(lower_hist_gap),
+                            float(top_hist_gap),
+                            float(ratio_top_to_cand),
+                        )
+                    )
                 if octave_lower_candidates:
-                    lower_f, lower_score, lower_conf, lower_hist_gap, top_hist_gap = max(
+                    lower_f, lower_score, lower_conf, lower_hist_gap, top_hist_gap, lower_ratio = max(
                         octave_lower_candidates,
                         key=lambda item: float(item[1]) - 0.12 * float(item[3]) + 0.08 * float(item[2]),
                     )
+                    high_harmonic_like = bool(float(lower_ratio) >= 2.72)
                     likely_upper_harmonic = bool(
-                        base_ref >= 240.0
-                        and top_f >= max(320.0, base_ref * 1.16)
-                        and lower_f >= max(120.0, base_ref * 0.78)
-                        and lower_hist_gap <= 2.4
-                        and top_hist_gap >= 2.2
+                        history_ref >= (145.0 if high_harmonic_like else 240.0)
+                        and top_f >= max((380.0 if high_harmonic_like else 320.0), history_ref * (1.65 if high_harmonic_like else 1.16))
+                        and lower_f >= max(100.0, history_ref * (0.54 if high_harmonic_like else 0.78))
+                        and lower_hist_gap <= 2.6
+                        and top_hist_gap >= (8.8 if high_harmonic_like else 2.2)
                         and (
-                            float(top_score) <= float(lower_score) + 0.28
-                            or float(score_margin) <= 0.26
+                            float(top_score) <= float(lower_score) + (0.42 if high_harmonic_like else 0.28)
+                            or float(score_margin) <= (0.34 if high_harmonic_like else 0.26)
                         )
+                        and (not (high_harmonic_like and rising_transition and lower_hist_gap > 1.4))
                     )
                     if likely_upper_harmonic:
-                        if top_hist_gap >= 4.8 or float(top_f) >= float(lower_f) * 1.92:
+                        if high_harmonic_like:
+                            chosen_f = 0.90 * float(lower_f) + 0.10 * float(chosen_f)
+                        elif top_hist_gap >= 4.8 or float(top_f) >= float(lower_f) * 1.92:
                             chosen_f = 0.84 * float(lower_f) + 0.16 * float(chosen_f)
                         else:
                             chosen_f = 0.68 * float(lower_f) + 0.32 * float(chosen_f)
@@ -11913,7 +12121,18 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     leak_guard_ratio = 0.78
                 if high_register and near_boost >= 0.35 and high_f > 0 and chosen_f < (high_f * leak_guard_ratio):
-                    chosen_f = 0.70 * float(chosen_f) + 0.30 * float(high_f)
+                    leak_guard_choice = 0.70 * float(chosen_f) + 0.30 * float(high_f)
+                    leak_guard_mix = 0.18 + 0.30 * float(np.clip(chosen_conf, 0.0, 1.0)) + 0.22 * near_boost
+                    leak_guard_mix = float(np.clip(leak_guard_mix, 0.12, 0.62))
+                    chosen_raw_ratio = float(chosen_f / max(float(raw_frequency), 1e-9))
+                    projected_fused_ratio = float(((1.0 - leak_guard_mix) * float(raw_frequency) + leak_guard_mix * float(leak_guard_choice)) / max(float(raw_frequency), 1e-9))
+                    top_score = float(scored_candidates[0][1]) if scored_candidates else 0.0
+                    second_score = float(scored_candidates[1][1]) if len(scored_candidates) > 1 else -999.0
+                    margin = float(top_score - second_score)
+                    if (margin <= 0.30 or stable_count >= 5) and 0.92 <= chosen_raw_ratio <= 1.08 and projected_fused_ratio >= 1.10:
+                        chosen_f = 0.85 * float(chosen_f) + 0.15 * float(high_f)
+                    else:
+                        chosen_f = float(leak_guard_choice)
                     try:
                         if hasattr(self, '_lfm_parse_diag'):
                             self._lfm_parse_diag['sep_backing_leak_guard'] = int(self._lfm_parse_diag.get('sep_backing_leak_guard', 0)) + 1
@@ -22538,6 +22757,14 @@ class ECGStylePitchVisualizer(QWidget):
         """)
         controls_row2_layout.addWidget(self.technique_recognition_btn)
 
+        self.technique_backend_label = QLabel('技巧推理: 自动/CPU优先')
+        self.technique_backend_label.setToolTip('显示当前技巧识别推理模式与 external 调度顺序')
+        self.technique_backend_label.setStyleSheet(
+            'color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
+        )
+        controls_row2_layout.addWidget(self.technique_backend_label)
+        self._update_technique_backend_status_visualizer()
+        
         # 清除按钮
         clear_btn = QPushButton("清除")
         clear_btn.clicked.connect(self.clear_data)
@@ -33029,7 +33256,6 @@ class ECGStylePitchVisualizer(QWidget):
         mean_pitch_hz = float(record.get('mean_pitch_hz', 0.0) or 0.0)
         voiced_ratio = float(record.get('voiced_ratio', 0.0) or 0.0)
         stable_ratio = float(record.get('stable_ratio', 0.0) or 0.0)
-        mean_rms = float(record.get('mean_rms', 0.0) or 0.0)
         confidence = float(record.get('confidence', 0.0) or 0.0)
         probability_margin = float(record.get('probability_margin', 0.0) or 0.0)
         if event_type == 'chest_voice':
@@ -33041,26 +33267,6 @@ class ECGStylePitchVisualizer(QWidget):
                 if relaxed:
                     return confidence >= 0.50 and probability_margin >= 0.018 and voiced_ratio >= 0.17
                 return confidence >= 0.53 and probability_margin >= 0.030 and voiced_ratio >= 0.20 and stable_ratio >= 0.04
-            if mean_pitch_hz > 0.0 and mean_pitch_hz < 430.0:
-                if relaxed:
-                    return confidence >= 0.50 and probability_margin >= 0.014 and voiced_ratio >= 0.18 and stable_ratio >= 0.05 and mean_rms >= 0.00028
-                return confidence >= 0.52 and probability_margin >= 0.020 and voiced_ratio >= 0.22 and stable_ratio >= 0.07 and mean_rms >= 0.00034
-            if mean_pitch_hz > 0.0 and mean_pitch_hz < 520.0:
-                if relaxed:
-                    return confidence >= 0.52 and probability_margin >= 0.016 and voiced_ratio >= 0.22 and stable_ratio >= 0.06 and mean_rms >= 0.00036
-                return confidence >= 0.55 and probability_margin >= 0.024 and voiced_ratio >= 0.26 and stable_ratio >= 0.09 and mean_rms >= 0.00045
-        if event_type == 'falsetto':
-            supportful_mid_high = bool(
-                mean_pitch_hz >= 300.0
-                and mean_pitch_hz <= 460.0
-                and voiced_ratio >= 0.58
-                and stable_ratio >= 0.14
-                and mean_rms >= 0.00042
-            )
-            if supportful_mid_high:
-                if relaxed:
-                    return confidence >= 0.54 and probability_margin >= 0.035
-                return confidence >= 0.60 and probability_margin >= 0.10
         return self._voice_prediction_accepted(confidence, probability_margin, relaxed=relaxed)
 
     def _apply_voice_type_context_priors(
@@ -33095,27 +33301,6 @@ class ECGStylePitchVisualizer(QWidget):
             and voiced_ratio <= 0.46
             and stable_ratio <= 0.20
         )
-        supportful_mid_high = bool(
-            mean_pitch_hz >= 320.0
-            and mean_pitch_hz <= 520.0
-            and voiced_ratio >= 0.58
-            and stable_ratio >= 0.14
-            and mean_rms >= 0.00042
-            and mean_zcr <= 0.16
-        )
-        dense_high_register = bool(
-            mean_pitch_hz >= 360.0
-            and mean_pitch_hz <= 560.0
-            and voiced_ratio >= 0.68
-            and stable_ratio >= 0.24
-            and mean_rms >= 0.00082
-            and mean_zcr <= 0.14
-        )
-        airy_high_register = bool(
-            mean_pitch_hz >= 360.0
-            and mean_rms <= 0.00045
-            and stable_ratio < 0.18
-        )
 
         # 低音区默认更应保守地判为真声，避免把轻薄真声误判为假声。
         if mean_pitch_hz > 0.0:
@@ -33127,26 +33312,10 @@ class ECGStylePitchVisualizer(QWidget):
                 chest_bias += 0.22
             elif mean_pitch_hz < 340.0:
                 chest_bias += 0.10
-            elif mean_pitch_hz < 430.0:
-                chest_bias += 0.05 if supportful_mid_high else 0.01
-            elif mean_pitch_hz < 520.0:
-                if dense_high_register:
-                    chest_bias += 0.10
-                    falsetto_bias -= 0.05
-                elif supportful_mid_high:
-                    chest_bias += 0.06
-                    falsetto_bias -= 0.02
-                elif airy_high_register:
-                    falsetto_bias += 0.02
             elif mean_pitch_hz >= 520.0:
-                if dense_high_register:
-                    chest_bias += 0.05
-                    falsetto_bias -= 0.03
-                elif supportful_mid_high:
-                    chest_bias += 0.03
-                    falsetto_bias += 0.01
-                else:
-                    falsetto_bias += 0.04
+                falsetto_bias += 0.04
+            elif mean_pitch_hz >= 420.0:
+                falsetto_bias += 0.02
 
         if mean_pitch_hz < 300.0:
             if voiced_ratio >= 0.56 and stable_ratio >= 0.14:
@@ -33155,21 +33324,13 @@ class ECGStylePitchVisualizer(QWidget):
                 chest_bias += 0.05
         if mean_pitch_hz < 320.0 and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
             chest_bias += 0.08
-        if supportful_mid_high:
-            chest_bias += 0.04
-            falsetto_bias -= 0.03
-        if dense_high_register:
-            chest_bias += 0.05
-            falsetto_bias -= 0.04
-        if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18 and not supportful_mid_high:
+        if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18:
             falsetto_bias += 0.03
         if breath_like:
             chest_bias += 0.06
             falsetto_bias -= 0.10
         if mean_pitch_hz < 340.0 and mean_zcr >= 0.12 and stable_ratio < 0.12:
             falsetto_bias -= 0.05
-        if mean_pitch_hz >= 320.0 and mean_pitch_hz <= 460.0 and supportful_mid_high and chest_prob >= max(0.26, falsetto_prob * 0.62):
-            force_chest = True
 
         adjusted_chest = chest_prob + chest_bias
         adjusted_falsetto = max(0.0, falsetto_prob + falsetto_bias)
@@ -33210,8 +33371,7 @@ class ECGStylePitchVisualizer(QWidget):
             'relaxed_used': False,
             'reason': '',
         }
-        mix_types_selected = any(self._technique_type_selected(name) for name in ('strong_mix', 'weak_mix', 'balanced_mix'))
-        if not (self._technique_type_selected('chest_voice') or self._technique_type_selected('falsetto') or mix_types_selected):
+        if not (self._technique_type_selected('chest_voice') or self._technique_type_selected('falsetto')):
             self._last_voice_type_debug['reason'] = 'not_selected'
             return []
         if audio_samples is None or sample_rate is None:
@@ -33451,7 +33611,7 @@ class ECGStylePitchVisualizer(QWidget):
                     self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
                 all_predictions.append(record)
                 event_type = str(record.get('event_type', '') or '')
-                if not (self._technique_type_selected(event_type) or mix_types_selected):
+                if not self._technique_type_selected(event_type):
                     continue
                 if not self._voice_prediction_record_accepted(record, relaxed=False):
                     continue
@@ -33463,7 +33623,7 @@ class ECGStylePitchVisualizer(QWidget):
             relaxed_predictions = []
             for record in all_predictions:
                 event_type = str(record.get('event_type', '') or '')
-                if not (self._technique_type_selected(event_type) or mix_types_selected):
+                if not self._technique_type_selected(event_type):
                     continue
                 if not self._voice_prediction_record_accepted(record, relaxed=True):
                     continue
@@ -33604,6 +33764,13 @@ class ECGStylePitchVisualizer(QWidget):
         if not any(self._technique_type_selected(name) for name in ('strong_mix', 'weak_mix', 'balanced_mix')):
             return []
 
+        capture_mix_rule_debug = bool(getattr(self, '_capture_mix_rule_debug', False))
+        debug_rows: List[Dict[str, Any]] = []
+        try:
+            self._last_mix_rule_debug_rows = debug_rows
+        except Exception:
+            pass
+
         def _clamp01(value: float) -> float:
             return max(0.0, min(1.0, float(value or 0.0)))
 
@@ -33622,7 +33789,26 @@ class ECGStylePitchVisualizer(QWidget):
                 mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
             except Exception:
                 continue
+            debug_row: Optional[Dict[str, Any]] = None
+            if capture_mix_rule_debug:
+                debug_row = {
+                    'event_type': str(getattr(event, 'event_type', '') or ''),
+                    'voice_type': str(getattr(event, 'voice_type', '') or ''),
+                    'start_time': float(getattr(event, 'start_time', 0.0) or 0.0),
+                    'end_time': float(getattr(event, 'end_time', 0.0) or 0.0),
+                    'duration': duration,
+                    'confidence': confidence,
+                    'strength': strength,
+                    'probability_margin': probability_margin,
+                    'chest_prob': chest_prob,
+                    'falsetto_prob': falsetto_prob,
+                    'voiced_ratio': voiced_ratio,
+                    'mean_pitch_hz': mean_pitch_hz,
+                }
             if duration < 0.18 or mean_pitch_hz <= 0.0:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'invalid_duration_or_pitch'
+                    debug_rows.append(debug_row)
                 continue
 
             try:
@@ -33656,6 +33842,22 @@ class ECGStylePitchVisualizer(QWidget):
             )
             head_bias = _clamp01((falsetto_prob - chest_prob + 0.18) / 0.50)
             chest_bias = _clamp01((chest_prob - falsetto_prob + 0.18) / 0.50)
+            if debug_row is not None:
+                debug_row.update({
+                    'mean_rms': mean_rms,
+                    'mean_zcr': mean_zcr,
+                    'stable_ratio': stable_ratio,
+                    'mean_breath_score': mean_breath_score,
+                    'breath_hint_ratio': breath_hint_ratio,
+                    'learned_mix_prob': learned_mix_prob,
+                    'learned_mix_threshold': learned_mix_threshold,
+                    'learned_mix_margin': learned_mix_margin,
+                    'heuristic_mix_support': heuristic_mix_support,
+                    'learned_mix_support': learned_mix_support,
+                    'mix_support': mix_support,
+                    'head_bias': head_bias,
+                    'chest_bias': chest_bias,
+                })
             pure_learned_head_mix = (
                 learned_mix_prob >= learned_mix_threshold
                 and head_bias >= 0.70
@@ -34078,6 +34280,7 @@ class ECGStylePitchVisualizer(QWidget):
                 and mix_support <= 0.182
                 and mean_rms >= 0.041
                 and mean_rms <= 0.095
+                    and not (mean_pitch_hz < 440.0 and chest_prob < 0.045 and mean_rms < 0.060)
                 and duration >= 6.5
                 and duration <= 18.5
                 and heuristic_mix_support <= 0.06
@@ -34190,44 +34393,73 @@ class ECGStylePitchVisualizer(QWidget):
                 and voiced_ratio >= 0.99
             )
             released_nearthreshold_extreme_energy_softhead_mix = (
-                learned_mix_prob > 0.0
-                and learned_mix_prob < learned_mix_threshold
-                and learned_mix_margin >= -0.110
-                and learned_mix_margin <= -0.070
-                and mean_pitch_hz >= 448.0
-                and mean_pitch_hz <= 590.0
-                and chest_prob >= 0.035
-                and chest_prob <= 0.085
-                and falsetto_prob >= 0.920
-                and falsetto_prob <= 0.970
-                and ((mean_rms >= 0.014 and mean_rms <= 0.026) or (mean_rms >= 0.100 and mean_rms <= 0.160))
-                and duration >= 3.5
-                and duration <= 8.5
-                and learned_mix_support >= 0.035
-                and learned_mix_support <= 0.105
-                and mix_support >= 0.024
-                and mix_support <= 0.075
-                and heuristic_mix_support <= 0.03
-                and stable_ratio >= 0.99
-                and voiced_ratio >= 0.99
+                (
+                    learned_mix_prob > 0.0
+                    and learned_mix_prob < learned_mix_threshold
+                    and learned_mix_margin >= -0.110
+                    and learned_mix_margin <= -0.070
+                    and mean_pitch_hz >= 448.0
+                    and mean_pitch_hz <= 590.0
+                    and chest_prob >= 0.035
+                    and chest_prob <= 0.085
+                    and falsetto_prob >= 0.920
+                    and falsetto_prob <= 0.970
+                    and ((mean_rms >= 0.014 and mean_rms <= 0.026) or (mean_rms >= 0.100 and mean_rms <= 0.160))
+                    and duration >= 3.5
+                    and duration <= 8.5
+                    and learned_mix_support >= 0.035
+                    and learned_mix_support <= 0.105
+                    and mix_support >= 0.024
+                    and mix_support <= 0.075
+                    and heuristic_mix_support <= 0.03
+                    and stable_ratio >= 0.99
+                    and voiced_ratio >= 0.99
+                )
+                or (
+                    learned_mix_prob > 0.0
+                    and learned_mix_prob < learned_mix_threshold
+                    and head_bias >= 0.99
+                    and learned_mix_prob >= 0.540
+                    and learned_mix_prob <= 0.560
+                    and learned_mix_margin >= -0.105
+                    and learned_mix_margin <= -0.080
+                    and mean_pitch_hz >= 442.0
+                    and mean_pitch_hz <= 448.0
+                    and chest_prob >= 0.060
+                    and chest_prob <= 0.085
+                    and falsetto_prob >= 0.915
+                    and falsetto_prob <= 0.940
+                    and mean_rms >= 0.120
+                    and mean_rms <= 0.140
+                    and duration >= 6.0
+                    and duration <= 6.8
+                    and learned_mix_support >= 0.060
+                    and learned_mix_support <= 0.080
+                    and mix_support >= 0.040
+                    and mix_support <= 0.055
+                    and heuristic_mix_support <= 0.02
+                    and stable_ratio >= 0.99
+                    and voiced_ratio >= 0.99
+                )
             )
             released_sustained_highpitch_lowprob_softhead_mix = (
                 learned_mix_prob > 0.0
                 and learned_mix_prob < learned_mix_threshold
-                and learned_mix_prob >= 0.380
+                and learned_mix_prob >= 0.300
+                and (learned_mix_prob >= 0.400 or duration >= 9.0)
                 and learned_mix_prob <= 0.520
-                and learned_mix_margin >= -0.260
+                and learned_mix_margin >= -0.340
                 and learned_mix_margin <= -0.120
-                and mean_pitch_hz >= 448.0
-                and mean_pitch_hz <= 545.0
-                and chest_prob >= 0.025
+                and mean_pitch_hz >= 440.0
+                and mean_pitch_hz <= 550.0
+                and chest_prob >= 0.020
                 and chest_prob <= 0.085
                 and falsetto_prob >= 0.920
-                and falsetto_prob <= 0.975
+                and falsetto_prob <= 0.978
                 and mean_rms >= 0.060
-                and mean_rms <= 0.115
+                and mean_rms <= 0.245
                 and duration >= 6.3
-                and duration <= 16.5
+                and duration <= 19.0
                 and learned_mix_support <= 0.105
                 and mix_support <= 0.075
                 and heuristic_mix_support <= 0.02
@@ -34245,12 +34477,12 @@ class ECGStylePitchVisualizer(QWidget):
                 and mean_pitch_hz <= 430.0
                 and chest_prob >= 0.060
                 and chest_prob <= 0.110
-                and falsetto_prob >= 0.915
+                and falsetto_prob >= 0.910
                 and falsetto_prob <= 0.940
                 and mean_rms >= 0.082
                 and mean_rms <= 0.110
                 and duration >= 6.0
-                and duration <= 10.5
+                and duration <= 11.2
                 and learned_mix_support <= 0.035
                 and mix_support <= 0.025
                 and heuristic_mix_support <= 0.02
@@ -34334,14 +34566,15 @@ class ECGStylePitchVisualizer(QWidget):
                 and learned_mix_prob <= 0.490
                 and learned_mix_margin >= -0.240
                 and learned_mix_margin <= -0.150
-                and mean_pitch_hz >= 440.0
+                and mean_pitch_hz >= 405.0
                 and mean_pitch_hz <= 530.0
                 and chest_prob >= 0.100
-                and chest_prob <= 0.130
-                and falsetto_prob >= 0.870
-                and falsetto_prob <= 0.900
+                and chest_prob <= 0.135
+                and falsetto_prob >= 0.865
+                and falsetto_prob <= 0.905
                 and mean_rms >= 0.050
                 and mean_rms <= 0.160
+                    and not (mean_pitch_hz < 420.0 and chest_prob < 0.110 and mean_rms < 0.070)
                 and duration >= 6.0
                 and duration <= 16.5
                 and learned_mix_support <= 0.020
@@ -34376,20 +34609,20 @@ class ECGStylePitchVisualizer(QWidget):
                 learned_mix_prob > 0.0
                 and learned_mix_prob < learned_mix_threshold
                 and head_bias >= 0.99
-                and learned_mix_prob >= 0.410
-                and learned_mix_prob <= 0.430
-                and learned_mix_margin >= -0.235
-                and learned_mix_margin <= -0.205
-                and mean_pitch_hz >= 385.0
-                and mean_pitch_hz <= 420.0
-                and chest_prob >= 0.075
-                and chest_prob <= 0.125
-                and falsetto_prob >= 0.870
-                and falsetto_prob <= 0.930
+                and learned_mix_prob >= 0.350
+                and learned_mix_prob <= 0.475
+                and learned_mix_margin >= -0.290
+                and learned_mix_margin <= -0.165
+                and mean_pitch_hz >= 345.0
+                and mean_pitch_hz <= 425.0
+                and chest_prob >= 0.095
+                and chest_prob <= 0.150
+                and falsetto_prob >= 0.850
+                and falsetto_prob <= 0.910
                 and mean_rms >= 0.079
-                and mean_rms <= 0.115
-                and duration >= 5.0
-                and duration <= 9.0
+                and mean_rms <= 0.220
+                and duration >= 4.8
+                and duration <= 15.0
                 and learned_mix_support <= 0.002
                 and mix_support <= 0.002
                 and heuristic_mix_support <= 0.020
@@ -34480,14 +34713,14 @@ class ECGStylePitchVisualizer(QWidget):
                 and learned_mix_prob <= 0.575
                 and learned_mix_margin >= -0.100
                 and learned_mix_margin <= -0.070
-                and mean_pitch_hz >= 545.0
+                and mean_pitch_hz >= 540.0
                 and mean_pitch_hz <= 575.0
                 and chest_prob >= 0.015
                 and chest_prob <= 0.035
                 and falsetto_prob >= 0.965
                 and falsetto_prob <= 0.985
                 and mean_rms >= 0.105
-                and mean_rms <= 0.125
+                and mean_rms <= 0.170
                 and duration >= 7.5
                 and duration <= 9.0
                 and learned_mix_support >= 0.080
@@ -34609,28 +34842,48 @@ class ECGStylePitchVisualizer(QWidget):
                 weak_mix_support_floor = 0.22
                 weak_mix_pitch_floor = 230.0
 
+            if debug_row is not None:
+                debug_row.update({
+                    'released_nearthreshold_extreme_energy_softhead_mix': released_nearthreshold_extreme_energy_softhead_mix,
+                    'released_sustained_highpitch_lowprob_softhead_mix': released_sustained_highpitch_lowprob_softhead_mix,
+                    'released_midhigh_long_lowprob_softhead_mix': released_midhigh_long_lowprob_softhead_mix,
+                    'released_midhigh_moderate_energy_lowprob_softhead_mix': released_midhigh_moderate_energy_lowprob_softhead_mix,
+                    'released_highpitch_long_moderate_energy_lowprob_softhead_mix': released_highpitch_long_moderate_energy_lowprob_softhead_mix,
+                    'released_highpitch_headbiased_combination_soft_mix': released_highpitch_headbiased_combination_soft_mix,
+                    'released_highpitch_chesty_nearthreshold_mix': released_highpitch_chesty_nearthreshold_mix,
+                    'released_supportful_midhigh_nearthreshold_mix': released_supportful_midhigh_nearthreshold_mix,
+                    'released_supportful_highpitch_nearthreshold_airy_mix': released_supportful_highpitch_nearthreshold_airy_mix,
+                    'released_supportful_highpitch_nearthreshold_dense_mix': released_supportful_highpitch_nearthreshold_dense_mix,
+                    'weak_mix_support': weak_mix_support,
+                    'weak_mix_support_floor': weak_mix_support_floor,
+                    'weak_mix_pitch_floor': weak_mix_pitch_floor,
+                })
+
             if learned_mix_prob > 0.0 and learned_mix_prob < max(0.26, learned_mix_threshold - 0.08) and not (released_highpitch_long_lowprob_softhead_mix or released_midlow_balanced_lowprob_softhead_mix or released_lowmid_chesty_lowprob_softhead_mix or released_nearthreshold_extreme_energy_softhead_mix or released_sustained_highpitch_lowprob_softhead_mix or released_midhigh_long_lowprob_softhead_mix or released_midhigh_moderate_energy_lowprob_softhead_mix or released_highpitch_long_moderate_energy_lowprob_softhead_mix or released_highpitch_headbiased_combination_soft_mix or released_highpitch_chesty_nearthreshold_mix or released_ultrahigh_lowchest_zero_support_mix or released_midhigh_headbiased_zero_support_mix or released_supportful_midhigh_nearthreshold_mix or released_supportful_highpitch_nearthreshold_airy_mix or released_supportful_highpitch_nearthreshold_dense_mix):
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_low_learned_prob'
+                    debug_rows.append(debug_row)
                 continue
             if pure_learned_head_mix and mean_pitch_hz < 430.0 and falsetto_prob < 0.90 and not (released_low_energy_midhigh_head_mix or released_supported_low_pitch_head_mix or released_midpitch_lowchest_pure_head_mix or released_short_lowpitch_marginal_head_mix or released_midpitch_underpowered_pure_head_mix or released_midhigh_balanced_pure_head_mix or released_underpowered_short_lowpitch_head_mix or released_midpitch_long_lowenergy_marginal_head_mix):
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_pure_head_control'
+                    debug_rows.append(debug_row)
                 continue
             if marginal_head_mix and not (released_high_pitch_head_mix or released_near_threshold_high_pitch_head_mix or released_low_energy_midhigh_head_mix or released_sustained_highpitch_marginal_head_mix or released_midpitch_lowchest_pure_head_mix or released_short_lowpitch_marginal_head_mix or released_midpitch_underpowered_pure_head_mix or released_midhigh_balanced_pure_head_mix or released_underpowered_short_lowpitch_head_mix or released_midpitch_long_lowenergy_marginal_head_mix):
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_marginal_head_control'
+                    debug_rows.append(debug_row)
                 continue
             if underpowered_low_pitch_head_mix and not released_underpowered_short_lowpitch_head_mix:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_underpowered_low_pitch_head_mix'
+                    debug_rows.append(debug_row)
                 continue
             if borderline_low_mid_pitch_head_mix:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_borderline_low_mid_pitch_head_mix'
+                    debug_rows.append(debug_row)
                 continue
-
-            supportful_midhigh_mix_bridge = bool(
-                mean_pitch_hz >= 300.0
-                and mean_pitch_hz <= 520.0
-                and voiced_ratio >= 0.58
-                and stable_ratio >= 0.18
-                and confidence >= 0.52
-                and learned_mix_prob >= max(0.22, learned_mix_threshold - 0.10)
-                and mix_support >= 0.18
-                and chest_prob >= 0.10
-                and falsetto_prob >= 0.44
-            )
 
             subtype = ''
             subtype_conf = 0.0
@@ -34667,21 +34920,31 @@ class ECGStylePitchVisualizer(QWidget):
                 )
                 if released_short_lowmid_supported_headbias_mix:
                     subtype_conf = max(subtype_conf, 0.60)
-            elif supportful_midhigh_mix_bridge and head_bias >= 0.26 and weak_mix_support >= max(0.16, weak_mix_support_floor * 0.72) and mean_pitch_hz >= max(260.0, weak_mix_pitch_floor - 40.0):
-                subtype = 'weak_mix'
-                subtype_mix_support = max(weak_mix_support, mix_support)
-                subtype_conf = (
-                    0.36 * subtype_mix_support
-                    + 0.18 * max(head_bias, chest_bias * 0.72)
-                    + 0.16 * pitch_support
-                    + 0.14 * stable_support
-                    + 0.16 * confidence
-                )
+
+            if debug_row is not None:
+                debug_row.update({
+                    'subtype': subtype,
+                    'subtype_mix_support': subtype_mix_support,
+                    'subtype_conf': subtype_conf,
+                })
 
             low_pitch_chesty_mix_guard = (
                 subtype in ('weak_mix', 'strong_mix')
                 and mean_pitch_hz < 300.0
-                and learned_mix_margin >= 0.08
+                and (
+                    learned_mix_margin >= 0.08
+                    or (
+                        subtype == 'weak_mix'
+                        and mean_pitch_hz < 280.0
+                        and chest_prob >= 0.30
+                        and falsetto_prob <= 0.70
+                        and learned_mix_margin >= 0.03
+                        and learned_mix_support >= 0.30
+                        and heuristic_mix_support >= 0.30
+                        and duration >= 8.0
+                        and mean_rms >= 0.08
+                    )
+                )
                 and not (
                     released_supported_low_pitch_head_mix
                     or released_midpitch_lowchest_pure_head_mix
@@ -34690,6 +34953,9 @@ class ECGStylePitchVisualizer(QWidget):
                 )
             )
             if low_pitch_chesty_mix_guard:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'low_pitch_chesty_mix_guard'
+                    debug_rows.append(debug_row)
                 continue
 
             high_pitch_headbiased_weak_mix_guard = (
@@ -34706,16 +34972,38 @@ class ECGStylePitchVisualizer(QWidget):
                 )
             )
             if high_pitch_headbiased_weak_mix_guard:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'high_pitch_headbiased_weak_mix_guard'
+                    debug_rows.append(debug_row)
                 continue
 
-            highpitch_lowprob_chesty_control_guard = (
+            low_edge_long_combo_soft_mix_guard = (
+                subtype == 'weak_mix'
+                and released_highpitch_headbiased_combination_soft_mix
+                and mean_pitch_hz < 445.0
+                and duration >= 8.0
+                and mean_rms <= 0.070
+                and chest_prob <= 0.060
+                and learned_mix_support <= 0.001
+                and heuristic_mix_support <= 0.020
+            )
+            if low_edge_long_combo_soft_mix_guard:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'low_edge_long_combo_soft_mix_guard'
+                    debug_rows.append(debug_row)
+                continue
+
+            sustained_highpitch_lowprob_chesty_control_guard = (
                 subtype == 'weak_mix'
                 and released_sustained_highpitch_lowprob_softhead_mix
                 and mean_pitch_hz >= 520.0
                 and chest_prob >= 0.070
                 and falsetto_prob <= 0.930
             )
-            if highpitch_lowprob_chesty_control_guard:
+            if sustained_highpitch_lowprob_chesty_control_guard:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'sustained_highpitch_lowprob_chesty_control_guard'
+                    debug_rows.append(debug_row)
                 continue
 
             midpitch_pure_head_control_guard = (
@@ -34728,30 +35016,51 @@ class ECGStylePitchVisualizer(QWidget):
                 and not released_midpitch_lowchest_pure_head_mix
             )
             if midpitch_pure_head_control_guard:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'midpitch_pure_head_control_guard'
+                    debug_rows.append(debug_row)
                 continue
 
             low_pitch_strong_mix_chest_guard = (
                 subtype == 'strong_mix'
                 and str(getattr(event, 'voice_type', '') or '') == 'chest'
                 and mean_pitch_hz < 236.0
-                and mean_rms < 0.0335
+                and mean_rms < 0.046
                 and mix_support >= 0.54
                 and learned_mix_margin >= 0.04
                 and learned_mix_margin <= 0.08
                 and chest_prob >= 0.52
                 and falsetto_prob <= 0.48
-                and duration <= 0.70
+                and duration <= 1.10
             )
             if low_pitch_strong_mix_chest_guard:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'low_pitch_strong_mix_chest_guard'
+                    debug_rows.append(debug_row)
                 continue
 
             subtype_conf = _clamp01(subtype_conf)
             if not subtype:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_no_subtype'
+                    debug_rows.append(debug_row)
                 continue
             if subtype_conf < 0.44:
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_low_subtype_conf'
+                    debug_row['subtype_conf'] = subtype_conf
+                    debug_rows.append(debug_row)
                 continue
             if not self._technique_type_selected(subtype):
+                if debug_row is not None:
+                    debug_row['skip_reason'] = 'reject_unselected_subtype'
+                    debug_rows.append(debug_row)
                 continue
+
+            if debug_row is not None:
+                debug_row['skip_reason'] = ''
+                debug_row['result'] = subtype
+                debug_rows.append(debug_row)
 
             label_text, color = self._get_technique_event_style(subtype)
             mix_event = MixVoiceEvent(
@@ -34917,6 +35226,28 @@ class ECGStylePitchVisualizer(QWidget):
                 and float(isolated_snapshot.get('mean_rms', 0.0) or 0.0) < 0.0345
                 and float(isolated_snapshot.get('learned_mix_support', 0.0) or 0.0) < 0.305
             )
+            isolated_lowmid_chesty_weak_mix_guard = (
+                str(getattr(isolated_mix_event, 'subtype', '') or '') == 'weak_mix'
+                and not bool(isolated_snapshot.get('released_highpitch_chesty_nearthreshold_mix'))
+                and not bool(isolated_snapshot.get('released_midhigh_supported_softhead_mix'))
+                and float(isolated_snapshot.get('mean_pitch_hz', 0.0) or 0.0) >= 250.0
+                and float(isolated_snapshot.get('mean_pitch_hz', 0.0) or 0.0) <= 280.0
+                and float(isolated_snapshot.get('chest_prob', 0.0) or 0.0) >= 0.30
+                and float(isolated_snapshot.get('falsetto_prob', 1.0) or 1.0) <= 0.70
+                and float(isolated_snapshot.get('learned_mix_margin', 0.0) or 0.0) >= 0.03
+                and float(isolated_snapshot.get('learned_mix_support', 0.0) or 0.0) >= 0.30
+                and float(isolated_snapshot.get('heuristic_mix_support', 0.0) or 0.0) >= 0.30
+                and float(isolated_snapshot.get('mean_rms', 0.0) or 0.0) >= 0.08
+                and float(getattr(isolated_mix_event, 'duration', 0.0) or 0.0) >= 8.0
+            )
+            isolated_supported_softhead_lowchest_guard = (
+                str(getattr(isolated_mix_event, 'subtype', '') or '') == 'weak_mix'
+                and bool(isolated_snapshot.get('released_midhigh_supported_softhead_mix'))
+                and float(isolated_snapshot.get('mean_pitch_hz', 0.0) or 0.0) <= 450.0
+                and float(isolated_snapshot.get('chest_prob', 0.0) or 0.0) < 0.045
+                and float(isolated_snapshot.get('mean_rms', 0.0) or 0.0) < 0.060
+                and float(getattr(isolated_mix_event, 'duration', 0.0) or 0.0) >= 8.0
+            )
             released_softhead_followed_by_low_pitch_chesty_tail = False
             if bool(isolated_snapshot.get('released_midhigh_supported_softhead_mix')):
                 isolated_end_time = float(getattr(isolated_mix_event, 'end_time', 0.0) or 0.0)
@@ -34947,7 +35278,7 @@ class ECGStylePitchVisualizer(QWidget):
                     ):
                         released_softhead_followed_by_low_pitch_chesty_tail = True
                         break
-            if isolated_low_pitch_chest_tail_mix or released_softhead_followed_by_low_pitch_chesty_tail:
+            if isolated_low_pitch_chest_tail_mix or isolated_lowmid_chesty_weak_mix_guard or isolated_supported_softhead_lowchest_guard or released_softhead_followed_by_low_pitch_chesty_tail:
                 return []
         return mix_events
 
@@ -34968,19 +35299,18 @@ class ECGStylePitchVisualizer(QWidget):
             return summary
         offline_breath_events = self._build_offline_gap_breath_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
         offline_vibrato_events = self._build_offline_vibrato_events(frames)
-        voice_types_selected = any(self._technique_type_selected(name) for name in ('chest_voice', 'falsetto'))
         offline_voice_events = self._build_offline_chest_falsetto_events(frames, audio_samples=audio_samples, sample_rate=sample_rate)
-        offline_voice_events_for_output = list(offline_voice_events or []) if voice_types_selected else []
         offline_mix_events = self._build_rule_based_mix_events(frames, offline_voice_events)
-        offline_voice_events_for_mix = list(offline_voice_events or [])
+        offline_breath_events = list(offline_breath_events or []) + list(self._fallback_breath_events_from_voice_events(offline_voice_events) or [])
+        offline_voice_events_for_mix = []
         try:
-            offline_voice_events_for_mix = self._postprocess_technique_events(copy.deepcopy(offline_voice_events_for_mix))
+            mix_context_events = copy.deepcopy(list(offline_breath_events or []) + list(offline_voice_events or []))
+            offline_voice_events_for_mix = self._postprocess_technique_events(mix_context_events)
         except Exception:
             offline_voice_events_for_mix = []
         offline_voice_events_for_mix = [event for event in list(offline_voice_events_for_mix or []) if isinstance(event, VoiceTypeEvent)]
         if offline_voice_events_for_mix:
             offline_mix_events = list(offline_mix_events or []) + list(self._build_rule_based_mix_events(frames, offline_voice_events_for_mix) or [])
-        offline_breath_events = list(offline_breath_events or []) + list(self._fallback_breath_events_from_voice_events(offline_voice_events) or [])
         last_feature = None
         prev_vibrato_guard = bool(getattr(self, '_disable_realtime_vibrato_detection', False))
         self._disable_realtime_vibrato_detection = bool(offline_vibrato_events)
@@ -35006,7 +35336,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             min_conf = 0.55
         filtered_events = []
-        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events_for_output or []) + list(offline_mix_events or [])
+        all_events = list(getattr(self, '_technique_events', []) or []) + list(offline_breath_events or []) + list(offline_vibrato_events or []) + list(offline_voice_events or []) + list(offline_mix_events or [])
         for event in all_events:
             try:
                 event_min_conf = self._technique_event_min_confidence_threshold(event, min_conf)
@@ -35019,8 +35349,8 @@ class ECGStylePitchVisualizer(QWidget):
         if not filtered_events:
             if self._offline_local_file_source_kind(frames) == 'local_file_onepass':
                 filtered_events = self._fallback_local_file_onepass_events(all_events)
-            elif offline_voice_events_for_output:
-                filtered_events = self._fallback_normal_voice_events(offline_voice_events_for_output)
+            elif offline_voice_events:
+                filtered_events = self._fallback_normal_voice_events(offline_voice_events)
         self._technique_events = deque(filtered_events, maxlen=240)
         counts = {}
         duration = 0.0
@@ -35376,27 +35706,6 @@ class ECGStylePitchVisualizer(QWidget):
                 if mean_pitch_hz > 0.0 and mean_pitch_hz < 300.0:
                     return duration >= 0.24 and voiced_ratio >= 0.30 and confidence >= 0.64 and strength >= 0.56 and prob_margin >= 0.16 and window_count >= 3
             return duration >= 0.18 and voiced_ratio >= 0.24 and confidence >= 0.54 and strength >= 0.50 and (window_count >= 2 or strong_single)
-        if event_type in ('strong_mix', 'weak_mix', 'balanced_mix'):
-            source_kind = ''
-            try:
-                source_kind = str(getattr(event, 'display_payload', {}).get('source_kind', '') or '')
-            except Exception:
-                source_kind = ''
-            try:
-                mix_support = float(getattr(event, 'mix_support_score', 0.0) or 0.0)
-            except Exception:
-                mix_support = 0.0
-            try:
-                mix_prob = float(getattr(event, 'mix_prob', 0.0) or 0.0)
-            except Exception:
-                mix_prob = 0.0
-            try:
-                mean_pitch_hz = float(getattr(event, 'mean_pitch_hz', 0.0) or 0.0)
-            except Exception:
-                mean_pitch_hz = 0.0
-            if source_kind == 'local_file_onepass':
-                return duration >= 0.12 and confidence >= 0.46 and strength >= 0.42 and mix_support >= 0.10 and (mix_prob > 0.0 or mean_pitch_hz >= 220.0)
-            return duration >= 0.14 and confidence >= 0.48 and strength >= 0.44 and mix_support >= 0.12 and (mix_prob > 0.0 or mean_pitch_hz >= 220.0)
         return duration >= 0.10 and confidence >= 0.58
 
     def _technique_event_spacing(self, event_type: str) -> float:
@@ -35438,14 +35747,6 @@ class ECGStylePitchVisualizer(QWidget):
                     continue
             elif event_type in ('chest_voice', 'falsetto'):
                 if duration < 0.10 or max(confidence, strength) < 0.44:
-                    continue
-            elif event_type in ('strong_mix', 'weak_mix', 'balanced_mix'):
-                mix_support = 0.0
-                try:
-                    mix_support = float(getattr(event, 'mix_support_score', 0.0) or 0.0)
-                except Exception:
-                    mix_support = 0.0
-                if duration < 0.10 or max(confidence, strength) < 0.42 or mix_support < 0.10:
                     continue
             else:
                 continue
@@ -50281,6 +50582,13 @@ class IntegratedRecordingInterface(QMainWindow):
         # 🎯 初始化默认降噪模式为"基础频域降噪"
         self.init_default_noise_reduction()
 
+        # 🎵 集成 AI 声乐教练面板（停靠式侧边栏）
+        try:
+            from src.ai_coach.gui.integration import integrate_ai_coach
+            integrate_ai_coach(self)
+        except Exception as _e:
+            print(f"[AI Coach] 集成跳过: {_e}")
+
     # ======================= 时间轴同步主类封装 =======================
     def _sync_time_axis_to_accompaniment(self, accomp_dur: float, *, reason: str = "main_wrapper", force: bool = False):
         """主窗口包装：转发到 visualizer 的同步逻辑。如果 visualizer 不存在或无该方法则退化手动调整。"""
@@ -50452,6 +50760,54 @@ class IntegratedRecordingInterface(QMainWindow):
         dbg_row.addStretch()
         dbg_layout.addLayout(dbg_row)
         v.addWidget(debug_group)
+
+        # 技巧识别推理设置
+        technique_backend_group = QGroupBox('技巧识别推理')
+        technique_backend_group.setStyleSheet("QGroupBox { border: 1px solid #404040; border-radius: 6px; margin-top: 10px; padding-top: 12px; }")
+        tbg_layout = QVBoxLayout(technique_backend_group)
+        tbg_layout.addWidget(QLabel('说明：当本地 torch 在当前机器上不可用时，技巧识别会自动回退到 external；此处可将 external 调度策略设为自动、固定 CPU 优先或固定 GPU 优先。'))
+        strategy_row = QHBoxLayout()
+        strategy_row.addWidget(QLabel('external 调度策略:'))
+        infer_strategy_combo = QComboBox()
+        infer_strategy_combo.addItem('自动', 'auto')
+        infer_strategy_combo.addItem('CPU优先', 'cpu')
+        infer_strategy_combo.addItem('GPU优先', 'gpu')
+        current_strategy = _load_technique_external_infer_strategy_setting()
+        current_index = max(0, infer_strategy_combo.findData(current_strategy))
+        infer_strategy_combo.setCurrentIndex(current_index)
+        strategy_row.addWidget(infer_strategy_combo)
+        strategy_row.addStretch()
+        tbg_layout.addLayout(strategy_row)
+        technique_backend_status_lbl = QLabel('技巧推理: 读取中')
+        technique_backend_status_lbl.setWordWrap(True)
+        tbg_layout.addWidget(technique_backend_status_lbl)
+        backend_btn_row = QHBoxLayout()
+        clear_external_only_btn = QPushButton('清除 external-only 缓存')
+        backend_btn_row.addWidget(clear_external_only_btn)
+        backend_btn_row.addStretch()
+        tbg_layout.addLayout(backend_btn_row)
+        v.addWidget(technique_backend_group)
+
+        def _refresh_technique_backend_dialog_status(strategy_override: Optional[str] = None):
+            short_text, tooltip = self._describe_technique_external_backend_status(strategy_override=strategy_override)
+            technique_backend_status_lbl.setText(short_text)
+            technique_backend_status_lbl.setToolTip(tooltip)
+            if 'external-only' in short_text:
+                technique_backend_status_lbl.setStyleSheet('color: #FFF3D6; background: rgba(96, 52, 12, 0.95); border: 1px solid #E0A84F; border-radius: 6px; padding: 6px 8px; font-weight: 700;')
+            else:
+                technique_backend_status_lbl.setStyleSheet('color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 8px; font-weight: 700;')
+
+        infer_strategy_combo.currentIndexChanged.connect(lambda _idx: _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto')))
+
+        def _clear_external_only_cache_from_dialog():
+            try:
+                self._reset_technique_external_only_cache()
+            except Exception:
+                pass
+            _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto'))
+
+        clear_external_only_btn.clicked.connect(_clear_external_only_cache_from_dialog)
+        _refresh_technique_backend_dialog_status(str(infer_strategy_combo.currentData() or 'auto'))
 
         # 采集逻辑：通过音频处理线程累计帧并计算噪声谱/峰，异步轮询状态
         _poll_timer = QTimer(dlg)
@@ -58179,6 +58535,15 @@ class IntegratedRecordingInterface(QMainWindow):
         self.noise_status_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #DCEAF5; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
         system_status_layout.addWidget(self.noise_status_label)
 
+        self.technique_backend_status_label = QLabel("技巧推理: 读取中")
+        self.technique_backend_status_label.setWordWrap(True)
+        self.technique_backend_status_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 10px;")
+        system_status_layout.addWidget(self.technique_backend_status_label)
+        try:
+            self._refresh_technique_backend_status_panel()
+        except Exception:
+            pass
+        
         # 清除数据按钮
         clear_button = QPushButton("清除可视化数据")
         clear_button.clicked.connect(self.visualizer.clear_data)
@@ -58434,10 +58799,10 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             onepass_payload = {}
         try:
-            raw_records = list(onepass_payload.get('raw_pitch_records', []) or [])
+            cached_records = list(onepass_payload.get('raw_pitch_records', []) or [])
         except Exception:
-            raw_records = []
-        for rec in raw_records:
+            cached_records = []
+        for rec in cached_records:
             try:
                 if len(rec) >= 4:
                     records.append((float(rec[0]), float(rec[1]), float(rec[2]), rec[3]))
@@ -58462,7 +58827,7 @@ class IntegratedRecordingInterface(QMainWindow):
         if records:
             return records
         try:
-            segments = list(onepass_payload.get('display_segments', onepass_payload.get('segments', [])) or [])
+            segments = list(onepass_payload.get('segments', []) or [])
         except Exception:
             segments = []
         for seg in segments:
@@ -58501,6 +58866,39 @@ class IntegratedRecordingInterface(QMainWindow):
             return list(viz.collect_pitch_points_in_range(0.0, float(duration)) or [])
         except Exception:
             return []
+
+    def _collect_onepass_full_pitch_payloads(self) -> List[Dict[str, Any]]:
+        payloads: List[Dict[str, Any]] = []
+        try:
+            onepass_payload = dict(getattr(self, '_onepass_analysis_payload', {}) or {})
+        except Exception:
+            onepass_payload = {}
+        try:
+            cached_payloads = list(onepass_payload.get('pitch_payloads', []) or [])
+        except Exception:
+            cached_payloads = []
+        for item in cached_payloads:
+            try:
+                payload = dict(item or {})
+            except Exception:
+                continue
+            try:
+                timeline_time = float(payload.get('global_time', payload.get('timestamp', 0.0)) or 0.0)
+            except Exception:
+                timeline_time = 0.0
+            try:
+                has_pitch = bool(payload.get('has_pitch', False))
+            except Exception:
+                has_pitch = False
+            if timeline_time < 0.0:
+                continue
+            if not has_pitch:
+                continue
+            payloads.append(payload)
+        if not payloads:
+            return []
+        payloads.sort(key=lambda item: float(item.get('global_time', item.get('timestamp', 0.0)) or 0.0))
+        return payloads
 
     def _merge_time_spans(self, spans: List[Tuple[float, float]], *, gap_s: float = 0.08) -> List[Tuple[float, float]]:
         merged: List[Tuple[float, float]] = []
@@ -58695,6 +59093,454 @@ class IntegratedRecordingInterface(QMainWindow):
                 prev_freq = detected_frequency
         return frames
 
+    def _build_technique_frames_from_pitch_payloads(
+        self,
+        payloads: List[Dict[str, Any]],
+        *,
+        mode_name: str = '普通模式',
+        source_flags: Optional[Dict[str, bool]] = None,
+    ) -> List[FrameFeatures]:
+        frames: List[FrameFeatures] = []
+        prev_time = 0.0
+        prev_detected = 0.0
+        prev_display = 0.0
+        prev_rate = 0.0
+        prev_voiced_rms = 0.0
+        base_flags = dict(source_flags or {})
+        for item in list(payloads or []):
+            try:
+                pitch_data = dict(item or {})
+            except Exception:
+                continue
+            try:
+                timeline_time = float(pitch_data.get('global_time', pitch_data.get('timestamp', 0.0)) or 0.0)
+            except Exception:
+                continue
+            try:
+                raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+            except Exception:
+                raw_frequency = 0.0
+            try:
+                detected_frequency = float(pitch_data.get('detected_frequency', pitch_data.get('frequency', 0.0)) or 0.0)
+            except Exception:
+                detected_frequency = 0.0
+            try:
+                display_frequency = float(pitch_data.get('display_frequency', detected_frequency) or 0.0)
+            except Exception:
+                display_frequency = detected_frequency
+            try:
+                confidence = max(0.0, float(pitch_data.get('confidence', 0.0) or 0.0))
+            except Exception:
+                confidence = 0.0
+            try:
+                audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+            except Exception:
+                audio_rms = 0.0
+            try:
+                breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+            except Exception:
+                breath_hint = False
+            try:
+                has_pitch = bool(pitch_data.get('has_pitch', False)) and max(display_frequency, detected_frequency) > 0.0
+            except Exception:
+                has_pitch = bool(max(display_frequency, detected_frequency) > 0.0)
+            if not has_pitch:
+                continue
+            corrected_display = float(display_frequency if display_frequency > 0.0 else detected_frequency)
+            try:
+                corrected_display = self._normal_mode_ui_correct_octave_overshoot(
+                    pitch_data,
+                    corrected_display,
+                    last_plot_freq=float(prev_display or 0.0),
+                )
+                corrected_display = self._normal_mode_ui_align_to_fundamental_support(
+                    pitch_data,
+                    corrected_display,
+                    last_plot_freq=float(prev_display or 0.0),
+                )
+            except Exception:
+                corrected_display = float(display_frequency if display_frequency > 0.0 else detected_frequency)
+            if corrected_display <= 0.0:
+                corrected_display = float(display_frequency if display_frequency > 0.0 else detected_frequency)
+            try:
+                corrected_display = self._refine_onepass_payload_display_frequency(
+                    pitch_data,
+                    corrected_display,
+                    last_display=float(prev_display or 0.0),
+                )
+            except Exception:
+                pass
+
+            released_to_unvoiced = False
+            try:
+                stable_track = bool(
+                    prev_detected > 0.0
+                    and detected_frequency > 0.0
+                    and self._normal_mode_ui_semitone_distance(float(prev_detected), float(detected_frequency)) <= 2.6
+                )
+                mid_register_track = bool(170.0 <= max(float(detected_frequency), float(corrected_display)) <= 320.0)
+                low_relative_energy = bool(
+                    prev_voiced_rms > 0.0
+                    and audio_rms > 0.0
+                    and audio_rms <= max(0.0045, float(prev_voiced_rms) * 0.42)
+                )
+                if has_pitch and (not breath_hint) and stable_track and mid_register_track and low_relative_energy:
+                    has_pitch = False
+                    corrected_display = 0.0
+                    released_to_unvoiced = True
+            except Exception:
+                released_to_unvoiced = False
+
+            note_payload = pitch_data.get('display_note_info') or pitch_data.get('note_info') or {}
+            try:
+                note_info = dict(note_payload or {})
+            except Exception:
+                note_info = {}
+            note_name = note_info.get('note_name')
+            octave = note_info.get('octave')
+            midi_number = note_info.get('midi_number')
+            cents = note_info.get('cents')
+            if corrected_display > 0.0 and (note_name is None or midi_number is None):
+                try:
+                    resolved_note = dict(self.frequency_to_note_info(float(corrected_display)) or {})
+                except Exception:
+                    resolved_note = {}
+                note_name = resolved_note.get('note_name', note_name)
+                octave = resolved_note.get('octave', octave)
+                midi_number = resolved_note.get('midi_number', midi_number)
+                cents = resolved_note.get('cents', cents)
+
+            semi_delta = None
+            semi_rate = None
+            semi_accel = None
+            continuity_score = None
+            if prev_time > 0.0 and prev_detected > 0.0 and detected_frequency > 0.0:
+                try:
+                    dt = max(1e-6, timeline_time - prev_time)
+                    semi_delta = abs(12.0 * math.log2(max(detected_frequency, 1e-9) / max(prev_detected, 1e-9)))
+                    semi_rate = semi_delta / dt
+                    semi_accel = (semi_rate - prev_rate) / dt
+                    continuity_score = max(0.0, min(1.0, 1.0 - semi_delta / 6.0))
+                    prev_rate = float(semi_rate)
+                except Exception:
+                    semi_delta = None
+                    semi_rate = None
+                    semi_accel = None
+                    continuity_score = None
+
+            frame = FrameFeatures(
+                timeline_time=float(timeline_time),
+                wall_time=0.0,
+                raw_frequency_hz=float(raw_frequency),
+                detected_frequency_hz=float(detected_frequency),
+                display_frequency_hz=float(corrected_display),
+                has_pitch=bool(has_pitch),
+                confidence=float(confidence),
+                audio_rms=float(audio_rms),
+                note_name=note_name,
+                octave=octave,
+                midi_number=midi_number,
+                cents=cents,
+                voiced_score=min(1.0, confidence * 1.1) if has_pitch else 0.0,
+                periodicity_score=confidence if has_pitch else 0.0,
+                fast_change=bool(pitch_data.get('_fast_change', False)),
+                semitone_delta_prev=semi_delta,
+                semitone_rate=semi_rate,
+                semitone_accel=semi_accel,
+                continuity_score=continuity_score,
+                stable_anchor_frequency_hz=prev_detected if prev_detected > 0.0 else None,
+                harmonic_candidates=list(pitch_data.get('harmonic_candidates', []) or []),
+                mid_high_ratio=pitch_data.get('mid_high_ratio'),
+                hm_over_hh=pitch_data.get('hm_over_hh'),
+                spectral_tilt=pitch_data.get('spectral_tilt'),
+                tonal_hum=pitch_data.get('tonal_hum'),
+                breath_detect_hint=bool(breath_hint),
+                vibrato_info=dict(pitch_data.get('vibrato_info', {}) or {}),
+                mode_name=str(mode_name or '普通模式'),
+                preview_only=bool(pitch_data.get('_preview_only', False)),
+                source_flags={
+                    'rebuilt_from_pitch_payloads': True,
+                    'released_to_unvoiced': bool(released_to_unvoiced),
+                    **base_flags,
+                },
+            )
+            frames.append(frame)
+            prev_time = timeline_time
+            if detected_frequency > 0.0:
+                prev_detected = detected_frequency
+            if corrected_display > 0.0:
+                prev_display = corrected_display
+            if has_pitch and audio_rms > 0.0:
+                if prev_voiced_rms > 0.0:
+                    prev_voiced_rms = (0.84 * float(prev_voiced_rms)) + (0.16 * float(audio_rms))
+                else:
+                    prev_voiced_rms = float(audio_rms)
+        return frames
+
+    def _refine_onepass_payload_display_frequency(self, pitch_data: Dict[str, Any], frequency: float, *, last_display: float = 0.0) -> float:
+        try:
+            current_frequency = float(frequency or 0.0)
+        except Exception:
+            current_frequency = 0.0
+        if current_frequency <= 0.0:
+            return 0.0
+
+        pitch_helper_host = getattr(self, 'audio_processor', None)
+        if pitch_helper_host is None:
+            return float(current_frequency)
+        pick_display_fundamental_candidate = getattr(pitch_helper_host, '_pick_display_fundamental_candidate', None)
+        pitch_semitone_distance = getattr(pitch_helper_host, '_pitch_semitone_distance', None)
+        is_likely_upper_harmonic_ratio = getattr(pitch_helper_host, '_is_likely_upper_harmonic_ratio', None)
+        if not callable(pick_display_fundamental_candidate):
+            return float(current_frequency)
+        if not callable(pitch_semitone_distance):
+            return float(current_frequency)
+        if not callable(is_likely_upper_harmonic_ratio):
+            return float(current_frequency)
+
+        try:
+            raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
+        except Exception:
+            raw_frequency = 0.0
+        try:
+            detected_frequency = float(pitch_data.get('detected_frequency', pitch_data.get('frequency', 0.0)) or 0.0)
+        except Exception:
+            detected_frequency = 0.0
+        try:
+            confidence = float(pitch_data.get('confidence', 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            breath_hint = bool(pitch_data.get('breath_detect_hint', False))
+        except Exception:
+            breath_hint = False
+        try:
+            harmonic_candidates = list(pitch_data.get('harmonic_candidates', []) or [])
+        except Exception:
+            harmonic_candidates = []
+
+        if not harmonic_candidates:
+            return float(current_frequency)
+
+        reference_frequency = max(float(raw_frequency), float(detected_frequency), float(current_frequency))
+        if reference_frequency <= 0.0:
+            return float(current_frequency)
+
+        try:
+            detected_gap = pitch_semitone_distance(float(current_frequency), float(detected_frequency)) if detected_frequency > 0.0 else 999.0
+        except Exception:
+            detected_gap = 999.0
+        raw_detected_locked = bool(
+            raw_frequency > 0.0
+            and detected_frequency > 0.0
+            and pitch_semitone_distance(float(raw_frequency), float(detected_frequency)) <= 0.85
+        )
+        suspicious_low_display = bool(
+            (not breath_hint)
+            and confidence >= 0.88
+            and audio_rms >= 0.0012
+            and 170.0 <= float(detected_frequency) <= 320.0
+            and 4.8 <= float(detected_gap) <= 15.5
+            and float(current_frequency) <= float(detected_frequency) * 0.76
+            and raw_detected_locked
+        )
+        if suspicious_low_display:
+            return float(detected_frequency)
+
+        lower_candidate = pick_display_fundamental_candidate(
+            float(reference_frequency),
+            harmonic_candidates,
+            float(last_display or 0.0),
+            audio_rms=float(audio_rms or 0.0),
+        )
+        if lower_candidate <= 0.0 or lower_candidate >= float(current_frequency) * 0.995:
+            return float(current_frequency)
+
+        lower_gap = pitch_semitone_distance(float(current_frequency), float(lower_candidate))
+        harmonic_ratio = float(reference_frequency) / max(float(lower_candidate), 1e-9)
+        harmonic_like = bool(is_likely_upper_harmonic_ratio(harmonic_ratio))
+        if (not harmonic_like) and lower_gap < 6.0:
+            return float(current_frequency)
+
+        corroborated_subharmonic = False
+        for cand in harmonic_candidates:
+            try:
+                cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+            except Exception:
+                continue
+            if cand_freq <= 0.0 or abs(cand_freq - float(lower_candidate)) <= max(8.0, float(lower_candidate) * 0.08):
+                continue
+            ladder_ratio = cand_freq / max(float(lower_candidate), 1e-9)
+            if 1.62 <= ladder_ratio <= 2.28:
+                corroborated_subharmonic = True
+                break
+            if (
+                float(reference_frequency) >= 420.0
+                and float(lower_candidate) <= 220.0
+                and float(reference_frequency) / max(float(lower_candidate), 1e-9) >= 4.4
+                and 2.72 <= ladder_ratio <= 3.34
+            ):
+                corroborated_subharmonic = True
+                break
+            if (
+                float(reference_frequency) >= 420.0
+                and float(lower_candidate) <= 220.0
+                and float(reference_frequency) / max(float(lower_candidate), 1e-9) >= 4.4
+                and 4.6 <= ladder_ratio <= 8.4
+            ):
+                corroborated_subharmonic = True
+                break
+
+        try:
+            current_history_gap = pitch_semitone_distance(float(current_frequency), float(last_display)) if float(last_display) > 0.0 else 999.0
+        except Exception:
+            current_history_gap = 999.0
+        try:
+            lower_history_gap = pitch_semitone_distance(float(lower_candidate), float(last_display)) if float(last_display) > 0.0 else 999.0
+        except Exception:
+            lower_history_gap = 999.0
+
+        reference_current_ratio = float(reference_frequency) / max(float(current_frequency), 1e-9)
+        higher_harmonic_candidate_count = 0
+        for cand in harmonic_candidates:
+            try:
+                cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+            except Exception:
+                continue
+            if cand_freq > float(current_frequency) * 1.04:
+                higher_harmonic_candidate_count += 1
+        allow_low_rms_midband_twox_pull = bool(
+            0.030 <= float(audio_rms) < 0.040
+            and 135.0 <= float(lower_candidate) <= 160.0
+            and 1.60 <= harmonic_ratio <= 2.10
+        )
+        allow_history_anchored_midband_pull = bool(
+            float(audio_rms) >= 0.045
+            and 124.0 <= float(lower_candidate) <= 180.0
+            and 1.70 <= harmonic_ratio <= 2.45
+            and lower_history_gap <= 2.2
+        )
+        allow_strong_midband_twox_pull = bool(
+            corroborated_subharmonic
+            and reference_current_ratio <= 1.02
+            and float(current_frequency) >= 180.0
+            and higher_harmonic_candidate_count >= 2
+            and (
+                (
+                    110.0 <= float(lower_candidate) <= 160.0
+                    and float(audio_rms) >= 0.040
+                    and 1.60 <= harmonic_ratio <= 2.55
+                )
+                or allow_low_rms_midband_twox_pull
+                or allow_history_anchored_midband_pull
+            )
+        )
+        residual_octave_low_pull = bool(
+            corroborated_subharmonic
+            and harmonic_ratio <= 2.75
+            and reference_current_ratio <= 1.02
+            and float(lower_candidate) <= 180.0
+        )
+        if residual_octave_low_pull and (not allow_strong_midband_twox_pull):
+            return float(current_frequency)
+
+        history_anchored_low_pull = bool(
+            corroborated_subharmonic
+            and harmonic_ratio <= 2.45
+            and reference_current_ratio <= 1.02
+            and lower_history_gap <= 1.1
+            and current_history_gap >= 8.0
+            and float(lower_candidate) <= 180.0
+        )
+        if history_anchored_low_pull and (not allow_strong_midband_twox_pull):
+            return float(current_frequency)
+
+        pull_weight = 0.0
+        if corroborated_subharmonic and lower_gap >= 7.0:
+            pull_weight = 0.94 if harmonic_ratio >= 2.72 else 0.90
+        elif harmonic_like and lower_gap >= 8.4:
+            pull_weight = 0.92 if harmonic_ratio >= 2.72 else 0.86
+        elif harmonic_like and lower_gap >= 5.4 and (lower_history_gap + 0.40 < current_history_gap):
+            pull_weight = 0.86 if harmonic_ratio >= 2.72 else 0.80
+        elif harmonic_like and lower_gap >= 6.6 and float(last_display or 0.0) <= 0.0:
+            pull_weight = 0.82
+
+        if pull_weight <= 0.0:
+            return float(current_frequency)
+
+        strong_current_candidate = False
+        lower_candidate_confidence = 0.0
+        near_current_support_confidence = 0.0
+        for cand in harmonic_candidates:
+            try:
+                cand_freq = float(cand.get('frequency', 0.0) or 0.0)
+                cand_conf = float(cand.get('confidence', 0.55) or 0.55)
+            except Exception:
+                continue
+            if cand_freq <= 0.0:
+                continue
+            if abs(cand_freq - float(lower_candidate)) <= max(8.0, float(lower_candidate) * 0.08):
+                lower_candidate_confidence = max(lower_candidate_confidence, cand_conf)
+                continue
+            cand_current_gap = pitch_semitone_distance(float(cand_freq), float(current_frequency))
+            if cand_current_gap <= 3.0:
+                near_current_support_confidence = max(near_current_support_confidence, cand_conf)
+            if cand_current_gap <= 1.25 and cand_conf >= 0.95:
+                strong_current_candidate = True
+                break
+        weak_lower_current_supported_pull = bool(
+            corroborated_subharmonic
+            and float(current_frequency) >= 400.0
+            and 185.0 <= float(lower_candidate) <= 220.0
+            and harmonic_ratio <= 2.45
+            and float(audio_rms) <= 0.030
+            and lower_candidate_confidence <= 0.85
+            and near_current_support_confidence >= 0.95
+        )
+        supported_midband_twox_pull = bool(
+            corroborated_subharmonic
+            and reference_current_ratio <= 1.02
+            and float(lower_candidate) <= 220.0
+            and 1.80 <= harmonic_ratio <= 2.90
+            and float(audio_rms) <= 0.040
+            and near_current_support_confidence >= 0.95
+        )
+        low_rms_highratio_midband_pull = bool(
+            corroborated_subharmonic
+            and reference_current_ratio <= 1.02
+            and 150.0 <= float(lower_candidate) <= 220.0
+            and 2.60 <= harmonic_ratio <= 2.80
+            and float(audio_rms) <= 0.040
+        )
+        sparse_upper_midband_pull = bool(
+            corroborated_subharmonic
+            and reference_current_ratio <= 1.02
+            and 180.0 <= float(lower_candidate) <= 220.0
+            and 2.80 <= harmonic_ratio <= 2.90
+            and float(audio_rms) <= 0.040
+            and lower_candidate_confidence <= 0.85
+        )
+        if (
+            (
+                strong_current_candidate
+                and float(current_frequency) <= 360.0
+                and lower_gap >= 6.8
+                and float(lower_candidate) <= float(current_frequency) * 0.72
+            )
+            or weak_lower_current_supported_pull
+            or supported_midband_twox_pull
+            or low_rms_highratio_midband_pull
+            or sparse_upper_midband_pull
+        ):
+            return float(current_frequency)
+
+        corrected = float(pull_weight) * float(lower_candidate) + (1.0 - float(pull_weight)) * min(float(current_frequency), float(lower_candidate) * 1.08)
+        return float(corrected)
+
     def _technique_pitch_record_to_frequency(self, pitch_value: float, *, note_info: Optional[Dict[str, Any]] = None) -> Tuple[float, Optional[float], bool]:
         try:
             note_dict = dict(note_info or {})
@@ -58873,15 +59719,37 @@ class IntegratedRecordingInterface(QMainWindow):
                 except Exception:
                     full_duration = 0.0
             if full_duration > 0.0:
-                records = self._collect_onepass_full_pitch_records()
                 audio_samples, sample_rate = self._extract_onepass_full_technique_audio()
-                frames = self._build_technique_frames_from_pitch_records(
-                    records,
-                    mode_name=mode_text,
-                    audio_samples=audio_samples,
-                    sample_rate=sample_rate,
-                    source_flags={'offline_local_file': True, 'onepass_full_audio': True},
-                )
+                try:
+                    raw_pitch_records = list(onepass_payload.get('raw_pitch_records', []) or [])
+                except Exception:
+                    raw_pitch_records = []
+                if len(raw_pitch_records) >= 8:
+                    records = self._collect_onepass_full_pitch_records()
+                    frames = self._build_technique_frames_from_pitch_records(
+                        records,
+                        mode_name=mode_text,
+                        audio_samples=audio_samples,
+                        sample_rate=sample_rate,
+                        source_flags={'offline_local_file': True, 'onepass_full_audio': True},
+                    )
+                else:
+                    pitch_payloads = self._collect_onepass_full_pitch_payloads()
+                    if len(pitch_payloads) >= 8:
+                        frames = self._build_technique_frames_from_pitch_payloads(
+                            pitch_payloads,
+                            mode_name=mode_text,
+                            source_flags={'offline_local_file': True, 'onepass_full_audio': True},
+                        )
+                    else:
+                        records = self._collect_onepass_full_pitch_records()
+                        frames = self._build_technique_frames_from_pitch_records(
+                            records,
+                            mode_name=mode_text,
+                            audio_samples=audio_samples,
+                            sample_rate=sample_rate,
+                            source_flags={'offline_local_file': True, 'onepass_full_audio': True},
+                        )
                 if len(frames) >= 8:
                     payload.update({
                         'ok': True,
@@ -58949,7 +59817,7 @@ class IntegratedRecordingInterface(QMainWindow):
             selected_types = set(_normalize_technique_selection(getattr(getattr(self, '_technique_panel_state', None), 'selected_types', []) or []))
         except Exception:
             selected_types = set()
-        if selected_types.intersection({'chest_voice', 'falsetto', 'strong_mix', 'weak_mix', 'balanced_mix'}):
+        if selected_types.intersection({'chest_voice', 'falsetto'}):
             try:
                 raw_audio = getattr(self, 'audio_buffer', None)
                 if raw_audio is None or (hasattr(raw_audio, '__len__') and len(raw_audio) <= 0):
@@ -59114,7 +59982,7 @@ class IntegratedRecordingInterface(QMainWindow):
             elif analysis_mode == 'paused_realtime_session':
                 source_prefix = f'暂停前片段 {resolved_duration:.1f}s，'
             voice_status_suffix = ''
-            if selected_types.intersection({'chest_voice', 'falsetto', 'strong_mix', 'weak_mix', 'balanced_mix'}) and voice_debug:
+            if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
                 reason = self._format_voice_type_debug_reason(str(voice_debug.get('reason', '') or ''))
                 try:
                     candidate_windows = int(voice_debug.get('candidate_windows', 0) or 0)
@@ -59124,7 +59992,9 @@ class IntegratedRecordingInterface(QMainWindow):
                     candidate_windows = 0
                     predicted_windows = 0
                     accepted_windows = 0
-                voice_status_suffix = f"，声区候选 {candidate_windows} / 模型 {predicted_windows} / 通过 {accepted_windows}"
+                voice_status_suffix = (
+                    f"，真假声候选 {candidate_windows} / 模型 {predicted_windows} / 通过 {accepted_windows}"
+                )
                 if reason:
                     voice_status_suffix += f"，原因 {reason}"
             if event_count > 0:
@@ -59212,10 +60082,10 @@ class IntegratedRecordingInterface(QMainWindow):
                         msg = '已完成当前已播放片段的技巧识别。\n当前主唱曲线未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
                     else:
                         msg = '已完成离线技巧识别。\n当前录音未检测到需要单独分区标注的技巧区间，因此保持普通演唱段不标注。'
-                    if selected_types.intersection({'chest_voice', 'falsetto', 'strong_mix', 'weak_mix', 'balanced_mix'}) and voice_debug:
+                    if selected_types.intersection({'chest_voice', 'falsetto'}) and voice_debug:
                         reason = self._format_voice_type_debug_reason(str(voice_debug.get('reason', '') or ''))
                         if reason:
-                            msg += f'\n声区调试: {reason}'
+                            msg += f'\n真假声调试: {reason}'
                         try:
                             msg += (
                                 f"\n候选窗口: {int(voice_debug.get('candidate_windows', 0) or 0)}"
@@ -59362,7 +60232,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         selected_types = set(selected_types)
 
-        intro = QLabel('技巧识别会按当前已开放的项目做普通模式曲线分区标注。录音完成后可分析整段；本地实时分析暂停时分析当前已播放片段；一次性绘制模式下优先分析整段音频。当前已开放“换气”“颤音”“真声/假声”和“混声（强混/弱混/平衡混）”。')
+        intro = QLabel('技巧识别会按当前已开放的项目做普通模式曲线分区标注。录音完成后可分析整段；本地实时分析暂停时分析当前已播放片段；一次性绘制模式下优先分析整段音频。当前可用项目为“换气”“颤音”和“真假声区间”，其它技巧先按分类展示为待开发。')
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -59418,7 +60288,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 parent_chk.toggled.connect(_refresh_technique_dependencies)
         _refresh_technique_dependencies()
 
-        dev_note = QLabel('当前已开放：换气、颤音、真声、假声、混声（强混/弱混/平衡混）；若只看混声，可直接勾选混声分类，无需额外勾选真声/假声。')
+        dev_note = QLabel('当前已开放：换气、颤音、真声、假声；混声与混声细分类已接入选择联动，识别结果将跟随后续轻量模型训练接入。')
         dev_note.setWordWrap(True)
         dev_note.setStyleSheet('color: #9FB5C9; font-size: 12px; margin-top: 4px;')
         group_layout.addWidget(dev_note)
@@ -67544,20 +68414,12 @@ class _LocalFileRealtimeController(QObject):
         import tempfile
         from pathlib import Path
 
-        lfs_error = _git_lfs_pointer_audio_error(path)
-        if lfs_error:
-            raise RuntimeError(lfs_error)
-
-        suffix = str(Path(path).suffix or '').lower()
-        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4', '.opus', '.flac'}
-        last_error = None
-
         try:
             import soundfile as sf
             data, sr = sf.read(path, always_2d=True)
             return data.astype(np.float32), int(sr)
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         try:
             import torchaudio
@@ -67566,8 +68428,8 @@ class _LocalFileRealtimeController(QObject):
             if arr.ndim == 1:
                 arr = arr[None, :]
             return arr.T.astype(np.float32), int(sr)
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         try:
             import librosa
@@ -67577,8 +68439,8 @@ class _LocalFileRealtimeController(QObject):
             else:
                 data = y.T
             return data.astype(np.float32), int(sr)
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         try:
             ff = cls._find_ffmpeg_executable()
@@ -67596,18 +68458,13 @@ class _LocalFileRealtimeController(QObject):
                         tmpdir.rmdir()
                     except Exception:
                         pass
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         try:
             return cls._read_wave_pcm(path)
-        except Exception as exc:
-            root_error = last_error if last_error is not None else exc
-            if compressed_hint:
-                raise RuntimeError(
-                    f"无法读取音频文件: {Path(path).name} 不是标准 PCM WAV，当前环境缺少可用解码器。建议安装 ffmpeg，或先转换为 WAV/FLAC 后重试。原始错误: {root_error}"
-                )
-            raise RuntimeError(f"无法读取音频文件: {root_error}")
+        except Exception as e:
+            raise RuntimeError(f"无法读取音频文件: {e}")
 
     @staticmethod
     def _resample_linear(x, sr_in: int, sr_out: int):
@@ -68115,7 +68972,7 @@ class _LocalFilePanel(QDialog):
         self.main_diag_cb.stateChanged.connect(self._on_mainparse_style_changed)
         main_row.addWidget(self.main_diag_cb)
         self.main_stable_cb = QCheckBox("分层稳态")
-        self.main_stable_cb.setChecked(bool(getattr(self.ifc, '_lfm_layered_stability_enabled', False)))
+        self.main_stable_cb.setChecked(bool(getattr(self.ifc, '_lfm_layered_stability_enabled', True)))
         self.main_stable_cb.stateChanged.connect(self._on_mainparse_style_changed)
         main_row.addWidget(self.main_stable_cb)
         main_row.addWidget(QLabel("中高平滑"))
@@ -68607,9 +69464,9 @@ class _LocalFilePanel(QDialog):
         except Exception:
             diag_enabled = True
         try:
-            layered_enabled = bool(self.main_stable_cb.isChecked()) if hasattr(self, 'main_stable_cb') else False
+            layered_enabled = bool(self.main_stable_cb.isChecked()) if hasattr(self, 'main_stable_cb') else True
         except Exception:
-            layered_enabled = False
+            layered_enabled = True
         try:
             mid_blend = float(self.main_blend_slider.value()) / 100.0 if hasattr(self, 'main_blend_slider') else 0.22
         except Exception:
@@ -68677,7 +69534,7 @@ class _LocalFilePanel(QDialog):
         except Exception:
             pass
         try:
-            self.main_stable_cb.setChecked(False)
+            self.main_stable_cb.setChecked(True)
         except Exception:
             pass
         try:
@@ -69906,21 +70763,13 @@ class _OnePassPitchWorker(QThread):
         import tempfile
         from pathlib import Path
 
-        lfs_error = _git_lfs_pointer_audio_error(path)
-        if lfs_error:
-            raise RuntimeError(lfs_error)
-
-        suffix = str(Path(path).suffix or '').lower()
-        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4', '.opus', '.flac'}
-        last_error = None
-
         # 1) soundfile
         try:
             import soundfile as sf
             data, sr = sf.read(path, always_2d=True)
             return data.astype(np.float32), int(sr)
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         # 2) torchaudio
         try:
@@ -69930,8 +70779,8 @@ class _OnePassPitchWorker(QThread):
             if arr.ndim == 1:
                 arr = arr[None, :]
             return arr.T.astype(np.float32), int(sr)
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         # 3) librosa/audioread
         try:
@@ -69942,8 +70791,8 @@ class _OnePassPitchWorker(QThread):
             else:
                 data = y.T
             return data.astype(np.float32), int(sr)
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         # 4) ffmpeg 转临时 WAV，再用标准 wave 读取
         try:
@@ -69962,19 +70811,14 @@ class _OnePassPitchWorker(QThread):
                         tmpdir.rmdir()
                     except Exception:
                         pass
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         # 5) 最后只按 PCM WAV 读
         try:
             return self._read_wave_pcm(path)
-        except Exception as exc:
-            root_error = last_error if last_error is not None else exc
-            if compressed_hint:
-                raise RuntimeError(
-                    f"无法读取音频文件: {Path(path).name} 不是标准 PCM WAV，当前环境缺少可用解码器。建议安装 ffmpeg，或先转换为 WAV/FLAC 后重试。原始错误: {root_error}"
-                )
-            raise RuntimeError(f"无法读取音频文件: {root_error}")
+        except Exception as e:
+            raise RuntimeError(f"无法读取音频文件: {e}")
 
     def _collect_realtime_like_points(self, audio, sr: int, frame_window: int, frame_hop: int, *, progress_range: tuple[int, int] = (0, 100), status_text: str = "正在按实时分析链逐帧解析音高…", track_mode_override: str | None = None):
         from collections import deque as _deque
@@ -70035,7 +70879,7 @@ class _OnePassPitchWorker(QThread):
             i = 0
             while i + frame_window <= n:
                 if self._cancel:
-                    return None, None, None
+                    return None, None
                 frame = audio[i:i+frame_window]
                 try:
                     ap._lfm_forced_global_time = float(i) / float(sr)
@@ -70083,9 +70927,9 @@ class _OnePassPitchWorker(QThread):
             except Exception:
                 pass
 
-        raw_pitch_records = []
         times = []
         y_vals = []
+        voiced_payloads = []
         for payload in payloads:
             try:
                 if not bool(payload.get('has_pitch', False)):
@@ -70096,19 +70940,12 @@ class _OnePassPitchWorker(QThread):
                 t = payload.get('global_time', None)
                 if t is None:
                     continue
-                t_val = float(t)
-                y_val = self._hz_to_pitch_y(freq)
-                try:
-                    conf_val = max(0.0, min(1.0, float(payload.get('confidence', 0.0) or 0.0)))
-                except Exception:
-                    conf_val = 0.0
-                note_info = payload.get('note_info') or payload.get('note')
-                times.append(t_val)
-                y_vals.append(y_val)
-                raw_pitch_records.append((t_val, y_val, conf_val, note_info))
+                times.append(float(t))
+                y_vals.append(self._hz_to_pitch_y(freq))
+                voiced_payloads.append(dict(payload))
             except Exception:
                 continue
-        return raw_pitch_records, times, y_vals
+        return times, y_vals, voiced_payloads
 
     def run(self):
         try:
@@ -70186,7 +71023,7 @@ class _OnePassPitchWorker(QThread):
                 octave_lo, octave_hi = (-2, 2)
             use_service = bool(getattr(self.ifc, 'pitch_service', None)) and _PITCH_SERVICE_AVAILABLE
             n = len(audio)
-            raw_pitch_records, times, y_vals = self._collect_realtime_like_points(
+            times, y_vals, pitch_payloads = self._collect_realtime_like_points(
                 audio,
                 int(sr),
                 frame_window,
@@ -70197,8 +71034,22 @@ class _OnePassPitchWorker(QThread):
             )
             if self._cancel:
                 return
-            if raw_pitch_records is None or times is None or y_vals is None:
+            if times is None or y_vals is None:
                 return
+            raw_pitch_records = []
+            for t_val, y_val, payload in zip(list(times or []), list(y_vals or []), list(pitch_payloads or [])):
+                try:
+                    conf_val = max(0.0, min(1.0, float(payload.get('confidence', 0.0) or 0.0)))
+                except Exception:
+                    conf_val = 0.0
+                try:
+                    note_info = payload.get('note_info') or payload.get('note')
+                except Exception:
+                    note_info = None
+                try:
+                    raw_pitch_records.append((float(t_val), float(y_val), float(conf_val), note_info))
+                except Exception:
+                    continue
             # 轻量去尖刺：3点中值滤波（仅作用于已采样点，不改变趋势），贴近实时观感
             if onepass_cfg['enable_median_spike_filter'] and len(y_vals) >= 3:
                 try:
@@ -70392,10 +71243,10 @@ class _OnePassPitchWorker(QThread):
                     overlay_packets = []
             self.progress.emit(100)
             self.finished_ok.emit({
-                'raw_pitch_records': list(raw_pitch_records or []),
-                'display_segments': segments,
                 'segments': segments,
                 'duration': total_s,
+                'raw_pitch_records': raw_pitch_records,
+                'pitch_payloads': pitch_payloads,
                 'overlay_packets': overlay_packets,
                 'overlay_label': overlay_label,
                 'overlay_color': self.overlay_color,
@@ -71306,9 +72157,10 @@ def _ifc_start_offline_onepass(self, file_path: str):
         try:
             prog.set_message("绘制中…")
             prog.set_progress(100)
-            segs = payload.get('display_segments', payload.get('segments', []))
+            segs = payload.get('segments', [])
             dur = float(payload.get('duration', 0.0) or 0.0)
-            display_pitch_records = []
+            pitch_payloads = list(payload.get('pitch_payloads', []) or [])
+            pitch_records = []
             for seg in list(segs or []):
                 try:
                     seg_times = list(seg[0] or [])
@@ -71317,7 +72169,7 @@ def _ifc_start_offline_onepass(self, file_path: str):
                     continue
                 for t_val, p_val in zip(seg_times, seg_pitches):
                     try:
-                        display_pitch_records.append((float(t_val), float(p_val), 1.0, None))
+                        pitch_records.append((float(t_val), float(p_val), 1.0, None))
                     except Exception:
                         continue
             try:
@@ -71325,20 +72177,19 @@ def _ifc_start_offline_onepass(self, file_path: str):
             except Exception:
                 raw_pitch_records = []
             if not raw_pitch_records:
-                raw_pitch_records = list(display_pitch_records)
+                raw_pitch_records = list(pitch_records)
             try:
                 self._onepass_analysis_payload = dict(payload or {})
-                self._onepass_analysis_payload['display_segments'] = list(segs or [])
-                self._onepass_analysis_payload['segments'] = list(segs or [])
-                self._onepass_analysis_payload['pitch_records'] = list(display_pitch_records)
+                self._onepass_analysis_payload['pitch_records'] = list(pitch_records)
                 self._onepass_analysis_payload['raw_pitch_records'] = list(raw_pitch_records)
+                self._onepass_analysis_payload['pitch_payloads'] = list(pitch_payloads)
             except Exception:
                 self._onepass_analysis_payload = {
-                    'display_segments': segs,
                     'segments': segs,
                     'duration': dur,
-                    'pitch_records': list(display_pitch_records),
+                    'pitch_records': list(pitch_records),
                     'raw_pitch_records': list(raw_pitch_records),
+                    'pitch_payloads': list(pitch_payloads),
                 }
             # 设置时间轴为完整音频时长
             _apply_full_duration_axis(self.visualizer, dur)
@@ -71364,10 +72215,10 @@ def _ifc_start_offline_onepass(self, file_path: str):
             self.visualizer.draw_segmented_pitch_line(segs)
             try:
                 if hasattr(self.visualizer, '_pitch_store'):
-                    times = [float(rec[0]) for rec in display_pitch_records]
-                    pitches = [float(rec[1]) for rec in display_pitch_records]
-                    confs = [float(rec[2]) for rec in display_pitch_records]
-                    notes = [rec[3] for rec in display_pitch_records]
+                    times = [float(rec[0]) for rec in pitch_records]
+                    pitches = [float(rec[1]) for rec in pitch_records]
+                    confs = [float(rec[2]) for rec in pitch_records]
+                    notes = [rec[3] for rec in pitch_records]
                     self.visualizer._pitch_store.rebuild(times, pitches, confs, notes)
                     if hasattr(self.visualizer, '_refresh_time_bins'):
                         self.visualizer._refresh_time_bins()
@@ -71559,9 +72410,33 @@ class _OnePassPlaybackController(QObject):
             return
         import numpy as np
         try:
-            data, sr = _LocalFileRealtimeController._decode_audio_path(str(self.file_path))
-        except Exception as exc:
-            raise RuntimeError(str(exc))
+            import soundfile as sf
+            data, sr = sf.read(self.file_path, always_2d=True)
+        except Exception:
+            try:
+                import subprocess
+                import tempfile
+                from pathlib import Path
+
+                ff = _OnePassPitchWorker._find_ffmpeg_executable()
+                if ff:
+                    tmpdir = Path(tempfile.mkdtemp(prefix='onepass_playback_'))
+                    wav_path = tmpdir / 'decoded.wav'
+                    try:
+                        cmd = [ff, '-y', '-i', str(self.file_path), '-ac', '2', '-ar', str(int(self.sr)), '-f', 'wav', str(wav_path)]
+                        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        data, sr = _OnePassPitchWorker._read_wave_pcm(str(wav_path))
+                    finally:
+                        try:
+                            for p in tmpdir.glob('*'):
+                                p.unlink(missing_ok=True)
+                            tmpdir.rmdir()
+                        except Exception:
+                            pass
+                else:
+                    data, sr = _OnePassPitchWorker._read_wave_pcm(str(self.file_path))
+            except Exception as e:
+                raise RuntimeError(f"无法读取音频文件: {e}")
         if data.ndim == 2 and data.shape[1] > 1:
             data = data.mean(axis=1)
         else:
@@ -72716,12 +73591,8 @@ class _VocalSeparationWorker(QThread):
                 except Exception:
                     pass
 
-        lfs_error = _git_lfs_pointer_audio_error(path)
-        if lfs_error:
-            raise RuntimeError(lfs_error)
-
         suffix = str(Path(path).suffix or '').lower()
-        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4', '.flac'}
+        compressed_hint = suffix in {'.mp3', '.m4a', '.aac', '.ogg', '.wma', '.mp4'}
         last_error = None
         # 1) 首选 soundfile（支持常见 WAV/FLAC/OGG Vorbis 等）
         try:
