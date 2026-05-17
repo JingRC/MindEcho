@@ -3676,15 +3676,15 @@ class IntegratedAudioProcessor(QThread):
             if last_raw > 0 and now_t > last_rt:
                 dt = now_t - last_rt
                 semi = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
-                semi_thr = float(getattr(self, '_fast_change_semi_thr', 0.65))
-                dt_thr = float(getattr(self, '_fast_change_dt', 0.12))
-                # 变化速度阈值：小幅但极快变化也视为转音
+                semi_thr = float(getattr(self, '_fast_change_semi_thr', 0.55))
+                dt_thr = float(getattr(self, '_fast_change_dt', 0.15))
+                # 变化速度阈值：降低速率门槛以捕获中等速度转音
                 try:
-                    rate_thr = float(getattr(self, '_fast_change_rate_thr', 7.5))
+                    rate_thr = float(getattr(self, '_fast_change_rate_thr', 5.5))
                 except Exception:
-                    rate_thr = 7.5
+                    rate_thr = 5.5
                 rate = semi / max(dt, 1e-6)
-                if (dt <= dt_thr and semi >= semi_thr) or (rate >= rate_thr and semi >= 0.35):
+                if (dt <= dt_thr and semi >= semi_thr) or (rate >= rate_thr and semi >= 0.28):
                     fast_change = True
             setattr(self, lr_name, float(raw_frequency))
             setattr(self, lrt_name, float(now_t))
@@ -3692,7 +3692,39 @@ class IntegratedAudioProcessor(QThread):
             pass
         try:
             if fast_change:
-                self._fast_change_active_until = max(float(getattr(self, '_fast_change_active_until', 0.0) or 0.0), now_t + 0.25)
+                self._fast_change_active_until = max(float(getattr(self, '_fast_change_active_until', 0.0) or 0.0), now_t + 0.30)
+        except Exception:
+            pass
+
+        # 振荡检测（颤音/花腔）：追踪方向变化频率，识别周期性音高调制
+        is_oscillating = False
+        try:
+            osc_buf = getattr(self, '_pitch_osc_history', None)
+            if osc_buf is None or not isinstance(osc_buf, list):
+                osc_buf = []
+            osc_buf.append((float(now_t), float(raw_frequency)))
+            # 保留最近 0.35s 的历史
+            cutoff_t = float(now_t) - 0.35
+            while osc_buf and osc_buf[0][0] < cutoff_t:
+                osc_buf.pop(0)
+            if len(osc_buf) > 80:
+                osc_buf = osc_buf[-80:]
+            setattr(self, '_pitch_osc_history', osc_buf)
+            # 计算方向变化次数（忽略幅值过小的噪声波动）
+            if len(osc_buf) >= 6:
+                diffs = []
+                for i in range(1, len(osc_buf)):
+                    d = osc_buf[i][1] - osc_buf[i-1][1]
+                    if abs(d) > 0.20:
+                        diffs.append(d)
+                direction_changes = 0
+                if len(diffs) >= 3:
+                    for i in range(1, len(diffs)):
+                        if (diffs[i] > 0 and diffs[i-1] < 0) or (diffs[i] < 0 and diffs[i-1] > 0):
+                            direction_changes += 1
+                # 在 0.35s 内方向变化 ≥ 3 次 → 颤音/花腔振荡
+                if direction_changes >= 3:
+                    is_oscillating = True
         except Exception:
             pass
 
@@ -3715,19 +3747,22 @@ class IntegratedAudioProcessor(QThread):
             # 自适应轻量平滑：更高alpha以保留微小变化
             prev = _freq_smooth if _freq_smooth != 0 else raw_frequency
             delta_hz = abs(raw_frequency - prev)
-            alpha = 0.85
+            alpha = 0.88
             if delta_hz < 2.0:
-                alpha = 0.93  # 极小波动，尽量贴近raw
+                alpha = 0.94  # 极小波动，尽量贴近raw
             elif delta_hz < 5.0:
-                alpha = 0.88
+                alpha = 0.90
             else:
-                alpha = 0.82
+                alpha = 0.84
             if pro_mode:
-                alpha = min(0.99, alpha + 0.06)
+                alpha = min(0.99, alpha + 0.05)
+            # 颤音/花腔振荡：需要极高跟随性以保留调制细节
+            if is_oscillating:
+                alpha = min(0.97, alpha + 0.12)
             if fast_change:
                 boost = float(getattr(self, '_fast_change_alpha_boost', 0.18))
                 alpha = min(0.98, alpha + boost)
-            # 低电平时提高跟随，减少“直线化”
+            # 低电平时提高跟随，减少”直线化”
             if float(getattr(self, lfr_name, getattr(self, '_last_frame_rms', 0.0) or 0.0)) < 0.02:
                 alpha = min(0.96, alpha + 0.03)
             # 上行加速一点点
@@ -3738,7 +3773,10 @@ class IntegratedAudioProcessor(QThread):
             smooth = _freq_smooth
             # 微变化注入：在变化很小时保留少量原始细节，避免水平
             if delta_hz < 3.0:
-                smooth = 0.94 * smooth + 0.06 * raw_frequency
+                smooth = 0.92 * smooth + 0.08 * raw_frequency
+            # 颤音区域：大幅注入原始值保留振荡细节
+            if is_oscillating:
+                smooth = 0.22 * smooth + 0.78 * raw_frequency
             if fast_change:
                 smooth = 0.10 * smooth + 0.90 * raw_frequency
             elif pro_mode and delta_hz > 4.0:
@@ -9751,6 +9789,17 @@ class IntegratedAudioProcessor(QThread):
                     except Exception:
                         pass
                     self._last_no_pitch_emit_t = current_time
+                    # 记录低RMS无音高帧到pitch_history，供离线技巧分析（换气检测等）使用
+                    if not preview_only:
+                        try:
+                            self.pitch_history.append({
+                                'frequency': 0.0,
+                                'timestamp': current_time,
+                                'confidence': 0.0,
+                                'note_info': None
+                            })
+                        except Exception:
+                            pass
                 # 仅首次进入时打印一次诊断
                 try:
                     if _bt_voice and not hasattr(self, '_bt_voice_no_pitch_logged'):
@@ -32416,7 +32465,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 continue
             raw_gap = cur_t - prev_t
-            if raw_gap < max(0.11, base_dt * 2.4):
+            if raw_gap < max(0.07, base_dt * 1.8):
                 continue
             prev_support_gap = None
             next_support_gap = None
@@ -32430,10 +32479,15 @@ class ECGStylePitchVisualizer(QWidget):
                     next_support_gap = float(valid_frames[idx + 1].timeline_time) - cur_t
                 except Exception:
                     next_support_gap = None
-            support_gap_limit = max(0.11, base_dt * 2.1)
+            support_gap_limit = max(0.09, base_dt * 1.7)
             has_prev_support = bool(prev_support_gap is not None and prev_support_gap <= support_gap_limit)
             has_next_support = bool(next_support_gap is not None and next_support_gap <= support_gap_limit)
-            if not (has_prev_support and has_next_support):
+            both_support = has_prev_support and has_next_support
+            single_support = (has_prev_support or has_next_support) and not both_support
+            # 双侧支撑：正常检测；单侧支撑：需更明显的间隙特征
+            if not (both_support or single_support):
+                continue
+            if single_support and raw_gap < max(0.12, base_dt * 3.0):
                 continue
             start_time = max(0.0, prev_t + base_dt * 0.45)
             end_time = max(start_time, cur_t - base_dt * 0.45)
@@ -33307,8 +33361,8 @@ class ECGStylePitchVisualizer(QWidget):
 
     def _voice_prediction_accepted(self, confidence: float, probability_margin: float, *, relaxed: bool = False) -> bool:
         if relaxed:
-            return confidence >= 0.51 and probability_margin >= 0.025
-        return confidence >= 0.58 and probability_margin >= 0.08
+            return confidence >= 0.48 and probability_margin >= 0.018
+        return confidence >= 0.52 and probability_margin >= 0.05
 
     def _voice_prediction_record_accepted(self, record: Dict[str, Any], *, relaxed: bool = False) -> bool:
         event_type = str(record.get('event_type', '') or '')
@@ -33326,6 +33380,10 @@ class ECGStylePitchVisualizer(QWidget):
                 if relaxed:
                     return confidence >= 0.50 and probability_margin >= 0.018 and voiced_ratio >= 0.17
                 return confidence >= 0.53 and probability_margin >= 0.030 and voiced_ratio >= 0.20 and stable_ratio >= 0.04
+            if mean_pitch_hz > 0.0 and mean_pitch_hz >= 320.0:
+                if relaxed:
+                    return confidence >= 0.44 and probability_margin >= 0.006 and voiced_ratio >= 0.12
+                return confidence >= 0.46 and probability_margin >= 0.010 and voiced_ratio >= 0.14 and stable_ratio >= 0.02
         return self._voice_prediction_accepted(confidence, probability_margin, relaxed=relaxed)
 
     def _apply_voice_type_context_priors(
@@ -33370,7 +33428,9 @@ class ECGStylePitchVisualizer(QWidget):
             elif mean_pitch_hz < 290.0:
                 chest_bias += 0.22
             elif mean_pitch_hz < 340.0:
-                chest_bias += 0.10
+                chest_bias += 0.20
+            elif mean_pitch_hz < 420.0:
+                chest_bias += 0.08
             elif mean_pitch_hz >= 520.0:
                 falsetto_bias += 0.04
             elif mean_pitch_hz >= 420.0:
@@ -33386,8 +33446,8 @@ class ECGStylePitchVisualizer(QWidget):
         if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18:
             falsetto_bias += 0.03
         if breath_like:
-            chest_bias += 0.06
-            falsetto_bias -= 0.10
+            chest_bias += 0.14
+            falsetto_bias -= 0.18
         if mean_pitch_hz < 340.0 and mean_zcr >= 0.12 and stable_ratio < 0.12:
             falsetto_bias -= 0.05
 
@@ -33524,6 +33584,29 @@ class ECGStylePitchVisualizer(QWidget):
             mean_zcr = float(np.mean(zcr_values[frame_mask])) if frame_count > 0 else 0.0
             mean_breath_score = float(np.mean(breath_scores[frame_mask])) if frame_count > 0 else 0.0
             breath_hint_ratio = float(np.mean(breath_hints[frame_mask])) if frame_count > 0 else 0.0
+            # 呼吸段跳过真假声分类：明显呼吸特征 → 不是声区，避免假声误判
+            # 三个触发条件覆盖不同呼吸表现形态
+            low_energy_breath = (
+                voiced_ratio <= 0.48
+                and mean_rms <= 0.0050
+                and (mean_zcr >= 0.05 or mean_breath_score >= 0.13 or breath_hint_ratio >= 0.06)
+            )
+            high_hint_breath = (
+                breath_hint_ratio >= 0.14
+                and voiced_ratio <= 0.55
+                and mean_rms <= 0.0060
+            )
+            # 中间态：有一定呼吸提示 + 低稳定度 + 低能量 → 很可能是换气
+            moderate_breath = (
+                breath_hint_ratio >= 0.06
+                and voiced_ratio <= 0.45
+                and mean_rms <= 0.0035
+                and stable_ratio <= 0.14
+                and mean_zcr >= 0.04
+            )
+            window_breath_like = bool(low_energy_breath or high_hint_breath or moderate_breath)
+            if window_breath_like:
+                continue
             if voiced_ratio < 0.17 or stable_ratio < 0.03 or mean_rms < 0.00008:
                 continue
             pitch_slice = pitches[frame_mask]
@@ -35695,11 +35778,15 @@ class ECGStylePitchVisualizer(QWidget):
                 pre_pitch = float(getattr(event, 'pre_pitch_hz', 0.0) or 0.0)
                 post_pitch = float(getattr(event, 'post_pitch_hz', 0.0) or 0.0)
                 contextual = (pre_pitch > 0.0) and (post_pitch > 0.0)
-                long_gap = duration >= 0.14 and suppressed >= 2
-                airflow_ok = breath_peak >= 0.56 or mean_zcr >= 0.06
-                quiet_gap = mean_rms <= 0.0042
-                return duration >= 0.09 and duration <= 1.05 and contextual and long_gap and (airflow_ok or quiet_gap) and (confidence >= 0.54 or strength >= 0.52)
-            min_d = max(0.11, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.11
+                # 与状态机分支对齐：使用 OR 逻辑，允许短换气（≥0.08s）
+                min_d_cfg = max(0.08, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.08
+                gap_ok = suppressed >= 2 or duration >= max(0.09, min_d_cfg * 1.1)
+                short_breath_ok = duration >= 0.20 or breath_peak >= 0.62 or (mean_zcr >= 0.10 and suppressed >= 3)
+                long_silent_breath_ok = duration >= 0.28 and suppressed >= 4 and mean_rms <= 0.0020
+                airflow_ok = breath_peak >= 0.48 and (mean_zcr >= 0.06 or breath_peak >= 0.56)
+                strong_airflow_breath_ok = airflow_ok and gap_ok and short_breath_ok
+                return duration >= 0.08 and duration <= 1.10 and contextual and 0.00008 <= mean_rms <= 0.0080 and (strong_airflow_breath_ok or long_silent_breath_ok) and (confidence >= 0.52 or strength >= 0.48)
+            min_d = max(0.08, float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06)) if cfg is not None else 0.08
             suppressed = int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
             breath_peak = float(getattr(event, 'breath_score_peak', 0.0) or 0.0)
             mean_rms = float(getattr(event, 'mean_rms', 0.0) or 0.0)
@@ -35707,12 +35794,12 @@ class ECGStylePitchVisualizer(QWidget):
             pre_pitch = float(getattr(event, 'pre_pitch_hz', 0.0) or 0.0)
             post_pitch = float(getattr(event, 'post_pitch_hz', 0.0) or 0.0)
             contextual = (pre_pitch > 0.0) and (post_pitch > 0.0)
-            airflow_ok = breath_peak >= 0.52 and (mean_zcr >= 0.15 or breath_peak >= 0.68)
-            gap_ok = suppressed >= 3 or duration >= max(0.14, min_d + 0.02)
-            short_breath_ok = duration >= 0.34 or breath_peak >= 0.80 or (mean_zcr >= 0.20 and suppressed >= 5)
-            long_silent_breath_ok = duration >= 0.42 and suppressed >= 6 and mean_rms <= 0.00145 and mean_zcr >= 0.06
+            airflow_ok = breath_peak >= 0.48 and (mean_zcr >= 0.06 or breath_peak >= 0.56)
+            gap_ok = suppressed >= 2 or duration >= max(0.10, min_d + 0.02)
+            short_breath_ok = duration >= 0.24 or breath_peak >= 0.60 or (mean_zcr >= 0.12 and suppressed >= 3)
+            long_silent_breath_ok = duration >= 0.30 and suppressed >= 4 and mean_rms <= 0.0020
             strong_airflow_breath_ok = airflow_ok and gap_ok and short_breath_ok
-            return duration >= min_d and duration <= 0.90 and contextual and 0.00008 <= mean_rms <= 0.0058 and (strong_airflow_breath_ok or long_silent_breath_ok) and (confidence >= 0.60 or strength >= 0.58)
+            return duration >= min_d and duration <= 1.10 and contextual and 0.00008 <= mean_rms <= 0.0080 and (strong_airflow_breath_ok or long_silent_breath_ok) and (confidence >= 0.52 or strength >= 0.48)
         if event_type == 'slide':
             min_d = max(0.16, float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08)) if cfg is not None else 0.16
             span = float(getattr(event, 'pitch_span_semitones', 0.0) or 0.0)
@@ -35921,11 +36008,11 @@ class ECGStylePitchVisualizer(QWidget):
         stable_ratio = _pick('stable_ratio')
         mean_breath_score = _pick('mean_breath_score')
         breath_hint_ratio = _pick('breath_hint_ratio')
-        low_energy = 0.00008 <= mean_rms <= 0.0024
-        airy_noise = mean_zcr >= 0.09 or mean_breath_score >= 0.24 or breath_hint_ratio >= 0.16
-        weak_voicing = voiced_ratio <= 0.42 and stable_ratio <= 0.18
-        weak_separation = prob_margin <= 0.16 and confidence <= 0.76 and strength <= 0.70
-        return duration >= 0.08 and duration <= 0.90 and low_energy and airy_noise and weak_voicing and weak_separation
+        low_energy = 0.00008 <= mean_rms <= 0.0038
+        airy_noise = mean_zcr >= 0.07 or mean_breath_score >= 0.20 or breath_hint_ratio >= 0.12
+        weak_voicing = voiced_ratio <= 0.48 and stable_ratio <= 0.20
+        weak_separation = prob_margin <= 0.20 or confidence <= 0.74 or strength <= 0.68
+        return duration >= 0.08 and duration <= 0.95 and low_energy and airy_noise and weak_voicing and weak_separation
 
     def _fallback_breath_events_from_voice_events(self, events: List[BaseTechniqueEvent]) -> List[BreathEvent]:
         fallback: List[BreathEvent] = []
@@ -50687,6 +50774,30 @@ class IntegratedRecordingInterface(QMainWindow):
         )
         self.settings_btn.clicked.connect(self.open_settings_dialog)
         header_layout.addWidget(self.settings_btn)
+
+        # AI 教练切换按钮
+        self.ai_coach_btn = QPushButton(" AI 教练")
+        self.ai_coach_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #A78BFA, stop:1 #7C5CFC);
+                border: none;
+                border-radius: 6px;
+                padding: 7px 14px;
+                color: white;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #C4B5FD, stop:1 #A78BFA);
+            }
+            """
+        )
+        self.ai_coach_btn.setToolTip("显示/隐藏 AI 声乐教练面板 (Ctrl+Shift+A)")
+        self.ai_coach_btn.clicked.connect(self._toggle_ai_coach)
+        header_layout.addWidget(self.ai_coach_btn)
         header_layout.addStretch()
         main_layout.addLayout(header_layout)
         
@@ -50788,6 +50899,15 @@ class IntegratedRecordingInterface(QMainWindow):
                 print("ℹ️ 主窗口同步跳过：暂无伴奏数据")
         except Exception as _e:
             print(f"⚠️ ensure_backing_time_axis_sync(main) 异常: {_e}")
+
+    def _toggle_ai_coach(self):
+        """切换 AI 教练停靠面板的显示/隐藏"""
+        try:
+            dock = getattr(self, '_ai_coach_dock', None)
+            if dock is not None:
+                dock.setVisible(not dock.isVisible())
+        except Exception:
+            pass
 
     def open_settings_dialog(self):
         """打开设置对话框，配置录音保存位置"""
@@ -51374,6 +51494,76 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
         start_btn.clicked.connect(_start_env_capture)
         clear_btn.clicked.connect(_clear_env_profile)
+
+        # ── AI 教练设置 ──
+        ai_group = QGroupBox("AI 声乐教练")
+        ai_group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #7C5CFC;
+                border-radius: 8px;
+                margin-top: 14px;
+                padding: 18px 14px 14px 14px;
+                font-size: 13px;
+                font-weight: bold;
+                color: #A78BFA;
+                background-color: #1E1E36;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 2px 10px;
+                left: 10px;
+            }
+        """)
+        ai_layout = QVBoxLayout(ai_group)
+        ai_desc = QLabel("配置 AI 教练的 API 密钥、大模型提供商、教练名称和桌宠形象。")
+        ai_desc.setStyleSheet("color: #aaa; font-size: 12px; padding-bottom: 4px;")
+        ai_layout.addWidget(ai_desc)
+        ai_btn_row = QHBoxLayout()
+        open_ai_settings_btn = QPushButton(" 打开 AI 教练设置")
+        open_ai_settings_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #A78BFA, stop:1 #7C5CFC);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 9px 18px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #C4B5FD, stop:1 #A78BFA);
+            }
+        """)
+        def _open_ai_coach_settings():
+            try:
+                from src.ai_coach.gui.settings_panel import CoachSettingsDialog
+                from src.ai_coach.config import AppConfig, ConfigManager
+                panel = getattr(self, '_ai_coach_panel', None)
+                if panel is not None:
+                    agent = panel.coach_panel.agent
+                    config = agent.app_config
+                    config_mgr = ConfigManager()
+                    ai_dlg = CoachSettingsDialog(config, config_mgr, parent=dlg)
+                    if ai_dlg.exec() == CoachSettingsDialog.DialogCode.Accepted:
+                        new_config = ai_dlg.get_config()
+                        agent.reconfigure(new_config)
+                        # 同步桌宠
+                        try:
+                            panel._sync_mascot_identity()
+                        except Exception:
+                            pass
+                else:
+                    QMessageBox.information(dlg, "提示", "AI 教练面板尚未初始化，请先打开 AI 教练。")
+            except Exception as e:
+                QMessageBox.warning(dlg, "错误", f"无法打开 AI 教练设置: {e}")
+        open_ai_settings_btn.clicked.connect(_open_ai_coach_settings)
+        ai_btn_row.addWidget(open_ai_settings_btn)
+        ai_btn_row.addStretch()
+        ai_layout.addLayout(ai_btn_row)
+        v.addWidget(ai_group)
 
         # 操作按钮
         btn_row = QHBoxLayout()
@@ -59234,6 +59424,90 @@ class IntegratedRecordingInterface(QMainWindow):
             prev_time = timeline_time
             if detected_frequency > 0.0:
                 prev_freq = detected_frequency
+
+        # ── 间隙填补：在有声段之间插入合成无音高帧，供换气检测等技巧分析 ──
+        if len(frames) >= 2:
+            filled: List[FrameFeatures] = []
+            gap_interval = 0.030  # 每30ms插入一帧
+            for i, frame in enumerate(frames):
+                filled.append(frame)
+                if i + 1 >= len(frames):
+                    break
+                next_frame = frames[i + 1]
+                gap = float(next_frame.timeline_time) - float(frame.timeline_time)
+                if gap <= 0.065:
+                    continue
+                # 在有声段之间的显著间隙中插入合成无音高帧
+                num_insert = max(1, int(gap / gap_interval) - 1)
+                for j in range(1, min(num_insert + 1, 60)):  # 上限60帧防止异常
+                    gap_time = float(frame.timeline_time) + j * gap_interval
+                    if gap_time >= float(next_frame.timeline_time) - 0.005:
+                        break
+                    # 从原始音频估算RMS
+                    gap_rms = 0.0
+                    if audio_np is not None and sr_value > 0:
+                        try:
+                            center = int(round(gap_time * sr_value))
+                            radius = max(64, int(round(sr_value * 0.030)))
+                            start_idx = max(0, center - radius)
+                            end_idx = min(len(audio_np), center + radius)
+                            if end_idx > start_idx:
+                                gap_audio = audio_np[start_idx:end_idx]
+                                gap_rms = float(np.sqrt(np.mean(np.square(gap_audio, dtype=np.float64), dtype=np.float64)))
+                        except Exception:
+                            gap_rms = 0.0
+                    if gap_rms <= 0.0:
+                        gap_rms = 0.00025  # 呼吸区间典型RMS下限
+                    # 从原始音频估算 ZCR
+                    gap_zcr = 0.0
+                    if audio_np is not None and sr_value > 0:
+                        try:
+                            center = int(round(gap_time * sr_value))
+                            radius = max(64, int(round(sr_value * 0.030)))
+                            start_idx = max(0, center - radius)
+                            end_idx = min(len(audio_np), center + radius)
+                            if end_idx > start_idx:
+                                gap_audio_seg = audio_np[start_idx:end_idx]
+                                gap_zcr = float(np.mean(np.abs(np.diff(np.sign(gap_audio_seg)))) / (2.0 * max(1, len(gap_audio_seg))))
+                        except Exception:
+                            gap_zcr = 0.0
+                    if gap_zcr <= 0.0 and gap_rms > 0.0:
+                        gap_zcr = 0.12  # 呼吸区间典型ZCR
+                    gap_frame = FrameFeatures(
+                        timeline_time=gap_time,
+                        wall_time=0.0,
+                        raw_frequency_hz=0.0,
+                        detected_frequency_hz=0.0,
+                        display_frequency_hz=0.0,
+                        has_pitch=False,
+                        confidence=0.0,
+                        audio_rms=float(gap_rms),
+                        note_name=None,
+                        octave=None,
+                        midi_number=None,
+                        cents=None,
+                        zcr=float(gap_zcr),
+                        voiced_score=0.0,
+                        periodicity_score=0.0,
+                        fast_change=False,
+                        semitone_delta_prev=None,
+                        semitone_rate=0.0,
+                        semitone_accel=0.0,
+                        continuity_score=None,
+                        stable_anchor_frequency_hz=None,
+                        breath_detect_hint=True,
+                        vibrato_info={'has_vibrato': False},
+                        mode_name=str(mode_name or '普通模式'),
+                        preview_only=False,
+                        source_flags={
+                            'rebuilt_from_pitch_store': True,
+                            'synthetic_gap_fill': True,
+                            **base_flags,
+                        },
+                    )
+                    filled.append(gap_frame)
+            frames = filled
+
         return frames
 
     def _build_technique_frames_from_pitch_payloads(

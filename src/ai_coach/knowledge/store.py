@@ -295,6 +295,138 @@ class KnowledgeStore:
             pass
         return None
 
+    # ── 动态增长 ──────────────────────────────────────────────
+
+    def _title_similarity(self, title1: str, title2: str) -> float:
+        """计算两个标题的相似度（基于字符 trigram Jaccard）。"""
+        def _trigrams(s: str) -> set:
+            s = s.strip().lower()
+            return {s[i:i+3] for i in range(len(s) - 2)} if len(s) >= 3 else {s}
+        t1 = _trigrams(title1)
+        t2 = _trigrams(title2)
+        if not t1 or not t2:
+            return 0.0
+        return len(t1 & t2) / len(t1 | t2)
+
+    def _content_overlap(self, text1: str, text2: str, top_n: int = 30) -> float:
+        """基于高频词的 Jaccard 重叠率。"""
+        import re
+        def _top_words(text: str, n: int) -> set:
+            words = re.findall(r'[一-鿿]+|[a-zA-Z]+', text.lower())
+            freq: dict[str, int] = {}
+            for w in words:
+                if len(w) >= 2:
+                    freq[w] = freq.get(w, 0) + 1
+            return {w for w, _ in sorted(freq.items(), key=lambda x: -x[1])[:n]}
+        s1 = _top_words(text1, top_n)
+        s2 = _top_words(text2, top_n)
+        if not s1 or not s2:
+            return 0.0
+        return len(s1 & s2) / len(s1 | s2)
+
+    def _find_duplicate(self, entry: KnowledgeEntry) -> Optional[KnowledgeEntry]:
+        """查找与新条目高度重复的已有条目，未找到则返回 None。"""
+        for existing in self.entries.values():
+            # 同类别优先
+            cat_match = entry.category == existing.category
+            # 标题相似度
+            title_sim = self._title_similarity(entry.title, existing.title)
+            if title_sim > 0.75:
+                return existing
+            # 标题 + 内容综合判断
+            content_sim = self._content_overlap(entry.full_text, existing.full_text)
+            if title_sim > 0.4 and content_sim > 0.5:
+                return existing
+            if cat_match and content_sim > 0.7:
+                return existing
+            # 标签高度重叠
+            common_tags = set(t.lower() for t in entry.tags) & set(t.lower() for t in existing.tags)
+            if len(common_tags) >= 3 and content_sim > 0.4:
+                return existing
+        return None
+
+    def _merge_into(self, existing: KnowledgeEntry, new: KnowledgeEntry):
+        """将新条目的增量信息合并到已有条目。"""
+        # 合并标签
+        existing_tags_lower = {t.lower() for t in existing.tags}
+        for tag in new.tags:
+            if tag.lower() not in existing_tags_lower:
+                existing.tags.append(tag)
+                existing_tags_lower.add(tag.lower())
+        # 合并常见错误（去重）
+        existing_mistakes = set(m.strip().lower() for m in existing.common_mistakes)
+        for m in new.common_mistakes:
+            if m.strip().lower() not in existing_mistakes:
+                existing.common_mistakes.append(m)
+                existing_mistakes.add(m.strip().lower())
+        # 合并练习（按名称去重）
+        existing_ex_names = {ex.get("name", "").strip() for ex in existing.exercises}
+        for ex in new.exercises:
+            if ex.get("name", "").strip() not in existing_ex_names:
+                existing.exercises.append(ex)
+                existing_ex_names.add(ex.get("name", "").strip())
+        # 补充 theory/practice 如果已有为空
+        if not existing.theory and new.theory:
+            existing.theory = new.theory
+        if not existing.practice and new.practice:
+            existing.practice = new.practice
+        # 更新 update 时间
+        existing._raw["updated"] = max(
+            existing._raw.get("updated", ""), new._raw.get("updated", "")
+        )
+
+    def add_entry(self, entry: KnowledgeEntry, persist: bool = True):
+        """运行时添加知识条目（带去重合并）。"""
+        if not entry.id:
+            import uuid
+            entry.id = uuid.uuid4().hex[:12]
+
+        # 去重检查
+        dup = self._find_duplicate(entry)
+        if dup is not None:
+            self._merge_into(dup, entry)
+            if persist:
+                self._save_entry_yaml(dup)
+            return
+
+        self.entries[entry.id] = entry
+        for tag in entry.tags:
+            self._tag_index.setdefault(tag.lower(), []).append(entry.id)
+        if persist:
+            self._save_entry_yaml(entry)
+
+    def _entry_to_dict(self, entry: KnowledgeEntry) -> dict:
+        return {
+            "id": entry.id,
+            "title": entry.title,
+            "category": entry.category,
+            "level": entry.level,
+            "tags": entry.tags,
+            "related": entry.related,
+            "content": {
+                "summary": entry.summary,
+                "theory": entry.theory,
+                "practice": entry.practice,
+                "common_mistakes": entry.common_mistakes,
+                "criteria": entry.criteria,
+                "exercises": entry.exercises,
+                "faq": entry.faq,
+            },
+        }
+
+    def _save_entry_yaml(self, entry: KnowledgeEntry):
+        """将单条知识条目持久化为 YAML 文件。"""
+        import yaml
+        file_path = self._dir / f"_grown_{entry.id}.yaml"
+        data = {"entries": [self._entry_to_dict(entry)]}
+        try:
+            file_path.write_text(
+                yaml.dump(data, allow_unicode=True, default_flow_style=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
     @property
     def entry_count(self) -> int:
         return len(self.entries)

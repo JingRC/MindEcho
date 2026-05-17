@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 from ..agent import VocalCoachAgent
+from ..config import AppConfig, ConfigManager
 from ..context.builder import SingingContext
-from ..llm_client import DeepSeekConfig
+from ..identity import CoachIdentity
+from ..llm_client import LLMConfig
+from .settings_panel import CoachSettingsDialog
 
 # 以下为 PyQt6 导入，在无 GUI 环境会优雅降级
 try:
@@ -101,12 +104,56 @@ class _AgentThread(QThread):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 语音输入线程
+# ═══════════════════════════════════════════════════════════════
+
+_VOICE_AVAILABLE = False
+try:
+    import speech_recognition as _sr
+    _VOICE_AVAILABLE = True
+except ImportError:
+    pass
+
+
+class _VoiceWorker(QThread):
+    """后台语音识别线程"""
+    result = pyqtSignal(str)
+    error = pyqtSignal(str)
+    status = pyqtSignal(str)
+
+    def run(self):
+        try:
+            r = _sr.Recognizer()
+            with _sr.Microphone() as source:
+                self.status.emit("正在聆听...")
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                audio = r.listen(source, timeout=8, phrase_time_limit=15)
+            self.status.emit("正在识别...")
+            text = r.recognize_google(audio, language="zh-CN")
+            if text:
+                self.result.emit(text)
+            else:
+                self.error.emit("未识别到语音内容")
+        except _sr.WaitTimeoutError:
+            self.error.emit("聆听超时，请点击麦克风重试")
+        except _sr.UnknownValueError:
+            self.error.emit("无法识别语音内容，请说得清晰一些")
+        except _sr.RequestError as e:
+            self.error.emit(f"语音服务不可用: {e}")
+        except Exception as e:
+            self.error.emit(f"语音输入失败: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
 # 对话面板
 # ═══════════════════════════════════════════════════════════════
 
 
 class AICoachPanel(QWidget):
     """AI 声乐教练对话面板"""
+
+    # 配置变更回调（由 AICoachDockPanel 设置，用于同步桌宠）
+    on_config_changed = None
 
     def __init__(
         self,
@@ -123,38 +170,24 @@ class AICoachPanel(QWidget):
             on_stream_token=self._on_stream_token,
         )
         self._pending_tokens: list[str] = []
+
+        # 流式输出定时器：每 50ms 刷新一次，产生连续打字效果
+        self._stream_timer = QTimer(self)
+        self._stream_timer.setInterval(50)
+        self._stream_timer.timeout.connect(self._flush_pending_tokens)
+
         self._init_ui()
         self._connect_signals()
 
         # 欢迎消息
-        self._append_message(
-            "assistant",
-            "你好！我是 MindEcho AI 声乐教练 🎵\n\n"
-            "我可以帮你：\n"
-            "- 分析你的演唱录音，给出具体改进建议\n"
-            "- 将你的演唱与专业歌手进行对比\n"
-            "- 回答声乐相关的任何问题\n"
-            "- 制定个性化的练习计划\n\n"
-            "你可以：\n"
-            "- 直接打字提问\n"
-            "- 先录一首歌，然后点 **分析演唱**\n"
-            "- 加载你和专业歌手的分析文件，点 **对比分析**\n\n"
-            f"知识库已加载：{self.agent.knowledge_stats['entry_count']} 条声乐知识\n"
-            f"涵盖分类：{', '.join(self.agent.knowledge_stats['categories'])}"
-        )
+        identity = self.agent.identity
+        self._append_message("assistant", identity.get_greeting())
 
     # ── UI 构建 ───────────────────────────────────────────────
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-
-        # Profile bar
-        profile_bar = QHBoxLayout()
-        self.profile_label = QLabel("加载中...")
-        self.profile_label.setStyleSheet("color: #888; font-size: 11px;")
-        profile_bar.addWidget(self.profile_label)
-        profile_bar.addStretch()
-        layout.addLayout(profile_bar)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Splitter: chat + report
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -186,6 +219,19 @@ class AICoachPanel(QWidget):
             }
         """)
         report_tabs.addTab(self.report_display, "分析报告")
+
+        # 练习数据可视化标签页
+        self.chart_display = QTextBrowser()
+        self.chart_display.setStyleSheet("""
+            QTextBrowser {
+                background-color: #1a1a2e;
+                color: #e0e0e0;
+                border: 1px solid #333;
+                font-size: 12px;
+            }
+        """)
+        report_tabs.addTab(self.chart_display, "练习数据")
+
         splitter.addWidget(report_tabs)
         splitter.setSizes([400, 200])
         layout.addWidget(splitter)
@@ -268,6 +314,24 @@ class AICoachPanel(QWidget):
             QPushButton:hover { background-color: #5a7aaa; }
         """)
         input_layout.addWidget(self.input_field)
+        self.btn_mic = QPushButton("🎤")
+        self.btn_mic.setFixedSize(36, 36)
+        self.btn_mic.setToolTip("语音输入")
+        self.btn_mic.setStyleSheet("""
+            QPushButton {
+                background-color: #2a2a4a;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                font-size: 16px;
+            }
+            QPushButton:hover { background-color: #3a3a5a; border-color: #4ADE80; }
+            QPushButton:disabled { color: #555; }
+        """)
+        if not _VOICE_AVAILABLE:
+            self.btn_mic.setEnabled(False)
+            self.btn_mic.setToolTip("语音输入需要安装: pip install SpeechRecognition pyaudio")
+        input_layout.addWidget(self.btn_mic)
         input_layout.addWidget(self.btn_send)
         layout.addLayout(input_layout)
 
@@ -276,12 +340,12 @@ class AICoachPanel(QWidget):
     def _connect_signals(self):
         self.btn_send.clicked.connect(self._on_send)
         self.input_field.returnPressed.connect(self._on_send)
+        self.btn_mic.clicked.connect(self._on_voice_input)
         self.btn_analyze.clicked.connect(self._on_analyze)
         self.btn_compare.clicked.connect(self._on_compare)
         self.btn_plan.clicked.connect(self._on_plan)
         self.btn_report.clicked.connect(self._on_report)
         self.btn_clear.clicked.connect(self._on_clear)
-
         # 延迟加载 profile
         QTimer.singleShot(100, self._refresh_profile)
 
@@ -296,6 +360,55 @@ class AICoachPanel(QWidget):
         self.input_field.setEnabled(False)
         self.btn_send.setEnabled(False)
         self._run_agent_task("chat", message=text)
+
+    def _on_voice_input(self):
+        """语音输入按钮 —— 后台识别，完成后填入输入框"""
+        if not _VOICE_AVAILABLE:
+            return
+
+        self.btn_mic.setEnabled(False)
+        self.btn_mic.setText("🔴")
+        self.btn_mic.setStyleSheet("""
+            QPushButton {
+                background-color: #4a2a2a;
+                color: #F87171;
+                border: 1px solid #F87171;
+                border-radius: 4px;
+                font-size: 16px;
+            }
+        """)
+
+        self._voice_worker = _VoiceWorker()
+        self._voice_worker.result.connect(self._on_voice_result)
+        self._voice_worker.error.connect(self._on_voice_error)
+        self._voice_worker.status.connect(self._on_voice_status)
+        self._voice_worker.finished.connect(self._on_voice_done)
+        self._voice_worker.start()
+
+    def _on_voice_result(self, text: str):
+        self.input_field.setText(text)
+        self.input_field.setFocus()
+
+    def _on_voice_error(self, msg: str):
+        self._append_message("assistant", f"🎤 {msg}")
+
+    def _on_voice_status(self, msg: str):
+        self.btn_mic.setToolTip(msg)
+
+    def _on_voice_done(self):
+        self.btn_mic.setText("🎤")
+        self.btn_mic.setEnabled(True)
+        self.btn_mic.setToolTip("语音输入")
+        self.btn_mic.setStyleSheet("""
+            QPushButton {
+                background-color: #2a2a4a;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                font-size: 16px;
+            }
+            QPushButton:hover { background-color: #3a3a5a; border-color: #4ADE80; }
+        """)
 
     def _on_analyze(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -353,16 +466,37 @@ class AICoachPanel(QWidget):
         self.chat_display.clear()
         self.agent.session_mgr.clear_chat_history()
 
+    def _on_settings(self):
+        """打开 AI 教练设置对话框"""
+        config = self.agent.app_config
+        config_mgr = ConfigManager()
+        dlg = CoachSettingsDialog(config, config_mgr, parent=self)
+        if dlg.exec() == CoachSettingsDialog.DialogCode.Accepted:
+            new_config = dlg.get_config()
+            try:
+                self.agent.reconfigure(new_config)
+                self._append_message(
+                    "assistant",
+                    f"⚙ 设置已更新。现在由 **{new_config.identity.name}** 使用 "
+                    f"**{new_config.llm.model}** 模型为你服务。"
+                )
+                # 通知外部（如 AICoachDockPanel）同步桌宠
+                if callable(self.on_config_changed):
+                    self.on_config_changed()
+            except Exception as e:
+                self._append_message("assistant", f"⚠ 配置已保存，但重新连接失败: {e}")
+
     def _on_thinking(self):
         self.thinking_bar.setVisible(True)
 
     def _on_stream_token(self, token: str):
         self._pending_tokens.append(token)
-        # 每收到 5 个 token 更新一次 UI（减少刷新频率）
-        if len(self._pending_tokens) >= 5:
-            self._flush_pending_tokens()
+        # 首个 token 到达时启动定时刷新 (50ms 间隔，连续打字效果)
+        if not self._stream_timer.isActive():
+            self._stream_timer.start()
 
     def _on_response_done(self, response: str):
+        self._stream_timer.stop()
         self._flush_pending_tokens()
         self.thinking_bar.setVisible(False)
         self.input_field.setEnabled(True)
@@ -385,6 +519,7 @@ class AICoachPanel(QWidget):
         """在后台线程中运行 Agent 任务"""
         self.thinking_bar.setVisible(True)
         self._pending_tokens.clear()
+        self._stream_timer.stop()
 
         # 禁用 UI（流式响应用 _flush 更新，非流式用 result_ready 更新）
         if task_type == "chat":
@@ -421,8 +556,75 @@ class AICoachPanel(QWidget):
         )
 
     def _refresh_profile(self):
+        """刷新用户画像摘要 — 供外部（integration.py）调用显示"""
+        self._refresh_charts()
         try:
-            summary = self.agent.get_profile_summary()
-            self.profile_label.setText(summary.replace("\n", " | "))
+            return self.agent.get_profile_summary()
         except Exception:
-            pass
+            return ""
+
+    def _refresh_charts(self):
+        """刷新练习数据可视化图表。"""
+        try:
+            from .charts import sparkline_svg, bar_chart_svg, progress_ring_svg
+            sessions = self.agent.session_mgr.sessions
+
+            parts = ['<div style="padding:12px;font-family:sans-serif;">']
+            parts.append(
+                '<h3 style="color:#A78BFA;margin:0 0 12px 0;">练习数据总览</h3>'
+            )
+
+            # 关键指标卡片
+            stats = self.agent.session_mgr.get_stats()
+            rings_html = '<div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap;">'
+            # 累计练习次数
+            max_sessions = max(stats["total_sessions"], 1)
+            rings_html += (
+                f'<div style="text-align:center;min-width:80px;">'
+                f'{progress_ring_svg(min(stats["total_sessions"] / max(30, stats["total_sessions"]), 1.0), size=64, color="#7C5CFC", label=str(stats["total_sessions"]))}'
+                f'<div style="font-size:11px;color:#999;margin-top:4px;">练习次数</div></div>'
+            )
+            # 累计小时
+            rings_html += (
+                f'<div style="text-align:center;min-width:80px;">'
+                f'{progress_ring_svg(min(stats["total_hours"] / max(10, stats["total_hours"]), 1.0), size=64, color="#4ADE80", label=f"{stats["total_hours"]}h")}'
+                f'<div style="font-size:11px;color:#999;margin-top:4px;">练习时长</div></div>'
+            )
+            rings_html += "</div>"
+            parts.append(rings_html)
+
+            # 音准趋势折线图
+            acc_data = [
+                s.accuracy for s in sessions[-20:]
+                if s.accuracy > 0
+            ]
+            if len(acc_data) >= 3:
+                acc_labels = [
+                    s.timestamp[:10] if s.timestamp else ""
+                    for s in sessions[-20:]
+                    if s.accuracy > 0
+                ]
+                parts.append(
+                    '<h4 style="color:#ccc;margin:0 0 6px 0;">音准趋势</h4>'
+                )
+                parts.append(
+                    sparkline_svg(acc_data, width=340, height=70, labels=acc_labels)
+                )
+
+            # 最近练习柱状图
+            recent = [s for s in sessions[-8:] if s.accuracy > 0]
+            if recent:
+                parts.append(
+                    '<h4 style="color:#ccc;margin:12px 0 6px 0;">最近练习</h4>'
+                )
+                bar_data = [
+                    (s.song_name[:6] if s.song_name else s.session_id[:6], s.accuracy)
+                    for s in recent
+                ]
+                parts.append(bar_chart_svg(bar_data, width=340, height=120))
+
+            parts.append("</div>")
+            self.chart_display.setHtml("".join(parts))
+
+        except Exception:
+            pass  # 图表失败不影响主功能

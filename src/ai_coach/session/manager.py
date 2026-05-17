@@ -67,9 +67,13 @@ class SessionManager:
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
 
+        # 会话持久化目录
+        self._sessions_dir = self._data_dir.parent / "sessions"
+        self._sessions_dir.mkdir(parents=True, exist_ok=True)
+
         self.profile: UserProfile = self._load_profile()
-        self.sessions: list[PracticeSession] = []
-        self._chat_history: list[dict[str, str]] = []
+        self.sessions: list[PracticeSession] = self._load_practice_sessions()
+        self._chat_history: list[dict[str, str]] = self._load_chat_history()
 
     # ── 用户画像 ─────────────────────────────────────────────
 
@@ -86,11 +90,18 @@ class SessionManager:
                 pass
         return UserProfile()
 
+    @staticmethod
+    def _atomic_write(file_path: Path, text: str):
+        """原子写入：先写临时文件再 rename，避免写入中途崩溃导致文件损坏。"""
+        tmp = file_path.with_suffix(file_path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(file_path)
+
     def save_profile(self):
         data = {k: v for k, v in self.profile.__dict__.items()}
-        self._profile_path().write_text(
+        self._atomic_write(
+            self._profile_path(),
             json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
 
     def update_profile(
@@ -153,6 +164,7 @@ class SessionManager:
         self.sessions.append(session)
         self.profile.total_practice_sessions += 1
         self.save_profile()
+        self._save_practice_sessions()
         return sid
 
     def end_session(self, session_id: str, duration_minutes: float,
@@ -170,6 +182,7 @@ class SessionManager:
         if accuracy > 0:
             self.record_accuracy(accuracy)
         self.save_profile()
+        self._save_practice_sessions()
 
     def recent_sessions(self, n: int = 5) -> list[PracticeSession]:
         return self.sessions[-n:] if self.sessions else []
@@ -180,12 +193,77 @@ class SessionManager:
         self._chat_history.append({"role": role, "content": content})
         if len(self._chat_history) > self.MAX_HISTORY_TURNS * 2:
             self._chat_history = self._chat_history[-(self.MAX_HISTORY_TURNS * 2):]
+        self._save_chat_history()
 
     def get_chat_history(self, last_n: int = 10) -> list[dict[str, str]]:
         return self._chat_history[-last_n * 2:] if self._chat_history else []
 
     def clear_chat_history(self):
         self._chat_history.clear()
+        self._save_chat_history()
+
+    # ── 持久化：聊天历史 ──────────────────────────────────────
+
+    def _chat_history_path(self) -> Path:
+        return self._sessions_dir / "chat_history.json"
+
+    def _save_chat_history(self):
+        try:
+            self._atomic_write(
+                self._chat_history_path(),
+                json.dumps(self._chat_history, ensure_ascii=False, indent=2),
+            )
+        except Exception:
+            pass
+
+    def _load_chat_history(self) -> list[dict[str, str]]:
+        path = self._chat_history_path()
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                pass
+        return []
+
+    # ── 持久化：练习会话 ──────────────────────────────────────
+
+    def _sessions_path(self) -> Path:
+        return self._sessions_dir / "practice_log.json"
+
+    def _save_practice_sessions(self):
+        try:
+            data = [
+                {
+                    "session_id": s.session_id,
+                    "timestamp": s.timestamp,
+                    "duration_minutes": s.duration_minutes,
+                    "song_name": s.song_name,
+                    "accuracy": s.accuracy,
+                    "main_focus": s.main_focus,
+                    "notes": s.notes,
+                    "analysis_data_path": s.analysis_data_path,
+                }
+                for s in self.sessions
+            ]
+            self._atomic_write(
+                self._sessions_path(),
+                json.dumps(data, ensure_ascii=False, indent=2),
+            )
+        except Exception:
+            pass
+
+    def _load_practice_sessions(self) -> list[PracticeSession]:
+        path = self._sessions_path()
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [PracticeSession(**item) for item in data]
+            except Exception:
+                pass
+        return []
 
     # ── 统计 ─────────────────────────────────────────────────
 
@@ -199,3 +277,42 @@ class SessionManager:
             "completed_stages": self.profile.completed_stages,
             "focus_areas": self.profile.focus_areas,
         }
+
+    def format_practice_context(self) -> str:
+        """将用户练习数据格式化为 LLM 上下文，注入 system prompt。
+
+        只注入有实际数据的内容，避免空泛的模板字段。
+        """
+        s = self.get_stats()
+        parts = []
+
+        if s["total_sessions"] > 0:
+            parts.append(f"- 累计练习 {s['total_sessions']} 次 ({s['total_hours']} 小时)")
+
+        if s["vocal_range"] not in ("0-0Hz", "0.0-0.0Hz", "-Hz"):
+            parts.append(f"- 当前音域 {s['vocal_range']}")
+
+        if s["level"] and s["level"] != "beginner":
+            parts.append(f"- 学习阶段: {s['level']}")
+
+        if s["completed_stages"]:
+            parts.append(f"- 已完成阶段: {', '.join(s['completed_stages'])}")
+
+        if s["focus_areas"]:
+            parts.append(f"- 需重点关注: {', '.join(s['focus_areas'])}")
+
+        trend = s["recent_accuracy_trend"]
+        if trend and "数据不足" not in trend:
+            parts.append(f"- 近期趋势: {trend}")
+
+        # 最近的练习记录
+        recent = [s for s in self.sessions[-5:] if s.song_name]
+        if recent:
+            songs = [s.song_name for s in recent]
+            accs = [f"{s.accuracy*100:.0f}%" if s.accuracy else "N/A" for s in recent]
+            parts.append(f"- 最近练习曲目: {', '.join(f'{s}({a})' for s, a in zip(songs, accs))}")
+
+        if not parts:
+            return ""
+
+        return "## 用户练习数据\n" + "\n".join(parts)

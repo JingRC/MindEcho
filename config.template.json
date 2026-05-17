@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "",
+    "base_url": "",
+    "model": "",
+    "max_tokens": 4096,
+    "temperature": 0.7
+  },
+  "identity": {
+    "name": "麦麦",
+    "display_name": "麦麦",
+    "personality": "温暖鼓励",
+    "avatar_theme": "classic",
+    "accent_color": "#7C5CFC",
+    "greeting_template": "嗨～我是{name}！\n平时可以陪你聊聊天、聊聊音乐，有什么唱歌上的问题也尽管问我。\n想分析录音的话录完点「分析演唱」就行，想对比专业歌手的版本也可以～"
+  }
+}

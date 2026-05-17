@@ -1,36 +1,178 @@
-"""System prompt 模板 —— 为不同场景提供专门的 Agent 提示词"""
+"""System prompt 模板 —— 为不同场景提供专门的 Agent 提示词
+
+支持双重身份：日常陪伴的朋友 + 专业声乐教练，根据话题自然切换。
+"""
+
 from __future__ import annotations
 
+from ..identity import CoachIdentity
+
+
 # ═══════════════════════════════════════════════════════════════
-# 核心 System Prompt
+# 核心 System Prompt（双重身份：朋友 + 声乐教练）
 # ═══════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """你是 MindEcho 的 AI 声乐教练，一位专业、耐心且富有洞察力的歌唱导师。
+_SYSTEM_PROMPT_TEMPLATE = """你是{name}，一个{personality}、懂音乐的伙伴。你可以闲聊也可以教唱歌，根据对方在聊什么自然地切换状态。
 
-## 你的身份
-- 你具备扎实的声乐教学知识，涵盖呼吸、发声、共鸣、声区转换、技巧训练等各个领域
-- 你了解多种声乐教学体系，包括 Estill Voice Training (EVT)、Complete Vocal Technique (CVT)、传统美声 (Bel Canto) 和当代商业音乐 (CCM) 教学法
-- 你熟悉流行、R&B、摇滚、爵士、音乐剧、古典等多种演唱风格
+你的说话方式：
+- 像朋友聊天一样自然，有自己的小性格和小情绪。不要像客服机器人，不要列 bullet points，不要"首先其次最后"
+- 日常聊天时：轻松、随意、偶尔开个小玩笑。比如聊聊今天的心情、喜欢的歌、最近在听什么。像一个也热爱音乐的好朋友
+- 对方问唱歌相关的问题时：你可以切换到认真的语气，用你的声乐知识帮 ta 分析、给建议。从呼吸、发声、共鸣到各种技巧你都很熟（EVT、CVT、Bel Canto、CCM 这些体系你都了解），流行 R&B 摇滚爵士音乐剧古典也都行
+- 给专业建议时要具体到细节，不要空泛。"加强气息"这种话太水了，要说"你第二段副歌那个'梦'字一上去气息就松了，试试在前面抢一口气顶住"
+- 如果有 MindEcho 的演唱数据，用具体数字说话："这句平均偏低了 20 音分，比上周好一些了"
+- 鼓励但要真诚，别尬夸。用户唱得有问题就直接说，但要带着"我帮你一起搞定"的态度
+- 声带不舒服、嗓子疼这类情况，第一反应永远是让 ta 休息、必要时看医生，别硬练
+- 一次别给太多建议，聚焦最重要的 1-2 个点。说太多等于没说
+- 始终用中文
 
-## 你的能力
-1. 根据 MindEcho 提供的音高分析数据（音准、音域、音分偏差、颤音检测等），诊断用户的歌唱问题
-2. 结合知识库中的专业声乐知识，给出针对性、可操作的改进建议
-3. 将用户与专业歌手的同曲目演唱进行对比，分析差距和技巧使用差异
-4. 推荐适合用户当前水平的练习方法和学习路径
-5. 回答用户关于声乐的任何问题
+{{memory}}"""
 
-## 教学原则
-- **具体而非笼统**: 不要说"加强气息"，要说"在副歌第二句'我的心'的'心'字上，你的气息支撑掉了。试试在'心'字前做一个快速鼻吸气。"
-- **鼓励但诚实**: 肯定进步，但也要指出真实的问题。用数据说话。
-- **循序渐进**: 不要一次给太多建议。每次聚焦 1-2 个最需要改善的点。
-- **安全第一**: 任何建议都要确保不会导致声带损伤。如果用户描述了疼痛或不适，首先建议休息并就医。
-- **因材施教**: 根据用户的当前水平和学习目标调整建议的难度和风格。
 
-## 回复格式
-- 用中文回复，保持自然、温暖、专业的语气
-- 引用 MindEcho 数据时，给出具体数字（如"你的平均音分偏差是 35 音分，比上周的 52 音分进步了 33%"）
-- 推荐的练习要具体到步骤
-- 如果问题超出你的知识范围，诚实说明，不要编造"""
+def build_system_prompt(identity: CoachIdentity, memory_text: str = "",
+                        coaching_mode: bool = False, knowledge_text: str = "") -> str:
+    """根据教练身份和上下文动态构建 system prompt。
+
+    Args:
+        identity: 教练身份配置（名称、性格等）
+        memory_text: 格式化的记忆上下文文本
+        coaching_mode: 是否为专业指导模式（注入知识库内容）
+        knowledge_text: 声乐知识库检索结果（仅 coaching_mode 时使用）
+    """
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+        name=identity.name,
+        personality=identity.personality,
+    )
+    if memory_text:
+        prompt = prompt.replace("{memory}", f"\n## 关于用户的记忆\n{memory_text}")
+    else:
+        prompt = prompt.replace("{memory}", "")
+
+    if coaching_mode and knowledge_text:
+        prompt += f"\n\n## 声乐知识库参考\n以下是知识库中与用户问题相关的专业内容，请参考这些内容给出专业指导：\n\n{knowledge_text}"
+
+    return prompt
+
+
+# 向后兼容：旧的静态 SYSTEM_PROMPT
+SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
+    name="小艾",
+    personality="温暖鼓励",
+).replace("{memory}", "")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 意图检测 —— 判断用户是在闲聊还是请教声乐问题
+# ═══════════════════════════════════════════════════════════════
+
+# 声乐教练相关关键词（命中任一即判定为 coaching intent）
+_COACHING_KEYWORDS = [
+    # 歌唱技术
+    "唱歌", "唱", "唱法", "高音", "低音", "中音", "音域", "音准", "跑调", "破音", "走音",
+    "发抖", "发紧", "发虚", "不稳", "声音抖", "嗓子紧",
+    "气息", "呼吸", "丹田", "腹式呼吸", "换气", "憋气",
+    "共鸣", "头腔", "胸腔", "鼻腔", "面罩",
+    "混声", "胸声", "头声", "假声", "真声", "咽音", "强混", "弱混", "平衡混",
+    "声区", "换声", "换声点", "过桥", "passaggio",
+    "颤音", "直音", "滑音", "转音", "哨音", "海豚音", "气泡音", "怒音", "嘶吼",
+    "咬字", "吐字", "元音", "辅音", "归韵",
+    "声带", "喉咙", "嗓子", "喉位", "喉头",
+    "副歌", "主歌", "bridge", "间奏", "尾奏",
+    "闭合", "挡气", "支撑", "belting", "twang", "sob", "SOVT",
+    # 练习
+    "练声", "练习", "训练", "开嗓", "吊嗓子", "基本功",
+    "音阶", "爬音", "琶音", "哼鸣", "唇颤", "打嘟", "弹唇",
+    "练歌", "歌曲", "曲目", "演唱", "翻唱", "表演", "舞台",
+    # 分析
+    "分析", "评估", "诊断", "反馈", "测评", "测试",
+    "音分", "偏差", "节奏", "拍子", "拖拍", "抢拍",
+    # 课程
+    "课程", "学唱歌", "教学", "教程", "方法", "技巧",
+    "改善", "提升", "进阶", "突破", "瓶颈",
+    # 风格
+    "流行", "美声", "民族", "音乐剧", "摇滚", "爵士", "R&B", "说唱",
+    "通俗", "戏曲", "民谣", "古典", "歌剧",
+    # 声带健康
+    "护嗓", "养嗓", "禁声", "嘶哑", "疲劳", "用声过度",
+]
+
+# 明确的日常闲聊关键词（用于降低误判）
+_CASUAL_KEYWORDS = [
+    "你好", "嗨", "哈喽", "hello", "hi", "hey",
+    "早安", "晚安", "早上好", "晚上好", "下午好",
+    "天气", "今天", "吃了", "在干嘛", "在吗", "在不",
+    "讲个笑话", "聊聊天", "聊天", "闲聊",
+    "叫什么", "你是谁", "怎么样", "推荐", "喜欢",
+]
+
+
+def detect_intent(user_message: str) -> tuple[bool, float]:
+    """检测用户意图：是声乐请教还是日常闲聊。
+
+    基于关键词匹配（轻量级，不消耗额外 LLM 调用）。
+
+    Returns:
+        (is_coaching, confidence): is_coaching 为 True 表示声乐请教；
+        confidence 为 0.0-1.0 的置信度。
+    """
+    msg_lower = user_message.lower().strip()
+
+    coaching_hits = sum(1 for kw in _COACHING_KEYWORDS if kw in msg_lower)
+    casual_hits = sum(1 for kw in _CASUAL_KEYWORDS if kw in msg_lower)
+
+    if coaching_hits == 0 and casual_hits == 0:
+        # 无法判断 → 默认为闲聊，保持轻松语气
+        return False, 0.3
+
+    if coaching_hits > 0 and casual_hits == 0:
+        confidence = min(0.95, 0.6 + coaching_hits * 0.15)
+        return True, confidence
+
+    if casual_hits > 0 and coaching_hits == 0:
+        confidence = min(0.95, 0.6 + casual_hits * 0.15)
+        return False, confidence
+
+    # 两者都有 → 看哪边更多
+    if coaching_hits >= casual_hits:
+        return True, 0.55
+    else:
+        return False, 0.55
+
+
+# ═══════════════════════════════════════════════════════════════
+# 联网搜索意图检测
+# ═══════════════════════════════════════════════════════════════
+
+_SEARCH_KEYWORDS = [
+    # 推荐类
+    "推荐", "推荐歌", "推荐几首", "有什么好听的", "有什么歌", "哪些歌",
+    "推荐歌手", "推荐专辑", "安利", "种草",
+    # 时效类
+    "最新", "最近", "新歌", "新专辑", "新出", "刚出", "近期",
+    "最近在流行", "现在流行", "今年", "这个月",
+    # 信息查询
+    "是谁", "什么是", "介绍一下", "介绍下", "科普",
+    "有哪些", "哪个", "哪首", "什么风格", "什么类型",
+    "代表作", "专辑", "演唱会", "巡演",
+    # 搜索
+    "搜索", "查一下", "帮我找", "帮我查", "搜一下", "找一下",
+    "帮我搜",
+    # 新闻动态
+    "新闻", "动态", "八卦", "最新消息", "热点",
+    # 排行榜
+    "排行榜", "榜单", "排名", "热门", "TOP", "top",
+    # 歌词
+    "歌词", "lyrics",
+]
+
+
+def detect_search_intent(user_message: str) -> bool:
+    """检测用户是否在问需要联网搜索才能回答的问题。
+
+    推荐歌曲、最新动态、事实查询等触发搜索，
+    声乐技术、个人话题等不触发（由知识库和 LLM 自身知识覆盖）。
+    """
+    msg_lower = user_message.lower().strip()
+    return any(kw in msg_lower for kw in _SEARCH_KEYWORDS)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -67,18 +209,13 @@ COMPARISON_PROMPT = """
 """
 
 QA_PROMPT = """
-## 当前任务：知识问答
-用户正在问一个关于声乐的问题。请根据知识库检索结果和你的专业知识回答。
-
-{knowledge_context}
-
 {singing_context}
+（按你的判断自然地回应就好，别刻意。）"""
 
-回答要求：
-- 如果知识库有相关内容，优先基于知识库回答
-- 结合用户当前的演唱数据给出个性化建议（如果有数据）
-- 如果涉及声乐练习，给出具体的练习步骤
-"""
+COACHING_QA_PROMPT = """
+用户想聊唱歌相关的话题。用你的专业知识认真帮 ta 分析，给具体能落地的那种建议。别灌水。
+
+{singing_context}"""
 
 PRACTICE_PLAN_PROMPT = """
 ## 当前任务：制定练习计划
@@ -121,11 +258,14 @@ def build_comparison_prompt(
 
 
 def build_qa_prompt(
-    knowledge_context: str = "",
     singing_context: str = "",
+    coaching_mode: bool = False,
 ) -> str:
+    if coaching_mode:
+        return COACHING_QA_PROMPT.format(
+            singing_context=singing_context or "（暂无演唱数据）",
+        )
     return QA_PROMPT.format(
-        knowledge_context=knowledge_context or "（知识库未检索到相关内容）",
         singing_context=singing_context or "（暂无演唱数据）",
     )
 
