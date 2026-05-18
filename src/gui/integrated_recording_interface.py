@@ -61322,7 +61322,12 @@ class IntegratedRecordingInterface(QMainWindow):
         )
 
         # P0.1: raw 确认优先 — YIN 原始值与展示值一致(≤1.05半音)，两条独立路径互证，高可信放行
+        # 但呼吸/极低能量时就算 raw 一致也可能是环境噪声，需拒绝
         if raw_supports_candidate and raw_frequency > 0.0:
+            if very_low_energy and weak_confidence and (not high_register_supported):
+                return False
+            if breath_hint and audio_rms <= max(min_voice_rms * 5.0, 0.0040) and (not high_register_supported):
+                return False
             return True
 
         if very_low_energy and weak_confidence and (not raw_supports_candidate) and (not high_register_supported):
@@ -61455,10 +61460,20 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 _fast_turn = False
             if _fast_turn:
-                self._normal_mode_display_ui_warmup_done = True
-                self._normal_mode_display_ui_last_voiced_wall = now_wall
-                self._normal_mode_display_ui_last_plot_freq = float(current_frequency)
-                return float(current_frequency)
+                # 呼吸帧即使频率跳变大也非真实转音，不走快速通道
+                try:
+                    _ft_breath = bool(pitch_data.get('breath_detect_hint', False))
+                    _ft_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+                except Exception:
+                    _ft_breath, _ft_rms = False, 0.0
+                if _ft_breath and _ft_rms <= max(min_voice_rms * 5.0, 0.0040):
+                    # 不跳过预热，继续走正常噪声门控
+                    pass
+                else:
+                    self._normal_mode_display_ui_warmup_done = True
+                    self._normal_mode_display_ui_last_voiced_wall = now_wall
+                    self._normal_mode_display_ui_last_plot_freq = float(current_frequency)
+                    return float(current_frequency)
 
             freq_values = [float(item[1]) for item in warmup_buf if float(item[1]) > 0.0]
             # P1.2: 单帧限幅渐进接入，但需确认是真实人声而非环境噪音
@@ -61467,10 +61482,17 @@ class IntegratedRecordingInterface(QMainWindow):
                     try:
                         _wu_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
                         _wu_conf = float(pitch_data.get('confidence', 0.0) or 0.0)
+                        _wu_breath = bool(pitch_data.get('breath_detect_hint', False))
                     except Exception:
-                        _wu_rms, _wu_conf = 0.0, 0.0
+                        _wu_rms, _wu_conf, _wu_breath = 0.0, 0.0, False
                     # 极低能量+低置信 → 环境噪音，不接入
                     if _wu_rms <= max(min_voice_rms * 1.8, 0.0012) and _wu_conf < 0.60:
+                        return 0.0
+                    # 呼吸/气声帧 + 低能量 → 换气尖峰，不接入
+                    if _wu_breath and _wu_rms <= max(min_voice_rms * 4.0, 0.0035):
+                        return 0.0
+                    # 低能量+中低置信 → 疑似噪音，不放行单帧
+                    if _wu_rms <= max(min_voice_rms * 2.8, 0.0020) and _wu_conf < 0.72:
                         return 0.0
                     single_freq = float(warmup_buf[-1][1])
                     clamped = self._normal_mode_ui_clamp_step_from_prev(
@@ -61542,9 +61564,28 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             fast_turn = False
 
+        try:
+            audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+        except Exception:
+            audio_rms = 0.0
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
+        except Exception:
+            min_voice_rms = 0.0005
+
         if last_plot_freq > 0.0 and segment_count <= 4 and (not fast_turn) and (not high_register_supported):
             early_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
             if early_gap >= reject_jump_semi:
+                # 极端跳变(≥10半音)且有真实能量 → 新起音，不钳制，直接重置预热以新频率开始
+                if early_gap >= 10.0 and audio_rms >= max(min_voice_rms * 5.0, 0.0035):
+                    self._reset_normal_mode_display_ui_warmup()
+                    self._normal_mode_display_ui_segment_start_wall = now_wall
+                    self._normal_mode_display_ui_segment_count = 1
+                    self._normal_mode_display_ui_warmup_buf = [(now_wall, float(refined_frequency))]
+                    self._normal_mode_display_ui_warmup_done = True
+                    self._normal_mode_display_ui_last_voiced_wall = now_wall
+                    self._normal_mode_display_ui_last_plot_freq = float(refined_frequency)
+                    return float(refined_frequency)
                 step_ratio = 2.0 ** (float(early_step_semi) / 12.0)
                 if refined_frequency > last_plot_freq:
                     refined_frequency = min(refined_frequency, float(last_plot_freq) * step_ratio)
@@ -64900,6 +64941,8 @@ class IntegratedRecordingInterface(QMainWindow):
                 delattr(self, '_normal_mode_sparse_peak_candidate')
             if hasattr(self, '_normal_mode_sparse_peak_last_block_wall'):
                 delattr(self, '_normal_mode_sparse_peak_last_block_wall')
+            if hasattr(self, '_normal_mode_fs_jump_state'):
+                delattr(self, '_normal_mode_fs_jump_state')
             if hasattr(self, '_last_head_points_update_wall'):
                 delattr(self, '_last_head_points_update_wall')
         except Exception:
@@ -64910,9 +64953,49 @@ class IntegratedRecordingInterface(QMainWindow):
             current_frequency = float(candidate_frequency or 0.0)
         except Exception:
             current_frequency = 0.0
-        if current_frequency <= 0.0 or prev_display <= 0.0 or fast_turn:
+        if current_frequency <= 0.0 or prev_display <= 0.0:
             try:
                 self._normal_mode_sparse_peak_candidate = None
+            except Exception:
+                pass
+            return current_frequency
+
+        # 快速转音仍检测极端上跳（≥12半音），防止尾音/换气时泛音误识被当作"转音"放行
+        # 但不直接拒绝，而是要求连续确认帧，以免阻挡真实的八度跳唱
+        if fast_turn:
+            try:
+                _fs_jump_semi = self._normal_mode_ui_semitone_distance(current_frequency, prev_display)
+            except Exception:
+                _fs_jump_semi = 0.0
+            if current_frequency > prev_display and _fs_jump_semi >= 12.0 and audio_rms <= max(min_voice_rms * 12.0, 0.008):
+                # 极端上跳 + 能量不够强 → 需要连续确认才放行
+                now_wall_fs = time.time()
+                fs_state = getattr(self, '_normal_mode_fs_jump_state', None)
+                if not isinstance(fs_state, dict) or fs_state.get('freq', 0.0) <= 0.0:
+                    fs_state = {'freq': current_frequency, 'count': 1, 'start_wall': now_wall_fs}
+                elif (abs(current_frequency - float(fs_state.get('freq', 0.0))) / max(float(fs_state.get('freq', 1.0)), 1e-9)) <= 0.12 and (now_wall_fs - float(fs_state.get('start_wall', 0.0))) <= 0.25:
+                    fs_state['count'] = int(fs_state.get('count', 1)) + 1
+                    fs_state['freq'] = 0.65 * float(fs_state.get('freq', current_frequency)) + 0.35 * current_frequency
+                else:
+                    fs_state = {'freq': current_frequency, 'count': 1, 'start_wall': now_wall_fs}
+                self._normal_mode_fs_jump_state = fs_state
+                if int(fs_state.get('count', 1)) >= 3:
+                    # 连续3帧确认 → 真实八度跳，放行
+                    try:
+                        self._normal_mode_sparse_peak_candidate = None
+                        self._normal_mode_fs_jump_state = None
+                    except Exception:
+                        pass
+                    return current_frequency
+                # 未确认 → 按住上一帧
+                try:
+                    self._normal_mode_sparse_peak_candidate = None
+                except Exception:
+                    pass
+                return float(prev_display)
+            try:
+                self._normal_mode_sparse_peak_candidate = None
+                self._normal_mode_fs_jump_state = None
             except Exception:
                 pass
             return current_frequency
@@ -64947,7 +65030,7 @@ class IntegratedRecordingInterface(QMainWindow):
             and dt > 0.0
             and dt <= float(getattr(self, '_normal_mode_sparse_peak_dt', 0.14) or 0.14)
             and jump_semi >= float(getattr(self, '_normal_mode_sparse_peak_semi', 3.8) or 3.8)
-            and (low_energy or confidence <= 0.78)
+            and (low_energy or confidence <= 0.78 or (upward_jump and jump_semi >= 10.0))
             and confidence <= float(getattr(self, '_normal_mode_sparse_peak_conf', 0.96) or 0.96)
             and not breath_hint
         )
