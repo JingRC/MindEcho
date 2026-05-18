@@ -1523,10 +1523,10 @@ class IntegratedAudioProcessor(QThread):
         self._true_peak_abs_thr = 0.002
         self._true_peak_min_sep_semi = 0.8
         self._true_peaks_allow_fast = True
-        self._fast_change_semi_thr = 0.65
+        self._fast_change_semi_thr = 0.35
         self._fast_change_dt = 0.12
         self._fast_change_alpha_boost = 0.18
-        self._fast_change_rate_thr = 7.5
+        self._fast_change_rate_thr = 4.0
         self._fast_change_active_until = 0.0
 
         # ===== 调试标志（处理线程本地）=====
@@ -3676,15 +3676,15 @@ class IntegratedAudioProcessor(QThread):
             if last_raw > 0 and now_t > last_rt:
                 dt = now_t - last_rt
                 semi = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
-                semi_thr = float(getattr(self, '_fast_change_semi_thr', 0.55))
+                semi_thr = float(getattr(self, '_fast_change_semi_thr', 0.35))
                 dt_thr = float(getattr(self, '_fast_change_dt', 0.15))
                 # 变化速度阈值：降低速率门槛以捕获中等速度转音
                 try:
-                    rate_thr = float(getattr(self, '_fast_change_rate_thr', 5.5))
+                    rate_thr = float(getattr(self, '_fast_change_rate_thr', 4.0))
                 except Exception:
-                    rate_thr = 5.5
+                    rate_thr = 4.0
                 rate = semi / max(dt, 1e-6)
-                if (dt <= dt_thr and semi >= semi_thr) or (rate >= rate_thr and semi >= 0.28):
+                if (dt <= dt_thr and semi >= semi_thr) or (rate >= rate_thr and semi >= 0.20):
                     fast_change = True
             setattr(self, lr_name, float(raw_frequency))
             setattr(self, lrt_name, float(now_t))
@@ -3743,6 +3743,33 @@ class IntegratedAudioProcessor(QThread):
                 (_last_stable_frequency - raw_frequency) > 180):
                 setattr(self, fs_name, raw_frequency)
                 setattr(self, ls_name, raw_frequency)
+                return raw_frequency
+            # 音符跳跃断裂检测：快速大幅跳变（非滑音/转音）直接复位，避免"山峰斜坡"
+            is_note_jump = False
+            try:
+                if (not is_oscillating) and last_raw > 0 and _last_stable_frequency > 0:
+                    dt_jump = float(now_t) - float(last_rt)
+                    if 0.005 < dt_jump <= 0.18:
+                        semi_jump = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
+                        rate_jump = semi_jump / max(dt_jump, 1e-6)
+                        # 极高变化率 → 音符跳跃；滑音/转音通常 ≤15 半音/s
+                        if rate_jump >= 22.0 and semi_jump >= 1.2:
+                            is_note_jump = True
+                        elif rate_jump >= 18.0 and semi_jump >= 1.8:
+                            is_note_jump = True
+                        # 跨越无音高间隙的跳跃：间距较宽但变化量巨大
+                        if dt_jump >= 0.03 and semi_jump >= 3.5 and rate_jump >= 14.0:
+                            is_note_jump = True
+            except Exception:
+                pass
+            if is_note_jump:
+                setattr(self, fs_name, raw_frequency)
+                setattr(self, ls_name, raw_frequency)
+                # 清空振荡历史防止跨音符残余
+                try:
+                    setattr(self, '_pitch_osc_history', [])
+                except Exception:
+                    pass
                 return raw_frequency
             # 自适应轻量平滑：更高alpha以保留微小变化
             prev = _freq_smooth if _freq_smooth != 0 else raw_frequency
@@ -10317,22 +10344,45 @@ class IntegratedAudioProcessor(QThread):
                         else:
                             # 温和衰减，避免单个稳定帧立即清零
                             setattr(self, bj_streak_n, max(0, int(getattr(self, bj_streak_n)) - 1))
-                        # 单次大跨幅阈值提高(≥11半音)且时间更严格，同时需ZCR较高或能量极低
+                        # 单次大跨幅(≥11半音)且时间更严格，同时需ZCR较高或能量极低
                         if semitone_jump >= float(getattr(self, '_breath_big_jump_semi_thr', 11.0)) and (now_t - last_t) <= 0.10 and (zcr_once >= float(getattr(self, '_breath_zcr_for_bigjump', 0.28)) or audio_rms <= 0.0033):
-                            setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_bigjump', 0.18)))
+                            setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_bigjump', 0.22)))
                             setattr(self, prevoice_wait_n, 1)  # 抑制结束后跳过首帧
                             # 重置参考，避免用噪声频率作为下一帧比较基准
                             setattr(self, bj_last_f0_n, 0.0)
                             setattr(self, bj_streak_n, 0)
+                            # 立即发送无音高帧推进时间线
+                            if not hasattr(self, '_no_pitch_emit_interval'):
+                                self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                                self._last_no_pitch_emit_t = 0.0
+                            if (now_t - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                                frame = PitchFrame(
+                                    timestamp=now_t,
+                                    f0_raw=0.0,
+                                    f0_smooth=0.0,
+                                    confidence=0.0,
+                                    note_info=None,
+                                    has_pitch=False,
+                                    audio_rms=audio_rms,
+                                    vibrato_info={'has_vibrato': False}
+                                )
+                                try:
+                                    payload = frame.to_dict()
+                                    payload['zcr'] = float(zcr_once)
+                                    payload['breath_detect_hint'] = True
+                                    self._emit_pitch_data_throttled(payload)
+                                except Exception:
+                                    pass
+                                self._last_no_pitch_emit_t = now_t
                             return
-                        # 若在短窗口内累计≥2次显著跳变，判为换气，抑制一小段时间（略缩短）
+                        # 若在短窗口内累计≥2次显著跳变，判为换气，抑制一小段时间
                         if int(getattr(self, bj_streak_n)) >= 2:
-                            setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_multi', 0.16)))
+                            setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_multi', 0.22)))
                             setattr(self, prevoice_wait_n, 1)  # 抑制结束后跳过首帧
                             # 重置参考
                             setattr(self, bj_last_f0_n, 0.0)
                             setattr(self, bj_streak_n, 0)
-                            # 首次触发时立即按“无音高”节流发射一次，以推进时间线
+                            # 首次触发时立即按”无音高”节流发射一次，以推进时间线
                             if not hasattr(self, '_no_pitch_emit_interval'):
                                 self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
                                 self._last_no_pitch_emit_t = 0.0
@@ -10362,20 +10412,20 @@ class IntegratedAudioProcessor(QThread):
                     if (not melodic_high_guard) and min_voice_rms <= audio_rms <= breath_rms_upper:
                         try:
                             zcr = zcr_once
-                            # 强阈值：明显噪声，直接较长抑制（阈值更高且仅在更低能量下触发）
+                            # 强阈值：明显噪声，直接较长抑制
                             _zcr_strong_thr = float(getattr(self, '_breath_zcr_strong', 0.34))
                             if (audio_rms <= (0.004 if _bt_voice else 0.0035)) and (zcr >= _zcr_strong_thr):
-                                setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_zcr_strong', 0.14)))
+                                setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_zcr_strong', 0.20)))
                                 setattr(self, prevoice_wait_n, 1)
                                 # 重置参考
                                 setattr(self, bj_last_f0_n, 0.0)
                                 setattr(self, bj_streak_n, 0)
                                 return
-                            # 中阈值：疑似换气中段的零星细节点，仅在距离上次有效绘制较长时触发，抑制更短
+                            # 中阈值：疑似换气中段的零星细节点，仅在距离上次有效绘制较长时触发
                             last_draw_t = float(getattr(self, last_draw_t_n, getattr(self, '_last_drawn_t', 0.0)) or 0.0)
                             _zcr_mid_thr = float(getattr(self, '_breath_zcr_mid', 0.26))
                             if (audio_rms <= (0.0043 if _bt_voice else 0.0038)) and (zcr >= _zcr_mid_thr) and (now_t - last_draw_t) >= 0.20 and not stable_pitch_guard:
-                                setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_zcr_mid', 0.10)))
+                                setattr(self, breath_until_n, now_t + float(getattr(self, '_breath_suppress_zcr_mid', 0.14)))
                                 setattr(self, prevoice_wait_n, 1)
                                 setattr(self, bj_last_f0_n, 0.0)
                                 setattr(self, bj_streak_n, 0)
@@ -22871,6 +22921,7 @@ class ECGStylePitchVisualizer(QWidget):
             'color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
         )
         controls_row2_layout.addWidget(self.technique_backend_label)
+        self.technique_backend_label.hide()
         self._update_technique_backend_status_visualizer()
         
         # 清除按钮
@@ -47208,23 +47259,35 @@ class ECGStylePitchVisualizer(QWidget):
                     continue
                 segs = np.concatenate([points[:-1], points[1:]], axis=1)
 
-                # 颜色映射
+                # 颜色映射 + 大跳越虚化（per-segment alpha）
                 colors = []
                 for i in range(len(segs)):
                     try:
                         mid_pitch = (interp_pitches[i] + interp_pitches[i + 1]) / 2
+                        # 计算相邻细节点间的半音跨幅
+                        if interp_pitches[i] > 0.0 and interp_pitches[i + 1] > 0.0:
+                            semi_gap = abs(12.0 * np.log2(max(interp_pitches[i + 1], 1e-9) / max(interp_pitches[i], 1e-9)))
+                        else:
+                            semi_gap = 0.0
                     except Exception:
                         mid_pitch = interp_pitches[i] if i < len(interp_pitches) else 0.0
+                        semi_gap = 0.0
                     hue = ((mid_pitch - 1.0) % 6.0) / 6.0
-                    rgb = colorsys.hsv_to_rgb(hue, 0.95, 1.0)
-                    colors.append(rgb)
+                    r, g, b = colorsys.hsv_to_rgb(hue, 0.95, 1.0)
+                    # 大跨幅线段虚化：半音跨幅越大越透明
+                    if semi_gap <= 2.0:
+                        seg_alpha = 1.0
+                    elif semi_gap <= 5.0:
+                        seg_alpha = 1.0 - (semi_gap - 2.0) / 3.0 * 0.50
+                    else:
+                        seg_alpha = max(0.20, 0.50 - (semi_gap - 5.0) / 10.0 * 0.30)
+                    colors.append((r, g, b, seg_alpha))
 
                 if colors:
                     line_collection = LineCollection(
                         segs,
                         colors=colors,
                         linewidths=self.current_linewidth,
-                        alpha=0.95,
                         zorder=10,
                         capstyle='round',
                         joinstyle='round'
@@ -58853,33 +58916,40 @@ class IntegratedRecordingInterface(QMainWindow):
         
         # 系统状态
         system_status_layout = QVBoxLayout()
-        system_status_layout.addWidget(QLabel("系统状态"))
-        
+        self.system_status_title_label = QLabel("系统状态")
+        self.system_status_title_label.hide()
+        system_status_layout.addWidget(self.system_status_title_label)
+
         self.system_status_label = QLabel("状态: 就绪")
         self.system_status_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #F6FBFF; background: #1B2733; border: 1px solid #31506B; border-radius: 6px; padding: 6px 10px;")
+        self.system_status_label.hide()
         system_status_layout.addWidget(self.system_status_label)
-        
+
         self.performance_label = QLabel("性能: 良好")
         self.performance_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #D7EFFF; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
+        self.performance_label.hide()
         system_status_layout.addWidget(self.performance_label)
-        
+
         # 降噪状态显示
         self.noise_status_label = QLabel("降噪: 关闭")
         self.noise_status_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #DCEAF5; background: #16202A; border: 1px solid #2C4258; border-radius: 6px; padding: 6px 10px;")
+        self.noise_status_label.hide()
         system_status_layout.addWidget(self.noise_status_label)
 
         self.technique_backend_status_label = QLabel("技巧推理: 读取中")
         self.technique_backend_status_label.setWordWrap(True)
         self.technique_backend_status_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 6px 10px;")
+        self.technique_backend_status_label.hide()
         system_status_layout.addWidget(self.technique_backend_status_label)
         try:
             self._refresh_technique_backend_status_panel()
         except Exception:
             pass
-        
+
         # 清除数据按钮
         clear_button = QPushButton("清除可视化数据")
         clear_button.clicked.connect(self.visualizer.clear_data)
+        clear_button.hide()
         system_status_layout.addWidget(clear_button)
         
         layout.addLayout(system_status_layout)
@@ -60925,6 +60995,23 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception:
             return 999.0
 
+    def _normal_mode_ui_clamp_step_from_prev(self, candidate_frequency: float, *, last_plot_freq: float = 0.0, max_step_semi: float = 2.4) -> float:
+        """限幅到距上一有效频率不超过 max_step_semi 半音，用于预热期渐进接入"""
+        try:
+            candidate = float(candidate_frequency or 0.0)
+        except Exception:
+            candidate = 0.0
+        if candidate <= 0.0:
+            return 0.0
+        if last_plot_freq <= 0.0:
+            return candidate
+        step_ratio = 2.0 ** (float(max_step_semi) / 12.0)
+        if candidate > last_plot_freq:
+            clamped = min(candidate, float(last_plot_freq) * step_ratio)
+        else:
+            clamped = max(candidate, float(last_plot_freq) / step_ratio)
+        return 0.65 * float(clamped) + 0.35 * float(last_plot_freq)
+
     def _normal_mode_ui_correct_octave_overshoot(self, pitch_data, candidate_frequency: float, *, last_plot_freq: float = 0.0) -> float:
         try:
             current_frequency = float(candidate_frequency or 0.0)
@@ -61225,6 +61312,7 @@ class IntegratedRecordingInterface(QMainWindow):
         raw_supports_candidate = bool(raw_frequency > 0.0 and self._normal_mode_ui_semitone_distance(raw_frequency, current_frequency) <= 1.05)
         low_energy = bool(audio_rms <= max(min_voice_rms * 2.3, 0.0011))
         very_low_energy = bool(audio_rms <= max(min_voice_rms * 1.55, 0.00082))
+        breath_like_energy = bool(audio_rms <= max(min_voice_rms * 1.8, 0.0009))
         weak_confidence = bool(confidence <= 0.74)
         sparse_harmonics = bool(len(harmonic_candidates) <= 1)
         high_register_supported = self._normal_mode_ui_high_register_relaxation(
@@ -61233,14 +61321,20 @@ class IntegratedRecordingInterface(QMainWindow):
             last_plot_freq=last_plot_freq,
         )
 
+        # P0.1: raw 确认优先 — YIN 原始值与展示值一致(≤1.05半音)，两条独立路径互证，高可信放行
+        if raw_supports_candidate and raw_frequency > 0.0:
+            return True
+
         if very_low_energy and weak_confidence and (not raw_supports_candidate) and (not high_register_supported):
             return False
-        if breath_hint and low_energy and (not raw_supports_candidate):
+        # P1.1: breath_hint 仅在最极低能量(≤0.0009)时拒绝，避免轻柔演唱误判
+        if breath_hint and breath_like_energy and (not raw_supports_candidate):
             return False
 
         if last_plot_freq > 0.0 and (not fast_turn):
             jump_semi = self._normal_mode_ui_semitone_distance(current_frequency, last_plot_freq)
-            if low_energy and jump_semi >= 3.2 and (not raw_supports_candidate) and (not high_register_supported):
+            # P1.1: 半音跳变门限放宽 3.2→4.5（小三度→大三度以内均可接受）
+            if low_energy and jump_semi >= 4.5 and (not raw_supports_candidate) and (not high_register_supported):
                 return False
             if very_low_energy and jump_semi >= 2.4 and confidence < 0.82 and (not high_register_supported):
                 return False
@@ -61355,28 +61449,60 @@ class IntegratedRecordingInterface(QMainWindow):
             warmup_max = 0.20
 
         if not warmup_done:
+            # P0.2: 快速转音直接跳过预热 — 转音本身就是快速变化，等"稳定"无意义
+            try:
+                _fast_turn = bool(pitch_data.get('_fast_change', False))
+            except Exception:
+                _fast_turn = False
+            if _fast_turn:
+                self._normal_mode_display_ui_warmup_done = True
+                self._normal_mode_display_ui_last_voiced_wall = now_wall
+                self._normal_mode_display_ui_last_plot_freq = float(current_frequency)
+                return float(current_frequency)
+
             freq_values = [float(item[1]) for item in warmup_buf if float(item[1]) > 0.0]
+            # P1.2: 单帧限幅渐进接入，但需确认是真实人声而非环境噪音
             if len(freq_values) <= 1:
+                if len(warmup_buf) >= 1 and warmup_buf[0][1] > 0.0:
+                    try:
+                        _wu_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+                        _wu_conf = float(pitch_data.get('confidence', 0.0) or 0.0)
+                    except Exception:
+                        _wu_rms, _wu_conf = 0.0, 0.0
+                    # 极低能量+低置信 → 环境噪音，不接入
+                    if _wu_rms <= max(min_voice_rms * 1.8, 0.0012) and _wu_conf < 0.60:
+                        return 0.0
+                    single_freq = float(warmup_buf[-1][1])
+                    clamped = self._normal_mode_ui_clamp_step_from_prev(
+                        single_freq,
+                        last_plot_freq=last_plot_freq_seed,
+                        max_step_semi=early_step_semi,
+                    )
+                    return float(clamped)
                 return 0.0
 
             if len(freq_values) == 2:
                 semi_2 = self._normal_mode_ui_semitone_distance(freq_values[0], freq_values[1])
-                if semi_2 <= confirm_close_semi:
-                    stable = 0.55 * float(freq_values[-1]) + 0.45 * float(freq_values[-2])
+                # P0.2: 高音区直接确认，不等待 close_semi
+                if semi_2 <= confirm_close_semi or high_register_supported:
+                    w = 0.55 if semi_2 <= confirm_close_semi else 0.72
+                    stable = w * float(freq_values[-1]) + (1.0 - w) * float(freq_values[-2])
                     self._normal_mode_display_ui_warmup_done = True
                     self._normal_mode_display_ui_last_plot_freq = float(stable)
                     return float(stable)
-                if high_register_supported and warmup_elapsed >= min(0.045, warmup_max):
-                    stable = 0.72 * float(freq_values[-1]) + 0.28 * float(freq_values[-2])
-                    self._normal_mode_display_ui_warmup_done = True
-                    self._normal_mode_display_ui_last_plot_freq = float(stable)
-                    return float(stable)
+                # P1.2: 2帧差距大但不超时，限幅渐进不拒绝
                 if warmup_elapsed < warmup_max:
-                    return 0.0
+                    clamped = self._normal_mode_ui_clamp_step_from_prev(
+                        float(freq_values[-1]),
+                        last_plot_freq=float(freq_values[-2]),
+                        max_step_semi=early_step_semi,
+                    )
+                    return float(clamped)
 
             stable_center = float(np.median(np.asarray(freq_values, dtype=np.float64))) if freq_values else float(current_frequency)
             latest_freq = float(freq_values[-1]) if freq_values else float(current_frequency)
             latest_gap = self._normal_mode_ui_semitone_distance(latest_freq, stable_center)
+            # P0.2: 高音区放宽跳变拒绝门限
             if latest_gap >= reject_jump_semi and len(freq_values) < 4 and warmup_elapsed < warmup_max and (not high_register_supported):
                 return 0.0
 
@@ -61426,6 +61552,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     refined_frequency = max(refined_frequency, float(last_plot_freq) / step_ratio)
                 refined_frequency = 0.68 * float(refined_frequency) + 0.32 * float(last_plot_freq)
 
+        # 快速转音时跳过稳态 up_gap 抑制，保留波动细节
         if last_plot_freq > 0.0 and (not fast_turn):
             up_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
             raw_supports_high = bool(raw_frequency > 0.0 and self._normal_mode_ui_semitone_distance(raw_frequency, refined_frequency) <= 1.05)
@@ -61466,7 +61593,7 @@ class IntegratedRecordingInterface(QMainWindow):
             hold_s = float(getattr(self, '_normal_mode_display_ui_bridge_hold_s', 0.18) or 0.18)
         except Exception:
             hold_s = 0.18
-        hold_s = min(hold_s, 0.12)
+        hold_s = min(hold_s, 0.22)  # P2: 延长桥接保持，覆盖更多呼吸间隙
         if (now_wall - last_real_wall) > hold_s:
             return 0.0
 
@@ -61499,18 +61626,22 @@ class IntegratedRecordingInterface(QMainWindow):
         if audio_rms < max(min_voice_rms * bridge_rms_mul, min_voice_rms + 1e-5):
             if audio_rms <= max(min_voice_rms * release_mul, min_voice_rms * 0.95):
                 return 0.0
-        if audio_rms <= max(min_voice_rms * 1.35, 0.00075):
+        if audio_rms <= max(min_voice_rms * 1.35, 0.0015):
             return 0.0
-        if confidence < 0.52:
+        if confidence < 0.58:
             return 0.0
-        if breath_hint:
-            return 0.0
-
+        # P2: breath_hint 时渐变衰减而非直接断线
         try:
             raw_frequency = float(pitch_data.get('raw_frequency', 0.0) or 0.0)
         except Exception:
             raw_frequency = 0.0
         bridged = float(last_real_freq)
+        if breath_hint:
+            elapsed = max(0.0, now_wall - last_real_wall)
+            decay_factor = max(0.0, 1.0 - elapsed / max(hold_s, 0.01))
+            bridged *= decay_factor
+            if bridged < 1.0:
+                return 0.0
         if raw_frequency > 0.0:
             semi_gap = self._normal_mode_ui_semitone_distance(raw_frequency, last_real_freq)
             if semi_gap <= 2.2:
@@ -64913,7 +65044,7 @@ class IntegratedRecordingInterface(QMainWindow):
         return float(0.88 * released_frequency + 0.12 * float(prev_display))
 
     def _smooth_normal_mode_display_frequency(self, pitch_data, display_frequency: float) -> float:
-        """普通模式实时绘制专用近直出策略，仅在极小抖动时做轻微抑抖。"""
+        """普通模式实时绘制：支持音符跳跃断裂、快速转音和颤音保留。"""
         try:
             target_frequency = float(display_frequency or 0.0)
         except Exception:
@@ -64940,8 +65071,10 @@ class IntegratedRecordingInterface(QMainWindow):
         prev_wall = float(getattr(self, '_normal_mode_plot_prev_wall', 0.0) or 0.0)
         dt = (now_t - prev_wall) if prev_wall > 0.0 else 0.0
 
-        fast_turn = bool(pitch_data.get('_fast_change'))
         ref_frequency = raw_frequency if raw_frequency > 0.0 else target_frequency
+
+        # ── 快速转音检测 ──
+        fast_turn = bool(pitch_data.get('_fast_change'))
         try:
             semi_delta = abs(12.0 * np.log2(max(ref_frequency, 1e-9) / max(prev_raw, 1e-9))) if prev_raw > 0.0 else 0.0
         except Exception:
@@ -64949,26 +65082,99 @@ class IntegratedRecordingInterface(QMainWindow):
         rate = semi_delta / max(dt, 1e-6) if dt > 0.0 else 0.0
         if (not fast_turn) and prev_wall > 0.0:
             try:
-                semi_thr = float(getattr(self, '_normal_mode_plot_fast_turn_semi', 0.42) or 0.42)
+                semi_thr = float(getattr(self, '_normal_mode_plot_fast_turn_semi', 0.30) or 0.30)
                 dt_thr = float(getattr(self, '_normal_mode_plot_fast_turn_dt', 0.14) or 0.14)
-                fast_turn = bool((dt <= dt_thr and semi_delta >= semi_thr * 0.72) or (rate >= 5.2 and semi_delta >= 0.18))
+                fast_turn = bool((dt <= dt_thr and semi_delta >= semi_thr * 0.72) or (rate >= 3.5 and semi_delta >= 0.12))
             except Exception:
                 fast_turn = False
 
+        # ── 振荡检测（颤音/花腔）──
+        is_oscillating = False
+        try:
+            osc_buf = getattr(self, '_normal_plot_osc_history', None)
+            if osc_buf is None or not isinstance(osc_buf, list):
+                osc_buf = []
+            osc_buf.append((float(now_t), float(ref_frequency)))
+            cutoff_t = float(now_t) - 0.35
+            while osc_buf and osc_buf[0][0] < cutoff_t:
+                osc_buf.pop(0)
+            if len(osc_buf) > 80:
+                osc_buf = osc_buf[-80:]
+            setattr(self, '_normal_plot_osc_history', osc_buf)
+            if len(osc_buf) >= 6:
+                diffs = []
+                for i in range(1, len(osc_buf)):
+                    d = osc_buf[i][1] - osc_buf[i-1][1]
+                    if abs(d) > 0.25:
+                        diffs.append(d)
+                direction_changes = 0
+                if len(diffs) >= 3:
+                    for i in range(1, len(diffs)):
+                        if (diffs[i] > 0 and diffs[i-1] < 0) or (diffs[i] < 0 and diffs[i-1] > 0):
+                            direction_changes += 1
+                if direction_changes >= 3:
+                    is_oscillating = True
+        except Exception:
+            pass
+
+        # ── 音符跳跃断裂检测：极高速率跳变 → 直接复位，断开连线 ──
+        # 低能量时抑制跳变检测，避免呼吸误检导致异常峰
+        is_note_jump = False
+        try:
+            if (not is_oscillating) and prev_raw > 0.0 and ref_frequency > 0.0 and 0.005 < dt <= 0.18:
+                semi_jump = abs(12.0 * np.log2(max(ref_frequency, 1e-9) / max(prev_raw, 1e-9)))
+                rate_jump = semi_jump / max(dt, 1e-6)
+                rms_ok = audio_rms >= max(min_voice_rms * 2.2, 0.0016)
+                if rms_ok and rate_jump >= 22.0 and semi_jump >= 1.2:
+                    is_note_jump = True
+                elif rms_ok and rate_jump >= 16.0 and semi_jump >= 2.0:
+                    is_note_jump = True
+                if rms_ok and dt >= 0.03 and semi_jump >= 3.5 and rate_jump >= 12.0:
+                    is_note_jump = True
+        except Exception:
+            pass
+
+        if is_note_jump:
+            self._normal_mode_plot_prev_wall = now_t
+            self._normal_mode_plot_prev_raw = ref_frequency
+            self._plot_freq_prev = float(ref_frequency)
+            try:
+                setattr(self, '_normal_plot_osc_history', [])
+            except Exception:
+                pass
+            return float(ref_frequency)
+
+        # ── 主平滑逻辑 ──
         if raw_frequency > 0.0:
             raw_gap = abs(raw_frequency - target_frequency)
-            if fast_turn:
-                smoothed_frequency = 0.94 * target_frequency + 0.06 * raw_frequency
+            if is_oscillating:
+                # 颤音：大幅注入原始值保留振荡细节
+                smoothed_frequency = 0.24 * target_frequency + 0.76 * raw_frequency
+            elif fast_turn:
+                # 快速转音：大幅注入原始值保留波动感
+                smoothed_frequency = 0.20 * target_frequency + 0.80 * raw_frequency
             elif raw_gap <= 1.0:
                 smoothed_frequency = target_frequency
             elif raw_gap <= 4.0:
-                smoothed_frequency = 0.12 * raw_frequency + 0.88 * target_frequency
+                smoothed_frequency = 0.14 * raw_frequency + 0.86 * target_frequency
             else:
-                smoothed_frequency = 0.25 * raw_frequency + 0.75 * target_frequency
+                smoothed_frequency = 0.28 * raw_frequency + 0.72 * target_frequency
         else:
             smoothed_frequency = target_frequency
 
-        if (not fast_turn) and raw_frequency > 0.0 and prev_display > 0.0 and audio_rms <= max(min_voice_rms * 2.0, 0.0012):
+        # ── 低能量 raw 偏离保护：raw 远高于 target 且能量低时，拒绝注入噪声 raw ──
+        if (not fast_turn) and (not is_oscillating) and raw_frequency > 0.0 and target_frequency > 0.0:
+            try:
+                raw_deviation = abs(raw_frequency - target_frequency) / max(target_frequency, 1e-9)
+            except Exception:
+                raw_deviation = 0.0
+            low_energy = audio_rms <= max(min_voice_rms * 4.5, 0.0038)
+            if low_energy and raw_frequency > target_frequency and raw_deviation > 0.15:
+                # raw 比 target 高超过 15% + 低能量 → 大概率呼吸噪声，拒绝 raw 注入
+                smoothed_frequency = 0.03 * raw_frequency + 0.97 * target_frequency
+
+        # ── 低能量上行大跳暂抑（防换气伪峰）──
+        if (not fast_turn) and (not is_oscillating) and raw_frequency > 0.0 and prev_display > 0.0 and audio_rms <= max(min_voice_rms * 2.0, 0.0012):
             try:
                 low_rms_gap = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(prev_display, 1e-9)))
             except Exception:
@@ -64982,13 +65188,13 @@ class IntegratedRecordingInterface(QMainWindow):
                 float(smoothed_frequency),
                 float(prev_display),
                 float(dt),
-                bool(fast_turn),
+                bool(fast_turn or is_oscillating),
             )
         except Exception:
             pass
 
-        # 仅对极小振幅做轻微抑抖，不再引入可感知的时间滞后。
-        if (not fast_turn) and abs(smoothed_frequency - prev_display) <= 0.55:
+        # 仅对非转音非颤音的极小振幅做轻微抑抖
+        if (not fast_turn) and (not is_oscillating) and abs(smoothed_frequency - prev_display) <= 0.55:
             smoothed_frequency = 0.96 * smoothed_frequency + 0.04 * prev_display
 
         self._normal_mode_plot_prev_wall = now_t
