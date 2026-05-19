@@ -1412,6 +1412,7 @@ class IntegratedAudioProcessor(QThread):
         self.sample_rate = 96000  # 🚀 96kHz超高采样率，提升时间分辨率
         self.channels = 1
         self.chunk_size = 96      # 🎵 超低延迟块（理论延迟1.0ms @96kHz），兼顾稳定与实时性
+        self.tuning_offset_semitones = 0.0  # 全局音高校准偏移（半音），负值=降低显示音高，正值=升高
 
         # 专业级音频设备配置（Windows优化）
         try:
@@ -4087,14 +4088,36 @@ class IntegratedAudioProcessor(QThread):
                 self._pitch_semitone_distance(lower_candidate, last_display) + 0.35 < self._pitch_semitone_distance(display_frequency, last_display)
             )
             lower_matches_history = bool(last_display > 0.0 and self._pitch_semitone_distance(lower_candidate, last_display) <= 2.4)
+            # 头声慢速攀升检测：假声爬升时单帧幅度常不足0.65半音(rising_head_voice阈值)
+            # 若不加此检测，慢速攀升会被Condition C误判为"偏高"而拉回，导致"升调→显示降调"
+            slow_head_rise = bool(
+                head_voice_guard
+                and last_display > 0.0
+                and display_frequency > last_display
+                and self._pitch_semitone_distance(display_frequency, last_display) >= 0.40
+            )
             if head_voice_guard:
-                if (not rising_head_voice) and (not register_leap_guard) and weak_voice and harmonic_like and lower_matches_history and lower_gap >= 9.5 and (not raw_supports_display):
-                    display_frequency = 0.78 * float(display_frequency) + 0.22 * float(lower_candidate)
-                elif recent_head_context_hz < 400.0 and lower_matches_history and lower_gap >= 6.6 and (harmonic_like or (not raw_supports_display)):
-                    display_frequency = 0.68 * float(display_frequency) + 0.32 * float(lower_candidate)
-                elif lower_matches_history and lower_gap >= 5.5 and harmonic_like and (not rising_head_voice):
-                    # 头声偏低候选+历史匹配→增强修正，针对性解决假声偏高
-                    display_frequency = 0.75 * float(display_frequency) + 0.25 * float(lower_candidate)
+                # 若跃迁守卫活跃但与lower_candidate差距≥八度(12半音)→明确谐波误认，不用削弱
+                _leap_override = bool(register_leap_guard and lower_gap >= 12.0)
+                if (not rising_head_voice) and (not register_leap_guard or _leap_override) and weak_voice and harmonic_like and lower_matches_history and lower_gap >= 9.5 and (not raw_supports_display):
+                    w = 0.22 if (not register_leap_guard) else 0.30
+                    display_frequency = (1.0 - w) * float(display_frequency) + w * float(lower_candidate)
+                elif (not rising_head_voice) and recent_head_context_hz < 400.0 and lower_matches_history and lower_gap >= 6.6 and (harmonic_like or (not raw_supports_display)):
+                    if register_leap_guard:
+                        if lower_gap >= 12.0:
+                            display_frequency = 0.52 * float(display_frequency) + 0.48 * float(lower_candidate)
+                        else:
+                            display_frequency = 0.84 * float(display_frequency) + 0.16 * float(lower_candidate)
+                    else:
+                        display_frequency = 0.68 * float(display_frequency) + 0.32 * float(lower_candidate)
+                elif lower_matches_history and lower_gap >= 5.5 and harmonic_like and (not rising_head_voice) and (not slow_head_rise):
+                    if register_leap_guard:
+                        if lower_gap >= 12.0:
+                            display_frequency = 0.60 * float(display_frequency) + 0.40 * float(lower_candidate)
+                        else:
+                            display_frequency = 0.88 * float(display_frequency) + 0.12 * float(lower_candidate)
+                    else:
+                        display_frequency = 0.75 * float(display_frequency) + 0.25 * float(lower_candidate)
             else:
                 if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
                     display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
@@ -5864,32 +5887,40 @@ class IntegratedAudioProcessor(QThread):
             return {}
         if frequency <= 0:
             return {}
+
+        # 获取全局校准偏移（需在缓存查询前获取以纳入缓存键）
+        try:
+            _tune_offset = float(getattr(self, 'tuning_offset_semitones', 0.0) or 0.0)
+        except Exception:
+            _tune_offset = 0.0
+
         try:
             cache = getattr(self, '_frequency_to_note_info_cache', None)
             if not isinstance(cache, dict):
                 cache = {}
                 self._frequency_to_note_info_cache = cache
-            cache_key = int(round(frequency * 10.0))
+            cache_key = int(round(frequency * 10.0 + _tune_offset * 10000.0))
             cached = cache.get(cache_key)
             if cached is not None:
                 return dict(cached)
         except Exception:
             cache = None
             cache_key = None
-        
-        # 基准音A4 = 440Hz
+
+        # 基准音A4 = 440Hz（可通过 tuning_offset_semitones 全局校准）
         A4 = 440.0
         notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        
-        # 计算相对于A4的半音数
-        semitones_from_A4 = 12 * np.log2(frequency / A4)
-        
+
+        # 计算相对于A4的半音数（叠加校准偏移）
+        semitones_from_A4 = 12 * np.log2(frequency / A4) + _tune_offset
+
         # 计算音符索引和八度
         note_index = (9 + round(semitones_from_A4)) % 12
         octave = 4 + (9 + round(semitones_from_A4)) // 12
-        
-        # 计算偏差（分）
-        closest_freq = A4 * (2 ** ((note_index - 9 + (octave - 4) * 12) / 12))
+
+        # 计算偏差（分）—— 基于校准后的理论频率
+        calibrated_semi = round(semitones_from_A4)
+        closest_freq = A4 * (2 ** (calibrated_semi / 12.0))
         cents = 1200 * np.log2(frequency / closest_freq)
         
         result = {
@@ -5907,7 +5938,23 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             pass
         return result
-    
+
+    def set_tuning_offset(self, semitones: float):
+        """设置全局音高校准偏移（半音）。
+        负值 = 降低显示音高（软件读数偏高时使用）
+        正值 = 升高显示音高（软件读数偏低时使用）
+        例如：参考软件显示D4，本软件显示E4 → set_tuning_offset(-2.0)
+        """
+        try:
+            self.tuning_offset_semitones = float(semitones or 0.0)
+        except Exception:
+            self.tuning_offset_semitones = 0.0
+        # 清除频率→音名缓存，使新偏移生效
+        try:
+            self._frequency_to_note_info_cache = {}
+        except Exception:
+            pass
+
     def stop_recording(self):
         """停止录音"""
         try:
@@ -11914,11 +11961,23 @@ class IntegratedAudioProcessor(QThread):
             ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
             last_stable = float(getattr(self, ls_name, 0.0) or 0.0)
 
+            # 冷启动检测：提前读取稳态计数，用于抑制初期近讲偏置
+            _sc_name = '_mon_lead_high_stable_count' if preview_only else '_lead_high_stable_count'
+            try:
+                _cold_stable_count = int(getattr(self, _sc_name, 0) or 0)
+            except Exception:
+                _cold_stable_count = 0
+
             rms_ref = float(getattr(self, '_lead_vocal_rms_ref', 0.018))
             rms_ref = max(1e-6, rms_ref)
             near_factor = float(np.clip(audio_rms / rms_ref, 0.0, 1.6))
             # 近讲加成：0~1，靠近麦克风时提高对高音主旋律候选的偏好
             near_boost = float(np.clip((near_factor - 0.55) / 0.75, 0.0, 1.0))
+            # 冷启动：缺乏历史锚定时降低近讲偏置，避免初期向上漂移（前半段偏高频）
+            if last_stable <= 0.0:
+                near_boost = near_boost * 0.38
+            elif _cold_stable_count < 2:
+                near_boost = near_boost * 0.58
 
             try:
                 max_up_semi = float(getattr(self, '_lead_vocal_max_up_semi', 13.0))
