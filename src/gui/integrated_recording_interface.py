@@ -10335,6 +10335,36 @@ class IntegratedAudioProcessor(QThread):
                         )
                     except Exception:
                         melodic_high_guard = False
+                    # 换气持久化：抑制窗口过期后若仍呈现换气特征，立即延长抑制
+                    # 避免离散细节点在换气间隙泄漏（无需重新累积跳变计数）
+                    if (not melodic_high_guard) and (audio_rms <= breath_rms_upper) and (zcr_once >= 0.20):
+                        setattr(self, breath_until_n, now_t + 0.12)
+                        setattr(self, prevoice_wait_n, 0)
+                        setattr(self, bj_last_f0_n, 0.0)
+                        setattr(self, bj_streak_n, 0)
+                        if not hasattr(self, '_no_pitch_emit_interval'):
+                            self._no_pitch_emit_interval = float(getattr(self, '_no_pitch_emit_interval_default', 0.05))
+                            self._last_no_pitch_emit_t = 0.0
+                        if (now_t - getattr(self, '_last_no_pitch_emit_t', 0.0)) >= self._no_pitch_emit_interval:
+                            frame = PitchFrame(
+                                timestamp=now_t,
+                                f0_raw=0.0,
+                                f0_smooth=0.0,
+                                confidence=0.0,
+                                note_info=None,
+                                has_pitch=False,
+                                audio_rms=audio_rms,
+                                vibrato_info={'has_vibrato': False}
+                            )
+                            try:
+                                payload = frame.to_dict()
+                                payload['zcr'] = float(zcr_once)
+                                payload['breath_detect_hint'] = True
+                                self._emit_pitch_data_throttled(payload)
+                            except Exception:
+                                pass
+                            self._last_no_pitch_emit_t = now_t
+                        return
                     if (not melodic_high_guard) and (min_voice_rms <= audio_rms <= breath_rms_upper) and last_f0 > 0 and (now_t - last_t) <= 0.14 and not (recent_voiced_guard and audio_rms >= 0.0040) and not stable_pitch_guard:
                         # 半音跨幅（避免除零）
                         semitone_jump = abs(12.0 * np.log2(max(1e-9, smooth_frequency / max(last_f0, 1e-9))))
@@ -60976,10 +61006,12 @@ class IntegratedRecordingInterface(QMainWindow):
             '_normal_mode_display_ui_segment_start_wall',
             '_normal_mode_display_ui_segment_count',
             '_normal_mode_display_ui_last_plot_freq',
+            '_normal_mode_display_ui_last_plot_rms',
             '_normal_mode_display_ui_last_real_voiced_wall',
             '_normal_mode_display_ui_last_real_voiced_freq',
             '_normal_mode_display_ui_warmup_done',
             '_normal_mode_display_ui_warmup_buf',
+            '_normal_mode_display_ui_last_breath_wall',
         ):
             try:
                 if hasattr(self, attr):
@@ -61322,12 +61354,24 @@ class IntegratedRecordingInterface(QMainWindow):
         )
 
         # P0.1: raw 确认优先 — YIN 原始值与展示值一致(≤1.05半音)，两条独立路径互证，高可信放行
-        # 但呼吸/极低能量时就算 raw 一致也可能是环境噪声，需拒绝
+        # 但呼吸/极低能量/泛音锁定时就算 raw 一致也可能是误检，需拒绝
         if raw_supports_candidate and raw_frequency > 0.0:
             if very_low_energy and weak_confidence and (not high_register_supported):
                 return False
             if breath_hint and audio_rms <= max(min_voice_rms * 5.0, 0.0040) and (not high_register_supported):
                 return False
+            # 方案A: 泛音锁定检测 — 频率跳变接近整数倍但能量没跟上 → 拒绝
+            if last_plot_freq > 0.0 and current_frequency > last_plot_freq and (not high_register_supported):
+                ratio = current_frequency / max(last_plot_freq, 1e-9)
+                near_harmonic = (1.42 <= ratio <= 1.58) or (1.90 <= ratio <= 2.10) or (2.85 <= ratio <= 3.15)
+                if near_harmonic:
+                    try:
+                        last_rms = float(getattr(self, '_normal_mode_display_ui_last_plot_rms', 0.0) or 0.0)
+                    except Exception:
+                        last_rms = 0.0
+                    if last_rms > 0.0 and last_rms < 0.010:
+                        if audio_rms < last_rms * 1.30:
+                            return False
             return True
 
         if very_low_energy and weak_confidence and (not raw_supports_candidate) and (not high_register_supported):
@@ -61416,6 +61460,20 @@ class IntegratedRecordingInterface(QMainWindow):
             self._normal_mode_display_ui_warmup_done = False
             self._normal_mode_display_ui_last_plot_freq = 0.0
 
+        # P2: 换气后首帧强制重置预热，确保从干净起点开始，避免换气后不稳定区域
+        try:
+            _post_breath_wall = float(getattr(self, '_normal_mode_display_ui_last_breath_wall', 0.0) or 0.0)
+        except Exception:
+            _post_breath_wall = 0.0
+        if _post_breath_wall > 0.0 and (now_wall - _post_breath_wall) < 0.25:
+            if bool(getattr(self, '_normal_mode_display_ui_warmup_done', False)):
+                self._reset_normal_mode_display_ui_warmup()
+                self._normal_mode_display_ui_segment_start_wall = now_wall
+                self._normal_mode_display_ui_segment_count = 0
+                self._normal_mode_display_ui_warmup_buf = []
+                self._normal_mode_display_ui_warmup_done = False
+                self._normal_mode_display_ui_last_plot_freq = 0.0
+
         self._normal_mode_display_ui_last_voiced_wall = now_wall
         self._normal_mode_display_ui_segment_count = int(getattr(self, '_normal_mode_display_ui_segment_count', 0) or 0) + 1
         segment_count = int(self._normal_mode_display_ui_segment_count)
@@ -61452,6 +61510,10 @@ class IntegratedRecordingInterface(QMainWindow):
             warmup_max = float(getattr(self, '_normal_mode_display_ui_warmup_max', 0.20) or 0.20)
         except Exception:
             warmup_max = 0.20
+        try:
+            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
+        except Exception:
+            min_voice_rms = 0.0005
 
         if not warmup_done:
             # P0.2: 快速转音直接跳过预热 — 转音本身就是快速变化，等"稳定"无意义
@@ -61473,6 +61535,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._normal_mode_display_ui_warmup_done = True
                     self._normal_mode_display_ui_last_voiced_wall = now_wall
                     self._normal_mode_display_ui_last_plot_freq = float(current_frequency)
+                    self._normal_mode_display_ui_last_plot_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
                     return float(current_frequency)
 
             freq_values = [float(item[1]) for item in warmup_buf if float(item[1]) > 0.0]
@@ -61511,9 +61574,23 @@ class IntegratedRecordingInterface(QMainWindow):
                     stable = w * float(freq_values[-1]) + (1.0 - w) * float(freq_values[-2])
                     self._normal_mode_display_ui_warmup_done = True
                     self._normal_mode_display_ui_last_plot_freq = float(stable)
+                    self._normal_mode_display_ui_last_plot_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
                     return float(stable)
-                # P1.2: 2帧差距大但不超时，限幅渐进不拒绝
+                # P1.2: 2帧差距大但不超时 — 检测起音第一帧是否误检（YIN瞬态不稳定）
+                # warmup_buf 存的是 (wall_time, frequency)，无法直接取首帧RMS
+                # 用当前帧RMS判断：若能量足够说明已是真唱，第1帧大概率是YIN瞬态误差，信任第2帧
                 if warmup_elapsed < warmup_max:
+                    try:
+                        _w2_curr_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+                    except Exception:
+                        _w2_curr_rms = 0.0
+                    if _w2_curr_rms >= max(min_voice_rms * 4.0, 0.0030):
+                        # 当前帧能量足够 → 是真人声而非噪声，信任最新帧
+                        self._normal_mode_display_ui_warmup_done = True
+                        self._normal_mode_display_ui_last_voiced_wall = now_wall
+                        self._normal_mode_display_ui_last_plot_freq = float(freq_values[-1])
+                        self._normal_mode_display_ui_last_plot_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
+                        return float(freq_values[-1])
                     clamped = self._normal_mode_ui_clamp_step_from_prev(
                         float(freq_values[-1]),
                         last_plot_freq=float(freq_values[-2]),
@@ -61542,6 +61619,7 @@ class IntegratedRecordingInterface(QMainWindow):
             self._normal_mode_display_ui_warmup_done = True
             self._normal_mode_display_ui_last_voiced_wall = now_wall
             self._normal_mode_display_ui_last_plot_freq = float(stabilized)
+            self._normal_mode_display_ui_last_plot_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
             return float(stabilized)
 
         try:
@@ -61568,10 +61646,6 @@ class IntegratedRecordingInterface(QMainWindow):
             audio_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
         except Exception:
             audio_rms = 0.0
-        try:
-            min_voice_rms = float(getattr(self, '_min_voice_rms_override', 0.0005) or 0.0005)
-        except Exception:
-            min_voice_rms = 0.0005
 
         if last_plot_freq > 0.0 and segment_count <= 4 and (not fast_turn) and (not high_register_supported):
             early_gap = self._normal_mode_ui_semitone_distance(refined_frequency, last_plot_freq)
@@ -61585,6 +61659,7 @@ class IntegratedRecordingInterface(QMainWindow):
                     self._normal_mode_display_ui_warmup_done = True
                     self._normal_mode_display_ui_last_voiced_wall = now_wall
                     self._normal_mode_display_ui_last_plot_freq = float(refined_frequency)
+                    self._normal_mode_display_ui_last_plot_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
                     return float(refined_frequency)
                 step_ratio = 2.0 ** (float(early_step_semi) / 12.0)
                 if refined_frequency > last_plot_freq:
@@ -61612,6 +61687,7 @@ class IntegratedRecordingInterface(QMainWindow):
 
         self._normal_mode_display_ui_last_voiced_wall = now_wall
         self._normal_mode_display_ui_last_plot_freq = float(refined_frequency)
+        self._normal_mode_display_ui_last_plot_rms = float(pitch_data.get('audio_rms', 0.0) or 0.0)
         return float(refined_frequency)
 
     def _bridge_normal_mode_display_gap_for_ui(self, pitch_data) -> float:
@@ -61663,6 +61739,11 @@ class IntegratedRecordingInterface(QMainWindow):
             breath_hint = bool(pitch_data.get('breath_detect_hint', False))
         except Exception:
             breath_hint = False
+        if breath_hint:
+            try:
+                self._normal_mode_display_ui_last_breath_wall = now_wall
+            except Exception:
+                pass
 
         if audio_rms < max(min_voice_rms * bridge_rms_mul, min_voice_rms + 1e-5):
             if audio_rms <= max(min_voice_rms * release_mul, min_voice_rms * 0.95):
