@@ -1411,7 +1411,7 @@ class IntegratedAudioProcessor(QThread):
         # 录音参数 - 终极超低延迟配置（在硬件探测前先给出兜底值，避免属性缺失）
         self.sample_rate = 96000  # 🚀 96kHz超高采样率，提升时间分辨率
         self.channels = 1
-        self.chunk_size = 32      # 🎵 终极小块（理论延迟0.33ms @96kHz）
+        self.chunk_size = 96      # 🎵 超低延迟块（理论延迟1.0ms @96kHz），兼顾稳定与实时性
 
         # 专业级音频设备配置（Windows优化）
         try:
@@ -1804,7 +1804,9 @@ class IntegratedAudioProcessor(QThread):
                     gain = float(getattr(self, 'listenback_vocal_gain', 1.0) or 1.0)
                     if gain != 1.0 and n > 0:
                         try:
-                            chunk = np.clip(chunk * gain, -1.0, 1.0)
+                            # 软限幅(tanh)避免硬削波产生的噼啪声，同时保持响度增益
+                            boosted = chunk * gain
+                            chunk = np.tanh(boosted * 0.88) / 0.88
                         except Exception:
                             pass
                     if n < frames:
@@ -1915,7 +1917,9 @@ class IntegratedAudioProcessor(QThread):
                     gain = float(getattr(self, 'listenback_vocal_gain', 1.0) or 1.0)
                     if gain != 1.0 and n > 0:
                         try:
-                            chunk = np.clip(chunk * gain, -1.0, 1.0)
+                            # 软限幅(tanh)避免硬削波产生的噼啪声，同时保持响度增益
+                            boosted = chunk * gain
+                            chunk = np.tanh(boosted * 0.88) / 0.88
                         except Exception:
                             pass
                     if n < frames:
@@ -4085,9 +4089,12 @@ class IntegratedAudioProcessor(QThread):
             lower_matches_history = bool(last_display > 0.0 and self._pitch_semitone_distance(lower_candidate, last_display) <= 2.4)
             if head_voice_guard:
                 if (not rising_head_voice) and (not register_leap_guard) and weak_voice and harmonic_like and lower_matches_history and lower_gap >= 9.5 and (not raw_supports_display):
-                    display_frequency = 0.86 * float(display_frequency) + 0.14 * float(lower_candidate)
+                    display_frequency = 0.78 * float(display_frequency) + 0.22 * float(lower_candidate)
                 elif recent_head_context_hz < 400.0 and lower_matches_history and lower_gap >= 6.6 and (harmonic_like or (not raw_supports_display)):
-                    display_frequency = 0.74 * float(display_frequency) + 0.26 * float(lower_candidate)
+                    display_frequency = 0.68 * float(display_frequency) + 0.32 * float(lower_candidate)
+                elif lower_matches_history and lower_gap >= 5.5 and harmonic_like and (not rising_head_voice):
+                    # 头声偏低候选+历史匹配→增强修正，针对性解决假声偏高
+                    display_frequency = 0.75 * float(display_frequency) + 0.25 * float(lower_candidate)
             else:
                 if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
                     display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
@@ -4163,6 +4170,13 @@ class IntegratedAudioProcessor(QThread):
                         head_down_limit = 1.35
                     else:
                         head_down_limit = 1.70
+                    # P3: raw/检测频率支持下行时放宽限幅，避免假声逐级下行被抹平成弧线
+                    if float(raw_frequency or 0.0) > 0.0 and raw_frequency < display_frequency:
+                        raw_down_gap = self._pitch_semitone_distance(display_frequency, raw_frequency)
+                        if raw_down_gap >= 2.2:
+                            head_down_limit = head_down_limit * 1.55
+                        elif raw_down_gap >= 1.2:
+                            head_down_limit = head_down_limit * 1.30
                     min_allowed = float(last_display) * (2.0 ** (-head_down_limit / 12.0))
                     if float(raw_frequency or 0.0) >= min_allowed * 0.88 and display_frequency < min_allowed:
                         display_frequency = float(min_allowed)
@@ -5254,8 +5268,9 @@ class IntegratedAudioProcessor(QThread):
             except Exception:
                 # 无配置时默认128样本（@48kHz≈2.7ms；@96kHz≈1.3ms）
                 self._callback_min_enqueue_samples = 128
-            # 回调侧累积缓冲与信号限频
-            self._enqueue_accum = np.empty(0, dtype=np.float32)
+            # 回调侧累积缓冲（预分配，避免每帧np.concatenate内存抖动导致XRUN）
+            self._enqueue_accum_buf = np.zeros(8192, dtype=np.float32)
+            self._enqueue_accum_len = 0
             self._last_level_emit_t = time.time()
             self._last_progress_emit_t = time.time()
             # 下调信号发射频率，降低跨线程负载
@@ -5346,23 +5361,35 @@ class IntegratedAudioProcessor(QThread):
                 except Exception:
                     audio_data = np.clip(audio_data, -1.0, 1.0)
                 
-                # 合批入队：累积到 >= 指定样本再入队，显著降低队列操作频率
+                # 合批入队：预分配缓冲追加，避免np.concatenate每帧内存抖动导致XRUN
                 try:
-                    # 追加到累积缓冲
-                    if self._enqueue_accum.size == 0:
-                        self._enqueue_accum = audio_data.copy()
-                    else:
-                        self._enqueue_accum = np.concatenate((self._enqueue_accum, audio_data))
+                    # 追加到预分配累积缓冲（无分配）
+                    n_new = len(audio_data)
+                    need = self._enqueue_accum_len + n_new
+                    buf = self._enqueue_accum_buf
+                    if need > len(buf):
+                        # 极少触发：扩容（翻倍）
+                        new_buf = np.zeros(max(need, len(buf) * 2), dtype=np.float32)
+                        new_buf[:self._enqueue_accum_len] = buf[:self._enqueue_accum_len]
+                        self._enqueue_accum_buf = new_buf
+                        buf = new_buf
+                    buf[self._enqueue_accum_len:need] = audio_data
+                    self._enqueue_accum_len = need
 
                     # 批量吐出满足阈值的包
                     min_samples = int(self._callback_min_enqueue_samples)
-                    while self._enqueue_accum.size >= min_samples:
-                        packet = self._enqueue_accum[:min_samples]
-                        self._enqueue_accum = self._enqueue_accum[min_samples:]
+                    while self._enqueue_accum_len >= min_samples:
+                        packet = buf[:min_samples].copy()
+
+                        # 将剩余数据前移（避免重复分配）
+                        remaining = self._enqueue_accum_len - min_samples
+                        if remaining > 0:
+                            buf[:remaining] = buf[min_samples:min_samples + remaining]
+                        self._enqueue_accum_len = remaining
 
                         if not self.audio_buffer_queue.full():
                             self.audio_buffer_queue.put_nowait({
-                                'data': packet.copy(),
+                                'data': packet,
                                 'timestamp': time.time(),
                                 'should_save': self.is_recording and self.should_save
                             })
@@ -5371,7 +5398,7 @@ class IntegratedAudioProcessor(QThread):
                             try:
                                 self.audio_buffer_queue.get_nowait()
                                 self.audio_buffer_queue.put_nowait({
-                                    'data': packet.copy(),
+                                    'data': packet,
                                     'timestamp': time.time(),
                                     'should_save': self.is_recording and self.should_save
                                 })
@@ -10202,8 +10229,8 @@ class IntegratedAudioProcessor(QThread):
                             or (
                                 float(smooth_frequency or 0.0) >= 320.0
                                 and float(raw_frequency or 0.0) >= 285.0
-                                and float(zcr_once or 0.0) <= 0.17
-                                and float(audio_rms) >= float(min_voice_rms) * 0.60
+                                and float(zcr_once or 0.0) <= 0.18
+                                and float(audio_rms) >= float(min_voice_rms) * 0.55
                             )
                         ),
                         preview_only=preview_only,
@@ -65248,7 +65275,12 @@ class IntegratedRecordingInterface(QMainWindow):
             try:
                 semi_thr = float(getattr(self, '_normal_mode_plot_fast_turn_semi', 0.30) or 0.30)
                 dt_thr = float(getattr(self, '_normal_mode_plot_fast_turn_dt', 0.14) or 0.14)
-                fast_turn = bool((dt <= dt_thr and semi_delta >= semi_thr * 0.72) or (rate >= 3.5 and semi_delta >= 0.12))
+                # 高音区(≥310Hz)假声转音更敏感，降低门限捕捉逐音下行
+                _is_high_register_ctx = bool(max(ref_frequency, prev_raw) >= 310.0)
+                _ft_semi_mul = 0.62 if _is_high_register_ctx else 0.72
+                _ft_rate_thr = 2.8 if _is_high_register_ctx else 3.5
+                _ft_min_semi = 0.08 if _is_high_register_ctx else 0.12
+                fast_turn = bool((dt <= dt_thr and semi_delta >= semi_thr * _ft_semi_mul) or (rate >= _ft_rate_thr and semi_delta >= _ft_min_semi))
             except Exception:
                 fast_turn = False
 
@@ -65289,11 +65321,18 @@ class IntegratedRecordingInterface(QMainWindow):
                 semi_jump = abs(12.0 * np.log2(max(ref_frequency, 1e-9) / max(prev_raw, 1e-9)))
                 rate_jump = semi_jump / max(dt, 1e-6)
                 rms_ok = audio_rms >= max(min_voice_rms * 2.2, 0.0016)
+                # 高音区假声能量偏弱，放宽RMS门限以识别音符跳跃
+                _is_high_nj = bool(max(ref_frequency, prev_raw) >= 310.0)
+                _rms_ok_high = _is_high_nj and audio_rms >= max(min_voice_rms * 1.6, 0.0010)
                 if rms_ok and rate_jump >= 22.0 and semi_jump >= 1.2:
                     is_note_jump = True
                 elif rms_ok and rate_jump >= 16.0 and semi_jump >= 2.0:
                     is_note_jump = True
                 if rms_ok and dt >= 0.03 and semi_jump >= 3.5 and rate_jump >= 12.0:
+                    is_note_jump = True
+                if _rms_ok_high and rate_jump >= 18.0 and semi_jump >= 1.5:
+                    is_note_jump = True
+                if _rms_ok_high and dt >= 0.03 and semi_jump >= 2.8 and rate_jump >= 9.0:
                     is_note_jump = True
         except Exception:
             pass

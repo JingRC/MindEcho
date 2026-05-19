@@ -159,10 +159,34 @@ class NoiseReductionProcessor:
                 padded_data.fill(0.0)
                 padded_data[:original_length] = audio_data
                 audio_data = padded_data
+                return self._process_single_frame(audio_data, original_length)
             elif original_length > self.frame_size:
-                # 如果数据太长，截取
-                audio_data = audio_data[:self.frame_size]
-            
+                # 滑动窗口逐帧处理，避免截断丢数据
+                hop = max(1, self.frame_size // 4)
+                output = np.zeros(original_length, dtype=np.float32)
+                weight = np.zeros(original_length, dtype=np.float32)
+                win = self._analysis_window if self._analysis_window is not None and len(self._analysis_window) == self.frame_size else np.hanning(self.frame_size).astype(np.float32)
+                for start in range(0, original_length, hop):
+                    end = min(start + self.frame_size, original_length)
+                    chunk = np.zeros(self.frame_size, dtype=np.float32)
+                    seg_len = end - start
+                    chunk[:seg_len] = audio_data[start:end]
+                    processed_chunk = self._process_single_frame(chunk, seg_len)
+                    out_len = min(seg_len, len(processed_chunk))
+                    output[start:start+out_len] += processed_chunk[:out_len] * win[:out_len]
+                    weight[start:start+out_len] += win[:out_len]
+                mask = weight > 1e-9
+                output[mask] /= weight[mask]
+                return output.astype(np.float32)
+            else:
+                return self._process_single_frame(audio_data, original_length)
+        except Exception as e:
+            print(f"❌ 基础频域降噪处理错误: {e}")
+            return audio_data
+
+    def _process_single_frame(self, audio_data, original_length):
+        """处理单个帧的频谱降噪"""
+        try:
             # 步骤1: 应用窗函数
             if self._analysis_window is None or self._analysis_window.size != len(audio_data):
                 self._refresh_processing_cache()
