@@ -38449,6 +38449,12 @@ class ECGStylePitchVisualizer(QWidget):
                         need_silent_consec = int(getattr(self, '_noise_gate_min_consecutive_silent', 2))
                         onset_hold = float(getattr(self, '_noise_gate_onset_hold_s', 0.25))
                         tail_hold = float(getattr(self, '_noise_gate_tail_hold_s', 0.10))
+                        # ── Silence Gate：CREPE 未在静音上训练，可能在无声段随机输出高置信度 ──
+                        # 当 RMS 低于噪声底板 × 1.5 时判定为静音，强制将置信度归零。
+                        # 噪声底板由 Minimum Statistics（P5 百分位，3s 窗）自适应估计。
+                        # 归零后的置信度进入中值滤波，持续静音会使平滑置信度快速衰减。
+                        if audio_rms <= noise_floor * 1.5:
+                            confidence = 0.0
                         # ── 置信度时序平滑（5帧中值滤波）──
                         # 噪声 CMNDF 置信度帧间波动剧烈(0.3→0.7→0.4→0.6)，
                         # 真实信号置信度稳定(0.82→0.85→0.80→0.86)。
@@ -38459,26 +38465,35 @@ class ECGStylePitchVisualizer(QWidget):
                         _conf_list = list(self._gate_conf_history)
                         _conf_list.sort()
                         conf_smoothed = float(_conf_list[len(_conf_list) // 2])
-                        # ── 帧分类 ──
+                        # ── 帧分类（迟滞双阈值 / Hysteresis）──
+                        # 借鉴 torchcrepe.threshold.Hysteresis（施密特触发器）设计：
+                        # 进入 voiced 的置信度门槛更高（防气声/呼吸误触发），
+                        # 退出 voiced 的门槛更低（更快切断气声尾迹）。
+                        # 中间地带（0.38-0.50）保持上一状态，避免频繁切换。
+                        state = getattr(self, '_voice_gate_state', 'silent')
+                        _onset_conf = 0.50   # silent→voiced：需要更高置信度（原是0.45）
+                        _offset_conf = 0.38  # voiced→silent：更容易退出（原是0.30）
                         # voiced_like: 两条路径，都必须有最低置信度保证周期性
-                        # 路径1 (正常): RMS超阈值 + 至少微弱周期性 (conf>=0.45)
-                        #    → 拒绝键盘/椅子/车声等无周期环境响动
+                        # 路径1 (正常): RMS超阈值 + 足够周期性
                         # 路径2 (弱唱): 高置信度 + RMS明显高于底噪
-                        #    → 捕获极弱但稳定的清唱
-                        voiced_like = (audio_rms >= rms_enter and conf_smoothed >= 0.45) or (
+                        voiced_like = (audio_rms >= rms_enter and conf_smoothed >= _onset_conf) or (
                             conf_smoothed >= conf_hi and audio_rms >= noise_floor * 2.2
                         )
-                        # silent_like: RMS 低于退出阈值；或低平滑置信度且 RMS 不算太高；
-                        # 或置信度过低（<0.30）→ 几乎肯定是呼吸/噪声，不管能量多大
-                        # conf_lo 加速退出：噪声平滑置信度通常 < 0.38
-                        silent_like = (audio_rms <= rms_exit) or (
-                            conf_smoothed <= conf_lo and audio_rms <= rms_enter * 0.85
-                        ) or (
-                            conf_smoothed <= conf_lo * 0.80
-                        )
+                        # silent_like: 在 voiced 状态使用更宽松的退出阈值
+                        if state == 'voiced':
+                            silent_like = (audio_rms <= rms_exit) or (
+                                conf_smoothed <= conf_lo and audio_rms <= rms_enter * 0.85
+                            ) or (
+                                conf_smoothed <= _offset_conf
+                            )
+                        else:
+                            silent_like = (audio_rms <= rms_exit) or (
+                                conf_smoothed <= conf_lo and audio_rms <= rms_enter * 0.85
+                            ) or (
+                                conf_smoothed <= conf_lo * 0.80
+                            )
                         # 深静音：RMS 极低，立即断线，不经过尾部缓冲
                         deep_silent = (audio_rms <= noise_floor * 1.3)
-                        state = getattr(self, '_voice_gate_state', 'silent')
                         # 将当前帧封装（供缓冲/回放）
                         cur_pkt = {
                             'frequency': frequency,
