@@ -19,6 +19,7 @@ class KnowledgeEntry:
         "id", "title", "category", "level", "tags", "related",
         "summary", "theory", "practice", "common_mistakes",
         "criteria", "exercises", "faq", "_raw",
+        "quality_score", "review_status",
     )
 
     def __init__(self, raw: dict):
@@ -38,6 +39,10 @@ class KnowledgeEntry:
         self.criteria: str = content.get("criteria", "")
         self.exercises: list[dict] = content.get("exercises", [])
         self.faq: list[dict] = content.get("faq", [])
+
+        # 质量控制字段
+        self.quality_score: float = float(raw.get("quality_score", 0.0))
+        self.review_status: str = raw.get("review_status", "approved")  # pending / approved / rejected
 
     @property
     def full_text(self) -> str:
@@ -375,15 +380,39 @@ class KnowledgeStore:
             existing._raw.get("updated", ""), new._raw.get("updated", "")
         )
 
-    def add_entry(self, entry: KnowledgeEntry, persist: bool = True):
-        """运行时添加知识条目（带去重合并）。"""
+    def add_entry(self, entry: KnowledgeEntry, persist: bool = True,
+                  source: str = "manual"):
+        """运行时添加知识条目（带去重合并 + 质量控制）。
+
+        Args:
+            entry: 待添加的知识条目
+            persist: 是否持久化到 YAML
+            source: 来源标记 — "manual" (人工, 默认审核通过),
+                    "llm_extract" (LLM 提取, 需审核)
+        """
         if not entry.id:
             import uuid
             entry.id = uuid.uuid4().hex[:12]
 
+        # 自动计算质量评分
+        entry.quality_score = self._compute_quality_score(entry)
+
+        # LLM 提取的条目默认标记为待审核
+        if source == "llm_extract":
+            if entry.review_status == "approved":
+                pass  # 显式标记为 approved 则保留
+            else:
+                entry.review_status = "pending"
+
+        # 质量阈值：低于 0.15 的 LLM 提取条目直接丢弃
+        if source == "llm_extract" and entry.quality_score < 0.15:
+            return
+
         # 去重检查
         dup = self._find_duplicate(entry)
         if dup is not None:
+            # 若新条目的信息更丰富，提升已有条目的质量评分
+            dup.quality_score = max(dup.quality_score, entry.quality_score)
             self._merge_into(dup, entry)
             if persist:
                 self._save_entry_yaml(dup)
@@ -395,6 +424,75 @@ class KnowledgeStore:
         if persist:
             self._save_entry_yaml(entry)
 
+    def _compute_quality_score(self, entry: KnowledgeEntry) -> float:
+        """自动评估知识条目的质量（0.0-1.0）。
+
+        评分因素:
+        - 标题存在且有意义 (0.15)
+        - 理论知识是否充实 (0.30)
+        - 练习方法是否具体 (0.25)
+        - 常见错误是否列出 (0.15)
+        - 标签是否完整 (0.10)
+        - 摘要是否清晰 (0.05)
+        """
+        score = 0.0
+        if entry.title and len(entry.title) >= 2:
+            score += 0.15
+        if entry.theory and len(entry.theory) >= 50:
+            score += 0.30
+        elif entry.theory and len(entry.theory) >= 20:
+            score += 0.15
+        if entry.practice and len(entry.practice) >= 30:
+            score += 0.25
+        elif entry.practice and len(entry.practice) >= 10:
+            score += 0.12
+        if entry.common_mistakes and len(entry.common_mistakes) >= 1:
+            score += 0.15
+        if entry.tags and len(entry.tags) >= 2:
+            score += 0.10
+        elif entry.tags and len(entry.tags) >= 1:
+            score += 0.05
+        if entry.summary and len(entry.summary) >= 10:
+            score += 0.05
+        return min(1.0, score)
+
+    def approve_entry(self, entry_id: str) -> bool:
+        """审核通过一条待审核的知识条目。"""
+        entry = self.entries.get(entry_id)
+        if entry is None:
+            return False
+        entry.review_status = "approved"
+        entry._raw["review_status"] = "approved"
+        self._save_entry_yaml(entry)
+        return True
+
+    def reject_entry(self, entry_id: str) -> bool:
+        """拒绝并删除一条待审核的知识条目。"""
+        entry = self.entries.get(entry_id)
+        if entry is None:
+            return False
+        # 删除 YAML 文件和内存条目
+        file_path = self._dir / f"_grown_{entry.id}.yaml"
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+        del self.entries[entry_id]
+        for tag in entry.tags:
+            tag_ids = self._tag_index.get(tag.lower(), [])
+            if entry_id in tag_ids:
+                tag_ids.remove(entry_id)
+        return True
+
+    def get_pending_entries(self) -> list[KnowledgeEntry]:
+        """获取所有待审核的知识条目。"""
+        return [e for e in self.entries.values() if e.review_status == "pending"]
+
+    def get_entries_by_quality(self, min_score: float = 0.4) -> list[KnowledgeEntry]:
+        """按质量评分过滤条目。"""
+        return [e for e in self.entries.values() if e.quality_score >= min_score]
+
     def _entry_to_dict(self, entry: KnowledgeEntry) -> dict:
         return {
             "id": entry.id,
@@ -403,6 +501,8 @@ class KnowledgeStore:
             "level": entry.level,
             "tags": entry.tags,
             "related": entry.related,
+            "quality_score": entry.quality_score,
+            "review_status": entry.review_status,
             "content": {
                 "summary": entry.summary,
                 "theory": entry.theory,

@@ -760,13 +760,20 @@ def _auto_load_analysis(main_window, agent):
         return
 
     try:
-        analysis_files = sorted(
-            recordings_dir.glob("*_analysis.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if analysis_files:
-            latest = analysis_files[0]
+        # 查找所有 JSON 文件，过滤出 MindEcho 分析 JSON（含 pitch_analysis 或 recording_info）
+        candidates = []
+        for p in recordings_dir.glob("*.json"):
+            if p.name.startswith("._") or p.name.endswith("_temp.json"):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    head = f.read(512)
+                if '"pitch_analysis"' in head or '"recording_info"' in head:
+                    candidates.append(p)
+            except Exception:
+                continue
+        if candidates:
+            latest = max(candidates, key=lambda p: p.stat().st_mtime)
             agent.load_analysis_file(latest)
             print(f"[AI Coach] 自动加载分析数据: {latest.name}")
     except Exception as e:

@@ -176,7 +176,18 @@ class MemoryManager:
     # ── 搜索 ─────────────────────────────────────────────────
 
     def search(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
-        """关键词 + 遗忘曲线加权搜索。"""
+        """混合检索：语义搜索 + 关键词 + 遗忘曲线加权。
+
+        优先尝试向量语义检索（需 chromadb + sentence-transformers），
+        不可用时回退到关键词匹配。
+        """
+        semantic_results = self.search_semantic(query, top_k=max(top_k, 10))
+        if semantic_results:
+            return semantic_results[:top_k]
+        return self._search_keyword(query, top_k)
+
+    def _search_keyword(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
+        """关键词 + 遗忘曲线加权搜索（回退方案）。"""
         query_lower = query.lower()
         scored = []
         for entry in self.get_all():
@@ -190,11 +201,129 @@ class MemoryManager:
             if query_lower in entry.type.lower():
                 score += 3
             if score > 0:
-                # 乘以遗忘曲线权重
                 ebb_weight = _ebbinghaus_weight(entry)
                 scored.append((score * (0.5 + 0.5 * ebb_weight), entry))
         scored.sort(key=lambda x: x[0], reverse=True)
         return [e for _, e in scored[:top_k]]
+
+    def search_semantic(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
+        """基于 ChromaDB 向量的语义检索。
+
+        复用 KnowledgeStore 的 embedding 模型和 ChromaDB 基础设施。
+        如果依赖不可用，返回空列表（调用方应回退到关键词搜索）。
+        """
+        try:
+            return self._search_chromadb(query, top_k)
+        except Exception:
+            return []
+
+    def _search_chromadb(self, query: str, top_k: int) -> list[MemoryEntry]:
+        """ChromaDB 向量检索内部实现。"""
+        import numpy as np
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            return []
+
+        if not hasattr(self, "_embedder"):
+            self._embedder = SentenceTransformer(
+                "paraphrase-multilingual-MiniLM-L12-v2"
+            )
+
+        collection = self._get_or_build_memory_collection()
+        if collection is None:
+            return []
+
+        q_emb = self._embedder.encode([query], normalize_embeddings=True)
+        entries = self.get_all()
+        n = min(top_k, len(entries))
+        if n == 0:
+            return []
+
+        results = collection.query(query_embeddings=q_emb.tolist(), n_results=n)
+
+        found = {}
+        for eid, distance in zip(results["ids"][0], results["distances"][0]):
+            found[eid] = 1.0 - float(distance)
+
+        # 按语义相似度排序，再乘以遗忘曲线权重
+        entries_by_name = {e.name: e for e in entries}
+        scored = []
+        for eid, sim in found.items():
+            entry = entries_by_name.get(eid)
+            if entry:
+                ebb = _ebbinghaus_weight(entry)
+                scored.append((sim * 0.6 + ebb * 0.4, entry))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [e for _, e in scored[:top_k]]
+
+    def _get_or_build_memory_collection(self):
+        """懒加载 ChromaDB 集合（与 KnowledgeStore 共享 client，独立 collection）。"""
+        try:
+            import chromadb
+        except ImportError:
+            return None
+
+        if not hasattr(self, "_chroma_client"):
+            cache_dir = self._dir.parent / "_chroma_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self._chroma_client = chromadb.PersistentClient(path=str(cache_dir))
+
+        try:
+            collection = self._chroma_client.get_collection("ai_coach_memories")
+        except Exception:
+            collection = self._chroma_client.create_collection("ai_coach_memories")
+            self._rebuild_memory_index(collection)
+
+        return collection
+
+    def _rebuild_memory_index(self, collection=None):
+        """重建记忆向量索引（新增记忆或首次构建时调用）。"""
+        if not hasattr(self, "_embedder"):
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._embedder = SentenceTransformer(
+                    "paraphrase-multilingual-MiniLM-L12-v2"
+                )
+            except ImportError:
+                return
+
+        if collection is None:
+            try:
+                collection = self._get_or_build_memory_collection()
+            except Exception:
+                return
+        if collection is None:
+            return
+
+        entries = self.get_all()
+        if not entries:
+            return
+
+        ids = [e.name for e in entries]
+        docs = [f"{e.description}\n{e.content[:500]}" for e in entries]
+        embeddings = self._embedder.encode(docs, normalize_embeddings=True)
+        metadatas = [
+            {"type": e.type, "importance": e.importance}
+            for e in entries
+        ]
+
+        # 清除旧数据再重建
+        try:
+            collection.delete(ids=collection.get()["ids"])
+        except Exception:
+            pass
+
+        batch_size = 100
+        for i in range(0, len(ids), batch_size):
+            collection.add(
+                ids=ids[i:i + batch_size],
+                documents=docs[i:i + batch_size],
+                embeddings=embeddings[i:i + batch_size].tolist(),
+                metadatas=metadatas[i:i + batch_size],
+            )
 
     # ── LLM 上下文注入 ───────────────────────────────────────
 
@@ -288,13 +417,45 @@ class MemoryManager:
         tmp.replace(file_path)  # os.replace = 原子 rename（Windows 也支持）
 
     def _write_entry(self, entry: MemoryEntry, add_to_index: bool = True) -> MemoryEntry:
-        """写入记忆文件并可选更新索引。"""
+        """写入记忆文件并可选更新索引（含 ChromaDB 增量同步）。"""
         file_path = self._dir / f"{entry.name}.md"
         full_text = _default_frontmatter(entry) + "\n" + entry.content + "\n"
         self._atomic_write(file_path, full_text)
         if add_to_index:
             self._add_to_index(entry)
+        # ChromaDB 增量更新
+        self._upsert_chromadb_entry(entry)
         return entry
+
+    def _upsert_chromadb_entry(self, entry: MemoryEntry):
+        """增量更新单条记忆的 ChromaDB 向量。"""
+        try:
+            collection = getattr(self, '_chroma_client', None)
+            if collection is None:
+                try:
+                    import chromadb
+                    cache_dir = self._dir.parent / "_chroma_cache"
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    self._chroma_client = chromadb.PersistentClient(path=str(cache_dir))
+                except ImportError:
+                    return
+            try:
+                collection = self._chroma_client.get_collection("ai_coach_memories")
+            except Exception:
+                collection = self._chroma_client.create_collection("ai_coach_memories")
+            if not hasattr(self, "_embedder"):
+                return
+            doc = f"{entry.description}\n{entry.content[:500]}"
+            emb = self._embedder.encode([doc], normalize_embeddings=True)
+            # upsert: 若已存在则更新，不存在则添加
+            collection.upsert(
+                ids=[entry.name],
+                documents=[doc],
+                embeddings=emb.tolist(),
+                metadatas=[{"type": entry.type, "importance": entry.importance}],
+            )
+        except Exception:
+            pass  # ChromaDB 同步失败不影响主流程
 
     def _parse_file(self, file_path: Path) -> Optional[MemoryEntry]:
         """解析 .md 文件为 MemoryEntry。"""

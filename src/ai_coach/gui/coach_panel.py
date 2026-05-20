@@ -244,47 +244,77 @@ class AICoachPanel(QWidget):
         self.thinking_bar.setStyleSheet("QProgressBar { border: none; background: transparent; }")
         layout.addWidget(self.thinking_bar)
 
-        # Action buttons
-        btn_layout = QHBoxLayout()
+        # ── 按钮区：两行布局，主操作在上、辅助操作在下 ──
+        _btn_style = """
+            QPushButton {
+                background-color: #2a2a4a; color: #e0e0e0;
+                border: 1px solid #444; border-radius: 6px;
+                padding: 7px 14px; font-size: 12px;
+            }
+            QPushButton:hover { background-color: #3a3a5a; border-color: #5a7aaa; }
+            QPushButton:pressed { background-color: #4a4a6a; }
+        """
+        _btn_primary_style = """
+            QPushButton {
+                background-color: #3a4a6a; color: #c8d8ff;
+                border: 1px solid #5a7aaa; border-radius: 6px;
+                padding: 7px 16px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #4a5a7a; border-color: #7a9aca; }
+            QPushButton:pressed { background-color: #5a6a8a; }
+        """
 
-        self.btn_analyze = QPushButton("分析演唱")
-        self.btn_analyze.setToolTip("分析最近一次录音")
-        btn_layout.addWidget(self.btn_analyze)
+        # ── 第一行：核心分析操作 ──
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
+
+        self.btn_analyze_recent = QPushButton("分析最近录音")
+        self.btn_analyze_recent.setToolTip("自动加载最近一次录音并分析")
+        self.btn_analyze_recent.setStyleSheet(_btn_primary_style)
+        row1.addWidget(self.btn_analyze_recent)
+
+        self.btn_analyze = QPushButton("选择分析")
+        self.btn_analyze.setToolTip("选择已保存的分析 JSON 文件")
+        self.btn_analyze.setStyleSheet(_btn_style)
+        row1.addWidget(self.btn_analyze)
 
         self.btn_compare = QPushButton("对比分析")
         self.btn_compare.setToolTip("与专业歌手的音高曲线对比")
-        btn_layout.addWidget(self.btn_compare)
+        self.btn_compare.setStyleSheet(_btn_style)
+        row1.addWidget(self.btn_compare)
+
+        row1.addStretch()
+
+        self.btn_settings = QPushButton("⚙ 设置")
+        self.btn_settings.setToolTip("AI 教练设置 (API / 身份)")
+        self.btn_settings.setStyleSheet(_btn_style + """
+            QPushButton:hover { background-color: #3a3a5a; border-color: #7C5CFC; }
+        """)
+        row1.addWidget(self.btn_settings)
+
+        layout.addLayout(row1)
+
+        # ── 第二行：辅助工具 ──
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
 
         self.btn_plan = QPushButton("练习计划")
         self.btn_plan.setToolTip("生成个性化练习计划")
-        btn_layout.addWidget(self.btn_plan)
+        self.btn_plan.setStyleSheet(_btn_style)
+        row2.addWidget(self.btn_plan)
 
         self.btn_report = QPushButton("导出报告")
         self.btn_report.setToolTip("导出 Markdown 分析报告")
-        btn_layout.addWidget(self.btn_report)
+        self.btn_report.setStyleSheet(_btn_style)
+        row2.addWidget(self.btn_report)
 
         self.btn_clear = QPushButton("清空对话")
-        btn_layout.addWidget(self.btn_clear)
+        self.btn_clear.setToolTip("清空当前对话")
+        self.btn_clear.setStyleSheet(_btn_style)
+        row2.addWidget(self.btn_clear)
 
-        for btn in [self.btn_analyze, self.btn_compare, self.btn_plan, self.btn_report, self.btn_clear]:
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #2a2a4a;
-                    color: #e0e0e0;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    padding: 6px 12px;
-                    font-size: 12px;
-                }
-                QPushButton:hover {
-                    background-color: #3a3a5a;
-                }
-                QPushButton:pressed {
-                    background-color: #4a4a6a;
-                }
-            """)
-
-        layout.addLayout(btn_layout)
+        row2.addStretch()
+        layout.addLayout(row2)
 
         # Input area
         input_layout = QHBoxLayout()
@@ -341,11 +371,13 @@ class AICoachPanel(QWidget):
         self.btn_send.clicked.connect(self._on_send)
         self.input_field.returnPressed.connect(self._on_send)
         self.btn_mic.clicked.connect(self._on_voice_input)
+        self.btn_analyze_recent.clicked.connect(self._on_analyze_recent)
         self.btn_analyze.clicked.connect(self._on_analyze)
         self.btn_compare.clicked.connect(self._on_compare)
         self.btn_plan.clicked.connect(self._on_plan)
         self.btn_report.clicked.connect(self._on_report)
         self.btn_clear.clicked.connect(self._on_clear)
+        self.btn_settings.clicked.connect(self._on_settings)
         # 延迟加载 profile
         QTimer.singleShot(100, self._refresh_profile)
 
@@ -410,10 +442,41 @@ class AICoachPanel(QWidget):
             QPushButton:hover { background-color: #3a3a5a; border-color: #4ADE80; }
         """)
 
+    def _on_analyze_recent(self):
+        """自动查找并分析最近一次录音的 JSON。"""
+        recordings_dir = Path("recordings")
+        if not recordings_dir.exists():
+            self._append_message("assistant", "尚未找到录音目录。请先完成一次录音。")
+            return
+
+        candidates = []
+        for p in recordings_dir.glob("*.json"):
+            if p.name.startswith("._") or p.name.endswith("_temp.json"):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    head = f.read(512)
+                if '"pitch_analysis"' in head or '"recording_info"' in head:
+                    candidates.append(p)
+            except Exception:
+                continue
+
+        if not candidates:
+            self._append_message(
+                "assistant",
+                "尚未找到录音分析文件。请先完成一次录音，或使用「选择分析」手动加载。"
+            )
+            return
+
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        song_name = latest.stem
+        self._append_message("user", f"[分析最近录音] {song_name}")
+        self._run_agent_task("analyze", json_path=str(latest), song_name=song_name)
+
     def _on_analyze(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择 MindEcho 分析文件", "",
-            "JSON 文件 (*_analysis.json);;所有文件 (*)"
+            "JSON 文件 (*.json);;所有文件 (*)"
         )
         if not path:
             return
@@ -424,13 +487,13 @@ class AICoachPanel(QWidget):
     def _on_compare(self):
         user_path, _ = QFileDialog.getOpenFileName(
             self, "选择你的演唱分析文件", "",
-            "JSON 文件 (*_analysis.json);;所有文件 (*)"
+            "JSON 文件 (*.json);;所有文件 (*)"
         )
         if not user_path:
             return
         ref_path, _ = QFileDialog.getOpenFileName(
             self, "选择专业参考分析文件", "",
-            "JSON 文件 (*_analysis.json);;所有文件 (*)"
+            "JSON 文件 (*.json);;所有文件 (*)"
         )
         if not ref_path:
             return
@@ -446,21 +509,13 @@ class AICoachPanel(QWidget):
     def _on_report(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择 MindEcho 分析文件", "",
-            "JSON 文件 (*_analysis.json);;所有文件 (*)"
+            "JSON 文件 (*.json);;所有文件 (*)"
         )
         if not path:
             return
         song_name = Path(path).stem.replace("_analysis", "").replace("_", " ")
         self._append_message("user", f"[生成报告] {song_name}")
-
-        try:
-            report = self.agent.generate_report(
-                analysis_json_path=path, song_name=song_name
-            )
-            self.report_display.setMarkdown(report)
-            self._append_message("assistant", '报告已生成，请在下方「分析报告」标签页查看。')
-        except Exception as e:
-            self._append_message("assistant", f"报告生成失败: {e}")
+        self._run_agent_task("report", json_path=str(path), song_name=song_name)
 
     def _on_clear(self):
         self.chat_display.clear()
@@ -517,15 +572,12 @@ class AICoachPanel(QWidget):
 
     def _run_agent_task(self, task_type: str, **kwargs):
         """在后台线程中运行 Agent 任务"""
+        self._current_task_type = task_type  # 记录任务类型供结果处理用
         self.thinking_bar.setVisible(True)
         self._pending_tokens.clear()
         self._stream_timer.stop()
 
-        # 禁用 UI（流式响应用 _flush 更新，非流式用 result_ready 更新）
-        if task_type == "chat":
-            self.thread = _AgentThread(self.agent, task_type, **kwargs)
-        else:
-            self.thread = _AgentThread(self.agent, task_type, **kwargs)
+        self.thread = _AgentThread(self.agent, task_type, **kwargs)
         self.thread.result_ready.connect(self._on_agent_result)
         self.thread.finished.connect(lambda: self.thinking_bar.setVisible(False))
         self.thread.finished.connect(lambda: self.input_field.setEnabled(True))
@@ -536,6 +588,11 @@ class AICoachPanel(QWidget):
         # 流式会话已通过 on_stream 更新，直接追加最终结果
         if not self._pending_tokens:
             self._append_message("assistant", result)
+        # 分析/报告类任务：自动填充到报告标签页
+        task = getattr(self, '_current_task_type', '')
+        if task in ("analyze", "report"):
+            self._last_analysis_result = result
+            self.report_display.setMarkdown(result)
         self._refresh_profile()
 
     def _append_message(self, role: str, content: str):
@@ -569,59 +626,111 @@ class AICoachPanel(QWidget):
             from .charts import sparkline_svg, bar_chart_svg, progress_ring_svg
             sessions = self.agent.session_mgr.sessions
 
-            parts = ['<div style="padding:12px;font-family:sans-serif;">']
+            parts = ['<div style="padding:16px;font-family:sans-serif;">']
+
+            # ── 标题行 ──
             parts.append(
-                '<h3 style="color:#A78BFA;margin:0 0 12px 0;">练习数据总览</h3>'
+                '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">'
+                '<span style="font-size:16px;">📊</span>'
+                '<span style="font-size:14px;font-weight:bold;color:#A78BFA;">练习数据总览</span>'
+                '</div>'
             )
 
-            # 关键指标卡片
+            # ── 指标卡片 ──
             stats = self.agent.session_mgr.get_stats()
-            rings_html = '<div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap;">'
-            # 累计练习次数
-            max_sessions = max(stats["total_sessions"], 1)
-            rings_html += (
-                f'<div style="text-align:center;min-width:80px;">'
-                f'{progress_ring_svg(min(stats["total_sessions"] / max(30, stats["total_sessions"]), 1.0), size=64, color="#7C5CFC", label=str(stats["total_sessions"]))}'
-                f'<div style="font-size:11px;color:#999;margin-top:4px;">练习次数</div></div>'
-            )
-            # 累计小时
-            rings_html += (
-                f'<div style="text-align:center;min-width:80px;">'
-                f'{progress_ring_svg(min(stats["total_hours"] / max(10, stats["total_hours"]), 1.0), size=64, color="#4ADE80", label=f"{stats["total_hours"]}h")}'
-                f'<div style="font-size:11px;color:#999;margin-top:4px;">练习时长</div></div>'
-            )
-            rings_html += "</div>"
-            parts.append(rings_html)
+            total = stats["total_sessions"]
+            hours = stats["total_hours"]
 
-            # 音准趋势折线图
-            acc_data = [
-                s.accuracy for s in sessions[-20:]
-                if s.accuracy > 0
-            ]
+            parts.append('<div style="display:flex;gap:12px;margin-bottom:16px;">')
+
+            # 练习次数卡片
+            ring_pct = min(total / max(30, total), 1.0) if total > 0 else 0.0
+            parts.append(
+                f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
+                f'{progress_ring_svg(ring_pct, size=56, stroke_width=5, color="#7C5CFC", label=str(total))}'
+                f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">练习次数</div>'
+                f'<div style="font-size:10px;color:#888;margin-top:2px;">累计录音分析</div>'
+                f'</div>'
+            )
+
+            # 练习时长卡片
+            time_min = stats.get("total_minutes", hours * 60)
+            time_ring = min(hours / max(10, hours), 1.0) if hours > 0 else 0.0
+            if hours >= 1.0:
+                time_label = f"{hours:.1f}h"
+            elif hours >= 0.01:
+                time_label = f"{hours * 60:.0f}min"
+            else:
+                time_label = "—"
+            parts.append(
+                f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
+                f'{progress_ring_svg(time_ring, size=56, stroke_width=5, color="#4ADE80", label=time_label)}'
+                f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">练习时长</div>'
+                f'<div style="font-size:10px;color:#888;margin-top:2px;">累计演唱时间</div>'
+                f'</div>'
+            )
+
+            # 音准纯净度卡片（排除旧公式产生的 0 和 1.0 极端值）
+            acc_vals = [s.accuracy for s in sessions[-20:] if 0.01 < s.accuracy < 0.99]
+            avg_acc = sum(acc_vals) / len(acc_vals) if acc_vals else 0.0
+            acc_label = f"{avg_acc*100:.0f}%" if acc_vals else "—"
+            parts.append(
+                f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
+                f'{progress_ring_svg(avg_acc, size=56, stroke_width=5, color="#F59E0B", label=acc_label)}'
+                f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">音准纯净度</div>'
+                f'<div style="font-size:10px;color:#888;margin-top:2px;">距标准音的偏差</div>'
+                f'</div>'
+            )
+
+            parts.append('</div>')  # end 指标卡片
+
+            # ── 状态描述 ──
+            valid_count = len(acc_vals)
+            if valid_count == 0:
+                desc = "还没有有效练习记录，完成首次录音分析后这里会显示你的成长数据。"
+            elif valid_count < 5:
+                desc = f"刚起步，已完成 {valid_count} 次有效练习。坚持下去，每一遍都在进步！"
+            elif avg_acc >= 0.7:
+                desc = f"共 {valid_count} 次练习，音准纯净度 {avg_acc*100:.0f}%，表现很稳定，继续打磨细节！"
+            elif avg_acc >= 0.5:
+                desc = f"共 {valid_count} 次练习，音准纯净度 {avg_acc*100:.0f}%，基础不错，多录音多复盘。"
+            elif avg_acc >= 0.3:
+                desc = f"共 {valid_count} 次练习，音准还有提升空间，每次录音后仔细听回放会很有帮助。"
+            else:
+                desc = f"共 {valid_count} 次练习，坚持就是进步，多录音多复盘音准会越来越稳。"
+            parts.append(
+                f'<div style="font-size:11px;color:#999;line-height:1.5;margin-bottom:14px;">'
+                f'{desc}'
+                f'</div>'
+            )
+
+            # ── 音准趋势 ──
+            acc_data = [s.accuracy for s in sessions[-20:] if 0.01 < s.accuracy < 0.99]
             if len(acc_data) >= 3:
                 acc_labels = [
                     s.timestamp[:10] if s.timestamp else ""
-                    for s in sessions[-20:]
-                    if s.accuracy > 0
+                    for s in sessions[-20:] if 0.01 < s.accuracy < 0.99
                 ]
                 parts.append(
-                    '<h4 style="color:#ccc;margin:0 0 6px 0;">音准趋势</h4>'
+                    '<div style="font-size:12px;color:#ccc;font-weight:bold;margin-bottom:6px;">'
+                    '音准趋势</div>'
                 )
                 parts.append(
-                    sparkline_svg(acc_data, width=340, height=70, labels=acc_labels)
+                    sparkline_svg(acc_data, width=340, height=64, labels=acc_labels)
                 )
 
-            # 最近练习柱状图
-            recent = [s for s in sessions[-8:] if s.accuracy > 0]
+            # ── 最近练习 ──
+            recent = [s for s in sessions[-8:] if 0.01 < s.accuracy < 0.99]
             if recent:
                 parts.append(
-                    '<h4 style="color:#ccc;margin:12px 0 6px 0;">最近练习</h4>'
+                    '<div style="font-size:12px;color:#ccc;font-weight:bold;margin:14px 0 6px 0;">'
+                    '最近练习</div>'
                 )
                 bar_data = [
                     (s.song_name[:6] if s.song_name else s.session_id[:6], s.accuracy)
                     for s in recent
                 ]
-                parts.append(bar_chart_svg(bar_data, width=340, height=120))
+                parts.append(bar_chart_svg(bar_data, width=340, height=110))
 
             parts.append("</div>")
             self.chart_display.setHtml("".join(parts))

@@ -5987,13 +5987,14 @@ class IntegratedAudioProcessor(QThread):
                         # 捕获快照，避免后续监听继续时缓冲被修改
                         _buf = np.array(self.audio_buffer, dtype=np.float32)
                         _pitches = list(self.pitch_history)
+                        _tech_events = list(getattr(self, '_technique_events', []))
                         _fname = self.recording_filename
                         _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
                         _ch = int(getattr(self, 'active_input_channels', self.channels))
                         _dur = float(self.current_duration)
                         def _bg_save():
                             try:
-                                out_path = self._save_recording_snapshot(_fname, _sr, _ch, _buf, _pitches, _dur)
+                                out_path = self._save_recording_snapshot(_fname, _sr, _ch, _buf, _pitches, _dur, _tech_events)
                                 self.recording_finished.emit(out_path or "", analysis_results)
                                 self.status_updated.emit("录音完成，监听继续")
                             except Exception as _e:
@@ -6039,13 +6040,14 @@ class IntegratedAudioProcessor(QThread):
                     import threading as _th
                     _buf = np.array(self.audio_buffer, dtype=np.float32)
                     _pitches = list(self.pitch_history)
+                    _tech_events = list(getattr(self, '_technique_events', []))
                     _fname = self.recording_filename
                     _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
                     _ch = int(getattr(self, 'active_input_channels', self.channels))
                     _dur = float(self.current_duration)
                     def _bg_save2():
                         try:
-                            out_path = self._save_recording_snapshot(_fname, _sr, _ch, _buf, _pitches, _dur)
+                            out_path = self._save_recording_snapshot(_fname, _sr, _ch, _buf, _pitches, _dur, _tech_events)
                             self.recording_finished.emit(out_path or "", analysis_results)
                             self.status_updated.emit("录音和分析完成")
                         except Exception as _e:
@@ -6084,16 +6086,39 @@ class IntegratedAudioProcessor(QThread):
             ch = int(getattr(self, 'active_input_channels', self.channels))
             duration = float(getattr(self, 'current_duration', len(audio_array) / max(sr, 1)))
             pitches = list(getattr(self, 'pitch_history', []))
+            tech_events = list(getattr(self, '_technique_events', []))
 
             # 复用快照保存逻辑，避免与实时状态竞争
-            out_path = self._save_recording_snapshot(self.recording_filename, sr, ch, audio_array, pitches, duration)
+            out_path = self._save_recording_snapshot(self.recording_filename, sr, ch, audio_array, pitches, duration, tech_events)
             return out_path or None
         except Exception as e:
             self.error_occurred.emit(f"保存录音失败: {e}")
             return None
 
+    @staticmethod
+    def _technique_event_to_dict(ev) -> dict:
+        """将技术事件 dataclass 序列化为可 JSON 存储的 dict。"""
+        d = {}
+        try:
+            for field_name in ev.__dataclass_fields__:
+                val = getattr(ev, field_name, None)
+                if val is None:
+                    continue
+                if isinstance(val, (int, float, str, bool)):
+                    d[field_name] = val
+                elif isinstance(val, dict):
+                    d[field_name] = val
+                elif hasattr(val, '__dataclass_fields__'):
+                    d[field_name] = IntegratedAudioProcessor._technique_event_to_dict(val)
+                else:
+                    d[field_name] = str(val) if not isinstance(val, (list, tuple)) else list(val)
+        except Exception:
+            pass
+        return d
+
     def _save_recording_snapshot(self, filename: str, sample_rate: int, channels: int,
-                                 audio_array: np.ndarray, pitch_history: list, duration: float) -> str:
+                                 audio_array: np.ndarray, pitch_history: list,
+                                 duration: float, technique_events: list | None = None) -> str:
         """使用提供的快照数据保存录音与分析，避免与实时状态竞争。返回保存的wav路径。"""
         try:
             recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
@@ -6111,6 +6136,16 @@ class IntegratedAudioProcessor(QThread):
                 wav_file.writeframes(audio_int16.tobytes())
             # 保存分析
             analysis_path = output_path.with_suffix('.json')
+            # 序列化技术事件
+            serialized_events = []
+            if technique_events:
+                for ev in technique_events:
+                    try:
+                        d = self._technique_event_to_dict(ev)
+                        if d:
+                            serialized_events.append(d)
+                    except Exception:
+                        pass
             analysis_data = {
                 'recording_info': {
                     'filename': filename,
@@ -6123,7 +6158,8 @@ class IntegratedAudioProcessor(QThread):
                     'total_detections': len(pitch_history),
                     'detection_rate': (len(pitch_history) / max(float(duration), 1.0)),
                     'pitch_data': list(pitch_history)
-                }
+                },
+                'technique_events': serialized_events
             }
             with open(analysis_path, 'w', encoding='utf-8') as f:
                 json.dump(analysis_data, f, indent=2, ensure_ascii=False)
@@ -36950,6 +36986,12 @@ class ECGStylePitchVisualizer(QWidget):
                     global_time = max(0.0, global_time - start_wall)
             except Exception:
                 pass
+            # 保存调用方是否显式提供了 global_time（用于后续门控决策）
+            # 必须在修改 pitch_data 之前判定，避免"自己加进去的 key"误触发 skip_gate
+            try:
+                self._caller_had_explicit_time = ('global_time' in pitch_data)
+            except Exception:
+                self._caller_had_explicit_time = False
             try:
                 pitch_data['global_time'] = float(global_time)
             except Exception:
@@ -37480,7 +37522,7 @@ class ECGStylePitchVisualizer(QWidget):
                     now_wall = _t.time()
                     # 自动化/测试场景快速结束倒计时：显式 global_time 或无头环境下直接结束并继续处理本帧
                     try:
-                        explicit_gt_present = ('global_time' in pitch_data)
+                        explicit_gt_present = getattr(self, '_caller_had_explicit_time', False)
                     except Exception:
                         explicit_gt_present = False
                     fast_end = False
@@ -38356,7 +38398,7 @@ class ECGStylePitchVisualizer(QWidget):
                 # 为了保证可预期与快速反馈，默认跳过普通模式的门控缓冲。
                 try:
                     if not skip_gate:
-                        explicit_gt_present = ('global_time' in pitch_data)
+                        explicit_gt_present = getattr(self, '_caller_had_explicit_time', False)
                         prefer_skip_for_explicit = bool(getattr(self, '_disable_gate_when_explicit_time', True))
                         is_headless = False
                         try:
@@ -38426,10 +38468,13 @@ class ECGStylePitchVisualizer(QWidget):
                         voiced_like = (audio_rms >= rms_enter and conf_smoothed >= 0.45) or (
                             conf_smoothed >= conf_hi and audio_rms >= noise_floor * 2.2
                         )
-                        # silent_like: RMS 低于退出阈值；或低平滑置信度且 RMS 不算太高
+                        # silent_like: RMS 低于退出阈值；或低平滑置信度且 RMS 不算太高；
+                        # 或置信度过低（<0.30）→ 几乎肯定是呼吸/噪声，不管能量多大
                         # conf_lo 加速退出：噪声平滑置信度通常 < 0.38
                         silent_like = (audio_rms <= rms_exit) or (
                             conf_smoothed <= conf_lo and audio_rms <= rms_enter * 0.85
+                        ) or (
+                            conf_smoothed <= conf_lo * 0.80
                         )
                         # 深静音：RMS 极低，立即断线，不经过尾部缓冲
                         deep_silent = (audio_rms <= noise_floor * 1.3)
@@ -38611,7 +38656,7 @@ class ECGStylePitchVisualizer(QWidget):
                 try:
                     f_in = float(frequency)
                     conf = float(confidence)
-                    # 维护短窗频率集合用于参考（中位数抗异常）
+                    # 维护短窗频率集合用于参考（中位数天然抗异常值）
                     self._robust_freq_window.append(f_in)
                     import numpy as _np
                     ref_freq = None
@@ -38659,11 +38704,28 @@ class ECGStylePitchVisualizer(QWidget):
                 # 噪声跳变抑制：大幅跨越且低置信度/低能量时丢弃该点（避免异常大跳线）
                 try:
                     prev_y = getattr(self, 'last_active_pitch_y', None)
+                    conf_thr = float(getattr(self, '_noise_jump_confidence', 0.35))
+                    rms_thr = float(getattr(self, '_noise_jump_rms', 0.004))
+                    # Gate 0 — 极低置信度无条件丢弃：置信度过低即为非人声噪声
+                    min_vis_conf = float(getattr(self, '_min_visual_confidence', 0.18))
+                    if confidence < min_vis_conf:
+                        self.current_pitch_active = False
+                        try:
+                            self.update_guides()
+                        except Exception:
+                            pass
+                        return
+                    # Gate 1 — 静默期间低置信度点丢弃：避免换气/无声时噪声产生异常弧线
+                    if audio_rms < rms_thr * 0.5 and confidence < conf_thr * 0.6:
+                        self.current_pitch_active = False
+                        try:
+                            self.update_guides()
+                        except Exception:
+                            pass
+                        return
                     if prev_y is not None:
                         jump_semi = abs((float(y_pos) - float(prev_y)) * 12.0)
                         jump_thr = float(getattr(self, '_noise_jump_semitones', getattr(self, '_fade_thr_one_oct', 12.0)))
-                        conf_thr = float(getattr(self, '_noise_jump_confidence', 0.35))
-                        rms_thr = float(getattr(self, '_noise_jump_rms', 0.004))
                         if jump_thr < 0.0:
                             jump_thr = 0.0
                         if jump_semi >= jump_thr and (confidence < conf_thr) and (audio_rms < rms_thr):
@@ -39976,6 +40038,36 @@ class ECGStylePitchVisualizer(QWidget):
             # 轻量刷新失败不影响主流程
             pass
 
+    def _update_v_guide_lightweight(self):
+        """仅更新纵向引导线位置（每 tick 调用），不做辉光/横向/焦点带重建。
+        中心模式（>8s）下引导线固定在图表正中，无需更新。"""
+        try:
+            v_line = getattr(self, 'v_guide_line', None)
+            if v_line is None:
+                return
+            if getattr(v_line, 'axes', None) is not self.ax:
+                return
+            cur_t = float(getattr(self, 'current_global_time', 0.0))
+            center_t = float(getattr(self, 'center_display_time', 8.0))
+            auto_follow = bool(getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True))
+            overlay_active = bool(getattr(self, '_retake_overlay_preview_active', False))
+            want_center = bool(cur_t > center_t and auto_follow and not overlay_active)
+            if want_center:
+                v_line.set_transform(self.ax.get_yaxis_transform())
+                v_line.set_xdata([0.5, 0.5])
+            else:
+                v_line.set_transform(self.ax.transData)
+                prev = float(getattr(self, '_smoothed_vx', cur_t))
+                v_x = prev + (cur_t - prev) * 0.35
+                self._smoothed_vx = float(v_x)
+                v_line.set_xdata([v_x, v_x])
+            v_glow = getattr(self, 'v_guide_glow_line', None)
+            if v_glow is not None and getattr(v_glow, 'axes', None) is self.ax:
+                v_glow.set_transform(v_line.get_transform())
+                v_glow.set_xdata(v_line.get_xdata())
+        except Exception:
+            pass
+
     def update_guides(self):
         """更新或创建纵向/横向辅助线（主线+柔光）位置与可见性。"""
         try:
@@ -40795,6 +40887,11 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             pass
                     else:
+                        # 每 tick 轻量更新引导线位置，让纵向线在 update_guides 间隙也能平滑跟随
+                        try:
+                            self._update_v_guide_lightweight()
+                        except Exception:
+                            pass
                         guides_changed = False
                         try:
                             guide_iv = float(getattr(self, '_normal_mode_front_guides_interval', 0.032) or 0.032)
@@ -71310,8 +71407,61 @@ def _ifc_switch_local_realtime_track_mode(self, mode_key: str):
             pass
     self._enter_local_file_realtime_mode(path, track_sources=sources, active_mode=mode)
 
+def _save_local_file_analysis(self):
+    """保存本地文件分析的 JSON（与 _save_recording_snapshot 格式统一）。"""
+    try:
+        ctrl = getattr(self, '_lfm_ctrl', None)
+        if ctrl is None:
+            return
+        source_path = Path(getattr(ctrl, 'file_path', ''))
+        if not source_path.exists():
+            return
+        pitches = list(getattr(self.audio_processor, 'pitch_history', []))
+        if not pitches:
+            return
+        tech_events = list(getattr(self, '_technique_events', []))
+        duration = float(getattr(ctrl, 'total_s', 0.0) or (len(pitches) / 64.0))
+        sr = int(getattr(self.audio_processor, 'sample_rate', 48000))
+        recordings_dir = Path(getattr(self.audio_processor, 'save_base_dir',
+                              project_root / "recordings"))
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+        analysis_path = recordings_dir / f"{source_path.stem}_analysis.json"
+        serialized_events = []
+        if tech_events:
+            for ev in tech_events:
+                try:
+                    d = self.audio_processor._technique_event_to_dict(ev)
+                    if d:
+                        serialized_events.append(d)
+                except Exception:
+                    pass
+        data = {
+            'recording_info': {
+                'filename': source_path.name,
+                'source_file': str(source_path),
+                'sample_rate': sr,
+                'channels': 1,
+                'duration': duration,
+                'total_frames': len(pitches)
+            },
+            'pitch_analysis': {
+                'total_detections': len(pitches),
+                'detection_rate': (len(pitches) / max(duration, 1.0)),
+                'pitch_data': pitches
+            },
+            'technique_events': serialized_events
+        }
+        with open(analysis_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"[本地文件分析] 已保存分析 JSON: {analysis_path}")
+    except Exception as e:
+        print(f"[本地文件分析] 保存分析 JSON 失败: {e}")
+
+
 @_patch_method('_exit_local_file_mode')
 def _ifc_exit_local_file_mode(self):
+    # 退出前保存分析 JSON（在清空数据之前）
+    _save_local_file_analysis(self)
     try:
         if hasattr(self, '_lfm_ctrl') and self._lfm_ctrl:
             self._lfm_ctrl.stop()

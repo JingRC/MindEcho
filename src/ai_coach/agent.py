@@ -280,7 +280,7 @@ class VocalCoachAgent:
                         },
                     })
                     if entry.title and (entry.theory or entry.practice):
-                        store.add_entry(entry, persist=True)
+                        store.add_entry(entry, persist=True, source="llm_extract")
 
             except Exception:
                 pass  # 静默失败
@@ -289,16 +289,31 @@ class VocalCoachAgent:
 
     # ── 对话摘要 (OpenClaw 工作记忆 → 情景记忆压缩) ──────────
 
-    _SUMMARY_PROMPT = """将以下对话历史压缩为一段简洁摘要（中文，200字以内）。
-重点保留：用户提到的个人信息、偏好、目标、唱歌相关的问题和进展。
-忽略：礼节性问候、重复内容、无信息量的客套话。
-只输出摘要文本，不要其他内容。"""
+    _SUMMARY_PROMPT = """将以下对话历史压缩为结构化摘要。输出 JSON：
+
+{
+  "summary": "一句话概述这段对话（50字内）",
+  "key_facts": ["用户提到的关键事实1", "事实2", ...],
+  "questions_asked": ["用户提出的重要问题"],
+  "progress": ["用户在唱歌/练习方面的进展"],
+  "preferences": ["用户表达的音乐/风格偏好"],
+  "decisions": ["用户做出的决定或计划"]
+}
+
+规则：
+- 只提取明确提到的信息，不要推测
+- 忽略礼节性问候和客套话
+- 每个列表只保留有意义的内容（可为空数组）
+- 直输出 JSON，不要其他文字"""
 
     def _maybe_summarize_conversation(self):
-        """当对话历史过长时，将早期消息压缩为情景记忆。
+        """当对话历史过长时，将早期消息压缩为结构化情景记忆。
 
-        保留最近 6 轮不变，将更早的对话压缩成摘要注入 system prompt。
+        保留最近 6 轮不变，将更早的对话压缩成结构化摘要和关键事实，
+        注入 system prompt 以维持长对话的连贯性。
         """
+        import json as _json
+
         MAX_MESSAGES = 20  # 超过此数量触发压缩
         KEEP_RECENT = 12   # 保留最近 12 条消息 (6 轮) 不压缩
 
@@ -318,13 +333,60 @@ class VocalCoachAgent:
         )
 
         try:
-            summary = self.llm.chat(
+            result = self.llm.chat(
                 [{"role": "user", "content": conversation}],
                 system=self._SUMMARY_PROMPT,
-                max_tokens=300,
+                max_tokens=400,
                 temperature=0.2,
             )
-            # 存储摘要：将早期消息替换为一条摘要消息
+            # 解析 JSON
+            json_str = result.strip()
+            if json_str.startswith("```"):
+                json_str = json_str.split("\n", 1)[1].rsplit("\n```", 1)[0]
+            data = _json.loads(json_str)
+
+            summary = data.get("summary", "")
+            key_facts = data.get("key_facts", [])
+            questions = data.get("questions_asked", [])
+            progress = data.get("progress", [])
+            preferences = data.get("preferences", [])
+            decisions = data.get("decisions", [])
+
+            # 构建结构化上下文
+            context_parts = []
+            if summary:
+                context_parts.append(f"[对话摘要] {summary}")
+            if key_facts:
+                context_parts.append("[关键事实]\n" + "\n".join(f"• {f}" for f in key_facts))
+            if questions:
+                context_parts.append("[用户关心的问题]\n" + "\n".join(f"• {q}" for q in questions))
+            if progress:
+                context_parts.append("[学习进展]\n" + "\n".join(f"• {p}" for p in progress))
+            if preferences:
+                context_parts.append("[偏好]\n" + "\n".join(f"• {p}" for p in preferences))
+            if decisions:
+                context_parts.append("[决定/计划]\n" + "\n".join(f"• {d}" for d in decisions))
+
+            context_block = "\n\n".join(context_parts)
+
+            # 存储压缩后的历史：系统消息 + 最近消息
+            self.session_mgr._chat_history = [
+                {"role": "system", "content": context_block}
+            ] + history[-KEEP_RECENT:]
+            return context_block
+        except Exception:
+            # JSON 解析失败 → 回退到简单摘要
+            pass
+
+        # 回退路径：使用简单摘要
+        try:
+            fallback_prompt = "将以下对话历史压缩为一段简洁摘要（中文，150字以内）。重点保留用户个人信息、偏好、目标、唱歌相关的问题。只输出摘要文本。"
+            summary = self.llm.chat(
+                [{"role": "user", "content": conversation}],
+                system=fallback_prompt,
+                max_tokens=250,
+                temperature=0.2,
+            )
             self.session_mgr._chat_history = [
                 {"role": "system", "content": f"[对话摘要] {summary.strip()}"}
             ] + history[-KEEP_RECENT:]
@@ -524,9 +586,20 @@ class VocalCoachAgent:
             sid = self.session_mgr.start_session(
                 focus="演唱分析", song_name=song_name
             )
+            # 从 JSON 中提取录音时长
+            duration_min = 0.0
+            if analysis_json_path:
+                try:
+                    import json
+                    with open(analysis_json_path, "r") as f:
+                        _d = json.load(f)
+                    _ri = _d.get("recording_info", {}) or {}
+                    duration_min = float(_ri.get("duration", 0)) / 60.0
+                except Exception:
+                    pass
             self.session_mgr.end_session(
                 sid,
-                duration_minutes=0,
+                duration_minutes=round(duration_min, 1),
                 accuracy=ctx.stats.pitch_accuracy,
                 analysis_data_path=str(analysis_json_path or ""),
             )

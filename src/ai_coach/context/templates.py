@@ -61,7 +61,7 @@ SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
 
 
 # ═══════════════════════════════════════════════════════════════
-# 意图检测 —— 判断用户是在闲聊还是请教声乐问题
+# 意图检测 —— 混合方案：关键词快速路径 + Embedding 语义消歧
 # ═══════════════════════════════════════════════════════════════
 
 # 声乐教练相关关键词（命中任一即判定为 coaching intent）
@@ -104,11 +104,46 @@ _CASUAL_KEYWORDS = [
     "叫什么", "你是谁", "怎么样", "推荐", "喜欢",
 ]
 
+# 用于 Embedding 语义消歧的锚文本（仅加载模型失败时回退到关键词）
+_COACHING_ANCHOR = "声乐教学指导 唱歌技巧 发声练习 气息共鸣 音准训练 高音突破"
+_CASUAL_ANCHOR = "日常聊天 闲聊问候 心情分享 生活话题 兴趣爱好"
+
+
+def _get_embedder():
+    """懒加载 sentence-transformers 模型（全局单例）。"""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        return None
+    import sys
+    mod = sys.modules.get(__name__)
+    if mod is None:
+        return None
+    if not hasattr(mod, '_intent_embedder'):
+        mod._intent_embedder = SentenceTransformer(
+            "paraphrase-multilingual-MiniLM-L12-v2"
+        )
+    return mod._intent_embedder
+
+
+def _semantic_similarity(text: str, anchor: str) -> float:
+    """计算 text 与 anchor 的余弦相似度（0-1）。"""
+    import numpy as np
+    embedder = _get_embedder()
+    if embedder is None:
+        return -1.0  # 不可用
+    emb_text = embedder.encode([text], normalize_embeddings=True)
+    emb_anchor = embedder.encode([anchor], normalize_embeddings=True)
+    return float(np.dot(emb_text[0], emb_anchor[0]))
+
 
 def detect_intent(user_message: str) -> tuple[bool, float]:
     """检测用户意图：是声乐请教还是日常闲聊。
 
-    基于关键词匹配（轻量级，不消耗额外 LLM 调用）。
+    混合方案：
+    1. 关键词匹配作快速路径（覆盖 >90% 场景）
+    2. 关键词无法判断或歧义时，用 Embedding 余弦相似度消歧
+    3. Embedding 不可用时回退到启发式规则
 
     Returns:
         (is_coaching, confidence): is_coaching 为 True 表示声乐请教；
@@ -119,10 +154,7 @@ def detect_intent(user_message: str) -> tuple[bool, float]:
     coaching_hits = sum(1 for kw in _COACHING_KEYWORDS if kw in msg_lower)
     casual_hits = sum(1 for kw in _CASUAL_KEYWORDS if kw in msg_lower)
 
-    if coaching_hits == 0 and casual_hits == 0:
-        # 无法判断 → 默认为闲聊，保持轻松语气
-        return False, 0.3
-
+    # 快速路径：关键词命中且无歧义
     if coaching_hits > 0 and casual_hits == 0:
         confidence = min(0.95, 0.6 + coaching_hits * 0.15)
         return True, confidence
@@ -131,11 +163,31 @@ def detect_intent(user_message: str) -> tuple[bool, float]:
         confidence = min(0.95, 0.6 + casual_hits * 0.15)
         return False, confidence
 
-    # 两者都有 → 看哪边更多
-    if coaching_hits >= casual_hits:
-        return True, 0.55
+    # 关键词冲突或零命中 → 启用语义消歧
+    coaching_sim = _semantic_similarity(msg_lower, _COACHING_ANCHOR)
+    if coaching_sim < 0:
+        # Embedding 不可用 → 回退到关键词启发式
+        if coaching_hits == 0 and casual_hits == 0:
+            return False, 0.3
+        if coaching_hits >= casual_hits:
+            return True, 0.55
+        else:
+            return False, 0.55
+
+    casual_sim = _semantic_similarity(msg_lower, _CASUAL_ANCHOR)
+    if casual_sim < 0:
+        casual_sim = coaching_sim * 0.5
+
+    if coaching_sim > casual_sim:
+        margin = coaching_sim - casual_sim
+        confidence = 0.5 + margin * 0.9
+        return True, min(0.92, confidence)
+    elif casual_sim > coaching_sim:
+        margin = casual_sim - coaching_sim
+        confidence = 0.5 + margin * 0.9
+        return False, min(0.92, confidence)
     else:
-        return False, 0.55
+        return False, 0.35
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -186,6 +186,7 @@ class PitchComparer:
         result.technique_comparison = {
             "颤音": {"user": f"{user_tech['vibrato_count']}次", "ref": f"{ref_tech['vibrato_count']}次"},
             "滑音": {"user": f"{user_tech['slide_count']}次", "ref": f"{ref_tech['slide_count']}次"},
+            "换气": {"user": f"{user_tech['breath_count']}次", "ref": f"{ref_tech['breath_count']}次"},
         }
 
         return result
@@ -201,7 +202,8 @@ class PitchComparer:
 
         values = []
         for p in pitch_data:
-            f0 = p.get("f0_smooth") or p.get("detected_frequency") or p.get("f0_raw") or 0
+            f0 = (p.get("f0_smooth") or p.get("detected_frequency")
+                  or p.get("f0_raw") or p.get("frequency") or 0)
             if p.get("has_pitch", f0 > 60):
                 values.append(f0)
             else:
@@ -210,9 +212,10 @@ class PitchComparer:
 
     def _extract_techniques(self, data: dict) -> dict:
         events = data.get("technique_events", [])
-        vibrato = sum(1 for e in events if e.get("type") == "vibrato")
-        slide = sum(1 for e in events if e.get("type") == "slide")
-        return {"vibrato_count": vibrato, "slide_count": slide}
+        vibrato = sum(1 for e in events if e.get("event_type") == "vibrato" or e.get("type") == "vibrato")
+        slide = sum(1 for e in events if e.get("event_type") == "slide" or e.get("type") == "slide")
+        breath = sum(1 for e in events if e.get("event_type") == "breath" or e.get("type") == "breath")
+        return {"vibrato_count": vibrato, "slide_count": slide, "breath_count": breath}
 
     def _segment_compare(
         self,
