@@ -327,11 +327,13 @@ except Exception:
 try:
     from .pyqtgraph_gradient_widget import (
         PYQTGRAPH_AVAILABLE as _PG_AVAIL,
-        PyQtGraphColorGradientWidget
+        PyQtGraphColorGradientWidget,
+        PyQtGraphPitchRenderer
     )
     PYQTGRAPH_GRADIENT_AVAILABLE = _PG_AVAIL
 except Exception:  # 允许缺失
     PYQTGRAPH_GRADIENT_AVAILABLE = False
+    PyQtGraphPitchRenderer = None
 
     class PyQtGraphColorGradientWidget(QWidget):  # type: ignore
         def __init__(self, *a, **k):
@@ -15395,6 +15397,8 @@ class ECGStylePitchVisualizer(QWidget):
         self.gradient_lines = []
         self.highlight_point = None
         self._force_redraw_on_next_update = False
+        # pyqtgraph 双轨开关 — 默认 False（matplotlib），设为 True 启用 pyqtgraph 渲染
+        self._use_pyqtgraph = False
 
         # ================== 初始化组件 ==================
         self.setup_colors()
@@ -23485,14 +23489,14 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         
-        # 初始化PyQtGraph彩色渐变组件（如果可用）
+        # 初始化PyQtGraph分段音高线渲染器（如果可用）
         self.pyqtgraph_gradient_widget = None
-        if PYQTGRAPH_GRADIENT_AVAILABLE:
+        if PYQTGRAPH_GRADIENT_AVAILABLE and PyQtGraphPitchRenderer is not None:
             try:
-                self.pyqtgraph_gradient_widget = PyQtGraphColorGradientWidget()
-                print("✅ PyQtGraph彩色渐变组件初始化成功")
+                self.pyqtgraph_gradient_widget = PyQtGraphPitchRenderer()
+                print("✅ PyQtGraph分段音高线渲染器初始化成功")
             except Exception as e:
-                print(f"⚠️ PyQtGraph彩色渐变组件初始化失败: {e}")
+                print(f"⚠️ PyQtGraph渲染器初始化失败: {e}")
                 self.pyqtgraph_gradient_widget = None
         
         # 设置初始坐标轴范围
@@ -45608,7 +45612,10 @@ class ECGStylePitchVisualizer(QWidget):
                         self._provisional_polyline = None
                     except Exception:
                         pass
-                self.draw_segmented_pitch_line(segments)
+                if getattr(self, '_use_pyqtgraph', False):
+                    self._pg_render_segmented(segments)
+                else:
+                    self.draw_segmented_pitch_line(segments)
             else:
                 # 普通模式不再使用整体 pitch_line，以避免跨窗口连线；走分段绘制兜底
                 try:
@@ -45923,6 +45930,39 @@ class ECGStylePitchVisualizer(QWidget):
             # 清理重入标记
             self._in_update_display = False
     
+    def _pg_render_segmented(self, segments):
+        """[pyqtgraph] 将分段数据交给 PyQtGraphPitchRenderer 渲染。
+
+        替代 draw_segmented_pitch_line 的 pyqtgraph 路径。
+        调用 setData 触发自动重绘，无需手动 draw_idle。
+        """
+        try:
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            pgw.set_segments(segments)
+            # 同步时间窗
+            t_off = float(getattr(self, 'time_offset', 0.0))
+            t_win = float(getattr(self, 'time_window', 16.0))
+            pgw.set_x_range(t_off, t_off + t_win)
+            # 同步音高范围
+            yc = float(getattr(self, 'y_view_center', 4.0))
+            yr = float(getattr(self, 'y_view_range', 3.0))
+            pgw.set_y_range(yc - yr, yc + yr)
+        except Exception:
+            pass
+
+    def _toggle_pyqtgraph(self):
+        """切换 pyqtgraph / matplotlib 渲染后端（调试用）。"""
+        self._use_pyqtgraph = not bool(getattr(self, '_use_pyqtgraph', False))
+        if self._use_pyqtgraph:
+            self.pyqtgraph_gradient_widget.set_segments([])
+            self.switch_display_widget(use_pyqtgraph=True)
+            print("🎯 切换到 pyqtgraph 渲染")
+        else:
+            self.switch_display_widget(use_pyqtgraph=False)
+            print("📊 切换到 matplotlib 渲染")
+
     def draw_segmented_pitch_line(self, segments):
         """绘制断续的音调曲线（每段独立绘制，换气段不连接），带签名缓存与懒更新以提升实时性"""
         try:
