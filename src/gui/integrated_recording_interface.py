@@ -11426,6 +11426,92 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             return 1.0
 
+    def _trellis_smooth_frequency(self, raw_freq: float, confidence: float) -> float:
+        """前向八度格子搜索器（Forward Octave Trellis）
+
+        用 Beam Search 在 3 个八度候选（×0.5, ×1.0, ×2.0）间做路径级选择。
+        利用歌者音高连续性（相邻帧不跨八度跳变）作为时间先验，
+        消除 YIN 在假声/气声段的八度模糊性。
+
+        参数:
+            raw_freq: YIN 输出的原始频率 (Hz)
+            confidence: YIN 置信度 (0-1)
+
+        返回: 经路径平滑后的频率 (Hz)
+        """
+        import math
+        import numpy as _np_trellis
+
+        beam_width = int(getattr(self, '_trellis_beam_width', 5))
+        sigma_semi = float(getattr(self, '_trellis_sigma_semitones', 1.5))
+        octave_penalty = float(getattr(self, '_trellis_octave_switch_penalty', -2.0))
+        hypotheses = getattr(self, '_trellis_hypotheses', [])
+
+        if raw_freq <= 0:
+            return raw_freq
+
+        # 生成 3 个八度候选
+        candidates = [raw_freq * 0.5, raw_freq, raw_freq * 2.0]
+
+        # 观测对数概率：YIN 最佳候选（raw_freq=×1.0）获 log(confidence)，其他平分剩余
+        conf = max(float(confidence), 0.001)
+        obs_logp_best = math.log(conf)
+        if conf < 0.999:
+            obs_logp_other = math.log((1.0 - conf) / 2.0)
+        else:
+            obs_logp_other = math.log(0.0005)
+
+        def _octave_tag(f, raw):
+            if f < raw * 0.75:
+                return 0.5
+            elif f > raw * 1.5:
+                return 2.0
+            return 1.0
+
+        if not hypotheses:
+            # 初始化：每个候选一个假设
+            for f_cand in candidates:
+                hypotheses.append({
+                    'freq': f_cand,
+                    'logp': obs_logp_best if abs(f_cand - raw_freq) < 1e-6 else obs_logp_other,
+                    'octave_tag': _octave_tag(f_cand, raw_freq),
+                })
+            self._trellis_hypotheses = hypotheses
+            best = max(hypotheses, key=lambda h: h['logp'])
+            return best['freq']
+
+        # 扩展每个假设
+        new_hyps = []
+        for hyp in hypotheses:
+            prev_f = hyp['freq']
+            prev_tag = hyp.get('octave_tag', 1.0)
+            prev_logp = hyp['logp']
+
+            for i, f_cand in enumerate(candidates):
+                if f_cand <= 0 or prev_f <= 0:
+                    trans_logp = 0.0
+                else:
+                    semi_diff = 12.0 * _np_trellis.log2(
+                        max(f_cand, 1e-9) / max(prev_f, 1e-9))
+                    trans_logp = -0.5 * (semi_diff / sigma_semi) ** 2
+                    cand_tag = _octave_tag(f_cand, raw_freq)
+                    if abs(cand_tag - prev_tag) > 0.1:
+                        trans_logp += octave_penalty
+
+                new_logp = prev_logp + obs_logp[i] + trans_logp
+                new_hyps.append({
+                    'freq': f_cand,
+                    'logp': new_logp,
+                    'octave_tag': _octave_tag(f_cand, raw_freq),
+                })
+
+        # Beam: 保留 top beam_width
+        new_hyps.sort(key=lambda h: h['logp'], reverse=True)
+        self._trellis_hypotheses = new_hyps[:beam_width]
+
+        best = self._trellis_hypotheses[0]
+        return best['freq']
+
     def _finalize_frequency(self, freq: float, audio_data: np.ndarray, fft_tuple=None, rms: float = None) -> float:
         """统一的返回前精修与裁剪：谐波支持上修 + 与UI设定一致范围 + 轻量YIN判据的八度决策。"""
         if freq is None or freq <= 0:
@@ -38424,6 +38510,8 @@ class ECGStylePitchVisualizer(QWidget):
                             self._vg_onset_buf = []  # list of dicts (buffered frames before进入voiced)
                         if not hasattr(self, '_vg_tail_buf'):
                             self._vg_tail_buf = []   # list of dicts (buffered frames pending退出voiced)
+                        if not hasattr(self, '_trellis_hypotheses'):
+                            self._trellis_hypotheses = []  # list of dicts for Forward Octave Trellis
                         # ── 读取全局噪声底板（由主处理循环在每帧前置更新）──
                         # 使用 Minimum Statistics 方法（P5 百分位，3s 窗口），
                         # 所有帧（含被前置过滤拦截的静音帧）均参与估计。
@@ -38596,6 +38684,7 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._vg_onset_buf.clear()
                                 self._vg_tail_buf.clear()
                                 self._gray_consec = 0
+                                self._trellis_hypotheses = []
                                 self.current_pitch_active = False
                                 try: self.update_guides()
                                 except Exception: pass
@@ -38609,6 +38698,7 @@ class ECGStylePitchVisualizer(QWidget):
                                     self._vg_onset_buf.clear()
                                     self._vg_tail_buf.clear()
                                     self._gray_consec = 0
+                                    self._trellis_hypotheses = []
                                     self.current_pitch_active = False
                                     try: self.update_guides()
                                     except Exception: pass
@@ -38623,6 +38713,7 @@ class ECGStylePitchVisualizer(QWidget):
                                     self._vg_onset_buf.clear()
                                     self._vg_tail_buf.clear()
                                     self._gray_consec = 0
+                                    self._trellis_hypotheses = []
                                     self.current_pitch_active = False
                                     try: self.update_guides()
                                     except Exception: pass
@@ -38704,10 +38795,17 @@ class ECGStylePitchVisualizer(QWidget):
                         print(f"⚠️ 网格重建失败: {_rg_e}")
                 if getattr(self, '_suppress_updates_until_new_data', False):
                     self._suppress_updates_until_new_data = False
-                # === 频率稳健化（倍频纠正 + 跳变限幅 + 置信度自适应）===
+                # === 前向八度格子搜索器（Forward Octave Trellis）===
+                # 用 Beam Search 在 3 个八度候选之间做路径级选择，
+                # 利用歌者音高连续性消除 YIN 在假声/气声段的八度模糊。
                 try:
                     f_in = float(frequency)
                     conf = float(confidence)
+                    f_in = self._trellis_smooth_frequency(f_in, conf)
+                except Exception:
+                    pass
+                # === 频率稳健化（倍频纠正 + 跳变限幅 + 置信度自适应）===
+                try:
                     # 维护短窗频率集合用于参考（中位数天然抗异常值）
                     self._robust_freq_window.append(f_in)
                     import numpy as _np
