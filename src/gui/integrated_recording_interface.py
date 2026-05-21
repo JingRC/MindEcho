@@ -38566,6 +38566,28 @@ class ECGStylePitchVisualizer(QWidget):
                             return
                         else:
                             # 已在 voiced：检测退出静音
+                            # ── 灰区计数器 ──
+                            # 非 voiced_like 也非 silent_like 的帧属于"灰区"：
+                            # 气声/呼吸平滑置信度（0.38-0.50）常落在此区间。
+                            # 单帧灰区正常（弱唱边缘），持续灰区 + 频率偏离参考 = 气声伪影。
+                            in_gray = (not voiced_like) and (not silent_like) and (not deep_silent)
+                            if in_gray:
+                                self._gray_consec = int(getattr(self, '_gray_consec', 0)) + 1
+                            else:
+                                self._gray_consec = 0
+                            # 持续灰区（≥5帧≈50ms）后检查频率合理性：
+                            # 若当前频率偏离上一稳定频率 > 4 半音 → 几乎肯定是噪声
+                            _gray_force = False
+                            if self._gray_consec >= 5:
+                                _last_f = getattr(self, '_last_stable_freq', None)
+                                if _last_f and _last_f > 0 and frequency > 0:
+                                    try:
+                                        _dev = abs(12.0 * np.log2(max(float(frequency), 1e-9) / _last_f))
+                                        if _dev > 4.0:
+                                            _gray_force = True
+                                            silent_like = True
+                                    except Exception:
+                                        pass
                             # 深静音快速通道：RMS 极低时直接退出，不等尾部缓冲
                             if deep_silent:
                                 self._voice_gate_state = 'silent'
@@ -38573,11 +38595,24 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._gate_consec_silent = 0
                                 self._vg_onset_buf.clear()
                                 self._vg_tail_buf.clear()
+                                self._gray_consec = 0
                                 self.current_pitch_active = False
                                 try: self.update_guides()
                                 except Exception: pass
                                 return
                             if silent_like:
+                                if _gray_force:
+                                    # 灰区强制退出：已累积 ≥5 帧灰区作为"尾部观察"，直接退出
+                                    self._voice_gate_state = 'silent'
+                                    self._gate_consec_voiced = 0
+                                    self._gate_consec_silent = 0
+                                    self._vg_onset_buf.clear()
+                                    self._vg_tail_buf.clear()
+                                    self._gray_consec = 0
+                                    self.current_pitch_active = False
+                                    try: self.update_guides()
+                                    except Exception: pass
+                                    return
                                 self._gate_consec_silent = int(getattr(self, '_gate_consec_silent', 0)) + 1
                                 self._vg_tail_buf.append(cur_pkt)
                                 buf_dur = (self._vg_tail_buf[-1]['timestamp'] - self._vg_tail_buf[0]['timestamp']) if self._vg_tail_buf else 0.0
@@ -38587,6 +38622,7 @@ class ECGStylePitchVisualizer(QWidget):
                                     self._gate_consec_voiced = 0
                                     self._vg_onset_buf.clear()
                                     self._vg_tail_buf.clear()
+                                    self._gray_consec = 0
                                     self.current_pitch_active = False
                                     try: self.update_guides()
                                     except Exception: pass
@@ -38598,6 +38634,7 @@ class ECGStylePitchVisualizer(QWidget):
                                 return
                             else:
                                 # 仍然是 voiced：若曾经进入尾部观察，则把缓存回放并清空
+                                self._gray_consec = 0
                                 if self._vg_tail_buf:
                                     try:
                                         for pkt in self._vg_tail_buf:
