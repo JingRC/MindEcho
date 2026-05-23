@@ -23529,6 +23529,7 @@ class ECGStylePitchVisualizer(QWidget):
                 pgw.on_view_changed = self._pg_on_view_changed
                 pgw.on_click_at_time = self._pg_on_click_at_time
                 pgw.on_wheel_scroll = self._pg_on_wheel
+                pgw.on_hover_info = self._pg_format_hover_text
                 print("✅ PyQtGraph分段音高线渲染器初始化成功")
             except Exception as e:
                 print(f"⚠️ PyQtGraph渲染器初始化失败: {e}")
@@ -28839,7 +28840,11 @@ class ECGStylePitchVisualizer(QWidget):
         """非拖拽态下的悬停处理：
         - 主轴上：执行悬停命中与放大镜更新
         - 离开主轴且不在放大镜轴上：隐藏悬停工件
+
+        GPU 模式下由 pyqtgraph 独立处理悬停/放大镜，跳过 matplotlib 版本。
         """
+        if getattr(self, '_use_pyqtgraph', False):
+            return
         try:
             magn_ax = getattr(self, '_magnifier_ax', None)
             in_main = (event.inaxes == self.ax)
@@ -45973,6 +45978,231 @@ class ECGStylePitchVisualizer(QWidget):
             # 清理重入标记
             self._in_update_display = False
     
+    def _pg_filter_noise_segments(self, segments):
+        """[pyqtgraph] 噪音段过滤 — 对齐 draw_segmented_pitch_line 的终端防抖1/2。
+
+        剔除孤立微段（环境噪音/换气杂音），与 normal 模式完全一致的逻辑。
+        """
+        if not segments:
+            return segments
+        try:
+            import numpy as _np
+            dur_max = float(getattr(self, '_micro_seg_dur_max', 0.05))
+            iso_gap = float(getattr(self, '_micro_seg_isolation_gap', 0.16))
+            semi_thr = float(getattr(self, '_micro_seg_neighbor_semi', 6.5))
+            dur_max3 = float(getattr(self, '_micro_seg_dur_max3', 0.06))
+            iso_single = float(getattr(self, '_micro_seg_iso_single_gap', 0.18))
+            semi_thr3 = float(getattr(self, '_micro_seg_neighbor_semi3', 7.2))
+            noise_dur_max = float(getattr(self, '_breath_noise_seg_dur_max', 0.12))
+            noise_points_max = int(getattr(self, '_breath_noise_seg_points_max', 6))
+            noise_jump_semi = float(getattr(self, '_breath_noise_jump_semi', 8.5))
+            noise_iso_gap = float(getattr(self, '_breath_noise_seg_iso_gap', 0.12))
+            filtered = []
+            S = len(segments)
+            for idx, (ts, ps) in enumerate(segments):
+                n = len(ts)
+                keep = True
+                if n <= 2:
+                    dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                    left_gap = float('inf'); right_gap = float('inf')
+                    left_semi = float('inf'); right_semi = float('inf')
+                    if idx - 1 >= 0 and len(segments[idx-1][0]) > 0:
+                        prev_t = segments[idx-1][0][-1]; prev_p = segments[idx-1][1][-1]
+                        left_gap = float(ts[0]) - float(prev_t)
+                        if n >= 1:
+                            try:
+                                left_semi = abs(12.0 * _np.log2(max(1e-9, float(ps[0]) / max(float(prev_p), 1e-9))))
+                            except Exception:
+                                left_semi = float('inf')
+                    if idx + 1 < S and len(segments[idx+1][0]) > 0:
+                        next_t = segments[idx+1][0][0]; next_p = segments[idx+1][1][0]
+                        right_gap = float(next_t) - float(ts[-1])
+                        try:
+                            right_semi = abs(12.0 * _np.log2(max(1e-9, float(next_p) / max(float(ps[-1]), 1e-9))))
+                        except Exception:
+                            right_semi = float('inf')
+                    iso_ok_left = (left_gap >= iso_gap) if left_gap != float('inf') else True
+                    iso_ok_right = (right_gap >= iso_gap) if right_gap != float('inf') else True
+                    semi_ok_left = (left_semi >= semi_thr) if left_semi != float('inf') else True
+                    semi_ok_right = (right_semi >= semi_thr) if right_semi != float('inf') else True
+                    if (dur <= dur_max) and iso_ok_left and iso_ok_right and semi_ok_left and semi_ok_right:
+                        keep = False
+                elif n <= 3:
+                    dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                    left_gap = float('inf'); right_gap = float('inf')
+                    left_semi = float('inf'); right_semi = float('inf')
+                    if idx - 1 >= 0 and len(segments[idx-1][0]) > 0:
+                        prev_t = segments[idx-1][0][-1]; prev_p = segments[idx-1][1][-1]
+                        left_gap = float(ts[0]) - float(prev_t)
+                        try:
+                            left_semi = abs(12.0 * _np.log2(max(1e-9, float(ps[0]) / max(float(prev_p), 1e-9))))
+                        except Exception:
+                            left_semi = float('inf')
+                    if idx + 1 < S and len(segments[idx+1][0]) > 0:
+                        next_t = segments[idx+1][0][0]; next_p = segments[idx+1][1][0]
+                        right_gap = float(next_t) - float(ts[-1])
+                        try:
+                            right_semi = abs(12.0 * _np.log2(max(1e-9, float(next_p) / max(float(ps[-1]), 1e-9))))
+                        except Exception:
+                            right_semi = float('inf')
+                    one_side_iso_and_far = ((left_gap >= iso_single and left_semi >= semi_thr3) or
+                                            (right_gap >= iso_single and right_semi >= semi_thr3))
+                    if (dur <= dur_max3) and one_side_iso_and_far:
+                        keep = False
+                if keep:
+                    # 终端防抖2：短时抖动噪声段（呼吸/环境噪声）
+                    try:
+                        if n > 0 and n <= noise_points_max:
+                            dur = (float(ts[-1]) - float(ts[0])) if n >= 2 else 0.0
+                            if dur <= noise_dur_max:
+                                max_jump = 0.0
+                                if n >= 2:
+                                    for j in range(1, n):
+                                        try:
+                                            dj = abs((float(ps[j]) - float(ps[j-1])) * 12.0)
+                                        except Exception:
+                                            dj = 0.0
+                                        if dj > max_jump:
+                                            max_jump = dj
+                                if max_jump >= noise_jump_semi:
+                                    left_gap = float('inf'); right_gap = float('inf')
+                                    if idx - 1 >= 0 and len(segments[idx-1][0]) > 0:
+                                        left_gap = float(ts[0]) - float(segments[idx-1][0][-1])
+                                    if idx + 1 < S and len(segments[idx+1][0]) > 0:
+                                        right_gap = float(segments[idx+1][0][0]) - float(ts[-1])
+                                    if (left_gap >= noise_iso_gap) or (right_gap >= noise_iso_gap):
+                                        keep = False
+                    except Exception:
+                        pass
+                if keep:
+                    filtered.append((ts, ps))
+            if len(filtered) != len(segments):
+                return filtered
+        except Exception:
+            pass
+        return segments
+
+    def _pg_merge_small_gaps(self, segments):
+        """[pyqtgraph] 小缺口跨段合并 — 对齐 normal 模式 终端防抖1.5 (line ~47042)。
+
+        相邻两段时间缺口 <= _merge_gap_time 且边界半音差 <= _merge_gap_semi → 合并。
+        避免换气微间隙产生多余孤立小段。
+        """
+        if not segments or len(segments) < 2:
+            return segments
+        try:
+            import numpy as _np
+            mgap = float(getattr(self, '_merge_gap_time', 0.20))
+            msemi = float(getattr(self, '_merge_gap_semi', 3.8))
+            merged = []
+            for ts, ps in segments:
+                if not merged:
+                    merged.append([list(ts), list(ps)])
+                    continue
+                last_ts, last_ps = merged[-1]
+                if last_ts and ts:
+                    dt = float(ts[0]) - float(last_ts[-1])
+                    try:
+                        sdiff = abs((float(ps[0]) - float(last_ps[-1])) * 12.0)
+                    except Exception:
+                        sdiff = 999.0
+                    if dt <= mgap and sdiff <= msemi:
+                        try:
+                            if getattr(self, '_mask_interval_between', None) is not None:
+                                if self._mask_interval_between(float(last_ts[-1]), float(ts[0])):
+                                    merged.append([list(ts), list(ps)])
+                                    continue
+                        except Exception:
+                            pass
+                        last_ts.extend(ts)
+                        last_ps.extend(ps)
+                    else:
+                        merged.append([list(ts), list(ps)])
+                else:
+                    merged.append([list(ts), list(ps)])
+            return [tuple(m) for m in merged]
+        except Exception:
+            return segments
+
+    def _pg_prepare_segments_for_render(self, segments):
+        """[pyqtgraph] EMA 平滑 + 自适应抽样 — 对齐 normal 模式 _prepare_segment_for_render。
+
+        1. 逐点 EMA 平滑，去除抖动/噪点（尤其高音段和密集区更激进）
+        2. 自适应抽样，控制细节点密度（最小间隔 + 斜率保护 + 首尾保留）
+        """
+        if not segments:
+            return segments
+        try:
+            import numpy as _np
+            high_thr = float(getattr(self, '_high_pitch_threshold', 5.5))
+            beta_base = float(getattr(self, '_vis_ema_beta_base', 0.45))
+            beta_high_scale = float(getattr(self, '_vis_ema_beta_high_scale', 0.72))
+            dense_dt_thr = float(getattr(self, '_vis_dense_dt_thr', 0.006))
+            jitter_semi_thr = float(getattr(self, '_vis_jitter_semi_thr', 5.5))
+            min_step_base = float(getattr(self, '_vis_min_spacing_base', 0.0035))
+            min_step_high = float(getattr(self, '_vis_min_spacing_high', 0.0065))
+            slope_keep_semi = float(getattr(self, '_vis_keep_slope_semi', 10.0))
+            seg_cap = int(getattr(self, '_vis_segment_points_cap', 2400))
+
+            result = []
+            for ts, ps in segments:
+                n = len(ts)
+                if n <= 2:
+                    result.append((ts, ps))
+                    continue
+
+                t = _np.asarray(ts, dtype=_np.float32)
+                y = _np.asarray(ps, dtype=_np.float32)
+                dt = _np.diff(t, prepend=t[0])
+
+                # 高音段判断
+                y_med = float(_np.median(y))
+                is_high = y_med >= high_thr
+
+                # ── EMA 平滑（逐点）──
+                y_s = _np.empty_like(y)
+                y_s[0] = y[0]
+                for k in range(1, n):
+                    beta = beta_base
+                    if is_high:
+                        beta *= beta_high_scale
+                    if dt[k] < dense_dt_thr:
+                        beta *= 0.80
+                    if abs((y[k] - y[k-1]) * 12.0) > jitter_semi_thr and dt[k] < 0.020:
+                        beta *= 0.70
+                    beta = max(0.08, min(0.85, beta))
+                    y_s[k] = y_s[k-1] + beta * (y[k] - y_s[k-1])
+
+                # ── 自适应抽样 ──
+                min_step = min_step_high if is_high else min_step_base
+                keep_idx = [0]
+                last_keep_t = t[0]
+                for k in range(1, n - 1):
+                    slope_semi = abs((y_s[k] - y_s[k-1]) * 12.0)
+                    if slope_semi >= slope_keep_semi:
+                        keep_idx.append(k)
+                        last_keep_t = t[k]
+                        continue
+                    if (t[k] - last_keep_t) >= min_step:
+                        keep_idx.append(k)
+                        last_keep_t = t[k]
+                if n - 1 not in keep_idx:
+                    keep_idx.append(n - 1)
+
+                rt = t[keep_idx].tolist()
+                rp = y_s[keep_idx].tolist()
+
+                # 超大段抽样上限保护
+                if len(rt) > seg_cap:
+                    step = int(_np.ceil(len(rt) / seg_cap))
+                    rt = rt[::step]
+                    rp = rp[::step]
+
+                result.append((rt, rp))
+            return result
+        except Exception:
+            return segments
+
     def _pg_render_segmented(self, segments):
         """[pyqtgraph] 将分段数据交给 PyQtGraphPitchRenderer 渲染。
 
@@ -45999,6 +46229,61 @@ class ECGStylePitchVisualizer(QWidget):
                 vis = pgw.isVisible()
                 sz = (pgw.width(), pgw.height())
                 print(f"[PG_DIAG] frame={self._pg_frame_cnt} segs={len(segments)} pts={seg_pts} visible={vis} size={sz} main_plot_area_is_pgw={self.main_plot_area is pgw}")
+            # ── 噪音过滤（对齐 draw_segmented_pitch_line 的终端防抖1/2）──
+            segments = self._pg_filter_noise_segments(segments)
+            # ── 音高遮罩过滤（对齐 draw_segmented_pitch_line 的 mask 逻辑）──
+            if segments and getattr(self, '_pitch_masks_active', False):
+                try:
+                    masked_segments = []
+                    for seg in segments:
+                        try:
+                            seg_times, seg_pitches = seg
+                        except Exception:
+                            continue
+                        try:
+                            filtered = self._apply_pitch_masks_to_series(
+                                list(seg_times), list(seg_pitches))
+                            seg_times = filtered[0]
+                            seg_pitches = filtered[1] if len(filtered) > 1 else []
+                        except Exception:
+                            pass
+                        if seg_times:
+                            masked_segments.append((seg_times, seg_pitches))
+                    segments = masked_segments
+                except Exception:
+                    pass
+            # ── 小缺口跨段合并（对齐 normal 模式 终端防抖1.5）──
+            segments = self._pg_merge_small_gaps(segments)
+            # ── EMA 平滑 + 自适应抽样（对齐 normal 模式 _prepare_segment_for_render）──
+            segments = self._pg_prepare_segments_for_render(segments)
+            # ── Cap 过滤：剔除超出 _max_visible_time 的点（对齐 draw_segmented_pitch_line）──
+            try:
+                preserve_future = bool(
+                    getattr(self, '_retake_force_preserve_future', False)
+                    or getattr(self, '_retake_countdown_preserve_future', False)
+                    or getattr(self, '_pending_retake_resume', False)
+                    or getattr(self, '_retake_countdown_pending_resume', False)
+                    or getattr(self, '_external_paused', False)
+                    or getattr(self, 'is_backing_paused', False)
+                    or getattr(self, 'retake_selection_active', False)
+                    or getattr(self, '_retake_overlay_preview_active', False)
+                    or getattr(self, '_retake_countdown_active', False)
+                )
+                if getattr(self, '_cap_visible_time_enabled', False) and (not preserve_future):
+                    import numpy as _np
+                    cap = float(getattr(self, '_max_visible_time', float('inf')))
+                    capped_segments = []
+                    for ts, ps in segments:
+                        if not ts:
+                            continue
+                        ta = _np.asarray(ts, dtype=_np.float32)
+                        ya = _np.asarray(ps, dtype=_np.float32)
+                        mcap = (ta <= cap)
+                        if mcap.any():
+                            capped_segments.append((ta[mcap].tolist(), ya[mcap].tolist()))
+                    segments = capped_segments
+            except Exception:
+                pass
             # ── 分段数据 ──
             pgw.set_segments(segments)
             # 同步线条颜色和粗细到 pyqtgraph
@@ -46007,6 +46292,14 @@ class ECGStylePitchVisualizer(QWidget):
                     pgw.set_line_color(str(self.line_color))
                 if hasattr(self, 'current_linewidth') and hasattr(pgw, 'set_line_width'):
                     pgw.set_line_width(float(self.current_linewidth))
+                # 同步散点大小（对齐 matplotlib _calc_marker_size）
+                if hasattr(pgw, 'set_point_size'):
+                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                    # matplotlib: s = d² (area points²); pyqtgraph pxMode: symbolSize = 直径 px
+                    # 同一公式下 pyqtgraph 点视觉偏小，乘 1.8 补偿
+                    diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                    pgw.set_point_size(diameter * 1.8)
             except Exception:
                 pass
             # ── 时间窗 ──
@@ -46149,6 +46442,15 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             pgw.set_grid_from_range(y_start, y_end, zoom_mode)
+            # 同步点大小（随 zoom 变化）
+            try:
+                if hasattr(pgw, 'set_point_size'):
+                    base_w = float(getattr(self, 'current_linewidth', 0.6))
+                    zoom = float(getattr(self, 'zoom_level', 1.0))
+                    diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
+                    pgw.set_point_size(diameter * 1.8)
+            except Exception:
+                pass
             # 同步辅助线：纵向跟随当前时间，横向跟随当前识别音高
             if hasattr(self, 'guides_enabled'):
                 pgw.set_guides_enabled(bool(self.guides_enabled))
@@ -46198,6 +46500,39 @@ class ECGStylePitchVisualizer(QWidget):
             pgw.set_guides(guide_v, guide_h)
         except Exception:
             pass
+
+    def _pg_format_hover_text(self, x: float, y: float) -> str:
+        """[pyqtgraph] 格式化悬停注记文本（对齐 _format_magnifier_text 逻辑）。"""
+        try:
+            midi = float(y) * 12.0 + 12.0
+            hz = 440.0 * (2.0 ** ((midi - 69.0) / 12.0))
+            name_oct = None
+            try:
+                if callable(getattr(self, 'frequency_to_note_info', None)):
+                    ni = self.frequency_to_note_info(hz)
+                    if ni and isinstance(ni, dict) and ni.get('note_name') is not None:
+                        nm = self._normalize_note_ascii(str(ni.get('note_name', '')))
+                        oc = ni.get('octave', '')
+                        name_oct = f"{nm}{oc}"
+            except Exception:
+                name_oct = None
+            if not name_oct:
+                try:
+                    midi_rounded = int(round(midi))
+                    pc = midi_rounded % 12
+                    octave = (midi_rounded // 12) - 1
+                    names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+                    name_oct = f"{names[pc]}{octave}"
+                except Exception:
+                    name_oct = None
+            parts = []
+            if name_oct:
+                parts.append(name_oct)
+            parts.append(f"{hz:.1f} Hz")
+            parts.append(f"t={float(x):.2f}s")
+            return "  ·  ".join(parts)
+        except Exception:
+            return ""
 
     def _pg_on_click_at_time(self, time_x, y_value):
         """[pyqtgraph] 鼠标点击音高线 → 触发回听播放或选区操作。"""
@@ -49050,7 +49385,9 @@ class ECGStylePitchVisualizer(QWidget):
         # 刷新显示
         self.update_axis_ranges()
         self.update_scrollbars()
-        if hasattr(self, 'canvas'):
+        if getattr(self, '_use_pyqtgraph', False):
+            self._pg_sync_view()
+        elif hasattr(self, 'canvas'):
             self.canvas.draw()
         self.update_status_display()
     

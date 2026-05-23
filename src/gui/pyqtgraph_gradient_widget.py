@@ -32,6 +32,139 @@ except ImportError:
     QT_VERSION = 5
 
 
+# ── 放大镜浮窗（pyqtgraph 版）──
+class _MagnifierOverlay(QWidget):
+    """圆形放大镜浮窗 — 抓取 PlotWidget 鼠标周围约 90px 区域，放大至 180px（~2x 放大）。
+    样式对齐 normal 模式 _update_magn_overlay_label 的视觉效果。
+    """
+
+    SIZE = 180          # 直径（像素）
+    CAPTURE_HALF = 45   # 抓取半边长（像素），90px → 180px ≈ 2x 放大
+
+    def __init__(self):
+        super().__init__(None)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self._set_flags()
+        self._make_circular_mask()
+        self._pixmap = None
+        self._text = ""
+
+        self._text_label = QLabel(self)
+        self._text_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._text_label.setStyleSheet(
+            "color: #e8f0f8; background: rgba(8,14,24,230); font-size: 9px; "
+            "padding: 4px 8px; border-radius: 2px;"
+        )
+        self._text_label.setGeometry(2, 3, self.SIZE - 4, 18)
+        self.hide()
+
+    def _set_flags(self):
+        try:
+            self.setWindowFlags(
+                Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.ToolTip |
+                Qt.WindowType.WindowStaysOnTopHint
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        except Exception:
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.ToolTip | Qt.WindowStaysOnTopHint)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+    def _make_circular_mask(self):
+        bitmap = QBitmap(self.SIZE, self.SIZE)
+        bitmap.fill(Qt.GlobalColor.color0)
+        painter = QPainter(bitmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.GlobalColor.color1)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, self.SIZE, self.SIZE)
+        painter.end()
+        self.setMask(bitmap)
+
+    def show_at(self, cursor_global: QPoint, crop_pixmap, text: str = ""):
+        """在光标附近显示放大镜（偏移 +40px 右, 上方），对齐 normal 模式定位。"""
+        try:
+            if crop_pixmap is None or crop_pixmap.isNull():
+                self.hide()
+                return
+            self._pixmap = crop_pixmap
+            self._text = text
+            self._text_label.setText(text)
+            self._text_label.setVisible(bool(text))
+
+            # 放大镜放在光标右上方，对齐 normal 模式 offset
+            x = int(cursor_global.x()) + 40
+            y = int(cursor_global.y()) - self.SIZE - 40
+
+            # 屏幕边界修正：避免放大镜超出可视区域
+            try:
+                from PyQt6.QtGui import QGuiApplication
+            except Exception:
+                from PyQt5.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                geo = screen.availableGeometry()
+                if x + self.SIZE > geo.x() + geo.width():
+                    x = int(cursor_global.x()) - self.SIZE - 40  # 翻转到左侧
+                if y < geo.y():
+                    y = int(cursor_global.y()) + 40  # 翻转到下方
+
+            self.move(x, y)
+            self.show()
+            self.update()
+        except Exception:
+            self.hide()
+
+    def paintEvent(self, event):
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        # 裁剪为圆形
+        clip = QPainterPath()
+        clip.addEllipse(0, 0, self.SIZE, self.SIZE)
+        painter.setClipPath(clip)
+
+        # 填充深色背景（对齐 normal 模式 #1a1a1a）
+        painter.setBrush(QColor(26, 26, 26))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, self.SIZE, self.SIZE)
+
+        # 绘制放大的截图（90px 区域 → 180px 镜片，~2x 局部放大）
+        scaled = self._pixmap.scaled(
+            self.SIZE, self.SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        ox = (self.SIZE - scaled.width()) // 2
+        oy = (self.SIZE - scaled.height()) // 2
+        painter.drawPixmap(ox, oy, scaled)
+
+        # 不透明顶部信息条（对齐 normal 模式 header bar，遮挡截图中的 Y 轴标签）
+        if self._text:
+            header = QRectF(0, 0, self.SIZE, 22)
+            painter.fillRect(header, QColor(8, 14, 24, 240))
+
+        # 圆形边框（对齐 normal 模式 rgba(128,200,255,230), linewidth 1.6）
+        painter.setClipping(False)
+        pen = QPen(QColor(128, 200, 255, 230))
+        pen.setWidthF(1.6)
+        try:
+            pen.setCosmetic(True)
+        except AttributeError:
+            pen.setWidth(1)  # PyQt5 回退
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(1, 1, self.SIZE - 2, self.SIZE - 2)
+        painter.end()
+
+
 class _PitchPlotWidget(pg.PlotWidget):
     """自定义 PlotWidget：滚轮 → Y 轴滚动（对齐正常模式），不缩放。"""
     wheel_scrolled = pyqtSignal(float)  # delta_y
@@ -60,6 +193,67 @@ class PyQtGraphPitchRenderer(QWidget):
     # 池大小常量
     MAX_SEGMENTS = 60       # 同时活跃分段数上限
     MAX_GRID_LINES = 40     # 水平网格线数上限
+
+    @staticmethod
+    def _make_feather_cursor():
+        """生成蓝色羽毛 QCursor（对齐 normal 模式 _ensure_blue_feather_cursor）。"""
+        try:
+            try:
+                from PyQt6.QtGui import (
+                    QCursor, QPixmap, QPainter, QPen, QBrush,
+                    QColor, QPainterPath, QLinearGradient,
+                )
+            except Exception:
+                from PyQt5.QtGui import (
+                    QCursor, QPixmap, QPainter, QPen, QBrush,
+                    QColor, QPainterPath, QLinearGradient,
+                )
+            size = 36
+            pm = QPixmap(size, size)
+            pm.fill(QColor(0, 0, 0, 0))
+            painter = QPainter(pm)
+            try:
+                try:
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                except Exception:
+                    painter.setRenderHint(QPainter.Antialiasing, True)
+
+                path = QPainterPath()
+                path.moveTo(7, 8)
+                path.cubicTo(12, 3, 22, 3, 29, 12)
+                path.cubicTo(31, 16, 29, 24, 22, 29)
+                path.cubicTo(16, 33, 10, 28, 10, 22)
+                path.cubicTo(10, 18, 12, 14, 15, 12)
+                stem = QPainterPath()
+                stem.moveTo(13, 31)
+                stem.lineTo(24, 9)
+
+                shadow = QPainterPath(path)
+                shadow.translate(1.5, 1.5)
+                painter.setPen(QPen(QColor(0, 0, 0, 50), 1.0))
+                painter.setBrush(QBrush(QColor(0, 0, 0, 40)))
+                painter.drawPath(shadow)
+
+                blue = QColor(66, 170, 255)
+                blue2 = QColor(30, 120, 210)
+                dark = QColor(24, 96, 168)
+                grad = QLinearGradient(7, 8, 29, 30)
+                grad.setColorAt(0.0, blue)
+                grad.setColorAt(1.0, blue2)
+                painter.setPen(QPen(dark, 1.2))
+                painter.setBrush(QBrush(grad))
+                painter.drawPath(path)
+                painter.setPen(QPen(dark, 1.5))
+                painter.drawPath(stem)
+            finally:
+                painter.end()
+
+            try:
+                return QCursor(pm, 7, 8)
+            except Exception:
+                return QCursor(pm)
+        except Exception:
+            return None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -117,6 +311,14 @@ class PyQtGraphPitchRenderer(QWidget):
         self.plot_widget.scene().sigMouseClicked.connect(self._on_mouse_clicked)
         vb.sigRangeChangedManually.connect(self._on_user_view_changed)
 
+        # ── 蓝色羽毛光标（对齐 normal 模式 _ensure_blue_feather_cursor）──
+        self._feather_cursor = self._make_feather_cursor()
+        self._feather_cursor_active = False
+        try:
+            self.plot_widget.viewport().setMouseTracking(True)
+        except Exception:
+            pass
+
         # ── 辅助线（对齐正常模式 update_guides）──
         #  主线和柔光底线叠加实现 glow 效果
         guide_glow_pen = pg.mkPen(color='#5dade2', width=3, style=QtCore.Qt.PenStyle.SolidLine)
@@ -151,6 +353,48 @@ class PyQtGraphPitchRenderer(QWidget):
         # ── 回调（由父组件设置，用于状态回写）──
         self.on_view_changed = None  # callable(x_range, y_range)
         self.on_click_at_time = None  # callable(time_x, y_value)
+        self.on_hover_info = None    # callable(x, y, text) — 格式化悬停文本
+
+        # ── 悬停高亮 + 注记（对齐 normal 模式样式）──
+        # 柔光：半透明浅蓝，视觉直径约 21px
+        self._hover_glow = pg.ScatterPlotItem(
+            [0], [0], size=22, pen=None, brush=pg.mkBrush('#3388ff'), pxMode=True
+        )
+        self._hover_glow.setOpacity(0.25)
+        self._hover_glow.setZValue(100)
+        self._hover_glow.setVisible(False)
+        self.plot_widget.addItem(self._hover_glow)
+
+        # 外环：透明填充 + 淡蓝白细边，视觉直径约 10px
+        self._hover_ring = pg.ScatterPlotItem(
+            [0], [0], size=12, pen=pg.mkPen('#c0d8ff', width=1.4), brush=None, pxMode=True
+        )
+        self._hover_ring.setOpacity(0.92)
+        self._hover_ring.setZValue(101)
+        self._hover_ring.setVisible(False)
+        self.plot_widget.addItem(self._hover_ring)
+
+        self._hover_annot = pg.TextItem(
+            '', color='#ffffff', anchor=(0.5, 1.0),
+            fill=pg.mkBrush(0, 0, 0, 180)
+        )
+        self._hover_annot.setZValue(102)
+        self._hover_annot.setVisible(False)
+        self.plot_widget.addItem(self._hover_annot)
+
+        self._hover_hit_radius = 18  # 命中半径（像素），对齐 normal 模式
+        self._hover_last_t = 0.0
+        self._hover_throttle_sec = 0.03  # ~33Hz，比 normal 模式更灵敏
+
+        # ── 放大镜浮窗 ──
+        self._magnifier = _MagnifierOverlay()
+        self._magn_enabled = True
+
+        # ── 鼠标追踪 ──
+        self._mouse_proxy = pg.SignalProxy(
+            self.plot_widget.scene().sigMouseMoved,
+            rateLimit=60, slot=self._on_mouse_moved
+        )
 
         # ── 艺术家复用池 ──
         self._line_pool: list = []       # PlotDataItem 列表（分段线）
@@ -165,6 +409,7 @@ class PyQtGraphPitchRenderer(QWidget):
 
         # ── 缓存（避免重复计算/刷新）──
         self._current_segment_count = 0
+        self._segments_cache: list = []  # 当前活跃 segments（供悬停命中检测）
         self._last_x_range = (None, None)
         self._last_y_range = (None, None)
         self._last_grid_cache_key = None
@@ -177,8 +422,9 @@ class PyQtGraphPitchRenderer(QWidget):
 
     def _init_pools(self):
         """预分配艺术家池。创建后通过 setData() 更新，不再新建/删除。"""
-        base_pen = pg.mkPen(color='#ff6b35', width=1.5)  # 线宽 1.5，减少锯齿感
-        base_scatter_pen = pg.mkPen(color='#444444', width=0)
+        base_pen = pg.mkPen(color='#ff6b35', width=1.5)
+        # 透明符号笔（对齐 matplotlib edgecolors='none'）
+        base_scatter_pen = pg.mkPen(None)
 
         for _ in range(self.MAX_SEGMENTS):
             line = self.plot_widget.plot(
@@ -188,7 +434,7 @@ class PyQtGraphPitchRenderer(QWidget):
                 skipFiniteCheck=True,
                 autoDownsample=True,
                 clipToView=True,
-                antialias=True,      # 线条抗锯齿
+                antialias=True,
             )
             line.setVisible(False)
             self._line_pool.append(line)
@@ -197,16 +443,20 @@ class PyQtGraphPitchRenderer(QWidget):
                 [], [],
                 pen=None,
                 symbol='o',
-                symbolSize=4,        # 略大，与正常模式白点视觉一致
+                symbolSize=4,         # 默认大小（像素），后续由 set_point_size 动态更新
                 symbolBrush='#ffffff',
                 symbolPen=base_scatter_pen,
                 skipFiniteCheck=True,
-                autoDownsample=True,
-                clipToView=True,
-                antialias=True,      # 散点抗锯齿
+                autoDownsample=False,  # 散点不降采样，保留所有细节点
+                clipToView=True,       # 但仍只渲染可见范围
+                antialias=True,
             )
             scatter.setVisible(False)
             self._scatter_pool.append(scatter)
+
+        self._line_color = '#ff6b35'
+        self._line_width = 1.5
+        self._point_size = 5
 
     # ═══════════════════════════════════════════
     # 公开 API（与现有 matplotlib 调用方对齐）
@@ -291,6 +541,7 @@ class PyQtGraphPitchRenderer(QWidget):
             print(f"[PG_SET_SEG] call=#{self._pg_set_seg_cnt} n_segs={len(segments)} total_pts={total_pts}")
 
         n = min(len(segments), self.MAX_SEGMENTS)
+        gap_thr = 0.14  # 段内断开阈值（对齐 matplotlib line_gap_thr_local）
 
         for i in range(self.MAX_SEGMENTS):
             line = self._line_pool[i]
@@ -314,19 +565,28 @@ class PyQtGraphPitchRenderer(QWidget):
                 mn = min(len(x), len(y))
                 x, y = x[:mn], y[:mn]
 
-                # 线段
-                line.setData(x, y)
+                # ── 线段：段内大间隔插入 NaN（对齐 matplotlib 的 NaN 断点逻辑）──
+                if mn >= 2:
+                    gap_x = [x[0]]
+                    gap_y = [y[0]]
+                    for j in range(1, mn):
+                        if x[j] - x[j-1] > gap_thr:
+                            gap_x.append(float('nan'))
+                            gap_y.append(float('nan'))
+                        gap_x.append(x[j])
+                        gap_y.append(y[j])
+                    line_x = np.asarray(gap_x, dtype=np.float64)
+                    line_y = np.asarray(gap_y, dtype=np.float64)
+                else:
+                    line_x, line_y = x, y
+
+                line.setData(line_x, line_y)
                 line.setVisible(True)
 
-                # 散点：1点也显示（确保单点分段至少可见），但大量点时隐藏避免性能问题
-                if mn <= 2000:
-                    scatter.setData(x, y)
-                    scatter.setVisible(True)
-                else:
-                    scatter.setData([], [])
-                    scatter.setVisible(False)
+                # ── 散点：始终显示（不因点数多而隐藏），用原始数据 ──
+                scatter.setData(x, y)
+                scatter.setVisible(True)
             else:
-                # 提前退出：超出活跃分段数的槽位全部隐藏
                 for j in range(i, self.MAX_SEGMENTS):
                     self._line_pool[j].setVisible(False)
                     self._scatter_pool[j].setData([], [])
@@ -334,6 +594,7 @@ class PyQtGraphPitchRenderer(QWidget):
                 break
 
         self._current_segment_count = n
+        self._segments_cache = segments[:n]  # 缓存供悬停命中检测
 
     def set_x_range(self, x_min, x_max):
         """设置 X 轴可见范围（时间窗）。X 轴起点固定为 0，不允许负时间。"""
@@ -417,6 +678,9 @@ class PyQtGraphPitchRenderer(QWidget):
             scatter.setData([], [])
             scatter.setVisible(False)
         self._current_segment_count = 0
+        self._segments_cache = []
+        self._hide_hover()
+        self._hide_magnifier()
 
     def set_grid_from_range(self, y_start, y_end, zoom_mode=None):
         """根据可见 Y 范围计算并设置网格线 + Y 轴刻度 + 音符标签。
@@ -632,6 +896,196 @@ class PyQtGraphPitchRenderer(QWidget):
         except Exception:
             pass
 
+    # ═══════════════════════════════════════════
+    # 悬停高亮 + 注记 + 放大镜
+    # ═══════════════════════════════════════════
+
+    def _on_mouse_moved(self, evt):
+        """SignalProxy 回调：鼠标在 PlotWidget 上移动（60fps 节流）。"""
+        try:
+            import time as _t
+            now = _t.time()
+            if now - self._hover_last_t < self._hover_throttle_sec:
+                return
+            self._hover_last_t = now
+
+            # SignalProxy 将事件包装在 tuple 中；鼠标移动时 evt[0] 是 QPointF（场景坐标）
+            scene_pos = evt[0] if isinstance(evt, tuple) and len(evt) > 0 else evt
+
+            # 进入视图 → 蓝色羽毛光标（对齐 normal 模式 _update_hover_cursor）
+            if not self._feather_cursor_active and self._feather_cursor is not None:
+                try:
+                    pw = self.plot_widget
+                    pw.setCursor(self._feather_cursor)
+                    self._feather_cursor_active = True
+                except Exception:
+                    pass
+
+            # 离开 plot 区域 → 隐藏一切
+            vb = self.plot_widget.getViewBox()
+            view_rect = vb.sceneBoundingRect()
+            if not view_rect.contains(scene_pos):
+                self._hide_hover()
+                self._hide_magnifier()
+                return
+
+            # 命中检测
+            hit = self._find_nearest_point(scene_pos)
+            if hit is None:
+                self._hide_hover()
+                self._hide_magnifier()
+                return
+
+            hx, hy = hit
+
+            # ── 更新悬停高亮 ──
+            self._update_hover_highlight(hx, hy)
+
+            # ── 更新注记 ──
+            text = self._pitch_to_note(hy)
+            if self.on_hover_info is not None:
+                try:
+                    text = self.on_hover_info(hx, hy)
+                except Exception:
+                    pass
+            self._hover_annot.setText(text)
+            # 注记放在数据点上方约 0.18 八度（紧贴但无遮挡）
+            self._hover_annot.setPos(hx, hy + 0.18)
+            self._hover_annot.setVisible(True)
+
+            # ── 更新放大镜 ──
+            if self._magn_enabled:
+                self._update_magnifier(hx, hy, scene_pos, text)
+            else:
+                self._hide_magnifier()
+        except Exception:
+            self._hide_hover()
+            self._hide_magnifier()
+
+    def _find_nearest_point(self, scene_pos):
+        """在缓存的 segments 中查找离鼠标最近的细节点（场景坐标像素距离）。
+
+        优先搜索散点（细节点），若无命中则回退到线段采样（对齐 normal 模式 fallback）。
+        """
+        try:
+            if not self._segments_cache:
+                return None
+
+            vb = self.plot_widget.getViewBox()
+            ms_x, ms_y = scene_pos.x(), scene_pos.y()
+
+            best_dist2 = float('inf')
+            best = None
+
+            # ── 第一遍：精确细节点 ──
+            for ts, ps in self._segments_cache:
+                if not ts:
+                    continue
+                for t, p in zip(ts, ps):
+                    pt_scene = vb.mapFromView(QtCore.QPointF(float(t), float(p)))
+                    dx = pt_scene.x() - ms_x
+                    dy = pt_scene.y() - ms_y
+                    dist2 = dx * dx + dy * dy
+                    if dist2 < best_dist2:
+                        best_dist2 = dist2
+                        best = (float(t), float(p))
+
+            # ── 命中则返回 ──
+            if best is not None and best_dist2 <= self._hover_hit_radius ** 2:
+                return best
+
+            # ── 第二遍：线段插值采样回退（对齐 normal 模式 _fallback_nearest_from_line）──
+            # 取 80 个采样点，覆盖各段，确保大间隙处也能命中
+            sample_cap = 80
+            sampled = 0
+            for ts, ps in self._segments_cache:
+                if sampled >= sample_cap or not ts:
+                    break
+                n = len(ts)
+                if n < 2:
+                    continue
+                step = max(1, n // max(1, sample_cap // max(1, len(self._segments_cache))))
+                for i in range(0, n, step):
+                    if sampled >= sample_cap:
+                        break
+                    pt_scene = vb.mapFromView(QtCore.QPointF(float(ts[i]), float(ps[i])))
+                    dx = pt_scene.x() - ms_x
+                    dy = pt_scene.y() - ms_y
+                    dist2 = dx * dx + dy * dy
+                    if dist2 < best_dist2:
+                        best_dist2 = dist2
+                        best = (float(ts[i]), float(ps[i]))
+                    sampled += 1
+
+            if best is not None and best_dist2 <= self._hover_hit_radius ** 2:
+                return best
+            return None
+        except Exception:
+            return None
+
+    def _update_hover_highlight(self, x, y):
+        """显示悬停高亮（柔光 + 圆环）在 (x, y) 处。"""
+        try:
+            self._hover_glow.setData([x], [y])
+            self._hover_glow.setVisible(True)
+            self._hover_ring.setData([x], [y])
+            self._hover_ring.setVisible(True)
+        except Exception:
+            pass
+
+    def _hide_hover(self):
+        """隐藏悬停高亮 + 注记。"""
+        try:
+            self._hover_glow.setVisible(False)
+            self._hover_ring.setVisible(False)
+            self._hover_annot.setVisible(False)
+        except Exception:
+            pass
+
+    def _update_magnifier(self, x, y, scene_pos, text=""):
+        """抓取光标周围 ~90px 区域，放大至 180px 圆形浮窗（~2x 局部放大）。
+        使用场景坐标直接定位，避免复杂数据映射。
+        """
+        try:
+            pw = self.plot_widget
+
+            # 场景坐标 → PlotWidget 本地像素（用于 grab 和全局定位）
+            pt_local = pw.mapFromScene(scene_pos)
+            lx, ly = int(pt_local.x()), int(pt_local.y())
+
+            half = _MagnifierOverlay.CAPTURE_HALF
+            crop_rect = QtCore.QRect(lx - half, ly - half, half * 2, half * 2)
+            crop_rect = crop_rect.intersected(pw.rect())
+
+            if crop_rect.width() < 20 or crop_rect.height() < 20:
+                self._hide_magnifier()
+                return
+
+            pixmap = pw.grab(crop_rect)
+            if pixmap is None or pixmap.isNull():
+                self._hide_magnifier()
+                return
+
+            # 光标全局坐标（用于放置放大镜，对齐 normal 模式 offset）
+            cursor_global = pw.mapToGlobal(QtCore.QPoint(lx, ly))
+
+            self._magnifier.show_at(cursor_global, pixmap, text)
+        except Exception:
+            self._hide_magnifier()
+
+    def _hide_magnifier(self):
+        """隐藏放大镜。"""
+        try:
+            self._magnifier.hide()
+        except Exception:
+            pass
+
+    def set_magnifier_enabled(self, enabled: bool):
+        """启用/禁用放大镜（父组件控制）。"""
+        self._magn_enabled = bool(enabled)
+        if not self._magn_enabled:
+            self._hide_magnifier()
+
     def _on_user_view_changed(self, vb, ranges):
         """用户手动缩放/平移后，将新范围回传给父组件。
         X 轴起点固定为 0（禁止负时间），Y 轴限制在 0-8 八度。"""
@@ -676,6 +1130,14 @@ class PyQtGraphPitchRenderer(QWidget):
         pen = pg.mkPen(color=color, width=self._line_width)
         for line in self._line_pool:
             line.setPen(pen)
+
+    def set_point_size(self, size):
+        """设置散点符号大小（对齐 normal 模式 _calc_marker_size）。"""
+        if not self._ready:
+            return
+        self._point_size = float(size)
+        for scatter in self._scatter_pool:
+            scatter.setSymbolSize(self._point_size)
 
 
 # ═══════════════════════════════════════════
