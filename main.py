@@ -88,6 +88,7 @@ def main() -> int:
     bootstrap_paths()
 
     print("MindEcho 统一启动器")
+    print(f"Python: {sys.executable} ({sys.version.split()[0]})")
     print("=" * 32)
 
     if not check_and_install_deps():

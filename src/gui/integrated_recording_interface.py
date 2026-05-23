@@ -331,13 +331,27 @@ try:
         PyQtGraphPitchRenderer
     )
     PYQTGRAPH_GRADIENT_AVAILABLE = _PG_AVAIL
-except Exception:  # 允许缺失
-    PYQTGRAPH_GRADIENT_AVAILABLE = False
-    PyQtGraphPitchRenderer = None
+except ImportError:
+    # 兼容直接运行（python integrated_recording_interface.py）时相对导入失败
+    try:
+        from pyqtgraph_gradient_widget import (
+            PYQTGRAPH_AVAILABLE as _PG_AVAIL,
+            PyQtGraphColorGradientWidget,
+            PyQtGraphPitchRenderer
+        )
+        PYQTGRAPH_GRADIENT_AVAILABLE = _PG_AVAIL
+    except ImportError:
+        PYQTGRAPH_GRADIENT_AVAILABLE = False
+        PyQtGraphPitchRenderer = None
 
-    class PyQtGraphColorGradientWidget(QWidget):  # type: ignore
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
+        class PyQtGraphColorGradientWidget(QWidget):  # type: ignore
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+
+if PYQTGRAPH_GRADIENT_AVAILABLE:
+    print(f"[PG_IMPORT] pyqtgraph_gradient_widget OK, AVAILABLE=True, Renderer={PyQtGraphPitchRenderer}")
+else:
+    print("[PG_IMPORT] pyqtgraph_gradient_widget 不可用 (pyqtgraph 未安装或导入失败)")
 
 # （保留旧的兼容片段：已提前定义，此处不再需要）
 
@@ -22877,6 +22891,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.display_mode = QComboBox()
         self.display_mode.addItems([
             "普通模式",
+            "普通模式 (GPU)",
             "彩色渐变",
             "专业模式"
         ])
@@ -23299,6 +23314,8 @@ class ECGStylePitchVisualizer(QWidget):
         self.v_scrollbar = QScrollBar(Qt.Orientation.Vertical)
         self.v_scrollbar.setRange(0, 100)  # 0-100的范围
         self.v_scrollbar.setValue(50)  # 默认中间位置（C4附近）
+        self.v_scrollbar.setSingleStep(2)  # 单步移动 2%
+        self.v_scrollbar.setPageStep(15)   # 页面移动 15%
         self.v_scrollbar.valueChanged.connect(self.on_vertical_scroll)
         self.v_scrollbar.setStyleSheet("""
             QScrollBar:vertical {
@@ -23363,24 +23380,34 @@ class ECGStylePitchVisualizer(QWidget):
         """切换显示组件：PyQtGraph / Matplotlib / Professional"""
         if not hasattr(self, 'plot_container') or not hasattr(self, 'main_plot_area'):
             return
-        
+
+        # ── 诊断计数 ──
+        if not hasattr(self, '_sw_count'):
+            self._sw_count = 0
+        self._sw_count += 1
+        import traceback
+        caller = traceback.extract_stack(limit=3)[-2]
+        print(f"[SWITCH] #{self._sw_count} use_pg={use_pyqtgraph} target={target} "
+              f"current_mpa_type={type(self.main_plot_area).__name__} "
+              f"caller={caller.name}:{caller.lineno}")
+
         container_layout = self.plot_container.layout()
-        
+
         # 移除当前的主显示组件
         container_layout.removeWidget(self.main_plot_area)
         self.main_plot_area.setParent(None)
-        
+
         if target == "professional" and getattr(self, 'professional_canvas', None) is not None:
-            # 切换到专业模式画布
             self.main_plot_area = self.professional_canvas
+            self.main_plot_area.show()
             print("🧭 切换到专业模式显示")
         elif use_pyqtgraph and self.pyqtgraph_gradient_widget is not None:
-            # 切换到PyQtGraph彩色渐变
             self.main_plot_area = self.pyqtgraph_gradient_widget
+            self.main_plot_area.show()
             print("🌈 切换到PyQtGraph彩色渐变显示")
         else:
-            # 切换到Matplotlib
             self.main_plot_area = self.canvas
+            self.main_plot_area.show()
             print("📊 切换到Matplotlib显示")
         
         # 重新添加到布局
@@ -23491,9 +23518,17 @@ class ECGStylePitchVisualizer(QWidget):
         
         # 初始化PyQtGraph分段音高线渲染器（如果可用）
         self.pyqtgraph_gradient_widget = None
+        print(f"[PG_CREATE] PYQTGRAPH_GRADIENT_AVAILABLE={PYQTGRAPH_GRADIENT_AVAILABLE} "
+              f"PyQtGraphPitchRenderer={PyQtGraphPitchRenderer} "
+              f"Renderer_is_None={PyQtGraphPitchRenderer is None}")
         if PYQTGRAPH_GRADIENT_AVAILABLE and PyQtGraphPitchRenderer is not None:
             try:
-                self.pyqtgraph_gradient_widget = PyQtGraphPitchRenderer()
+                pgw = PyQtGraphPitchRenderer()
+                self.pyqtgraph_gradient_widget = pgw
+                # 连接 pyqtgraph 鼠标回调 → 同步状态回 ECGStylePitchVisualizer
+                pgw.on_view_changed = self._pg_on_view_changed
+                pgw.on_click_at_time = self._pg_on_click_at_time
+                pgw.on_wheel_scroll = self._pg_on_wheel
                 print("✅ PyQtGraph分段音高线渲染器初始化成功")
             except Exception as e:
                 print(f"⚠️ PyQtGraph渲染器初始化失败: {e}")
@@ -30767,6 +30802,8 @@ class ECGStylePitchVisualizer(QWidget):
         if len(self.pitch_data) > 0:
             self._force_redraw_on_next_update = True
             self.update_display()
+        elif getattr(self, '_use_pyqtgraph', False):
+            self._pg_sync_view()
         else:
             self.canvas.draw_idle()
         # 更新辅助线位置
@@ -31052,6 +31089,9 @@ class ECGStylePitchVisualizer(QWidget):
                     self.update_display()
             except Exception:
                 pass
+        if getattr(self, '_use_pyqtgraph', False):
+            # GPU 模式：确保 pyqtgraph 视图始终反映当前 scroll 状态
+            self._pg_sync_view()
         if hasattr(self, 'canvas'):
             self.canvas.draw_idle()
         # 更新辅助线位置
@@ -43938,7 +43978,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 _mode_now = '普通模式'
             normal_realtime_mode = bool(
-                _mode_now == '普通模式'
+                (_mode_now == '普通模式' or _mode_now == '普通模式 (GPU)')
                 and getattr(self, 'is_recording_active', False)
                 and (not bool(getattr(self, '_in_onepass_mode', False)))
                 and getattr(self, '_lfm_ctrl', None) is None
@@ -45664,9 +45704,10 @@ class ECGStylePitchVisualizer(QWidget):
             # 根据显示模式进行额外处理
             display_mode = self.display_mode.currentText() if hasattr(self, 'display_mode') else "普通模式"
             
-            if display_mode == "普通模式":
-                # 确保使用Matplotlib组件
-                if self.main_plot_area != self.canvas:
+            is_pg_gpu = bool(getattr(self, '_use_pyqtgraph', False))
+            if display_mode.startswith("普通模式"):
+                # 确保使用正确的显示组件（GPU 模式已由 on_display_mode_changed 处理）
+                if not is_pg_gpu and self.main_plot_area != self.canvas:
                     self.switch_display_widget(use_pyqtgraph=False)
                 
                 # 心电图模式：更细的线条，提高颤音等细节显示清晰度
@@ -45675,134 +45716,135 @@ class ECGStylePitchVisualizer(QWidget):
                     print("💚 切换到普通模式（断续曲线）")
                 self._last_display_mode = "普通模式"
 
-                # 普通模式下，强制只保留白色逐段细节点，隐藏其他散点来源
-                try:
-                    # 1) 若有彩色渐变残留的 LineCollection，彻底移除，避免出现第二条叠加主线
-                    if hasattr(self, 'gradient_lines') and not isinstance(getattr(self, 'gradient_lines'), (list, tuple)):
-                        # 防御：如果 gradient_lines 不是可迭代列表/元组，尝试按单个对象移除
-                        try:
-                            gl = getattr(self, 'gradient_lines')
-                            if gl is not None and gl in getattr(self.ax, 'collections', []):
-                                gl.remove()
-                        except Exception:
-                            pass
-                        self.gradient_lines = []
-                    elif hasattr(self, 'gradient_lines') and self.gradient_lines:
-                        for line in list(self.gradient_lines):
-                            try:
-                                if line is not None and line in getattr(self.ax, 'collections', []):
-                                    line.remove()
-                            except Exception:
-                                pass
-                        try:
-                            self.gradient_lines = []
-                        except Exception:
-                            pass
-
-                    # 2) 隐藏任何可能残留的临时叠加主线（以避免与分段曲线同窗重复）
-                    if hasattr(self, '_provisional_line') and self._provisional_line is not None:
-                        try:
-                            self._provisional_line.set_visible(False)
-                        except Exception:
-                            pass
-                    if hasattr(self, '_front_realtime_line') and self._front_realtime_line is not None:
-                        try:
-                            if not bool(getattr(self, '_front_realtime_line_enabled', False)):
-                                self._front_realtime_line.set_data([], [])
-                                self._front_realtime_line.set_alpha(0.0)
-                                self._front_realtime_line.set_visible(False)
-                        except Exception:
-                            pass
-                    
-                    if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
-                        try:
-                            if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
-                                self.gradient_overlay_points.remove()
-                        except Exception:
-                            pass
-                        self.gradient_overlay_points = None
-                    # 移除可能残留的渐变散点，避免普通模式出现彩色/偏离的点
-                    if hasattr(self, 'gradient_scatter') and self.gradient_scatter is not None:
-                        try:
-                            if self.gradient_scatter in getattr(self.ax, 'collections', []):
-                                self.gradient_scatter.remove()
-                        except Exception:
-                            pass
-                        self.gradient_scatter = None
-                    if hasattr(self, '_batched_points') and self._batched_points is not None:
-                        try:
-                            # 普通模式严禁显示批量点，避免灰/淡点与重复
-                            self._batched_points.set_alpha(0.0)
-                            self._batched_points.set_visible(False)
-                        except Exception:
-                            pass
-                    # 录音中：显示“最近1秒更大”的白色头部点；非录音中隐藏，避免与逐段细节点叠加
+                if not is_pg_gpu:
+                    # 普通模式下，强制只保留白色逐段细节点，隐藏其他散点来源
                     try:
-                        if hasattr(self, 'is_recording_active') and bool(self.is_recording_active):
+                        # 1) 若有彩色渐变残留的 LineCollection，彻底移除，避免出现第二条叠加主线
+                        if hasattr(self, 'gradient_lines') and not isinstance(getattr(self, 'gradient_lines'), (list, tuple)):
+                            # 防御：如果 gradient_lines 不是可迭代列表/元组，尝试按单个对象移除
                             try:
-                                # 刷新并确保可见
-                                if hasattr(self, '_refresh_head_points_overlay_realtime'):
-                                    self._refresh_head_points_overlay_realtime(force=True, request_draw=False)
-                                if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
-                                    self._head_points_scatter.set_visible(True)
-                                    self._head_points_scatter.set_alpha(0.98)
-                                    self._head_points_scatter.set_zorder(14)
+                                gl = getattr(self, 'gradient_lines')
+                                if gl is not None and gl in getattr(self.ax, 'collections', []):
+                                    gl.remove()
                             except Exception:
                                 pass
-                        else:
-                            if hasattr(self, '_hide_normal_mode_front_overlay'):
-                                self._hide_normal_mode_front_overlay()
+                            self.gradient_lines = []
+                        elif hasattr(self, 'gradient_lines') and self.gradient_lines:
+                            for line in list(self.gradient_lines):
+                                try:
+                                    if line is not None and line in getattr(self.ax, 'collections', []):
+                                        line.remove()
+                                except Exception:
+                                    pass
+                            try:
+                                self.gradient_lines = []
+                            except Exception:
+                                pass
+
+                        # 2) 隐藏任何可能残留的临时叠加主线（以避免与分段曲线同窗重复）
+                        if hasattr(self, '_provisional_line') and self._provisional_line is not None:
+                            try:
+                                self._provisional_line.set_visible(False)
+                            except Exception:
+                                pass
+                        if hasattr(self, '_front_realtime_line') and self._front_realtime_line is not None:
+                            try:
+                                if not bool(getattr(self, '_front_realtime_line_enabled', False)):
+                                    self._front_realtime_line.set_data([], [])
+                                    self._front_realtime_line.set_alpha(0.0)
+                                    self._front_realtime_line.set_visible(False)
+                            except Exception:
+                                pass
+                        
+                        if hasattr(self, 'gradient_overlay_points') and self.gradient_overlay_points is not None:
+                            try:
+                                if self.gradient_overlay_points in getattr(self.ax, 'collections', []):
+                                    self.gradient_overlay_points.remove()
+                            except Exception:
+                                pass
+                            self.gradient_overlay_points = None
+                        # 移除可能残留的渐变散点，避免普通模式出现彩色/偏离的点
+                        if hasattr(self, 'gradient_scatter') and self.gradient_scatter is not None:
+                            try:
+                                if self.gradient_scatter in getattr(self.ax, 'collections', []):
+                                    self.gradient_scatter.remove()
+                            except Exception:
+                                pass
+                            self.gradient_scatter = None
+                        if hasattr(self, '_batched_points') and self._batched_points is not None:
+                            try:
+                                # 普通模式严禁显示批量点，避免灰/淡点与重复
+                                self._batched_points.set_alpha(0.0)
+                                self._batched_points.set_visible(False)
+                            except Exception:
+                                pass
+                        # 录音中：显示“最近1秒更大”的白色头部点；非录音中隐藏，避免与逐段细节点叠加
+                        try:
+                            if hasattr(self, 'is_recording_active') and bool(self.is_recording_active):
+                                try:
+                                    # 刷新并确保可见
+                                    if hasattr(self, '_refresh_head_points_overlay_realtime'):
+                                        self._refresh_head_points_overlay_realtime(force=True, request_draw=False)
+                                    if hasattr(self, '_head_points_scatter') and self._head_points_scatter is not None:
+                                        self._head_points_scatter.set_visible(True)
+                                        self._head_points_scatter.set_alpha(0.98)
+                                        self._head_points_scatter.set_zorder(14)
+                                except Exception:
+                                    pass
+                            else:
+                                if hasattr(self, '_hide_normal_mode_front_overlay'):
+                                    self._hide_normal_mode_front_overlay()
+                        except Exception:
+                            pass
+                        if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
+                            try:
+                                self.confidence_scatter.set_alpha(0.0)
+                                self.confidence_scatter.set_visible(False)
+                            except Exception:
+                                pass
+                        if hasattr(self, '_segment_points'):
+                            # 若逐段细点已存在则优先高可见；否则保持兜底集合/批量点在上，避免“先无点”
+                            any_seg = False
+                            for coll in self._segment_points:
+                                try:
+                                    # 统一确保为纯白、无描边、置顶
+                                    try:
+                                        coll.set_color((1.0, 1.0, 1.0))
+                                    except Exception:
+                                        pass
+                                    try:
+                                        coll.set_edgecolors('none')
+                                    except Exception:
+                                        pass
+                                    coll.set_alpha(0.98)
+                                    coll.set_zorder(14)
+                                    any_seg = True
+                                except Exception:
+                                    pass
+                            try:
+                                # 仅当已有逐段白点集合真正可见时才隐藏兜底点；
+                                # 否则保留兜底点以确保“跳转后一帧也有白点”。
+                                any_visible_seg_pts = False
+                                for coll in getattr(self, '_segment_points', []) or []:
+                                    try:
+                                        if (coll.get_alpha() or 0) > 0.1:
+                                            any_visible_seg_pts = True
+                                            break
+                                    except Exception:
+                                        pass
+                                if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
+                                    if any_visible_seg_pts:
+                                        self._browse_points_fallback.set_alpha(0.0)
+                                        self._browse_points_fallback.set_visible(False)
+                                    else:
+                                        # 兜底点置顶，避免被线条遮挡
+                                        try: self._browse_points_fallback.set_zorder(14)
+                                        except Exception: pass
+                            except Exception:
+                                pass
                     except Exception:
                         pass
-                    if hasattr(self, 'confidence_scatter') and self.confidence_scatter is not None:
-                        try:
-                            self.confidence_scatter.set_alpha(0.0)
-                            self.confidence_scatter.set_visible(False)
-                        except Exception:
-                            pass
-                    if hasattr(self, '_segment_points'):
-                        # 若逐段细点已存在则优先高可见；否则保持兜底集合/批量点在上，避免“先无点”
-                        any_seg = False
-                        for coll in self._segment_points:
-                            try:
-                                # 统一确保为纯白、无描边、置顶
-                                try:
-                                    coll.set_color((1.0, 1.0, 1.0))
-                                except Exception:
-                                    pass
-                                try:
-                                    coll.set_edgecolors('none')
-                                except Exception:
-                                    pass
-                                coll.set_alpha(0.98)
-                                coll.set_zorder(14)
-                                any_seg = True
-                            except Exception:
-                                pass
-                        try:
-                            # 仅当已有逐段白点集合真正可见时才隐藏兜底点；
-                            # 否则保留兜底点以确保“跳转后一帧也有白点”。
-                            any_visible_seg_pts = False
-                            for coll in getattr(self, '_segment_points', []) or []:
-                                try:
-                                    if (coll.get_alpha() or 0) > 0.1:
-                                        any_visible_seg_pts = True
-                                        break
-                                except Exception:
-                                    pass
-                            if hasattr(self, '_browse_points_fallback') and self._browse_points_fallback is not None:
-                                if any_visible_seg_pts:
-                                    self._browse_points_fallback.set_alpha(0.0)
-                                    self._browse_points_fallback.set_visible(False)
-                                else:
-                                    # 兜底点置顶，避免被线条遮挡
-                                    try: self._browse_points_fallback.set_zorder(14)
-                                    except Exception: pass
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                
+
             elif display_mode == "彩色渐变":
                 # 彩色渐变模式：使用优化的Matplotlib LineCollection超细渐变
                 print(f"🎨 超细平滑彩色渐变模式（断续）- 数据点数: {len(times)}")
@@ -45852,30 +45894,31 @@ class ECGStylePitchVisualizer(QWidget):
                         self.pitch_line.set_data([], [])
                         self.pitch_line.set_alpha(0.0)
             
-            # 只在使用Matplotlib时更新坐标轴和刷新
-            if self.main_plot_area == self.canvas and not ((getattr(self, '_new_points_since_last_draw', 0) == 0) and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True)):
-                # 更新坐标轴范围（如果需要） - 修复缩放一致性问题
-                current_xlim = self.ax.get_xlim()
-                current_ylim = self.ax.get_ylim()
-                
-                # 计算考虑缩放的实际Y轴范围
-                # 新缩放：直接使用 compute_half_range() 作为半范围
-                actual_y_range = self.compute_half_range()
-                expected_y_min = self.y_view_center - actual_y_range
-                expected_y_max = self.y_view_center + actual_y_range
-                
-                # 兼容：若上段未定义（防御）
-                axis_start = locals().get('axis_start', getattr(self,'time_offset',0.0))
-                axis_end = locals().get('axis_end', axis_start + getattr(self,'time_window',16.0))
-                if (abs(current_xlim[0] - axis_start) > 0.1 or 
-                    abs(current_xlim[1] - axis_end) > 0.1 or
-                    abs(current_ylim[0] - expected_y_min) > 0.1 or
-                    abs(current_ylim[1] - expected_y_max) > 0.1):
-                    # 避免在轻量帧频繁调用 update_axis_ranges（内部可能 clear），仅在重帧或显著偏差时更新
-                    self.update_axis_ranges()
-                
-                # 推迟到末尾统一 draw_idle，避免多次调度
-                pass
+            if not is_pg_gpu:
+                # 只在使用Matplotlib时更新坐标轴和刷新
+                if self.main_plot_area == self.canvas and not ((getattr(self, '_new_points_since_last_draw', 0) == 0) and getattr(self, 'auto_follow', True) and getattr(self, 'auto_scroll_enabled', True)):
+                    # 更新坐标轴范围（如果需要） - 修复缩放一致性问题
+                    current_xlim = self.ax.get_xlim()
+                    current_ylim = self.ax.get_ylim()
+                    
+                    # 计算考虑缩放的实际Y轴范围
+                    # 新缩放：直接使用 compute_half_range() 作为半范围
+                    actual_y_range = self.compute_half_range()
+                    expected_y_min = self.y_view_center - actual_y_range
+                    expected_y_max = self.y_view_center + actual_y_range
+                    
+                    # 兼容：若上段未定义（防御）
+                    axis_start = locals().get('axis_start', getattr(self,'time_offset',0.0))
+                    axis_end = locals().get('axis_end', axis_start + getattr(self,'time_window',16.0))
+                    if (abs(current_xlim[0] - axis_start) > 0.1 or 
+                        abs(current_xlim[1] - axis_end) > 0.1 or
+                        abs(current_ylim[0] - expected_y_min) > 0.1 or
+                        abs(current_ylim[1] - expected_y_max) > 0.1):
+                        # 避免在轻量帧频繁调用 update_axis_ranges（内部可能 clear），仅在重帧或显著偏差时更新
+                        self.update_axis_ranges()
+                    
+                    # 推迟到末尾统一 draw_idle，避免多次调度
+                    pass
             
             # 更新状态显示
             self.update_status_display()
@@ -45884,7 +45927,7 @@ class ECGStylePitchVisualizer(QWidget):
             self.update_scrollbars()
             # 重帧后再次刷新头部即时点，确保“最近1秒大点”与曲线同步
             try:
-                if display_mode == "普通模式":
+                if display_mode.startswith("普通模式"):
                     self._update_head_points_scatter()
             except Exception:
                 pass
@@ -45934,23 +45977,97 @@ class ECGStylePitchVisualizer(QWidget):
         """[pyqtgraph] 将分段数据交给 PyQtGraphPitchRenderer 渲染。
 
         替代 draw_segmented_pitch_line 的 pyqtgraph 路径。
-        调用 setData 触发自动重绘，无需手动 draw_idle。
+        同步 segments、时间窗、音高范围、网格、音符标签、播放头、选区。
         """
         try:
             pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
             if pgw is None:
+                # 回退：渲染器未创建，禁用 GPU 模式并使用 matplotlib
+                if not getattr(self, '_pg_disabled_logged', False):
+                    self._pg_disabled_logged = True
+                    print("[PG_DIAG] pyqtgraph_gradient_widget is None — 回退到 matplotlib 渲染")
+                self._use_pyqtgraph = False
+                self.draw_segmented_pitch_line(segments)
                 return
+            # ── 诊断：首帧和每 120 帧输出一次 ──
+            if not hasattr(self, '_pg_frame_cnt'):
+                self._pg_frame_cnt = 0
+            self._pg_frame_cnt += 1
+            diag = (self._pg_frame_cnt == 1 or self._pg_frame_cnt % 120 == 0)
+            if diag:
+                seg_pts = sum(len(s[0]) for s in segments) if segments else 0
+                vis = pgw.isVisible()
+                sz = (pgw.width(), pgw.height())
+                print(f"[PG_DIAG] frame={self._pg_frame_cnt} segs={len(segments)} pts={seg_pts} visible={vis} size={sz} main_plot_area_is_pgw={self.main_plot_area is pgw}")
+            # ── 分段数据 ──
             pgw.set_segments(segments)
-            # 同步时间窗
+            # 同步线条颜色和粗细到 pyqtgraph
+            try:
+                if hasattr(self, 'line_color') and hasattr(pgw, 'set_line_color'):
+                    pgw.set_line_color(str(self.line_color))
+                if hasattr(self, 'current_linewidth') and hasattr(pgw, 'set_line_width'):
+                    pgw.set_line_width(float(self.current_linewidth))
+            except Exception:
+                pass
+            # ── 时间窗 ──
             t_off = float(getattr(self, 'time_offset', 0.0))
             t_win = float(getattr(self, 'time_window', 16.0))
             pgw.set_x_range(t_off, t_off + t_win)
-            # 同步音高范围
+            # ── 音高范围 + 网格 + 标签 ──
             yc = float(getattr(self, 'y_view_center', 4.0))
             yr = float(getattr(self, 'y_view_range', 3.0))
-            pgw.set_y_range(yc - yr, yc + yr)
+            y_start, y_end = yc - yr, yc + yr
+            pgw.set_y_range(y_start, y_end)
+            zoom_mode = None
+            try:
+                profile = getattr(self, '_current_zoom_profile', None)
+                if profile is None and hasattr(self, '_get_zoom_profile'):
+                    profile = self._get_zoom_profile()
+                zoom_mode = profile.get('mode') if profile else None
+            except Exception:
+                pass
+            pgw.set_grid_from_range(y_start, y_end, zoom_mode)
+            # ── 播放头 ──
+            try:
+                ph = getattr(self, '_lb_playhead', None)
+                if ph is not None and ph.get_visible():
+                    xd = ph.get_xdata()
+                    if xd is not None and len(xd) >= 1:
+                        pgw.set_playhead(float(xd[0]))
+                    else:
+                        pgw.set_playhead(None)
+                else:
+                    pgw.set_playhead(None)
+            except Exception:
+                pgw.set_playhead(None)
+            # ── 选区边界 ──
+            try:
+                sel_active = bool(getattr(self, 'selection_active', False)
+                    or getattr(self, 'listenback_enabled', False)
+                    or getattr(self, 'retake_selection_active', False))
+                if sel_active:
+                    pgw.set_selection_range(
+                        float(getattr(self, 'sel_start', 0)),
+                        float(getattr(self, 'sel_end', 0)),
+                    )
+                else:
+                    pgw.set_selection_range(None, None)
+            except Exception:
+                pgw.set_selection_range(None, None)
+            # ── 同步辅助线 ──
+            try:
+                pgw.set_guides_enabled(bool(getattr(self, 'guides_enabled', True)))
+                self._pg_sync_guides()
+            except Exception:
+                pass
         except Exception:
-            pass
+            import traceback
+            if not hasattr(self, '_pg_err_cnt'):
+                self._pg_err_cnt = 0
+            self._pg_err_cnt += 1
+            if self._pg_err_cnt <= 3:
+                print(f"[PG_ERR] _pg_render_segmented error (#{self._pg_err_cnt}):")
+                traceback.print_exc()
 
     def _toggle_pyqtgraph(self):
         """切换 pyqtgraph / matplotlib 渲染后端（调试用）。"""
@@ -45962,6 +46079,137 @@ class ECGStylePitchVisualizer(QWidget):
         else:
             self.switch_display_widget(use_pyqtgraph=False)
             print("📊 切换到 matplotlib 渲染")
+
+    def _ensure_gpu_indicator(self):
+        """占位（已移除 GPU 指示器 UI）。"""
+        pass
+
+    def _hide_gpu_indicator(self):
+        """占位（已移除 GPU 指示器 UI）。"""
+        pass
+
+    def _pg_on_view_changed(self, x_range, y_range):
+        """[pyqtgraph] 用户手动缩放/平移后，将新范围同步回状态变量。"""
+        try:
+            x0, x1 = x_range
+            self.time_offset = float(x0)
+            self.time_window = float(x1 - x0)
+            y0, y1 = y_range
+            self.y_view_center = float((y0 + y1) * 0.5)
+            self.y_view_range = float((y1 - y0) * 0.5)
+            self._user_overrode_center = True
+        except Exception:
+            pass
+        try:
+            self.update_scrollbars()
+        except Exception:
+            pass
+
+    def _pg_on_wheel(self, delta):
+        """[pyqtgraph] 鼠标滚轮 → Y 轴滚动（对齐正常模式 on_mouse_scroll）。"""
+        try:
+            prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
+            if prof.get('disable_v_scroll'):
+                return
+            scroll_sensitivity = 0.3
+            delta_y = scroll_sensitivity if delta > 0 else -scroll_sensitivity
+            prev_center = self.y_view_center
+            new_center = self.y_view_center + delta_y
+            # 夹紧在 [0.5, 7.5]
+            new_center = max(0.5, min(7.5, new_center))
+            if abs(new_center - prev_center) < 0.01:
+                return
+            self.y_view_center = new_center
+            self._user_overrode_center = True
+            self.update_scrollbars()
+            self._pg_sync_view()
+        except Exception:
+            pass
+
+    def _pg_sync_view(self):
+        """[pyqtgraph] 将当前状态变量同步到 pyqtgraph 视图（不依赖 segments）。
+        用于无数据时滚动条/滚轮直接驱动 pyqtgraph 视图更新。"""
+        try:
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            t_off = float(getattr(self, 'time_offset', 0.0))
+            t_win = float(getattr(self, 'time_window', 16.0))
+            pgw.set_x_range(t_off, t_off + t_win)
+            yc = float(getattr(self, 'y_view_center', 4.0))
+            yr = float(getattr(self, 'y_view_range', 0) or getattr(self, 'compute_half_range', lambda: 2.0)())
+            y_start, y_end = yc - yr, yc + yr
+            pgw.set_y_range(y_start, y_end)
+            zoom_mode = None
+            try:
+                profile = getattr(self, '_current_zoom_profile', None)
+                if profile is None and hasattr(self, '_get_zoom_profile'):
+                    profile = self._get_zoom_profile()
+                zoom_mode = profile.get('mode') if profile else None
+            except Exception:
+                pass
+            pgw.set_grid_from_range(y_start, y_end, zoom_mode)
+            # 同步辅助线：纵向跟随当前时间，横向跟随当前识别音高
+            if hasattr(self, 'guides_enabled'):
+                pgw.set_guides_enabled(bool(self.guides_enabled))
+            self._pg_sync_guides()
+        except Exception:
+            pass
+
+    def _pg_sync_guides(self):
+        """将当前录制状态同步到 pyqtgraph 辅助线位置。
+
+        纵向线：跟随当前时间（录音时用墙钟连续推进，回听/分析用 current_global_time）。
+        横向线：跟随当前识别音高（last_active_pitch_y）。
+        """
+        try:
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            guide_v = None  # 纵向时间线
+            guide_h = None  # 横向音高线
+
+            # 优先使用播放头位置（回听模式，若可见）
+            try:
+                ph = getattr(self, '_lb_playhead', None)
+                if ph is not None and getattr(ph, 'get_visible', lambda: False)():
+                    xd = ph.get_xdata()
+                    if xd is not None and len(xd) >= 1:
+                        guide_v = float(xd[0])
+            except Exception:
+                pass
+
+            # 录音活跃中：用墙钟时间确保无声音时也能连续推进
+            if guide_v is None and bool(getattr(self, 'is_recording_active', False)):
+                try:
+                    st = getattr(self, 'start_time', None)
+                    if st is not None:
+                        import time as _t
+                        guide_v = max(0.0, float(_t.time()) - float(st))
+                except Exception:
+                    pass
+
+            # 回退到当前全局时间
+            if guide_v is None:
+                guide_v = float(getattr(self, 'current_global_time', 0.0))
+
+            # 横向：当前识别音高
+            guide_h = float(getattr(self, 'last_active_pitch_y', 0) or getattr(self, 'current_pitch_y', 4.0))
+            pgw.set_guides(guide_v, guide_h)
+        except Exception:
+            pass
+
+    def _pg_on_click_at_time(self, time_x, y_value):
+        """[pyqtgraph] 鼠标点击音高线 → 触发回听播放或选区操作。"""
+        try:
+            if getattr(self, 'listenback_enabled', False):
+                abs_time = time_x + float(getattr(self, 'start_time', 0.0))
+                self.sel_start = abs_time
+                self.sel_end = abs_time + 1.0
+                self._init_listenback_selection()
+                self.update_listenback_artists()
+        except Exception:
+            pass
 
     def draw_segmented_pitch_line(self, segments):
         """绘制断续的音调曲线（每段独立绘制，换气段不连接），带签名缓存与懒更新以提升实时性"""
@@ -47975,6 +48223,26 @@ class ECGStylePitchVisualizer(QWidget):
         # 重置线条样式
         if hasattr(self, 'pitch_line') and self.pitch_line is not None:
             self.pitch_line.set_drawstyle('default')
+
+        # ── pyqtgraph GPU 模式切换 ──
+        if mode == "普通模式 (GPU)":
+            self._use_pyqtgraph = True
+            self._apply_zoom_profile_center()
+            self.update_axis_ranges()  # 同步 y_view_range 到当前 zoom profile
+            self.update_scrollbars()   # 同步滚动条位置与初始视图
+            if self.pyqtgraph_gradient_widget is not None:
+                self.switch_display_widget(use_pyqtgraph=True)
+                # 立即将 pyqtgraph 视图同步到当前 zoom profile 的 X/Y 范围
+                # (否则会短暂显示 __init__ 的默认范围 C1-C7，造成与缩放控制不一致)
+                QTimer.singleShot(0, self._pg_sync_view)
+            self._ensure_gpu_indicator()
+        else:
+            was_gpu = bool(getattr(self, '_use_pyqtgraph', False))
+            self._use_pyqtgraph = False
+            if was_gpu:
+                self.switch_display_widget(use_pyqtgraph=False)
+            self._hide_gpu_indicator()
+
         try:
             if mode != "专业模式":
                 if hasattr(self, 'pro_tracks_label'):
@@ -47990,7 +48258,7 @@ class ECGStylePitchVisualizer(QWidget):
         # 若从专业模式切回，恢复主画布
         try:
             if mode != "专业模式" and getattr(self, 'main_plot_area', None) is getattr(self, 'professional_canvas', None):
-                self.switch_display_widget(use_pyqtgraph=False)
+                self.switch_display_widget(use_pyqtgraph=(mode == "普通模式 (GPU)"))
         except Exception:
             pass
         
@@ -48817,7 +49085,10 @@ class ECGStylePitchVisualizer(QWidget):
         # 更新显示
         self.update_axis_ranges()
         self.update_scrollbars()
-        self.canvas.draw()
+        if getattr(self, '_use_pyqtgraph', False):
+            self._pg_sync_view()
+        else:
+            self.canvas.draw()
 
         # 显示设置信息
         preset_info = {
@@ -49480,6 +49751,12 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 shift = 0.0
             self.current_global_time = raw_now + shift
+            # pyqtgraph GPU 模式：持续同步辅助线（纵向时间线无论是否有音高都要随时间推进）
+            if getattr(self, '_use_pyqtgraph', False):
+                try:
+                    self._pg_sync_guides()
+                except Exception:
+                    pass
             # 防御：当前窗口若超出锁定总时长范围（或末端少展示），进行末端对齐纠正
             try:
                 eff_total = float(getattr(self,'_backing_axis_length', getattr(self,'max_history_time',0.0))) if getattr(self,'_backing_axis_locked',False) else float(getattr(self,'max_history_time',0.0))
