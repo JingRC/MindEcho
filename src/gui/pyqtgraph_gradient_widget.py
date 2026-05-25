@@ -32,14 +32,85 @@ except ImportError:
     QT_VERSION = 5
 
 
-# ── 放大镜浮窗（pyqtgraph 版）──
-class _MagnifierOverlay(QWidget):
-    """圆形放大镜浮窗 — 抓取 PlotWidget 鼠标周围约 90px 区域，放大至 180px（~2x 放大）。
-    样式对齐 normal 模式 _update_magn_overlay_label 的视觉效果。
+# ── 音符标注浮窗（独立矩形标签，置于放大镜上层）──
+class _MagnifierLabel(QWidget):
+    """音符标注浮窗 — 独立矩形标签，浮于放大镜上方。
+
+    对齐 normal 模式 _magn_overlay_label：单独的 frameless QLabel，
+    不在放大镜内部，不受圆形裁剪影响，始终完整显示。
     """
 
-    SIZE = 180          # 直径（像素）
-    CAPTURE_HALF = 45   # 抓取半边长（像素），90px → 180px ≈ 2x 放大
+    def __init__(self):
+        super().__init__(None)
+        try:
+            self.setWindowFlags(
+                Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.ToolTip |
+                Qt.WindowType.WindowStaysOnTopHint
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        except Exception:
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.ToolTip | Qt.WindowStaysOnTopHint)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+        self._label = QLabel(self)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setStyleSheet(
+            "color: #e8f0f8; background: #101820; font-size: 10px; "
+            "padding: 4px 12px; border: 1px solid rgba(128,200,255,180);"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._label)
+        self.hide()
+
+    def show_at(self, global_pos: QPoint, text: str = ""):
+        """在指定全局位置（放大镜顶部中心）上方居中显示标注。"""
+        try:
+            if not text:
+                self.hide()
+                return
+            self._label.setText(text)
+            self.adjustSize()
+            # 水平居中于 global_pos，垂直置于其上方 2px
+            x = int(global_pos.x() - self.width() // 2)
+            y = int(global_pos.y() - self.height() - 2)
+            # 屏幕边界修正
+            try:
+                from PyQt6.QtGui import QGuiApplication
+            except Exception:
+                from PyQt5.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                geo = screen.availableGeometry()
+                if x < geo.x():
+                    x = geo.x()
+                if x + self.width() > geo.x() + geo.width():
+                    x = int(geo.x() + geo.width() - self.width())
+                if y < geo.y():
+                    y = int(geo.y())
+            self.move(x, y)
+            self.show()
+            self.raise_()
+        except Exception:
+            self.hide()
+
+
+# ── 放大镜浮窗（pyqtgraph 版）──
+class _MagnifierOverlay(QWidget):
+    """圆形放大镜浮窗 — 仅显示放大的像素截图，不含文字。
+
+    对齐 normal 模式 _magn_overlay_window：
+    - 圆形裁剪 + 蓝色细边框
+    - 音符标注由独立的 _MagnifierLabel 在上层显示
+    """
+
+    SIZE = 160          # 直径（像素）
+    CAPTURE_HALF = 40   # 抓取半边长（像素），80px → 160px = 2x 放大
 
     def __init__(self):
         super().__init__(None)
@@ -47,15 +118,6 @@ class _MagnifierOverlay(QWidget):
         self._set_flags()
         self._make_circular_mask()
         self._pixmap = None
-        self._text = ""
-
-        self._text_label = QLabel(self)
-        self._text_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self._text_label.setStyleSheet(
-            "color: #e8f0f8; background: rgba(8,14,24,230); font-size: 9px; "
-            "padding: 4px 8px; border-radius: 2px;"
-        )
-        self._text_label.setGeometry(2, 3, self.SIZE - 4, 18)
         self.hide()
 
     def _set_flags(self):
@@ -85,22 +147,19 @@ class _MagnifierOverlay(QWidget):
         painter.end()
         self.setMask(bitmap)
 
-    def show_at(self, cursor_global: QPoint, crop_pixmap, text: str = ""):
-        """在光标附近显示放大镜（偏移 +40px 右, 上方），对齐 normal 模式定位。"""
+    def show_at(self, cursor_global: QPoint, crop_pixmap):
+        """在光标附近显示放大镜（偏移 +36px 右, 上方）。"""
         try:
             if crop_pixmap is None or crop_pixmap.isNull():
                 self.hide()
                 return
             self._pixmap = crop_pixmap
-            self._text = text
-            self._text_label.setText(text)
-            self._text_label.setVisible(bool(text))
 
-            # 放大镜放在光标右上方，对齐 normal 模式 offset
-            x = int(cursor_global.x()) + 40
-            y = int(cursor_global.y()) - self.SIZE - 40
+            # 放大镜放在光标右上方
+            x = int(cursor_global.x()) + 36
+            y = int(cursor_global.y()) - self.SIZE - 36
 
-            # 屏幕边界修正：避免放大镜超出可视区域
+            # 屏幕边界修正
             try:
                 from PyQt6.QtGui import QGuiApplication
             except Exception:
@@ -109,9 +168,9 @@ class _MagnifierOverlay(QWidget):
             if screen is not None:
                 geo = screen.availableGeometry()
                 if x + self.SIZE > geo.x() + geo.width():
-                    x = int(cursor_global.x()) - self.SIZE - 40  # 翻转到左侧
+                    x = int(cursor_global.x()) - self.SIZE - 36
                 if y < geo.y():
-                    y = int(cursor_global.y()) + 40  # 翻转到下方
+                    y = int(cursor_global.y()) + 36
 
             self.move(x, y)
             self.show()
@@ -124,41 +183,35 @@ class _MagnifierOverlay(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         # 裁剪为圆形
         clip = QPainterPath()
         clip.addEllipse(0, 0, self.SIZE, self.SIZE)
         painter.setClipPath(clip)
 
-        # 填充深色背景（对齐 normal 模式 #1a1a1a）
+        # 填充深色背景
         painter.setBrush(QColor(26, 26, 26))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(0, 0, self.SIZE, self.SIZE)
 
-        # 绘制放大的截图（90px 区域 → 180px 镜片，~2x 局部放大）
+        # 绘制放大的截图（FastTransformation = 最近邻，像素级清晰）
         scaled = self._pixmap.scaled(
             self.SIZE, self.SIZE,
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.TransformationMode.FastTransformation
         )
         ox = (self.SIZE - scaled.width()) // 2
         oy = (self.SIZE - scaled.height()) // 2
         painter.drawPixmap(ox, oy, scaled)
 
-        # 不透明顶部信息条（对齐 normal 模式 header bar，遮挡截图中的 Y 轴标签）
-        if self._text:
-            header = QRectF(0, 0, self.SIZE, 22)
-            painter.fillRect(header, QColor(8, 14, 24, 240))
-
-        # 圆形边框（对齐 normal 模式 rgba(128,200,255,230), linewidth 1.6）
+        # 圆形边框
         painter.setClipping(False)
         pen = QPen(QColor(128, 200, 255, 230))
         pen.setWidthF(1.6)
         try:
             pen.setCosmetic(True)
         except AttributeError:
-            pen.setWidth(1)  # PyQt5 回退
+            pen.setWidth(1)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(1, 1, self.SIZE - 2, self.SIZE - 2)
@@ -386,11 +439,25 @@ class PyQtGraphPitchRenderer(QWidget):
         self._hover_last_t = 0.0
         self._hover_throttle_sec = 0.03  # ~33Hz，比 normal 模式更灵敏
 
-        # ── 放大镜浮窗 ──
+        # ── 悬停滞回：避免在相邻点间频繁跳变（对齐 normal 模式的隐式稳定）──
+        self._hover_last_point = None     # (x, y) 上一帧命中的点
+        self._hover_stick_radius2 = 64.0  # 滞回距离²（8px），在此范围内保持上一命中点
+
+        # ── 放大镜浮窗 + 独立标注标签（对齐 normal 模式 _magn_overlay_window + _magn_overlay_label）──
         self._magnifier = _MagnifierOverlay()
+        self._magn_label = _MagnifierLabel()
         self._magn_enabled = True
 
         # ── 鼠标追踪 ──
+        # viewport 事件过滤器：捕获原始 widget 像素坐标（不受 ViewBox 范围变化影响）
+        try:
+            vp = self.plot_widget.viewport()
+            vp.installEventFilter(self)
+        except Exception:
+            pass
+        self._cursor_widget_pos = QtCore.QPointF(0, 0)
+        self._cursor_global_pos = QtCore.QPointF(0, 0)
+
         self._mouse_proxy = pg.SignalProxy(
             self.plot_widget.scene().sigMouseMoved,
             rateLimit=60, slot=self._on_mouse_moved
@@ -679,6 +746,7 @@ class PyQtGraphPitchRenderer(QWidget):
             scatter.setVisible(False)
         self._current_segment_count = 0
         self._segments_cache = []
+        self._hover_last_point = None
         self._hide_hover()
         self._hide_magnifier()
 
@@ -897,11 +965,65 @@ class PyQtGraphPitchRenderer(QWidget):
             pass
 
     # ═══════════════════════════════════════════
+    # 事件过滤器（捕捉 viewport 原始像素坐标）
+    # ═══════════════════════════════════════════
+
+    def eventFilter(self, obj, event):
+        """在 viewport 上拦截 MouseMove，记录原始 widget 像素坐标。
+
+        关键：event.pos() 是 viewport 控件坐标，不经过 ViewBox 变换，
+        不受音频播放时 set_x_range() 更新范围的影响。
+        """
+        try:
+            # 兼容 PyQt5 QEvent.MouseMove 和 PyQt6 QEvent.Type.MouseMove
+            try:
+                is_move = bool(event is not None and event.type() == QEvent.Type.MouseMove)
+            except (AttributeError, TypeError):
+                try:
+                    is_move = bool(event is not None and event.type() == QEvent.MouseMove)
+                except Exception:
+                    is_move = False
+            if is_move:
+                # 记录控件像素坐标
+                try:
+                    pos = event.position()
+                except Exception:
+                    try:
+                        pos = event.pos()
+                    except Exception:
+                        pos = None
+                if pos is not None:
+                    self._cursor_widget_pos = QtCore.QPointF(float(pos.x()), float(pos.y()))
+
+                # 同时记录全局屏幕坐标（用于放大镜摆放位置）
+                try:
+                    gp = event.globalPosition()
+                    self._cursor_global_pos = QtCore.QPointF(float(gp.x()), float(gp.y()))
+                except Exception:
+                    try:
+                        gp = event.globalPos()
+                        self._cursor_global_pos = QtCore.QPointF(float(gp.x()), float(gp.y()))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            return super().eventFilter(obj, event)
+        except Exception:
+            return False
+
+    # ═══════════════════════════════════════════
     # 悬停高亮 + 注记 + 放大镜
     # ═══════════════════════════════════════════
 
     def _on_mouse_moved(self, evt):
-        """SignalProxy 回调：鼠标在 PlotWidget 上移动（60fps 节流）。"""
+        """SignalProxy 回调：鼠标在 PlotWidget 上移动（60fps 节流）。
+
+        关键改进：
+        - 滞回逻辑：上一帧命中点若仍在光标近处，保持不变，避免在相邻点间跳动
+        - 放大镜抓取前先隐藏自身，避免出现"镜中镜"递归
+        - 抓取中心 = 光标所在位置（而非命中的数据点），对齐 normal 模式行为
+        """
         try:
             import time as _t
             now = _t.time()
@@ -927,100 +1049,161 @@ class PyQtGraphPitchRenderer(QWidget):
             if not view_rect.contains(scene_pos):
                 self._hide_hover()
                 self._hide_magnifier()
+                self._hover_last_point = None
                 return
 
-            # 命中检测
+            # 命中检测（带滞回）
             hit = self._find_nearest_point(scene_pos)
             if hit is None:
                 self._hide_hover()
                 self._hide_magnifier()
+                self._hover_last_point = None
                 return
 
             hx, hy = hit
 
-            # ── 更新悬停高亮 ──
+            # ── 更新悬停高亮（数据点位置，始终在图上可见）──
             self._update_hover_highlight(hx, hy)
 
-            # ── 更新注记 ──
+            # ── 格式化注记文本 ──
             text = self._pitch_to_note(hy)
             if self.on_hover_info is not None:
                 try:
                     text = self.on_hover_info(hx, hy)
                 except Exception:
                     pass
-            self._hover_annot.setText(text)
-            # 注记放在数据点上方约 0.18 八度（紧贴但无遮挡）
-            self._hover_annot.setPos(hx, hy + 0.18)
-            self._hover_annot.setVisible(True)
 
-            # ── 更新放大镜 ──
+            # ── 更新放大镜（抓取中心 = 光标位置 scene_pos，对齐 normal 模式）──
             if self._magn_enabled:
+                # 放大镜模式：隐藏图上的 _hover_annot，仅用 _magn_label 显示标注（避免两个标签）
+                self._hover_annot.setVisible(False)
                 self._update_magnifier(hx, hy, scene_pos, text)
             else:
+                # 无放大镜时：图上的 _hover_annot 正常显示
+                self._hover_annot.setText(text)
+                self._hover_annot.setPos(hx, hy + 0.18)
+                self._hover_annot.setVisible(True)
                 self._hide_magnifier()
         except Exception:
             self._hide_hover()
             self._hide_magnifier()
+            self._hover_last_point = None
 
     def _find_nearest_point(self, scene_pos):
-        """在缓存的 segments 中查找离鼠标最近的细节点（场景坐标像素距离）。
+        """在缓存的 segments 中查找离鼠标最近的细节点。
 
-        优先搜索散点（细节点），若无命中则回退到线段采样（对齐 normal 模式 fallback）。
+        关键改进（修正时序竞态）：
+        - 不使用 scene_pos 做距离比较（scene_pos 来自 SignalProxy，使用
+          鼠标事件时刻的 ViewBox 范围；音频播放时 set_x_range 每帧更新，
+          回调时范围已变，mapFromScene(scene_pos) 会得到错误的控件坐标）
+        - 改用 QCursor.pos() + mapFromGlobal() — 实时鼠标控件坐标，
+          不依赖 ViewBox 范围，与数据点的 widget 坐标始终一致
+        - 数据点距离在 widget 像素空间比较（等价 normal 模式 event.x/y）
+        - 滞回：上一帧命中点在 8px 内保持不变
         """
         try:
             if not self._segments_cache:
+                self._hover_last_point = None
                 return None
 
-            vb = self.plot_widget.getViewBox()
-            ms_x, ms_y = scene_pos.x(), scene_pos.y()
+            pw = self.plot_widget
+            vb = pw.getViewBox()
+
+            # ── 光标 → widget 像素坐标 ──
+            #    优先用 viewport 事件过滤器捕获的原始像素坐标（事件时刻、
+            #    不经过 ViewBox 变换、不受音频管道 set_x_range 时序影响）
+            try:
+                cwp = self._cursor_widget_pos
+                wx, wy = cwp.x(), cwp.y()
+                if wx == 0.0 and wy == 0.0:
+                    # 尚未初始化，回退
+                    raise ValueError('not initialised')
+            except Exception:
+                # 回退：QCursor.pos()（call-time 实时坐标）
+                try:
+                    cursor_global = QCursor.pos()
+                    pt_cursor_widget = pw.mapFromGlobal(cursor_global)
+                    wx, wy = pt_cursor_widget.x(), pt_cursor_widget.y()
+                except Exception:
+                    # 最终回退：scene_pos（可能受时序影响）
+                    pt_cursor_widget = pw.mapFromScene(scene_pos)
+                    wx, wy = pt_cursor_widget.x(), pt_cursor_widget.y()
+
+            # ── 可见视口 X 范围 ──
+            x_range = vb.viewRange()[0]
+            vis_x0, vis_x1 = float(x_range[0]), float(x_range[1])
+
+            # ── 滞回优先 ──
+            if self._hover_last_point is not None:
+                lx, ly = self._hover_last_point
+                if vis_x0 <= lx <= vis_x1:
+                    pt_scene = vb.mapToScene(vb.mapFromView(QtCore.QPointF(float(lx), float(ly))))
+                    pt_w = pw.mapFromScene(pt_scene)
+                    dx = pt_w.x() - wx
+                    dy = pt_w.y() - wy
+                    if dx * dx + dy * dy <= self._hover_stick_radius2:
+                        return self._hover_last_point
 
             best_dist2 = float('inf')
             best = None
+            radius2 = self._hover_hit_radius ** 2
 
-            # ── 第一遍：精确细节点 ──
+            # ── 第一遍：可见视口内的精确细节点（widget 像素距离）──
             for ts, ps in self._segments_cache:
                 if not ts:
                     continue
                 for t, p in zip(ts, ps):
-                    pt_scene = vb.mapFromView(QtCore.QPointF(float(t), float(p)))
-                    dx = pt_scene.x() - ms_x
-                    dy = pt_scene.y() - ms_y
+                    ft = float(t)
+                    if ft < vis_x0 or ft > vis_x1:
+                        continue
+                    pt_scene = vb.mapToScene(vb.mapFromView(QtCore.QPointF(ft, float(p))))
+                    pt_w = pw.mapFromScene(pt_scene)
+                    dx = pt_w.x() - wx
+                    dy = pt_w.y() - wy
                     dist2 = dx * dx + dy * dy
                     if dist2 < best_dist2:
                         best_dist2 = dist2
-                        best = (float(t), float(p))
+                        best = (ft, float(p))
 
-            # ── 命中则返回 ──
-            if best is not None and best_dist2 <= self._hover_hit_radius ** 2:
+            if best is not None and best_dist2 <= radius2:
+                self._hover_last_point = best
                 return best
 
-            # ── 第二遍：线段插值采样回退（对齐 normal 模式 _fallback_nearest_from_line）──
-            # 取 80 个采样点，覆盖各段，确保大间隙处也能命中
-            sample_cap = 80
+            # ── 第二遍：线段密集采样回退 ──
+            sample_cap = 200
             sampled = 0
+            n_segs = max(1, len(self._segments_cache))
+            per_seg = max(10, sample_cap // n_segs)
             for ts, ps in self._segments_cache:
                 if sampled >= sample_cap or not ts:
-                    break
+                    continue
                 n = len(ts)
                 if n < 2:
                     continue
-                step = max(1, n // max(1, sample_cap // max(1, len(self._segments_cache))))
+                step = max(1, n // per_seg)
                 for i in range(0, n, step):
                     if sampled >= sample_cap:
                         break
-                    pt_scene = vb.mapFromView(QtCore.QPointF(float(ts[i]), float(ps[i])))
-                    dx = pt_scene.x() - ms_x
-                    dy = pt_scene.y() - ms_y
+                    ft = float(ts[i])
+                    if ft < vis_x0 or ft > vis_x1:
+                        continue
+                    pt_scene = vb.mapToScene(vb.mapFromView(QtCore.QPointF(ft, float(ps[i]))))
+                    pt_w = pw.mapFromScene(pt_scene)
+                    dx = pt_w.x() - wx
+                    dy = pt_w.y() - wy
                     dist2 = dx * dx + dy * dy
                     if dist2 < best_dist2:
                         best_dist2 = dist2
-                        best = (float(ts[i]), float(ps[i]))
+                        best = (ft, float(ps[i]))
                     sampled += 1
 
-            if best is not None and best_dist2 <= self._hover_hit_radius ** 2:
+            if best is not None and best_dist2 <= radius2:
+                self._hover_last_point = best
                 return best
+            self._hover_last_point = None
             return None
         except Exception:
+            self._hover_last_point = None
             return None
 
     def _update_hover_highlight(self, x, y):
@@ -1034,49 +1217,166 @@ class PyQtGraphPitchRenderer(QWidget):
             pass
 
     def _hide_hover(self):
-        """隐藏悬停高亮 + 注记。"""
+        """隐藏悬停高亮 + 注记，清除滞回状态。"""
         try:
             self._hover_glow.setVisible(False)
             self._hover_ring.setVisible(False)
             self._hover_annot.setVisible(False)
         except Exception:
             pass
+        self._hover_last_point = None
 
     def _update_magnifier(self, x, y, scene_pos, text=""):
-        """抓取光标周围 ~90px 区域，放大至 180px 圆形浮窗（~2x 局部放大）。
-        使用场景坐标直接定位，避免复杂数据映射。
+        """抓取以悬停数据点 (x, y) 为中心的 ViewBox 区域，放大至圆形浮窗。
+
+        核心修正（消除高亮偏移到放大镜右侧的持久 bug）：
+        ── 旧方案用 pw.mapToScene(crop_rect_corners) 把 viewport 像素矩形
+           映射到场景坐标。但 QGraphicsView.mapToScene() 和 pyqtgraph ViewBox
+           内部的 item 定位使用不同的坐标映射路径，两者在 X 轴上存在系统性偏移
+           （Y 轴标签区域的影响）。这导致 source_rect 相对 glow/ring 的实际
+           场景位置整体偏左，glow 被挤到放大镜最右侧。
+        ── 新方案：直接从数据点 (x,y) 经由 ViewBox 自身 API 计算场景位置，
+           并用 ViewBox sceneBoundingRect 的比例把 40px 换算为场景单位。
+           完全不使用 pw.mapToScene()，消除坐标系不一致。
         """
         try:
             pw = self.plot_widget
+            vb = pw.getViewBox()
+            vp = pw.viewport()
 
-            # 场景坐标 → PlotWidget 本地像素（用于 grab 和全局定位）
-            pt_local = pw.mapFromScene(scene_pos)
-            lx, ly = int(pt_local.x()), int(pt_local.y())
+            half_px = _MagnifierOverlay.CAPTURE_HALF  # 40 viewport pixels
 
-            half = _MagnifierOverlay.CAPTURE_HALF
-            crop_rect = QtCore.QRect(lx - half, ly - half, half * 2, half * 2)
-            crop_rect = crop_rect.intersected(pw.rect())
+            # ── 1. 数据点的场景坐标（经由 ViewBox 自身映射，保证与 glow/ring
+            #       的 scene position 完全一致）──
+            data_pt = QtCore.QPointF(float(x), float(y))
+            vb_local = vb.mapFromView(data_pt)
+            scene_center = vb.mapToScene(vb_local)
+            scx, scy = scene_center.x(), scene_center.y()
 
-            if crop_rect.width() < 20 or crop_rect.height() < 20:
+            # ── 2. 像素 → 场景单位换算（基于 ViewBox sceneBoundingRect 比例，
+            #       与 item 实际所在的场景坐标系完全一致）──
+            vb_sr = vb.sceneBoundingRect()
+            vb_sw = float(vb_sr.width())
+            vb_sh = float(vb_sr.height())
+            vp_w = float(vp.width()) if vp.width() > 0 else vb_sw
+            vp_h = float(vp.height()) if vp.height() > 0 else vb_sh
+
+            half_scene_x = half_px * vb_sw / vp_w
+            half_scene_y = half_px * vb_sh / vp_h
+
+            # ── 3. source_rect 以数据点场景位置为中心（场景坐标系）──
+            source_rect = QtCore.QRectF(
+                scx - half_scene_x, scy - half_scene_y,
+                half_scene_x * 2.0, half_scene_y * 2.0,
+            )
+
+            # ── 4. 数据点 → viewport 坐标（用于判断裁剪和放大镜屏幕位置）──
+            scene_pt = vb.mapToScene(vb.mapFromView(data_pt))
+            pt_vp = pw.mapFromScene(scene_pt)
+            vpx = int(round(pt_vp.x()))
+            vpy = int(round(pt_vp.y()))
+
+            # ── 5. 限制在 ViewBox 场景区域内 ──
+            vb_scene_rect = vb.sceneBoundingRect()
+            source_rect = source_rect.intersected(vb_scene_rect)
+
+            if source_rect.width() < 1e-6 or source_rect.height() < 1e-6:
                 self._hide_magnifier()
                 return
 
-            pixmap = pw.grab(crop_rect)
+            # 计算对应的 pixmap 尺寸（保持像素比例）
+            pw_pix = max(8, int(round(source_rect.width() * vp_w / vb_sw)))
+            ph_pix = max(8, int(round(source_rect.height() * vp_h / vb_sh)))
+
+            # ── 6. 抓取前隐藏会重复的元素 ──
+            magn_was_visible = self._magnifier.isVisible()
+            label_was_visible = self._magn_label.isVisible()
+            annot_was_visible = self._hover_annot.isVisible()
+
+            if magn_was_visible:
+                self._magnifier.hide()
+            if label_was_visible:
+                self._magn_label.hide()
+            if annot_was_visible:
+                self._hover_annot.setVisible(False)
+
+            # ── 7. QGraphicsScene.render() — 场景坐标系原生渲染 ──
+            try:
+                pw.scene().update()
+                vp.repaint()
+            except Exception:
+                try:
+                    pw.repaint()
+                except Exception:
+                    pass
+
+            try:
+                pixmap = QPixmap(pw_pix, ph_pix)
+                pixmap.fill(QColor(26, 26, 26))
+                painter = QPainter(pixmap)
+                try:
+                    try:
+                        am = Qt.AspectRatioMode.IgnoreAspectRatio
+                    except AttributeError:
+                        am = Qt.IgnoreAspectRatio
+                    pw.scene().render(
+                        painter, QtCore.QRectF(pixmap.rect()), source_rect, am,
+                    )
+                finally:
+                    painter.end()
+            except Exception:
+                # 回退：viewport grab 作为最后手段
+                try:
+                    crop_rect = QtCore.QRect(
+                        vpx - half_px, vpy - half_px, half_px * 2, half_px * 2,
+                    )
+                    pixmap = vp.grab(crop_rect)
+                except Exception:
+                    try:
+                        pixmap = pw.grab(crop_rect)
+                    except Exception:
+                        pixmap = None
+
+            if annot_was_visible:
+                self._hover_annot.setVisible(True)
+
             if pixmap is None or pixmap.isNull():
                 self._hide_magnifier()
                 return
 
-            # 光标全局坐标（用于放置放大镜，对齐 normal 模式 offset）
-            cursor_global = pw.mapToGlobal(QtCore.QPoint(lx, ly))
+            # ── 8. 放大镜放在光标全局位置（对齐 normal 模式）──
+            #       用事件过滤器捕获的光标全局坐标；回退到 QCursor
+            try:
+                cgp = self._cursor_global_pos
+                cursor_global = QtCore.QPoint(int(round(cgp.x())), int(round(cgp.y())))
+                if cursor_global.x() == 0 and cursor_global.y() == 0:
+                    raise ValueError('not initialised')
+            except Exception:
+                try:
+                    cursor_global = QCursor.pos()
+                except Exception:
+                    cursor_global = pw.mapToGlobal(QtCore.QPoint(vpx, vpy))
 
-            self._magnifier.show_at(cursor_global, pixmap, text)
+            self._magnifier.show_at(cursor_global, pixmap)
+
+            if text:
+                magn_center_x = int(cursor_global.x()) + 36 + _MagnifierOverlay.SIZE // 2
+                magn_top_y = int(cursor_global.y()) - _MagnifierOverlay.SIZE - 36
+                label_global = QPoint(magn_center_x, magn_top_y)
+                self._magn_label.show_at(label_global, text)
+            else:
+                self._magn_label.hide()
         except Exception:
             self._hide_magnifier()
 
     def _hide_magnifier(self):
-        """隐藏放大镜。"""
+        """隐藏放大镜 + 标注标签。"""
         try:
             self._magnifier.hide()
+        except Exception:
+            pass
+        try:
+            self._magn_label.hide()
         except Exception:
             pass
 
