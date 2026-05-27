@@ -283,7 +283,7 @@ class AICoachPanel(QWidget):
         self.btn_compare.setStyleSheet(_btn_style)
         row1.addWidget(self.btn_compare)
 
-        row1.addStretch()
+        row1.addSpacing(12)
 
         self.btn_settings = QPushButton("⚙ 设置")
         self.btn_settings.setToolTip("AI 教练设置 (API / 身份)")

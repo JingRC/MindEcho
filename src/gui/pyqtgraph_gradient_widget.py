@@ -219,13 +219,14 @@ class _MagnifierOverlay(QWidget):
 
 
 class _PitchPlotWidget(pg.PlotWidget):
-    """自定义 PlotWidget：滚轮 → Y 轴滚动（对齐正常模式），不缩放。"""
-    wheel_scrolled = pyqtSignal(float)  # delta_y
+    """自定义 PlotWidget：滚轮 → Y 轴滚动/Ctrl+滚轮 → X 轴缩放。"""
+    wheel_scrolled = pyqtSignal(float, object)  # delta_y, modifiers (Qt.KeyboardModifier)
 
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()
         if delta != 0:
-            self.wheel_scrolled.emit(float(delta))
+            mods = ev.modifiers() if hasattr(ev, 'modifiers') else ev.keyboardModifiers() if hasattr(ev, 'keyboardModifiers') else None
+            self.wheel_scrolled.emit(float(delta), mods)
         ev.accept()
 
 
@@ -374,13 +375,16 @@ class PyQtGraphPitchRenderer(QWidget):
 
         # ── 辅助线（对齐正常模式 update_guides）──
         #  主线和柔光底线叠加实现 glow 效果
-        guide_glow_pen = pg.mkPen(color='#5dade2', width=3, style=QtCore.Qt.PenStyle.SolidLine)
-        guide_main_pen = pg.mkPen(color='#85c1e9', width=1, style=QtCore.Qt.PenStyle.SolidLine)
+        #  样式对齐 normal 模式: 银灰 #C0C0C0，主线细虚线 + 柔光底线
+        guide_glow_pen = pg.mkPen(color='#C0C0C0', width=2.2, style=QtCore.Qt.PenStyle.SolidLine)
+        guide_main_pen = pg.mkPen(color='#C0C0C0', width=0.8, style=QtCore.Qt.PenStyle.DashLine)
 
         self._v_guide_glow = pg.InfiniteLine(angle=90, pen=guide_glow_pen, movable=False)
         self._v_guide_main = pg.InfiniteLine(angle=90, pen=guide_main_pen, movable=False)
-        self._v_guide_glow.setOpacity(0.18)
-        self._v_guide_main.setOpacity(0.55)
+        self._v_guide_glow.setOpacity(0.12)
+        self._v_guide_main.setOpacity(0.90)
+        self._v_guide_glow.setZValue(80)
+        self._v_guide_main.setZValue(90)
         self._v_guide_glow.setVisible(False)
         self._v_guide_main.setVisible(False)
         self.plot_widget.addItem(self._v_guide_glow)
@@ -388,8 +392,10 @@ class PyQtGraphPitchRenderer(QWidget):
 
         self._h_guide_glow = pg.InfiniteLine(angle=0, pen=guide_glow_pen, movable=False)
         self._h_guide_main = pg.InfiniteLine(angle=0, pen=guide_main_pen, movable=False)
-        self._h_guide_glow.setOpacity(0.18)
-        self._h_guide_main.setOpacity(0.55)
+        self._h_guide_glow.setOpacity(0.12)
+        self._h_guide_main.setOpacity(0.90)
+        self._h_guide_glow.setZValue(80)
+        self._h_guide_main.setZValue(90)
         self._h_guide_glow.setVisible(False)
         self._h_guide_main.setVisible(False)
         self.plot_widget.addItem(self._h_guide_glow)
@@ -405,8 +411,12 @@ class PyQtGraphPitchRenderer(QWidget):
 
         # ── 回调（由父组件设置，用于状态回写）──
         self.on_view_changed = None  # callable(x_range, y_range)
-        self.on_click_at_time = None  # callable(time_x, y_value)
+        self.on_click_at_time = None  # callable(time_x, y_value, scene_pos, event)
         self.on_hover_info = None    # callable(x, y, text) — 格式化悬停文本
+        self.on_selection_drag = None    # callable(x, y) — 选区拖拽中
+        self.on_selection_release = None  # callable() — 选区拖拽结束
+        self.on_listenback_button = None  # callable('play'|'pause'|'stop') — 回听控制按钮
+        self.on_mouse_press_data = None   # callable(x, y) -> bool — press 时检测交互类型，返回 True 表示已拦截
 
         # ── 悬停高亮 + 注记（对齐 normal 模式样式）──
         # 柔光：半透明浅蓝，视觉直径约 21px
@@ -447,6 +457,9 @@ class PyQtGraphPitchRenderer(QWidget):
         self._magnifier = _MagnifierOverlay()
         self._magn_label = _MagnifierLabel()
         self._magn_enabled = True
+
+        # ── 选区拖拽状态 ──
+        self._sel_dragging = False  # 由父组件控制，True 时 viewport 事件过滤器转发拖拽事件
 
         # ── 鼠标追踪 ──
         # viewport 事件过滤器：捕获原始 widget 像素坐标（不受 ViewBox 范围变化影响）
@@ -729,6 +742,7 @@ class PyQtGraphPitchRenderer(QWidget):
                 angle=90,
                 pen=pg.mkPen(color='#5dade2', width=1.5),
             )
+            self._playhead.setZValue(148)
             self.plot_widget.addItem(self._playhead)
 
         self._playhead.setPos(float(x))
@@ -890,47 +904,353 @@ class PyQtGraphPitchRenderer(QWidget):
                     pen=pg.mkPen(color='#FFB6C1', width=0.8),
                 )
                 line.setOpacity(0.88)
+                line.setZValue(150)
                 self.plot_widget.addItem(line)
                 setattr(self, attr, line)
             line.setPos(float(pos))
             line.setVisible(True)
 
+        self.set_selection_triangles(x_left, x_right)
+
+    # ═══════════════════════════════════════════
+    # 回听控制按钮（play ▶ / pause ⏸ / stop ⏹）
+    # ═══════════════════════════════════════════
+
+    _lb_ctrl_play = None       # pg.PlotDataItem (right-pointing triangle)
+    _lb_ctrl_pause_left = None  # pg.PlotDataItem (square)
+    _lb_ctrl_pause_right = None # pg.PlotDataItem (square)
+    _lb_ctrl_stop = None        # pg.PlotDataItem (square)
+    _lb_ctrl_hit_play = None    # (x0, x1, y0, y1) 数据坐标命中区
+    _lb_ctrl_hit_pause = None
+    _lb_ctrl_hit_stop = None
+
+    # 选区三角形标记（对齐 normal 模式 _sel_tri_top/bot_left/right）
+    _sel_tri_top_left = None    # pg.PlotDataItem
+    _sel_tri_bot_left = None    # pg.PlotDataItem
+    _sel_tri_top_right = None   # pg.PlotDataItem
+    _sel_tri_bot_right = None   # pg.PlotDataItem
+
+    def set_listenback_controls(self, show_play, show_pause_stop, center_x, center_y, size):
+        """设置回听控制按钮的位置、大小和可见性（使用 PlotDataItem 原生符号）。
+
+        Args:
+            show_play: 是否显示播放按钮 ▶
+            show_pause_stop: 是否显示暂停 ⏸ 和停止 ⏹ 按钮
+            center_x, center_y: 按钮组中心（数据坐标）
+            size: 按钮总尺寸（数据单位）
+        """
+        if not self._ready:
+            return
+        try:
+            vb = self.plot_widget.getViewBox()
+            # 将数据尺寸转换为像素尺寸
+            view_h = max(vb.rect().height(), 1)
+            y0, y1 = float(vb.viewRange()[1][0]), float(vb.viewRange()[1][1])
+            sy = view_h / max(abs(y1 - y0), 0.001)
+            s = float(size)
+            half = s * 0.5
+            cx, cy = float(center_x), float(center_y)
+            # 数据尺寸 → 像素尺寸（以视图高度为基准）
+            px_size = lambda d: max(d * sy, 0.5)
+
+            # ── 播放按钮（绿色右指三角 ▶）──
+            if show_play:
+                play_path = QPainterPath()
+                play_path.moveTo(-0.4, -0.55)
+                play_path.lineTo(-0.4, 0.55)
+                play_path.lineTo(0.6, 0)
+                play_path.closeSubpath()
+                psize = max(px_size(s), 14)
+                if self._lb_ctrl_play is None:
+                    self._lb_ctrl_play = pg.PlotDataItem(
+                        [cx], [cy], pen=None,
+                        symbol=play_path,
+                        symbolBrush=pg.mkBrush(0, 200, 100, 200),
+                        symbolPen=pg.mkPen(0, 180, 80, 1),
+                        symbolSize=psize,
+                    )
+                    self._lb_ctrl_play.setZValue(149)
+                    self.plot_widget.addItem(self._lb_ctrl_play)
+                else:
+                    self._lb_ctrl_play.setData([cx], [cy])
+                    self._lb_ctrl_play.opts['symbolSize'] = psize
+                    self._lb_ctrl_play.updateItems()
+                self._lb_ctrl_hit_play = (cx - half, cx + half, cy - half, cy + half)
+            else:
+                if self._lb_ctrl_play is not None:
+                    self._lb_ctrl_play.setData([], [])
+                self._lb_ctrl_hit_play = None
+
+            # ── 暂停 + 停止按钮 ──
+            if show_pause_stop:
+                bar_w_data = s * 0.25
+                inner_gap_data = s * 0.24
+                # spread pause group and stop button further apart
+                pause_cx = cx - s * 0.82
+                stop_cx = cx + s * 1.08
+
+                # 暂停条中心 = 组中心 ± (内间距/2 + 条宽/2)
+                left_x = pause_cx - inner_gap_data * 0.5 - bar_w_data * 0.5
+                right_x = pause_cx + inner_gap_data * 0.5 + bar_w_data * 0.5
+                # 条的高度 ≈ s（与 normal 模式 bar_h*2 = s 一致）
+                bar_size = max(px_size(s * 0.55), 14)
+
+                if self._lb_ctrl_pause_left is None:
+                    self._lb_ctrl_pause_left = pg.PlotDataItem(
+                        [left_x], [cy], pen=None,
+                        symbol='s',
+                        symbolBrush=pg.mkBrush(255, 255, 255, 180),
+                        symbolPen=pg.mkPen(220, 220, 220, 1),
+                        symbolSize=bar_size,
+                    )
+                    self._lb_ctrl_pause_left.setZValue(149)
+                    self.plot_widget.addItem(self._lb_ctrl_pause_left)
+                else:
+                    self._lb_ctrl_pause_left.setData([left_x], [cy])
+                    self._lb_ctrl_pause_left.opts['symbolSize'] = bar_size
+                    self._lb_ctrl_pause_left.updateItems()
+
+                if self._lb_ctrl_pause_right is None:
+                    self._lb_ctrl_pause_right = pg.PlotDataItem(
+                        [right_x], [cy], pen=None,
+                        symbol='s',
+                        symbolBrush=pg.mkBrush(255, 255, 255, 180),
+                        symbolPen=pg.mkPen(220, 220, 220, 1),
+                        symbolSize=bar_size,
+                    )
+                    self._lb_ctrl_pause_right.setZValue(149)
+                    self.plot_widget.addItem(self._lb_ctrl_pause_right)
+                else:
+                    self._lb_ctrl_pause_right.setData([right_x], [cy])
+                    self._lb_ctrl_pause_right.opts['symbolSize'] = bar_size
+                    self._lb_ctrl_pause_right.updateItems()
+
+                # 暂停命中区正方形
+                pause_size = s * 1.00
+                pause_x0 = pause_cx - pause_size * 0.5
+                pause_y0 = cy - pause_size * 0.5
+                self._lb_ctrl_hit_pause = (pause_x0, pause_x0 + pause_size, pause_y0, pause_y0 + pause_size)
+
+                # ── 停止按钮（红色方块 ⏹）──
+                stop_size_data = s * 1.00
+                stop_x0 = stop_cx - stop_size_data * 0.5
+                stop_y0 = cy - stop_size_data * 0.5
+                stop_px = max(px_size(stop_size_data), 14)
+
+                if self._lb_ctrl_stop is None:
+                    self._lb_ctrl_stop = pg.PlotDataItem(
+                        [stop_cx], [cy], pen=None,
+                        symbol='s',
+                        symbolBrush=pg.mkBrush(220, 60, 60, 200),
+                        symbolPen=pg.mkPen(180, 40, 40, 1),
+                        symbolSize=stop_px,
+                    )
+                    self._lb_ctrl_stop.setZValue(149)
+                    self.plot_widget.addItem(self._lb_ctrl_stop)
+                else:
+                    self._lb_ctrl_stop.setData([stop_cx], [cy])
+                    self._lb_ctrl_stop.opts['symbolSize'] = stop_px
+                    self._lb_ctrl_stop.updateItems()
+                self._lb_ctrl_hit_stop = (stop_x0, stop_x0 + stop_size_data, stop_y0, stop_y0 + stop_size_data)
+            else:
+                for attr in ('_lb_ctrl_pause_left', '_lb_ctrl_pause_right', '_lb_ctrl_stop'):
+                    item = getattr(self, attr, None)
+                    if item is not None:
+                        item.setData([], [])
+                self._lb_ctrl_hit_pause = None
+                self._lb_ctrl_hit_stop = None
+
+        except Exception:
+            pass
+
+    def hide_listenback_controls(self):
+        """隐藏所有回听控制按钮。"""
+        for attr in ('_lb_ctrl_play', '_lb_ctrl_pause_left', '_lb_ctrl_pause_right', '_lb_ctrl_stop',
+                     '_lb_ctrl_hit_play', '_lb_ctrl_hit_pause', '_lb_ctrl_hit_stop'):
+            if attr.startswith('_lb_ctrl_hit'):
+                setattr(self, attr, None)
+            else:
+                item = getattr(self, attr, None)
+                if item is not None:
+                    item.setData([], [])
+        self._hide_selection_triangles()
+
+    def set_selection_triangles(self, x_left, x_right):
+        """设置选区边界顶部/底部的三角形标记（使用 PlotDataItem 原生符号）。
+
+        在左右框线的上下两端各放置一个灰色小三角，指示选区边界。
+
+        Args:
+            x_left: 左框线 X 数据坐标（None 则隐藏）
+            x_right: 右框线 X 数据坐标（None 则隐藏）
+        """
+        if not self._ready:
+            return
+        try:
+            vb = self.plot_widget.getViewBox()
+            y_range = vb.viewRange()[1]
+            ymin, ymax = float(y_range[0]), float(y_range[1])
+            view_h = max(vb.rect().height(), 1)
+
+            tri_h = max(0.06, (ymax - ymin) * 0.04)
+            sy = view_h / max(abs(ymax - ymin), 0.001)
+            tri_px = max(tri_h * sy, 8)  # 三角像素大小，最小 8px
+
+            # 向上三角（顶点在上）
+            tri_up = QPainterPath()
+            tri_up.moveTo(0, -0.55)
+            tri_up.lineTo(0.5, 0.45)
+            tri_up.lineTo(-0.5, 0.45)
+            tri_up.closeSubpath()
+
+            # 向下三角（顶点在下）
+            tri_down = QPainterPath()
+            tri_down.moveTo(0, 0.55)
+            tri_down.lineTo(0.5, -0.45)
+            tri_down.lineTo(-0.5, -0.45)
+            tri_down.closeSubpath()
+
+            tri_brush = pg.mkBrush(0xA0, 0xA0, 0xA0, 242)
+
+            for attr, cx, cy, up in [
+                ('_sel_tri_top_left', x_left, ymax, True),
+                ('_sel_tri_bot_left', x_left, ymin, False),
+                ('_sel_tri_top_right', x_right, ymax, True),
+                ('_sel_tri_bot_right', x_right, ymin, False),
+            ]:
+                item = getattr(self, attr, None)
+                if cx is None:
+                    if item is not None:
+                        item.setData([], [])
+                    continue
+                symbol = tri_up if up else tri_down
+                if item is None:
+                    item = pg.PlotDataItem(
+                        [float(cx)], [float(cy)],
+                        pen=None,
+                        symbol=symbol,
+                        symbolBrush=tri_brush,
+                        symbolPen=pg.mkPen(None),
+                        symbolSize=tri_px,
+                    )
+                    item.setZValue(151)
+                    self.plot_widget.addItem(item)
+                    setattr(self, attr, item)
+                else:
+                    item.setData([float(cx)], [float(cy)])
+                    item.opts['symbolSize'] = tri_px
+                    item.updateItems()
+
+        except Exception:
+            pass
+
+    def _hide_selection_triangles(self):
+        """隐藏所有选区三角形标记。"""
+        for attr in ('_sel_tri_top_left', '_sel_tri_bot_left',
+                     '_sel_tri_top_right', '_sel_tri_bot_right'):
+            item = getattr(self, attr, None)
+            if item is not None:
+                item.setData([], [])
+
     # ═══════════════════════════════════════════
     # 鼠标交互 + 辅助线
     # ═══════════════════════════════════════════
 
-    def _on_wheel(self, delta):
-        """滚轮 → Y 轴滚动（对齐正常模式 on_mouse_scroll）。"""
-        if self.on_wheel_scroll is not None:
-            self.on_wheel_scroll(delta)
+    def _on_wheel(self, delta, modifiers=None):
+        """滚轮 → Y 轴滚动 / Ctrl+滚轮 → X 轴缩放。"""
+        try:
+            ctrl_pressed = False
+            if modifiers is not None:
+                try:
+                    from PyQt6.QtCore import Qt as _QtW
+                except ImportError:
+                    from PyQt5.QtCore import Qt as _QtW
+                ctrl_pressed = bool(int(modifiers) & int(_QtW.KeyboardModifier.ControlModifier))
+        except Exception:
+            ctrl_pressed = False
 
-    def set_guides(self, x_time, y_pitch):
-        """设置辅助线位置（对齐 normal 模式 update_guides）。
+        if ctrl_pressed:
+            # Ctrl+滚轮 → 水平缩放（时间窗口收放）
+            self._zoom_x_wheel(delta)
+        else:
+            # 普通滚轮 → Y 轴滚动
+            if self.on_wheel_scroll is not None:
+                self.on_wheel_scroll(delta)
+
+    def _zoom_x_wheel(self, delta):
+        """Ctrl+滚轮：以视图中心为锚点缩放 X 轴时间窗口。"""
+        try:
+            vb = self.plot_widget.getViewBox()
+            x_range = vb.viewRange()[0]
+            x0, x1 = float(x_range[0]), float(x_range[1])
+            span = x1 - x0
+            if span <= 0:
+                return
+            # 缩放因子：向上滚放大（缩小时间窗），向下滚缩小（放大时间窗）
+            factor = 0.85 if delta > 0 else 1.18
+            new_span = max(0.5, min(300.0, span * factor))
+            center = (x0 + x1) * 0.5
+            new_x0 = max(0.0, center - new_span * 0.5)
+            new_x1 = new_x0 + new_span
+            self.set_x_range(new_x0, new_x1)
+        except Exception:
+            pass
+
+    def set_guides(self, x_time, y_pitch,
+                   glow_alpha_v=0.12, main_alpha_v=0.90,
+                   glow_width_v=2.2, main_width_v=0.8,
+                   glow_alpha_h=0.12, main_width_h=0.8):
+        """设置辅助线位置与动态样式（对齐 normal 模式 update_guides）。
 
         纵向线跟随当前时间（current_global_time / _lb_playhead），
         横向线跟随当前识别音高（last_active_pitch_y），不由鼠标驱动。
 
+        动态柔光对齐 normal 模式：根据移动强度调整 glow alpha 和主线粗细。
+
         Args:
             x_time: 纵向线 X 位置（None 则隐藏）
             y_pitch: 横向线 Y 位置（None 则隐藏）
+            glow_alpha_v: 纵向柔光不透明度
+            main_alpha_v: 纵向主线不透明度
+            glow_width_v: 纵向柔光粗细
+            main_width_v: 纵向主线粗细
+            glow_alpha_h: 横向柔光不透明度
+            main_width_h: 横向主线粗细
         """
         if not self._ready or not self._guides_enabled:
             return
         try:
             if x_time is not None:
-                self._v_guide_glow.setPos(float(x_time))
-                self._v_guide_main.setPos(float(x_time))
+                fx = float(x_time)
+                self._v_guide_glow.setPos(fx)
+                self._v_guide_main.setPos(fx)
                 self._v_guide_glow.setVisible(True)
                 self._v_guide_main.setVisible(True)
+                # 动态样式：柔和度和粗细随移动强度变化
+                try:
+                    self._v_guide_glow.setOpacity(float(glow_alpha_v))
+                    self._v_guide_main.setOpacity(float(main_alpha_v))
+                    self._v_guide_glow.setPen(pg.mkPen(color='#C0C0C0', width=float(glow_width_v), style=QtCore.Qt.PenStyle.SolidLine))
+                    self._v_guide_main.setPen(pg.mkPen(color='#C0C0C0', width=float(main_width_v), style=QtCore.Qt.PenStyle.DashLine))
+                except Exception:
+                    pass
             else:
                 self._v_guide_glow.setVisible(False)
                 self._v_guide_main.setVisible(False)
 
             if y_pitch is not None:
-                self._h_guide_glow.setPos(float(y_pitch))
-                self._h_guide_main.setPos(float(y_pitch))
+                fy = float(y_pitch)
+                self._h_guide_glow.setPos(fy)
+                self._h_guide_main.setPos(fy)
                 self._h_guide_glow.setVisible(True)
                 self._h_guide_main.setVisible(True)
+                # 动态样式
+                try:
+                    self._h_guide_glow.setOpacity(float(glow_alpha_h))
+                    self._h_guide_glow.setPen(pg.mkPen(color='#C0C0C0', width=float(glow_width_v), style=QtCore.Qt.PenStyle.SolidLine))
+                    self._h_guide_main.setPen(pg.mkPen(color='#C0C0C0', width=float(main_width_h), style=QtCore.Qt.PenStyle.DashLine))
+                except Exception:
+                    pass
             else:
                 self._h_guide_glow.setVisible(False)
                 self._h_guide_main.setVisible(False)
@@ -953,58 +1273,206 @@ class PyQtGraphPitchRenderer(QWidget):
                 pass
 
     def _on_mouse_clicked(self, event):
-        """鼠标点击 → 回调父组件（用于 listenback 播放等）。"""
+        """鼠标点击（sigMouseClicked on RELEASE）。
+
+        eventFilter 已在 PRESS 阶段完成按钮命中 / 拖拽检测。
+        此处只处理"普通点击 → 设置新选区"的剩余情形。
+        """
         try:
-            if self.on_click_at_time is None:
+            # 若 eventFilter 已处理（按钮/拖拽），跳过
+            pending_btn = getattr(self, '_pending_btn_click', None)
+            had_interaction = getattr(self, '_interaction_detected', False)
+            if pending_btn is not None or had_interaction:
                 return
+
+            # 若 eventFilter 标记了普通点击未触发（release 时检查失败）→ 此处补发
+            pending_normal = getattr(self, '_pending_normal_click', False)
+            self._pending_normal_click = False
+
+            if pending_normal and self.on_click_at_time is not None:
+                vb = self.plot_widget.getViewBox()
+                pos = event.scenePos()
+                data_pos = vb.mapSceneToView(pos)
+                x, y = float(data_pos.x()), float(data_pos.y())
+                self.on_click_at_time(x, y, scene_pos=pos, event=event)
+        except Exception:
+            pass
+
+    def set_viewbox_mouse_enabled(self, enabled: bool):
+        """启用/禁用 ViewBox 鼠标交互（用于选区拖拽时禁止平移）。"""
+        try:
             vb = self.plot_widget.getViewBox()
-            pos = event.scenePos()
-            data_pos = vb.mapSceneToView(pos)
-            self.on_click_at_time(float(data_pos.x()), float(data_pos.y()))
+            vb.setMouseEnabled(x=enabled, y=False)
         except Exception:
             pass
 
     # ═══════════════════════════════════════════
-    # 事件过滤器（捕捉 viewport 原始像素坐标）
+    # 事件过滤器（捕捉 viewport 原始像素坐标 + 选区拖拽）
     # ═══════════════════════════════════════════
 
     def eventFilter(self, obj, event):
-        """在 viewport 上拦截 MouseMove，记录原始 widget 像素坐标。
+        """在 viewport 上拦截鼠标事件：
 
-        关键：event.pos() 是 viewport 控件坐标，不经过 ViewBox 变换，
-        不受音频播放时 set_x_range() 更新范围的影响。
+        - MouseButtonPress：检测按钮命中 / 交互类型（边缘/播放头/block拖拽）
+        - MouseMove：记录 widget 像素坐标 + 触发选区拖拽回调
+        - MouseButtonRelease：结束拖拽 / 触发按钮点击 / 触发"设置新选区"点击
         """
         try:
-            # 兼容 PyQt5 QEvent.MouseMove 和 PyQt6 QEvent.Type.MouseMove
             try:
-                is_move = bool(event is not None and event.type() == QEvent.Type.MouseMove)
-            except (AttributeError, TypeError):
-                try:
-                    is_move = bool(event is not None and event.type() == QEvent.MouseMove)
-                except Exception:
-                    is_move = False
-            if is_move:
-                # 记录控件像素坐标
-                try:
-                    pos = event.position()
-                except Exception:
-                    try:
-                        pos = event.pos()
-                    except Exception:
-                        pos = None
-                if pos is not None:
-                    self._cursor_widget_pos = QtCore.QPointF(float(pos.x()), float(pos.y()))
+                ev_type = event.type() if event is not None else None
+            except Exception:
+                ev_type = None
 
-                # 同时记录全局屏幕坐标（用于放大镜摆放位置）
+            if ev_type is not None:
+                # ── MouseButtonPress ──
                 try:
-                    gp = event.globalPosition()
-                    self._cursor_global_pos = QtCore.QPointF(float(gp.x()), float(gp.y()))
-                except Exception:
+                    is_press = bool(ev_type == QEvent.Type.MouseButtonPress)
+                except (AttributeError, TypeError):
                     try:
-                        gp = event.globalPos()
+                        is_press = bool(ev_type == QEvent.MouseButtonPress)
+                    except Exception:
+                        is_press = False
+                if is_press:
+                    # 记录光标位置
+                    try:
+                        pos = event.position()
+                    except Exception:
+                        try:
+                            pos = event.pos()
+                        except Exception:
+                            pos = None
+                    if pos is not None:
+                        self._cursor_widget_pos = QtCore.QPointF(float(pos.x()), float(pos.y()))
+
+                    # 转换为数据坐标
+                    try:
+                        pw = self.plot_widget
+                        vb = pw.getViewBox()
+                        pt_widget = QtCore.QPointF(self._cursor_widget_pos)
+                        pt_scene = pw.mapToScene(pt_widget.toPoint())
+                        data_pt = vb.mapSceneToView(pt_scene)
+                        x, y = float(data_pt.x()), float(data_pt.y())
+                    except Exception:
+                        x, y = None, None
+
+                    # ── 检测控制按钮命中 ──
+                    btn_hit = None
+                    if x is not None:
+                        for hit_attr, btn_name in [
+                            ('_lb_ctrl_hit_play', 'play'),
+                            ('_lb_ctrl_hit_pause', 'pause'),
+                            ('_lb_ctrl_hit_stop', 'stop'),
+                        ]:
+                            hit = getattr(self, hit_attr, None)
+                            if hit is None:
+                                continue
+                            x0, x1, y0, y1 = hit
+                            if x0 <= x <= x1 and y0 <= y <= y1:
+                                btn_hit = btn_name
+                                break
+
+                    if btn_hit:
+                        self._pending_btn_click = btn_hit
+                        # 不拦截，让 release 时触发（避免与 drag 冲突）
+                        try:
+                            return super().eventFilter(obj, event)
+                        except Exception:
+                            return False
+
+                    # ── 检测交互类型（边缘/播放头/block 拖拽）──
+                    if x is not None and self.on_mouse_press_data is not None:
+                        detected = self.on_mouse_press_data(x, y)
+                        if detected:
+                            self._sel_dragging = True
+                            self.set_viewbox_mouse_enabled(False)
+                            self._interaction_detected = True
+                            try:
+                                return super().eventFilter(obj, event)
+                            except Exception:
+                                return False
+
+                # ── MouseMove ──
+                try:
+                    is_move = bool(ev_type == QEvent.Type.MouseMove)
+                except (AttributeError, TypeError):
+                    try:
+                        is_move = bool(ev_type == QEvent.MouseMove)
+                    except Exception:
+                        is_move = False
+                if is_move:
+                    try:
+                        pos = event.position()
+                    except Exception:
+                        try:
+                            pos = event.pos()
+                        except Exception:
+                            pos = None
+                    if pos is not None:
+                        self._cursor_widget_pos = QtCore.QPointF(float(pos.x()), float(pos.y()))
+
+                    try:
+                        gp = event.globalPosition()
                         self._cursor_global_pos = QtCore.QPointF(float(gp.x()), float(gp.y()))
                     except Exception:
-                        pass
+                        try:
+                            gp = event.globalPos()
+                            self._cursor_global_pos = QtCore.QPointF(float(gp.x()), float(gp.y()))
+                        except Exception:
+                            pass
+
+                    # 选区拖拽中：回调父组件
+                    if hasattr(self, '_sel_dragging') and self._sel_dragging:
+                        try:
+                            if self.on_selection_drag is not None:
+                                pw = self.plot_widget
+                                vb = pw.getViewBox()
+                                pt_widget = QtCore.QPointF(self._cursor_widget_pos)
+                                pt_scene2 = pw.mapToScene(pt_widget.toPoint())
+                                data_pt = vb.mapSceneToView(pt_scene2)
+                                self.on_selection_drag(float(data_pt.x()), float(data_pt.y()))
+                        except Exception:
+                            pass
+
+                # ── MouseButtonRelease ──
+                try:
+                    is_release = bool(ev_type == QEvent.Type.MouseButtonRelease)
+                except (AttributeError, TypeError):
+                    try:
+                        is_release = bool(ev_type == QEvent.MouseButtonRelease)
+                    except Exception:
+                        is_release = False
+                if is_release:
+                    # 按钮点击
+                    pending_btn = getattr(self, '_pending_btn_click', None)
+                    if pending_btn is not None:
+                        self._pending_btn_click = None
+                        if self.on_listenback_button is not None:
+                            self.on_listenback_button(pending_btn)
+                        try:
+                            return super().eventFilter(obj, event)
+                        except Exception:
+                            return False
+
+                    # 拖拽结束
+                    if hasattr(self, '_sel_dragging') and self._sel_dragging:
+                        self._sel_dragging = False
+                        self.set_viewbox_mouse_enabled(True)
+                        self._interaction_detected = False
+                        try:
+                            if self.on_selection_release is not None:
+                                self.on_selection_release()
+                        except Exception:
+                            pass
+                        try:
+                            return super().eventFilter(obj, event)
+                        except Exception:
+                            return False
+
+                    # 普通点击：未命中按钮、未拖拽 → 设为"新选区"点击
+                    had_interaction = getattr(self, '_interaction_detected', False)
+                    if not had_interaction:
+                        self._pending_normal_click = True
+
         except Exception:
             pass
         try:
@@ -1386,14 +1854,362 @@ class PyQtGraphPitchRenderer(QWidget):
         if not self._magn_enabled:
             self._hide_magnifier()
 
-    def _on_user_view_changed(self, vb, ranges):
+    # ═══════════════════════════════════════════
+    # 重录倒计时覆盖层（对齐 normal 模式 _render_retake_countdown_overlay）
+    # ═══════════════════════════════════════════
+
+    def _ensure_countdown_items(self):
+        """懒创建倒计时覆盖层元素（对齐 matplotlib patches + lines + text）。"""
+        vb = self.plot_widget.getViewBox()
+        if not hasattr(self, '_cd_bg') or self._cd_bg is None:
+            self._cd_bg = QGraphicsRectItem()
+            self._cd_bg.setBrush(QColor(0, 0, 0, 36))  # alpha ~0.14
+            self._cd_bg.setPen(QPen(Qt.PenStyle.NoPen))
+            self._cd_bg.setZValue(150)
+            vb.addItem(self._cd_bg)
+            self._cd_bg.setVisible(False)
+
+        if not hasattr(self, '_cd_progress') or self._cd_progress is None:
+            self._cd_progress = QGraphicsRectItem()
+            self._cd_progress.setBrush(QColor(255, 76, 76, 46))  # #FF4C4C alpha~0.18
+            self._cd_progress.setPen(QPen(Qt.PenStyle.NoPen))
+            self._cd_progress.setZValue(152)
+            vb.addItem(self._cd_progress)
+            self._cd_progress.setVisible(False)
+
+        if not hasattr(self, '_cd_start_line') or self._cd_start_line is None:
+            self._cd_start_line = pg.InfiniteLine(
+                angle=90,
+                pen=pg.mkPen(color='#FF6F61', width=1.6, style=QtCore.Qt.PenStyle.DashLine),
+            )
+            self._cd_start_line.setOpacity(0.60)
+            self._cd_start_line.setZValue(188)
+            vb.addItem(self._cd_start_line)
+            self._cd_start_line.setVisible(False)
+
+        if not hasattr(self, '_cd_goal_line') or self._cd_goal_line is None:
+            self._cd_goal_line = pg.InfiniteLine(
+                angle=90,
+                pen=pg.mkPen(color='#FFC857', width=2.4),
+            )
+            self._cd_goal_line.setOpacity(0.92)
+            self._cd_goal_line.setZValue(191)
+            vb.addItem(self._cd_goal_line)
+            self._cd_goal_line.setVisible(False)
+
+        if not hasattr(self, '_cd_progress_line') or self._cd_progress_line is None:
+            self._cd_progress_line = pg.InfiniteLine(
+                angle=90,
+                pen=pg.mkPen(color='#FFF4A3', width=2.8),
+            )
+            self._cd_progress_line.setOpacity(0.95)
+            self._cd_progress_line.setZValue(193)
+            vb.addItem(self._cd_progress_line)
+            self._cd_progress_line.setVisible(False)
+
+        if not hasattr(self, '_cd_text') or self._cd_text is None:
+            self._cd_text = pg.TextItem('', color='#FFE066', anchor=(0.5, 0.5))
+            self._cd_text.setZValue(200)
+            self._cd_text.setVisible(False)
+            vb.addItem(self._cd_text)
+            try:
+                font = QFont('sans-serif', 44, QFont.Weight.Bold)
+                self._cd_text.setFont(font)
+            except Exception:
+                pass
+
+        if not hasattr(self, '_cd_hint') or self._cd_hint is None:
+            self._cd_hint = pg.TextItem('', color='#FFEEDD', anchor=(0.5, 0.5))
+            self._cd_hint.setZValue(200)
+            self._cd_hint.setVisible(False)
+            vb.addItem(self._cd_hint)
+            try:
+                font = QFont('sans-serif', 16, QFont.Weight.Bold)
+                self._cd_hint.setFont(font)
+            except Exception:
+                pass
+
+    def set_countdown_overlay(self, active, rem, cur_t, start_t, target_t):
+        """更新倒计时覆盖层（对齐 normal 模式 _render_retake_countdown_overlay 的视觉元素）。
+
+        Args:
+            active: 倒计时是否激活
+            rem: 剩余秒数（0 = 已结束）
+            cur_t: 当前平滑进度位置（数据时间坐标）
+            start_t: 倒计时起点（数据时间坐标）
+            target_t: 倒计时终点/目标位置
+        """
+        if not self._ready:
+            return
+        try:
+            self._ensure_countdown_items()
+            vb = self.plot_widget.getViewBox()
+            x_range = vb.viewRange()[0]
+            y_range = vb.viewRange()[1]
+            x_min, x_max = float(x_range[0]), float(x_range[1])
+            y_min, y_max = float(y_range[0]), float(y_range[1])
+            visible = bool(active and rem > 0.02)
+
+            # ── 背景遮罩 ──
+            try:
+                if visible:
+                    self._cd_bg.setRect(x_min, y_min, x_max - x_min, y_max - y_min)
+                self._cd_bg.setVisible(visible)
+            except Exception:
+                pass
+
+            # ── 进度填充（红色条）──
+            try:
+                if visible:
+                    width = max(1e-6, cur_t - start_t)
+                    self._cd_progress.setRect(start_t, y_min, width, y_max - y_min)
+                self._cd_progress.setVisible(visible)
+            except Exception:
+                pass
+
+            # ── 起点/目标指示线 ──
+            try:
+                if visible:
+                    self._cd_start_line.setPos(float(start_t))
+                    self._cd_goal_line.setPos(float(target_t))
+                self._cd_start_line.setVisible(visible)
+                self._cd_goal_line.setVisible(visible)
+            except Exception:
+                pass
+
+            # ── 动态进度指示线 ──
+            try:
+                if visible:
+                    self._cd_progress_line.setPos(float(cur_t))
+                self._cd_progress_line.setVisible(visible)
+            except Exception:
+                pass
+
+            # ── 倒计时文本 ──
+            try:
+                if visible and rem > 0:
+                    import math as _m
+                    if rem <= 1.0:
+                        display_val = f"{rem:.1f}s"
+                    elif rem <= 2.0:
+                        display_val = f"{rem:.1f}"
+                    else:
+                        display_val = str(int(max(1, _m.ceil(rem))))
+                    self._cd_text.setText(display_val)
+                    mid_x = (x_min + x_max) * 0.5
+                    mid_y = (y_min + y_max) * 0.55
+                    self._cd_text.setPos(mid_x, mid_y)
+                    self._cd_text.setVisible(True)
+                else:
+                    self._cd_text.setVisible(False)
+            except Exception:
+                pass
+
+            # ── 提示文字 ──
+            try:
+                if visible and rem > 0:
+                    hint_text = f"准备回录… {cur_t:.2f}s → {target_t:.2f}s"
+                    self._cd_hint.setText(hint_text.strip())
+                    mid_x = (x_min + x_max) * 0.5
+                    hint_y = (y_min + y_max) * 0.40
+                    self._cd_hint.setPos(mid_x, hint_y)
+                    self._cd_hint.setVisible(True)
+                else:
+                    self._cd_hint.setVisible(False)
+            except Exception:
+                pass
+
+        except Exception:
+            self.clear_countdown_overlay()
+
+    def clear_countdown_overlay(self):
+        """隐藏所有倒计时覆盖层元素。"""
+        for attr in ('_cd_bg', '_cd_progress', '_cd_start_line', '_cd_goal_line',
+                     '_cd_progress_line', '_cd_text', '_cd_hint'):
+            try:
+                item = getattr(self, attr, None)
+                if item is not None:
+                    item.setVisible(False)
+            except Exception:
+                pass
+
+    # ═══════════════════════════════════════════
+    # 重录覆盖预览点（对齐 normal 模式 retake overlay preview）
+    # ═══════════════════════════════════════════
+
+    def _ensure_overlay_preview_items(self):
+        """懒创建覆盖预览线 + 散点 + 标签（对齐 matplotlib _ensure_overlay_preview_artists）。"""
+        vb = self.plot_widget.getViewBox()
+        if not hasattr(self, '_overlay_line') or self._overlay_line is None:
+            preview_color = pg.mkPen(color='#FFD166', width=1.0)
+            self._overlay_line = self.plot_widget.plot(
+                [], [],
+                pen=preview_color,
+                connect='finite',
+                skipFiniteCheck=True,
+                autoDownsample=True,
+                clipToView=True,
+                antialias=True,
+            )
+            self._overlay_line.setZValue(13)
+            self._overlay_line.setVisible(False)
+
+        if not hasattr(self, '_overlay_scatter') or self._overlay_scatter is None:
+            self._overlay_scatter = pg.ScatterPlotItem(
+                [0], [0], size=5, pen=None, brush=pg.mkBrush(255, 255, 255, 250), pxMode=True,
+            )
+            self._overlay_scatter.setZValue(14)
+            self._overlay_scatter.setVisible(False)
+            vb.addItem(self._overlay_scatter)
+
+        if not hasattr(self, '_overlay_label') or self._overlay_label is None:
+            self._overlay_label = pg.TextItem(
+                '', color='#FFD166', anchor=(1, 1),
+            )
+            self._overlay_label.setZValue(15)
+            self._overlay_label.setVisible(False)
+            self._overlay_label.setOpacity(0.95)
+            vb.addItem(self._overlay_label)
+
+    def set_retake_overlay_preview(self, points, active, start_t=0.0, end_t=0.0):
+        """更新重录覆盖预览点（对齐 normal 模式 _update_overlay_preview_artists）。
+
+        Args:
+            points: list of (t, y, confidence) tuples
+            active: 是否激活
+            start_t: 选区起始时间（用于标签）
+            end_t: 选区结束时间（用于标签）
+        """
+        if not self._ready:
+            return
+        try:
+            self._ensure_overlay_preview_items()
+
+            if not active or not points:
+                self._overlay_line.setData([], [])
+                self._overlay_line.setVisible(False)
+                self._overlay_scatter.setData([], [])
+                self._overlay_scatter.setVisible(False)
+                self._overlay_label.setVisible(False)
+                return
+
+            import math as _m
+            import numpy as _np
+
+            # ── 构建分段（NaN 断点处理无音高间隙）──
+            segments = []
+            cur_t, cur_p = [], []
+            for t_val, y_val, _c_val in points:
+                try:
+                    t_f = float(t_val)
+                except Exception:
+                    continue
+                try:
+                    y_f = float(y_val)
+                except Exception:
+                    y_f = float('nan')
+                if not _m.isfinite(y_f):
+                    if cur_t:
+                        segments.append((cur_t, cur_p))
+                        cur_t, cur_p = [], []
+                    continue
+                cur_t.append(t_f)
+                cur_p.append(y_f)
+            if cur_t:
+                segments.append((cur_t, cur_p))
+
+            if not segments:
+                self._overlay_line.setData([], [])
+                self._overlay_line.setVisible(False)
+                self._overlay_scatter.setData([], [])
+                self._overlay_scatter.setVisible(False)
+                self._overlay_label.setVisible(False)
+                return
+
+            # ── 线段：拼接各段并插入 NaN ──
+            all_x, all_y = [], []
+            for seg_t, seg_p in segments:
+                x = _np.asarray(seg_t, dtype=_np.float64)
+                y = _np.asarray(seg_p, dtype=_np.float64)
+                mn = min(len(x), len(y))
+                x, y = x[:mn], y[:mn]
+                if mn >= 2:
+                    gap_x, gap_y = [x[0]], [y[0]]
+                    for j in range(1, mn):
+                        if x[j] - x[j-1] > 0.14:
+                            gap_x.append(float('nan'))
+                            gap_y.append(float('nan'))
+                        gap_x.append(x[j])
+                        gap_y.append(y[j])
+                    all_x.extend(gap_x)
+                    all_y.extend(gap_y)
+                else:
+                    all_x.extend(x.tolist())
+                    all_y.extend(y.tolist())
+
+            self._overlay_line.setData(_np.asarray(all_x, dtype=_np.float64),
+                                       _np.asarray(all_y, dtype=_np.float64))
+            self._overlay_line.setVisible(True)
+
+            # ── 散点：取最新 N 个点 ──
+            max_scatter = 300
+            flat_pts = [(t, p) for seg_t, seg_p in segments for t, p in zip(seg_t, seg_p)]
+            if len(flat_pts) > max_scatter:
+                flat_pts = flat_pts[-max_scatter:]
+            if flat_pts:
+                sx = _np.asarray([p[0] for p in flat_pts], dtype=_np.float64)
+                sy = _np.asarray([p[1] for p in flat_pts], dtype=_np.float64)
+                self._overlay_scatter.setData(sx, sy)
+                self._overlay_scatter.setVisible(True)
+            else:
+                self._overlay_scatter.setVisible(False)
+
+            # ── 标签（右上角）──
+            try:
+                vb = self.plot_widget.getViewBox()
+                x_range = vb.viewRange()[0]
+                y_range = vb.viewRange()[1]
+                label_x = float(x_range[1]) - (float(x_range[1]) - float(x_range[0])) * 0.015
+                label_y = float(y_range[1]) - (float(y_range[1]) - float(y_range[0])) * 0.025
+                self._overlay_label.setText(f"重录覆盖 {len(points)}点")
+                self._overlay_label.setPos(label_x, label_y)
+                self._overlay_label.setVisible(True)
+            except Exception:
+                pass
+
+        except Exception:
+            self.clear_retake_overlay_preview()
+
+    def clear_retake_overlay_preview(self):
+        """隐藏覆盖预览。"""
+        try:
+            if hasattr(self, '_overlay_line') and self._overlay_line is not None:
+                self._overlay_line.setData([], [])
+                self._overlay_line.setVisible(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_overlay_scatter') and self._overlay_scatter is not None:
+                self._overlay_scatter.setData([], [])
+                self._overlay_scatter.setVisible(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_overlay_label') and self._overlay_label is not None:
+                self._overlay_label.setVisible(False)
+        except Exception:
+            pass
+
+    def _on_user_view_changed(self, vb):
         """用户手动缩放/平移后，将新范围回传给父组件。
-        X 轴起点固定为 0（禁止负时间），Y 轴限制在 0-8 八度。"""
+        X 轴起点固定为 0（禁止负时间），Y 轴限制在 0-8 八度。
+        pyqtgraph 0.14 sigRangeChangedManually 只传递 vb 自身，需自行取 viewRange()。"""
         try:
             if self.on_view_changed is None:
                 return
-            x_range = ranges[0] if len(ranges) > 0 else None
-            y_range = ranges[1] if len(ranges) > 1 else None
+            vr = vb.viewRange()
+            x_range = vr[0] if len(vr) > 0 else None
+            y_range = vr[1] if len(vr) > 1 else None
             if x_range is not None and y_range is not None:
                 x0, x1 = float(x_range[0]), float(x_range[1])
                 y0, y1 = float(y_range[0]), float(y_range[1])

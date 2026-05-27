@@ -17760,6 +17760,12 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         self._ensure_overlay_preview_artists()
         self._update_overlay_preview_artists()
+        # GPU 模式同步
+        if getattr(self, '_use_pyqtgraph', False):
+            try:
+                self._pg_sync_retake_overlay_preview()
+            except Exception:
+                pass
 
     def clear_retake_overlay_preview(self):
         if not getattr(self, '_retake_overlay_preview_enabled', True):
@@ -17778,12 +17784,18 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
         self._discard_overlay_preview_artists()
-        canvas = getattr(self, 'canvas', None)
-        if canvas is not None:
+        if getattr(self, '_use_pyqtgraph', False):
             try:
-                canvas.draw_idle()
+                self._pg_sync_retake_overlay_preview()
             except Exception:
                 pass
+        else:
+            canvas = getattr(self, 'canvas', None)
+            if canvas is not None:
+                try:
+                    canvas.draw_idle()
+                except Exception:
+                    pass
 
     def _coerce_overlay_packet_point(self, packet: Dict[str, Any]) -> Optional[Tuple[float, float, float]]:
         if not isinstance(packet, dict):
@@ -18617,12 +18629,18 @@ class ECGStylePitchVisualizer(QWidget):
                     label_artist.set_visible(False)
             except Exception:
                 pass
-        canvas = getattr(self, 'canvas', None)
-        if canvas is not None:
+        if getattr(self, '_use_pyqtgraph', False):
             try:
-                canvas.draw_idle()
+                self._pg_sync_retake_overlay_preview()
             except Exception:
                 pass
+        else:
+            canvas = getattr(self, 'canvas', None)
+            if canvas is not None:
+                try:
+                    canvas.draw_idle()
+                except Exception:
+                    pass
 
     def refresh_artists(self, start: Optional[float] = None, end: Optional[float] = None):
         try:
@@ -20473,7 +20491,7 @@ class ECGStylePitchVisualizer(QWidget):
                                 self._sel_play_icon]:
                         if art is not None:
                             art.set_visible(True)
-                    # 初始位置/形状刷新
+                    # 初始位置/形状刷新（内部包含 GPU 同步）
                     self.update_listenback_artists()
                     # 图标命中区域缓存（数据坐标）
                     self._pause_hit_boxes = None  # [(x0,x1,y0,y1), (x0,x1,y0,y1)]
@@ -20485,7 +20503,6 @@ class ECGStylePitchVisualizer(QWidget):
                         if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
                             xL = float(self.sel_start)
                             self._lb_playhead.set_xdata([xL, xL])
-                            # 覆盖可见性为显示
                             self._lb_playhead.set_visible(True)
                             try:
                                 self._lb_playhead.set_zorder(148)
@@ -20502,12 +20519,33 @@ class ECGStylePitchVisualizer(QWidget):
                         self.canvas.draw_idle()
                 except Exception:
                     pass
+                # ── GPU 同步（独立于 matplotlib 的 try/except，确保始终执行）──
+                try:
+                    self._pg_sync_listenback_selection()
+                    self._pg_sync_listenback_controls()
+                    if getattr(self, '_use_pyqtgraph', False):
+                        pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                        if pgw is not None:
+                            pgw.set_guides_enabled(bool(getattr(self, 'guides_enabled', True)))
+                    # 灰色辅助线即为播放位置指示器（纵向=时间，横向=音高），对齐正常模式回听体验
+                    self._pg_sync_guides()
+                except Exception:
+                    pass
             else:
                 if self.retake_selection_active:
                     self.selection_active = True
                 else:
                     self.selection_active = False
                     self.selection_mode = None
+                # GPU 模式：禁用时清除选区边界线和控制按钮
+                try:
+                    if getattr(self, '_use_pyqtgraph', False):
+                        pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                        if pgw is not None:
+                            pgw.set_selection_range(None, None)
+                            pgw.hide_listenback_controls()
+                except Exception:
+                    pass
             # 刷新一次
             try:
                 self.update_listenback_artists()
@@ -20833,9 +20871,18 @@ class ECGStylePitchVisualizer(QWidget):
         if self.listenback_enabled:
             self.selection_mode = 'listenback'
             self.selection_active = True
+            self._pg_sync_listenback_selection()
         else:
             self.selection_mode = None
             self.selection_active = False
+            # GPU 模式：清除选区边界线
+            try:
+                if getattr(self, '_use_pyqtgraph', False):
+                    pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                    if pgw is not None:
+                        pgw.set_selection_range(None, None)
+            except Exception:
+                pass
         # 退出重录：清除覆盖预览与冻结，确保纵向辅助线回到当前录制位置
         try:
             self._retake_playhead_freeze = None
@@ -21313,6 +21360,15 @@ class ECGStylePitchVisualizer(QWidget):
                     if _time_hold.time() < hold_until:
                         overlay_active = True
             if not overlay_active:
+                # GPU 模式：隐去选区边界线和控制按钮
+                try:
+                    if getattr(self, '_use_pyqtgraph', False):
+                        pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                        if pgw is not None:
+                            pgw.set_selection_range(None, None)
+                            pgw.hide_listenback_controls()
+                except Exception:
+                    pass
                 if onepass_active:
                     try:
                         if hasattr(self, '_ensure_playhead'):
@@ -21532,6 +21588,13 @@ class ECGStylePitchVisualizer(QWidget):
                     self._stop_hit_box = None
             except Exception:
                 pass
+        except Exception:
+            pass
+        # ── GPU 同步（独立于 matplotlib 的 try/except，确保始终执行）──
+        try:
+            self._pg_sync_listenback_selection()
+            self._pg_sync_listenback_controls()
+            self._pg_sync_guides()
         except Exception:
             pass
 
@@ -23530,6 +23593,10 @@ class ECGStylePitchVisualizer(QWidget):
                 pgw.on_click_at_time = self._pg_on_click_at_time
                 pgw.on_wheel_scroll = self._pg_on_wheel
                 pgw.on_hover_info = self._pg_format_hover_text
+                pgw.on_selection_drag = self._pg_on_selection_drag
+                pgw.on_selection_release = self._pg_on_selection_release
+                pgw.on_listenback_button = self._pg_on_listenback_button
+                pgw.on_mouse_press_data = self._pg_on_mouse_press
                 print("✅ PyQtGraph分段音高线渲染器初始化成功")
             except Exception as e:
                 print(f"⚠️ PyQtGraph渲染器初始化失败: {e}")
@@ -30658,6 +30725,12 @@ class ECGStylePitchVisualizer(QWidget):
                 self._lb_playhead.set_xdata([x, x])
                 self._lb_playhead.set_visible(True)
                 self._lb_playhead.set_zorder(148)
+            except Exception:
+                pass
+            # GPU 模式：灰色辅助线即为播放位置指示器（纵向=时间，横向=音高），对齐正常模式回听体验
+            try:
+                if getattr(self, '_use_pyqtgraph', False):
+                    self._pg_sync_guides()
             except Exception:
                 pass
             # 播放推进：按播放头位置标记覆盖（真实播放，且非拖动）
@@ -43882,10 +43955,16 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         if len(self.pitch_data) == 0:
             # 即使无任何点，也应优先渲染倒计时覆盖层
-            try:
-                self._render_retake_countdown_overlay()
-            except Exception:
-                pass
+            if getattr(self, '_use_pyqtgraph', False):
+                try:
+                    self._pg_sync_countdown_overlay()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._render_retake_countdown_overlay()
+                except Exception:
+                    pass
             # ✅ 无任何音调点时仍需推进时间轴与中心辅助线，避免卡在 8 秒
             try:
                 # 依据当前自动滚动 offset 与窗口宽度刷新可视区域
@@ -43974,10 +44053,16 @@ class ECGStylePitchVisualizer(QWidget):
             if not hasattr(self, '_heavy_redraw_base'):
                 self._heavy_redraw_base = 0.030
             # 回录倒计时（若激活）：渲染数字与扫描线（早期执行保证后续平滑逻辑考虑到 playhead）
-            try:
-                self._render_retake_countdown_overlay()
-            except Exception:
-                pass
+            if getattr(self, '_use_pyqtgraph', False):
+                try:
+                    self._pg_sync_countdown_overlay()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._render_retake_countdown_overlay()
+                except Exception:
+                    pass
             try:
                 _mode_now = (self.display_mode.currentText() if hasattr(self, 'display_mode') else '普通模式')
             except Exception:
@@ -46286,6 +46371,9 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
             # ── 分段数据 ──
             pgw.set_segments(segments)
+            # 同步更新 _segments 缓存（_estimate_pitch_y_at_time 依赖此缓存查音高）
+            if segments:
+                self._segments = segments
             # 同步线条颜色和粗细到 pyqtgraph
             try:
                 if hasattr(self, 'line_color') and hasattr(pgw, 'set_line_color'):
@@ -46320,19 +46408,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 pass
             pgw.set_grid_from_range(y_start, y_end, zoom_mode)
-            # ── 播放头 ──
-            try:
-                ph = getattr(self, '_lb_playhead', None)
-                if ph is not None and ph.get_visible():
-                    xd = ph.get_xdata()
-                    if xd is not None and len(xd) >= 1:
-                        pgw.set_playhead(float(xd[0]))
-                    else:
-                        pgw.set_playhead(None)
-                else:
-                    pgw.set_playhead(None)
-            except Exception:
-                pgw.set_playhead(None)
+            # ── 播放位置由灰色辅助线（纵向=时间）指示，无需独立蓝色播放头 ──
             # ── 选区边界 ──
             try:
                 sel_active = bool(getattr(self, 'selection_active', False)
@@ -46351,6 +46427,16 @@ class ECGStylePitchVisualizer(QWidget):
             try:
                 pgw.set_guides_enabled(bool(getattr(self, 'guides_enabled', True)))
                 self._pg_sync_guides()
+            except Exception:
+                pass
+            # ── 同步倒计时覆盖层 ──
+            try:
+                self._pg_sync_countdown_overlay()
+            except Exception:
+                pass
+            # ── 同步重录覆盖预览 ──
+            try:
+                self._pg_sync_retake_overlay_preview()
             except Exception:
                 pass
         except Exception:
@@ -46398,8 +46484,9 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             pass
 
-    def _pg_on_wheel(self, delta):
-        """[pyqtgraph] 鼠标滚轮 → Y 轴滚动（对齐正常模式 on_mouse_scroll）。"""
+    def _pg_on_wheel(self, delta, modifiers=None):
+        """[pyqtgraph] 鼠标滚轮 → Y 轴滚动（对齐正常模式 on_mouse_scroll）。
+        Ctrl+滚轮的处理已在 pyqtgraph 侧完成（水平缩放），此处仅处理 Y 轴滚动。"""
         try:
             prof = getattr(self, '_current_zoom_profile', None) or self._get_zoom_profile()
             if prof.get('disable_v_scroll'):
@@ -46461,43 +46548,328 @@ class ECGStylePitchVisualizer(QWidget):
     def _pg_sync_guides(self):
         """将当前录制状态同步到 pyqtgraph 辅助线位置。
 
-        纵向线：跟随当前时间（录音时用墙钟连续推进，回听/分析用 current_global_time）。
-        横向线：跟随当前识别音高（last_active_pitch_y）。
+        对齐 normal 模式 update_guides 的完整协调逻辑：
+        - 纵向线：优先跟随 _lb_playhead，回退当前时间，含 EMA 平滑和中心模式
+        - 横向线：回听从预录段估算，否则用 last_active_pitch_y，含 EMA 平滑
+        - 动态柔光：根据移动强度动态调整 glow alpha/width
         """
         try:
             pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
             if pgw is None:
                 return
-            guide_v = None  # 纵向时间线
-            guide_h = None  # 横向音高线
 
-            # 优先使用播放头位置（回听模式，若可见）
+            import time as _t
+            now = _t.time()
+
+            # ── 统一平滑参数（对齐 normal 模式 update_guides）──
+            params = {
+                'min_redraw': 0.0,
+                'base_alpha': 0.28,
+                'base_max_step': 0.16,
+                'snap_eps': 0.009,
+                't1': 0.04,
+                't2': 0.10,
+                'motion_div': 0.12,
+                'glow_base': 0.40,
+                'glow_span': 0.10,
+                'lw_span': 0.12,
+                'v_main_alpha': 0.55,
+            }
+
+            # ── 确定纵向目标 v_target ──
+            time_start = float(getattr(self, 'time_offset', 0.0))
+            time_end = time_start + float(getattr(self, 'time_window', 16.0))
+
+            overlay_active = bool(getattr(self, '_retake_overlay_preview_active', False))
+            countdown_freeze = bool(
+                getattr(self, '_retake_countdown_active', False)
+                and getattr(self, '_retake_countdown_block_add', False)
+            )
+
+            cur_t = float(getattr(self, 'current_global_time', 0.0))
+            if overlay_active and not countdown_freeze:
+                st = getattr(self, 'start_time', None)
+                if st is not None:
+                    cur_t = max(0.0, float(_t.time()) - float(st))
+
+            want_center = (
+                cur_t > float(getattr(self, 'center_display_time', 8.0))
+                and bool(getattr(self, 'auto_follow', True))
+                and bool(getattr(self, 'auto_scroll_enabled', True))
+                and (not overlay_active)
+            )
+
+            # 优先：_lb_playhead 位置
+            _ph_x = None
             try:
                 ph = getattr(self, '_lb_playhead', None)
                 if ph is not None and getattr(ph, 'get_visible', lambda: False)():
                     xd = ph.get_xdata()
                     if xd is not None and len(xd) >= 1:
-                        guide_v = float(xd[0])
+                        _ph_x = float(xd[0])
             except Exception:
                 pass
 
-            # 录音活跃中：用墙钟时间确保无声音时也能连续推进
-            if guide_v is None and bool(getattr(self, 'is_recording_active', False)):
+            if overlay_active:
+                # 重录覆盖层：使用墙钟推进
+                v_target = None
                 try:
-                    st = getattr(self, 'start_time', None)
-                    if st is not None:
-                        import time as _t
-                        guide_v = max(0.0, float(_t.time()) - float(st))
+                    rng = getattr(self, '_retake_overlay_preview_range', (time_start, time_end))
+                    s0, e0 = float(rng[0]), float(rng[1])
+                    if e0 < s0:
+                        s0, e0 = e0, s0
+                except Exception:
+                    s0, e0 = time_start, time_end
+                if v_target is None and not countdown_freeze:
+                    try:
+                        anchor_wall = getattr(self, '_retake_overlay_wall_anchor', None)
+                        anchor_time = getattr(self, '_retake_overlay_time_anchor', None)
+                        if anchor_wall is None or anchor_time is None:
+                            anchor_wall = float(_t.time())
+                            anchor_time = float(s0)
+                            self._retake_overlay_wall_anchor = anchor_wall
+                            self._retake_overlay_time_anchor = anchor_time
+                        now_wall = float(_t.time())
+                        span = max(0.0, e0 - s0)
+                        elapsed = max(0.0, now_wall - float(anchor_wall))
+                        v_target = float(anchor_time) + min(span, elapsed)
+                    except Exception:
+                        v_target = s0
+                if v_target is None:
+                    v_target = s0
+                v_target = min(max(time_start, v_target), time_end)
+                if countdown_freeze:
+                    v_target = min(max(time_start, float(s0)), time_end)
+            elif _ph_x is not None:
+                v_target = min(max(time_start, _ph_x), time_end)
+            elif want_center:
+                v_target = (time_start + time_end) * 0.5
+            else:
+                # 录音活跃中用墙钟时间连续推进
+                if bool(getattr(self, 'is_recording_active', False)):
+                    try:
+                        st = getattr(self, 'start_time', None)
+                        if st is not None:
+                            v_target = max(0.0, float(_t.time()) - float(st))
+                        else:
+                            v_target = cur_t
+                    except Exception:
+                        v_target = cur_t
+                else:
+                    v_target = min(max(time_start, cur_t), time_end)
+
+            # ── 纵向 EMA 平滑 ──
+            base_alpha = float(params['base_alpha'])
+            base_max_step = float(params['base_max_step'])
+            if overlay_active and not countdown_freeze:
+                base_alpha = max(base_alpha, 0.75)
+                base_max_step = max(base_max_step, 0.25)
+
+            if want_center:
+                v_x = (time_start + time_end) * 0.5
+                self._smoothed_vx = v_x
+                self._last_vx_time = now
+            else:
+                prev = getattr(self, '_smoothed_vx', None)
+                if prev is None:
+                    v_x = v_target
+                else:
+                    delta_raw = v_target - prev
+                    ad = abs(delta_raw)
+                    if ad < float(params['snap_eps']):
+                        v_x = v_target
+                    else:
+                        if ad < float(params['t1']):
+                            alpha = max(base_alpha, 0.65)
+                            max_step = max(base_max_step, 0.12)
+                        elif ad < float(params['t2']):
+                            alpha = max(base_alpha, 0.48)
+                            max_step = max(base_max_step, 0.14)
+                        else:
+                            alpha = base_alpha
+                            max_step = base_max_step
+                        delta = delta_raw * alpha
+                        if delta > max_step:
+                            delta = max_step
+                        elif delta < -max_step:
+                            delta = -max_step
+                        v_x = prev + delta
+                self._smoothed_vx = v_x
+                self._last_vx_time = now
+
+            # ── 横向目标 ──
+            if self.last_active_pitch_y is None:
+                self.last_active_pitch_y = float(getattr(self, 'current_pitch_y', 4.0))
+
+            if countdown_freeze:
+                frozen_h = getattr(self, '_retake_countdown_frozen_hy', None)
+                if frozen_h is None:
+                    frozen_h = float(self.last_active_pitch_y)
+                    self._retake_countdown_frozen_hy = float(frozen_h)
+                h_target = float(frozen_h)
+            elif overlay_active and getattr(self, '_retake_overlay_last_point_y', None) is not None:
+                h_target = float(getattr(self, '_retake_overlay_last_point_y'))
+            else:
+                # 回听模式：从预录段直接估算（更精确），否则用 last_active_pitch_y
+                listenback_playing = bool(
+                    getattr(self, 'listenback_enabled', False)
+                    and getattr(self, 'selection_mode', None) == 'listenback'
+                    and getattr(self, 'selection_active', False)
+                )
+                if listenback_playing and v_target is not None:
+                    estimated = self._estimate_pitch_y_at_time(v_target)
+                    if estimated is not None:
+                        h_target = float(estimated)
+                    else:
+                        h_target = float(self.last_active_pitch_y)
+                else:
+                    h_target = float(self.last_active_pitch_y)
+
+            if not countdown_freeze and hasattr(self, '_retake_countdown_frozen_hy'):
+                try:
+                    self._retake_countdown_frozen_hy = None
                 except Exception:
                     pass
 
-            # 回退到当前全局时间
-            if guide_v is None:
-                guide_v = float(getattr(self, 'current_global_time', 0.0))
+            # ── 横向 EMA 平滑 ──
+            base_h_alpha = 0.40
+            base_h_step = 0.12
+            h_t1 = float(params['t1'])
+            h_t2 = float(params['t2'])
+            h_snap = float(params['snap_eps'])
 
-            # 横向：当前识别音高
-            guide_h = float(getattr(self, 'last_active_pitch_y', 0) or getattr(self, 'current_pitch_y', 4.0))
-            pgw.set_guides(guide_v, guide_h)
+            prev_h = getattr(self, '_smoothed_hy', None)
+            if prev_h is None:
+                h_y = h_target
+            else:
+                dd = h_target - prev_h
+                ad = abs(dd)
+                if ad < h_t1:
+                    a = max(base_h_alpha, 0.70)
+                    ms = max(base_h_step, 0.14)
+                elif ad < h_t2:
+                    a = max(base_h_alpha, 0.50)
+                    ms = max(base_h_step, 0.16)
+                else:
+                    a = base_h_alpha
+                    ms = base_h_step
+                if ad < h_snap:
+                    h_y = h_target
+                else:
+                    delta = dd * a
+                    if delta > ms:
+                        delta = ms
+                    elif delta < -ms:
+                        delta = -ms
+                    h_y = prev_h + delta
+            self._smoothed_hy = h_y
+
+            # ── 计算运动强度（用于动态柔光）──
+            motion_v = 0.0
+            motion_h = 0.0
+            try:
+                ad_v = abs(v_target - getattr(self, '_smoothed_vx', v_x))
+                motion_v = max(0.0, min(1.0, ad_v / float(params['motion_div'])))
+            except Exception:
+                pass
+            try:
+                ad_h = abs(h_target - getattr(self, '_smoothed_hy', h_y))
+                motion_h = max(0.0, min(1.0, ad_h / float(params['motion_div'])))
+            except Exception:
+                pass
+
+            # ── 中心模式下纵向线保持柔和 ──
+            if want_center:
+                glow_alpha_v = 0.12
+                main_alpha_v = float(params['v_main_alpha'])
+                glow_width_v = 2.2
+                main_width_v = 0.8
+            else:
+                glow_alpha_v = 0.12 * (float(params['glow_base']) + float(params['glow_span']) * motion_v)
+                main_alpha_v = float(params['v_main_alpha'])
+                glow_width_v = 2.2
+                main_width_v = 0.8 * (1.0 + float(params['lw_span']) * motion_v)
+
+            # 横向柔光（对称逻辑）
+            glow_alpha_h = 0.12 * (float(params['glow_base']) + float(params['glow_span']) * motion_h)
+            main_width_h = 0.8 * (1.0 + float(params['lw_span']) * motion_h)
+
+            # ── 推送到 pyqtgraph ──
+            pgw.set_guides(
+                v_x, h_y,
+                glow_alpha_v=glow_alpha_v, main_alpha_v=main_alpha_v,
+                glow_width_v=glow_width_v, main_width_v=main_width_v,
+                glow_alpha_h=glow_alpha_h, main_width_h=main_width_h,
+            )
+        except Exception:
+            pass
+
+    def _pg_sync_countdown_overlay(self):
+        """[pyqtgraph] 同步重录倒计时覆盖层到 GPU 渲染器。
+
+        对齐 normal 模式 _render_retake_countdown_overlay 的逻辑，
+        从本地状态读取倒计时参数并推送到 PyQtGraphPitchRenderer。
+        """
+        try:
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            active = bool(getattr(self, '_retake_countdown_active', False))
+            if not active:
+                pgw.clear_countdown_overlay()
+                return
+            import time as _t
+            now = _t.time()
+            end_wall = float(getattr(self, '_retake_countdown_end_wall', 0.0) or 0.0)
+            if end_wall <= 0.0:
+                host = getattr(self, '_host_interface', None)
+                if host is not None:
+                    try:
+                        end_wall = float(getattr(host, '_retake_countdown_deadline', 0.0) or 0.0)
+                    except Exception:
+                        end_wall = 0.0
+            rem = max(0.0, float(end_wall) - now)
+            if rem <= 0.02:
+                rem = 0.0
+
+            tgt = float(getattr(self, '_retake_countdown_target_time', 0.0))
+            dur = float(getattr(self, '_retake_countdown_duration', 3.0))
+            start_line_t = max(0.0, tgt - max(0.0, dur))
+
+            pos = getattr(self, '_retake_countdown_display_pos', None)
+            if pos is not None:
+                cur_t = float(pos)
+            elif rem > 0.0 and dur > 1e-6:
+                frac = 1.0 - rem / dur
+                cur_t = start_line_t + frac * (tgt - start_line_t)
+            else:
+                cur_t = tgt
+
+            pgw.set_countdown_overlay(
+                active=active,
+                rem=rem,
+                cur_t=float(max(start_line_t, min(tgt, cur_t))),
+                start_t=start_line_t,
+                target_t=tgt,
+            )
+        except Exception:
+            pass
+
+    def _pg_sync_retake_overlay_preview(self):
+        """[pyqtgraph] 同步重录覆盖预览点到 GPU 渲染器。
+
+        对齐 normal 模式 _update_overlay_preview_artists，
+        从 _retake_overlay_preview_points 读取预览点并推送。
+        """
+        try:
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            active = bool(getattr(self, '_retake_overlay_preview_active', False))
+            points = list(getattr(self, '_retake_overlay_preview_points', []))
+            rng = getattr(self, '_retake_overlay_preview_range', (0.0, 0.0))
+            start_t, end_t = float(rng[0]), float(rng[1])
+            pgw.set_retake_overlay_preview(points, active, start_t, end_t)
         except Exception:
             pass
 
@@ -46534,15 +46906,384 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             return ""
 
-    def _pg_on_click_at_time(self, time_x, y_value):
-        """[pyqtgraph] 鼠标点击音高线 → 触发回听播放或选区操作。"""
+    def _pg_sync_listenback_selection(self):
+        """[pyqtgraph] 将当前 sel_start/sel_end 同步到 GPU 选区边界线。"""
         try:
-            if getattr(self, 'listenback_enabled', False):
-                abs_time = time_x + float(getattr(self, 'start_time', 0.0))
-                self.sel_start = abs_time
-                self.sel_end = abs_time + 1.0
-                self._init_listenback_selection()
+            if not getattr(self, '_use_pyqtgraph', False):
+                return
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            try:
+                s = float(self.sel_start)
+                e = float(self.sel_end)
+            except Exception:
+                return
+            pgw.set_selection_range(s, e)
+        except Exception:
+            pass
+
+    def _pg_sync_listenback_controls(self):
+        """[pyqtgraph] 将回听控制按钮状态同步到 GPU 渲染器。"""
+        try:
+            if not getattr(self, '_use_pyqtgraph', False):
+                return
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            selection_mode = getattr(self, 'selection_mode', None)
+            if selection_mode != 'listenback':
+                pgw.hide_listenback_controls()
+                return
+            try:
+                s = float(self.sel_start)
+                e = float(self.sel_end)
+                if s > e:
+                    s, e = e, s
+                is_playing = (self._get_listenback_state() == 'playing')
+                show_play = bool(self.selection_active and not is_playing)
+                show_pause_stop = bool(is_playing)
+                cx = (s + e) * 0.5
+                try:
+                    vb = pgw.plot_widget.getViewBox()
+                    y0, y1 = vb.viewRange()[1]
+                    cy = (y0 + y1) * 0.5
+                except Exception:
+                    cy = 4.0
+                ctrl_size = max((e - s) * 0.10, 0.09)
+                pgw.set_listenback_controls(show_play, show_pause_stop, cx, cy, ctrl_size)
+            except Exception:
+                pgw.hide_listenback_controls()
+        except Exception:
+            pass
+
+    def _pg_on_mouse_press(self, x, y):
+        """[pyqtgraph] PRESS 阶段检测交互类型并设置拖拽标志。
+
+        对齐 normal 模式 on_mouse_press 的交互检测（不含"设置新选区"动作）。
+        Returns:
+            True  — 检测到了交互（边缘/播放头/block拖拽），已设置标志，拦截事件
+            False — 未检测到交互，由 release 阶段的 on_click_at_time 处理"设置新选区"
+        """
+        try:
+            mode = self._interaction_selection_mode()
+            if mode not in ('listenback', 'retake'):
+                return False
+
+            # ── 计算阈值（对齐 on_mouse_press 的 6px 阈值）──
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            try:
+                vb = pgw.plot_widget.getViewBox()
+                pw = pgw.plot_widget
+                vp_w = float(pw.viewport().width()) if pw.viewport() else 800.0
+                x0_vb, x1_vb = vb.viewRange()[0]
+                sec_per_px = max(1e-9, (float(x1_vb) - float(x0_vb)) / vp_w)
+                thr = sec_per_px * 6.0
+            except Exception:
+                thr = 0.05
+
+            x_val = float(x)
+            start = end = None
+            try:
+                start = float(self.sel_start)
+                end = float(self.sel_end)
+            except Exception:
+                start = end = None
+
+            # ── 1. 检测左右边线把手 ──
+            if x_val is not None and start is not None and end is not None:
+                if start > end:
+                    start, end = end, start
+                dL = abs(x_val - start)
+                dR = abs(x_val - end)
+                if dL <= dR and dL <= thr:
+                    self._sel_dragging_side = 'left'
+                    self._sel_dragging_last_x = x_val
+                    try:
+                        self._set_selection_hover_state('left')
+                    except Exception:
+                        pass
+                    return True
+                if dR < dL and dR <= thr:
+                    self._sel_dragging_side = 'right'
+                    self._sel_dragging_last_x = x_val
+                    try:
+                        self._set_selection_hover_state('right')
+                    except Exception:
+                        pass
+                    return True
+
+            # ── 2. 检测播放头拖拽（仅 listenback）──
+            if mode == 'listenback':
+                try:
+                    if x_val is not None and hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                        phx_data = self._lb_playhead.get_xdata()
+                        phx = float(phx_data[0]) if phx_data is not None and len(phx_data) > 0 else float(self.sel_start)
+                        if abs(x_val - phx) <= thr:
+                            self._dragging_playhead = True
+                            self._lb_user_moved_playhead = True
+                            self._sel_dragging_side = 'playhead'
+                            self._sel_dragging_last_x = x_val
+                            return True
+                except Exception:
+                    pass
+
+            # ── 3. 检测选区中间整体拖拽 ──
+            if x_val is not None and start is not None and end is not None and start <= x_val <= end:
+                if mode in ('retake', 'listenback'):
+                    self._sel_dragging_side = 'block'
+                    self._sel_dragging_last_x = x_val
+                    return True
+
+            return False
+        except Exception:
+            return False
+
+    def _pg_on_listenback_button(self, action):
+        """[pyqtgraph] 回听控制按钮点击 → 路由到对应处理器。"""
+        try:
+            if action == 'play':
+                self._toggle_listenback_play_pause()
+            elif action == 'pause':
+                self._handle_pause_click()
+            elif action == 'stop':
+                self._handle_stop_click()
+        except Exception:
+            pass
+
+    def _pg_on_click_at_time(self, time_x, y_value, scene_pos=None, event=None):
+        """[pyqtgraph] RELEASE 阶段：设置新选区并触发播放（拖拽检测已在 PRESS 阶段完成）。
+
+        仅在 _pg_on_mouse_press 未拦截（返回 False）时调用。
+        """
+        try:
+            mode = self._interaction_selection_mode()
+            if mode not in ('listenback', 'retake'):
+                return
+
+            # 刚完成拖拽：跳过，防止 release 事件重复触发
+            try:
+                drag_ended = getattr(self, '_pg_drag_ended_at', 0.0) or 0.0
+                if time.time() - drag_ended < 0.3:
+                    self._pg_drag_ended_at = 0.0
+                    return
+            except Exception:
+                pass
+
+            x = float(time_x)
+
+            # ── 设置新选区并触发动作 ──
+            if mode == 'listenback':
+                # 在点击位置设置回听选区并开始播放
+                span = float(getattr(self, '_listenback_default_span', 5.0))
+                if span <= 0.05:
+                    span = 5.0
+                right_limit = self._get_listenback_right_limit()
+                new_start = max(0.0, x - span * 0.5)
+                new_end = new_start + span
+                if right_limit is not None and new_end > right_limit:
+                    new_end = right_limit
+                    new_start = max(0.0, new_end - span)
+                if new_end <= new_start:
+                    new_end = new_start + span
+
+                self.sel_start = float(new_start)
+                self.sel_end = float(new_end)
+                self.selection_active = False  # 播放时不显示选区
+
+                # 确保播放头初始位置在选区起始
+                try:
+                    self._ensure_playhead()
+                    if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                        self._lb_playhead.set_xdata([self.sel_start, self.sel_start])
+                        self._lb_playhead.set_visible(True)
+                except Exception:
+                    pass
+
+                # 更新选区艺术家（matplotlib 侧）+ GPU 侧边界
+                try:
+                    self.update_listenback_artists()
+                except Exception:
+                    pass
+                self._pg_sync_listenback_selection()
+
+                # 聚焦时间窗
+                try:
+                    self._focus_time_window_on_range(self.sel_start, self.sel_end)
+                except Exception:
+                    pass
+
+                # 触发回听播放
+                try:
+                    self._toggle_listenback_play_pause()
+                except Exception:
+                    pass
+
+            elif mode == 'retake':
+                # 在点击位置设置重录选区
+                self.activate_retake_selection(
+                    anchor_time=float(x),
+                    initial_span=float(getattr(self, '_retake_default_span', 5.0)),
+                )
+
+        except Exception:
+            # 失败时不阻塞 ViewBox 正常交互
+            pass
+
+    def _start_pg_selection_drag(self):
+        """开始 pyqtgraph 选区拖拽：禁用 ViewBox 鼠标 + 设置拖拽标志。"""
+        try:
+            pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+            if pgw is None:
+                return
+            pgw._sel_dragging = True
+            pgw.set_viewbox_mouse_enabled(False)
+        except Exception:
+            pass
+
+    def _pg_on_selection_drag(self, x, y):
+        """[pyqtgraph] 选区拖拽中（对齐 on_mouse_move 的选区拖拽逻辑）。"""
+        try:
+            mode = self._interaction_selection_mode()
+            side = getattr(self, '_sel_dragging_side', None)
+            if side is None or mode is None:
+                return
+
+            last = getattr(self, '_sel_dragging_last_x', None)
+            if last is None:
+                self._sel_dragging_last_x = x
+                return
+
+            delta = float(x) - float(last)
+            if abs(delta) <= 1e-9:
+                return
+            self._sel_dragging_last_x = float(x)
+
+            if side == 'playhead':
+                # 拖拽播放头
+                try:
+                    if hasattr(self, '_lb_playhead') and self._lb_playhead is not None:
+                        new_x = max(float(self.sel_start), min(float(self.sel_end), float(x)))
+                        self._lb_playhead.set_xdata([new_x, new_x])
+                        self._lb_user_moved_playhead = True
+                        try:
+                            self.update_listenback_artists()
+                        except Exception:
+                            pass
+                        try:
+                            from PyQt6.QtWidgets import QApplication
+                        except Exception:
+                            from PyQt5.QtWidgets import QApplication
+                        QApplication.processEvents()
+                except Exception:
+                    pass
+                return
+
+            if side == 'block':
+                # 整体平拖选区
+                span = float(self.sel_end) - float(self.sel_start)
+                new_start = float(self.sel_start) + delta
+                new_end = new_start + span
+                if mode == 'listenback':
+                    max_time = self._get_listenback_right_limit()
+                else:
+                    try:
+                        max_time = float(getattr(self, 'max_history_time', None))
+                    except Exception:
+                        max_time = None
+                if new_start < 0.0:
+                    shift = -new_start
+                    new_start += shift
+                    new_end += shift
+                if max_time is not None and new_end > max_time:
+                    shift = new_end - max_time
+                    new_start -= shift
+                    new_end -= shift
+                    if new_start < 0.0:
+                        new_start = 0.0
+                if mode == 'retake':
+                    self.set_retake_range(new_start, new_end, refresh=False, sync_playhead=False, anchor_side='block')
+                else:
+                    self.sel_start = new_start
+                    self.sel_end = new_end
+                try:
+                    self.update_listenback_artists()
+                except Exception:
+                    pass
+                # 同步 GPU 选区边界
+                try:
+                    pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                    if pgw is not None:
+                        pgw.set_selection_range(new_start, new_end)
+                except Exception:
+                    pass
+                return
+
+            # 侧边拖拽（left/right）
+            if side == 'left':
+                new_val = max(0.0, float(x))
+                if mode == 'listenback':
+                    right_limit = self._get_listenback_right_limit()
+                    if right_limit is not None:
+                        new_val = min(new_val, float(self.sel_end) - 0.05)
+                else:
+                    new_val = min(new_val, float(self.sel_end) - 0.05)
+                if mode == 'retake':
+                    self.set_retake_range(new_val, float(self.sel_end), refresh=False,
+                                          sync_playhead=False, anchor_side='left')
+                else:
+                    self.sel_start = new_val
+            elif side == 'right':
+                new_val = max(float(self.sel_start) + 0.05, float(x))
+                if mode == 'listenback':
+                    right_limit = self._get_listenback_right_limit()
+                    if right_limit is not None:
+                        new_val = min(new_val, right_limit)
+                if mode == 'retake':
+                    self.set_retake_range(float(self.sel_start), new_val, refresh=False,
+                                          sync_playhead=False, anchor_side='right')
+                else:
+                    self.sel_end = new_val
+
+            try:
                 self.update_listenback_artists()
+            except Exception:
+                pass
+            # 同步 GPU 选区边界
+            try:
+                pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                if pgw is not None:
+                    pgw.set_selection_range(float(self.sel_start), float(self.sel_end))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _pg_on_selection_release(self):
+        """[pyqtgraph] 选区拖拽结束（对齐 on_mouse_release）。"""
+        try:
+            mode = self._interaction_selection_mode()
+            side = getattr(self, '_sel_dragging_side', None)
+            self._sel_dragging_side = None
+            self._sel_dragging_last_x = None
+            self._dragging_playhead = False
+            # 记录拖拽结束时间，防止 click 事件立即重新触发拖拽
+            self._pg_drag_ended_at = time.time()
+            try:
+                self._set_selection_hover_state(None)
+            except Exception:
+                pass
+            try:
+                self.update_listenback_artists()
+            except Exception:
+                pass
+            # 拖拽结束后，若回到 listenback 模式，更新回听范围
+            if mode == 'retake' and side is not None:
+                try:
+                    self._notify_retake_range_changed()
+                except Exception:
+                    pass
+            # 恢复 ViewBox 鼠标（已在 pyqtgraph 侧自动恢复）
         except Exception:
             pass
 
@@ -48576,6 +49317,14 @@ class ECGStylePitchVisualizer(QWidget):
             self._use_pyqtgraph = False
             if was_gpu:
                 self.switch_display_widget(use_pyqtgraph=False)
+                # 清除 pyqtgraph 倒计时 + 覆盖预览残留
+                try:
+                    pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                    if pgw is not None:
+                        pgw.clear_countdown_overlay()
+                        pgw.clear_retake_overlay_preview()
+                except Exception:
+                    pass
             self._hide_gpu_indicator()
 
         try:
@@ -50092,6 +50841,7 @@ class ECGStylePitchVisualizer(QWidget):
             if getattr(self, '_use_pyqtgraph', False):
                 try:
                     self._pg_sync_guides()
+                    self._pg_sync_countdown_overlay()
                 except Exception:
                     pass
             # 防御：当前窗口若超出锁定总时长范围（或末端少展示），进行末端对齐纠正
@@ -58781,12 +59531,16 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             try:
-                viz._render_retake_countdown_overlay()
+                if getattr(viz, '_use_pyqtgraph', False):
+                    viz._pg_sync_countdown_overlay()
+                else:
+                    viz._render_retake_countdown_overlay()
             except Exception:
                 pass
             try:
-                if hasattr(viz, 'canvas') and viz.canvas is not None:
-                    viz.canvas.draw_idle()
+                if not getattr(viz, '_use_pyqtgraph', False):
+                    if hasattr(viz, 'canvas') and viz.canvas is not None:
+                        viz.canvas.draw_idle()
             except Exception:
                 pass
         # 伴奏预卷期间若流中断，尝试重新启动
@@ -67198,12 +67952,16 @@ class IntegratedRecordingInterface(QMainWindow):
                         except Exception:
                             pass
                         try:
-                            viz._render_retake_countdown_overlay()
+                            if getattr(viz, '_use_pyqtgraph', False):
+                                viz._pg_sync_countdown_overlay()
+                            else:
+                                viz._render_retake_countdown_overlay()
                         except Exception:
                             pass
                         try:
-                            if hasattr(viz, 'canvas') and viz.canvas is not None:
-                                viz.canvas.draw_idle()
+                            if not getattr(viz, '_use_pyqtgraph', False):
+                                if hasattr(viz, 'canvas') and viz.canvas is not None:
+                                    viz.canvas.draw_idle()
                         except Exception:
                             pass
                     else:
