@@ -20075,10 +20075,21 @@ class ECGStylePitchVisualizer(QWidget):
                 self.canvas.draw_idle()
             except Exception:
                 pass
-        # ── pyqtgraph: 点数恢复后立即同步到 GPU 渲染器 ──
+        # ── pyqtgraph: 清空段缓存并立即触发完整重绘（_segments 可能已被 remove_range 清空）──
         try:
-            if getattr(self, '_use_pyqtgraph', False) and hasattr(self, '_pg_render_segmented'):
-                self._pg_render_segmented(getattr(self, '_segments', []))
+            if getattr(self, '_use_pyqtgraph', False):
+                for _cache_attr in ('_segments_cache', '_segments_cache_window', '_segments_cache_key',
+                                     '_segments', '_segments_cache'):
+                    try:
+                        if hasattr(self, _cache_attr):
+                            setattr(self, _cache_attr, [] if '_segments' in _cache_attr and 'cache' not in _cache_attr else None)
+                    except Exception:
+                        pass
+                try:
+                    if hasattr(self, 'update_display'):
+                        self.update_display()
+                except Exception:
+                    pass
         except Exception:
             pass
         return True
@@ -58339,6 +58350,10 @@ class IntegratedRecordingInterface(QMainWindow):
                         delattr(viz, '_manual_freeze_time')
                     except Exception:
                         setattr(viz, '_manual_freeze_time', None)
+                # 冻结手动滚动计时器，防止 auto_follow 在 update_display 中立即覆写 viewport，
+                # 保持视角停留在选区重录区域（用户期望提交/关闭后仍看到刚才编辑的位置）。
+                import time as _t_frz
+                viz._last_manual_scroll_time = _t_frz.time()
             except Exception:
                 pass
         # 恢复 overlay 预览开关到进入回录前状态（默认关闭，避免影响普通录制性能）。
