@@ -17937,7 +17937,7 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         new_points = []
         try:
-            min_conf = float(getattr(self, '_retake_overlay_preview_min_conf', 0.12))
+            min_conf = float(getattr(self, '_retake_overlay_preview_min_conf', 0.15))
         except Exception:
             min_conf = 0.12
         if min_conf < 0.0:
@@ -18004,6 +18004,35 @@ class ECGStylePitchVisualizer(QWidget):
                             continue
                     except Exception:
                         pass
+                # ── RMS 能量门控：极低能量视为静音，不绘制细节点 ──
+                try:
+                    rms_val = pkt.get('audio_rms', pkt.get('rms', None))
+                    if rms_val is not None:
+                        rms_thr = float(getattr(self, '_retake_overlay_preview_min_rms', 0.005))
+                        if float(rms_val) < rms_thr:
+                            ts_gap = None
+                            try:
+                                ts_gap = pkt.get('_retake_time')
+                                if ts_gap is None:
+                                    ts_gap = pkt.get('global_time')
+                                if ts_gap is None:
+                                    raw_ts = pkt.get('timestamp')
+                                    start_time = getattr(self, 'start_time', None)
+                                    if raw_ts is not None and start_time is not None:
+                                        ts_gap = float(raw_ts) - float(start_time)
+                                    elif raw_ts is not None:
+                                        ts_gap = raw_ts
+                            except Exception:
+                                ts_gap = None
+                            if ts_gap is not None:
+                                try:
+                                    ts_gap = float(ts_gap)
+                                    new_points.append((ts_gap, float('nan'), 0.0))
+                                except Exception:
+                                    pass
+                            continue
+                except Exception:
+                    pass
             point = self._coerce_overlay_packet_point(pkt)
             if point is None:
                 continue
@@ -20046,6 +20075,12 @@ class ECGStylePitchVisualizer(QWidget):
                 self.canvas.draw_idle()
             except Exception:
                 pass
+        # ── pyqtgraph: 点数恢复后立即同步到 GPU 渲染器 ──
+        try:
+            if getattr(self, '_use_pyqtgraph', False) and hasattr(self, '_pg_render_segmented'):
+                self._pg_render_segmented(getattr(self, '_segments', []))
+        except Exception:
+            pass
         return True
 
     def _filter_taill_buffer(self, predicate):
@@ -20163,14 +20198,32 @@ class ECGStylePitchVisualizer(QWidget):
                         continue
                     keep_x = []
                     keep_y = []
+                    prev_kept = False  # 前一个点是否在保留区
                     for xv, yv in zip(xs, ys):
                         try:
                             xf = float(xv)
                         except Exception:
                             continue
                         if xf < start - eps or xf >= end - eps:
+                            # 若当前保留点与前一个保留点跨过清除区间，插入 NaN 断点
+                            if prev_kept and keep_x:
+                                prev_xf = None
+                                for prev_v in reversed(keep_x):
+                                    try:
+                                        prev_xf = float(prev_v)
+                                        break
+                                    except Exception:
+                                        continue
+                                if prev_xf is not None and prev_xf < start + eps and xf >= end - eps:
+                                    if (not keep_x) or not (isinstance(keep_x[-1], float) and keep_x[-1] != keep_x[-1]):
+                                        keep_x.append(float('nan'))
+                                        keep_y.append(float('nan'))
+                                        prev_kept = False
                             keep_x.append(xv)
                             keep_y.append(yv)
+                            prev_kept = True
+                        else:
+                            prev_kept = False
                     if keep_x:
                         ln.set_data(keep_x, keep_y)
                         filtered_lines.append(ln)
@@ -20309,6 +20362,14 @@ class ECGStylePitchVisualizer(QWidget):
                     prov_line.set_visible(False)
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # ── pyqtgraph: 段缓存已更新，立即同步到 GPU 渲染器（非空才推送，避免误清空）──
+        try:
+            if getattr(self, '_use_pyqtgraph', False) and hasattr(self, '_pg_render_segmented'):
+                segs = getattr(self, '_segments', [])
+                if segs:
+                    self._pg_render_segmented(segs)
         except Exception:
             pass
 
@@ -46322,14 +46383,14 @@ class ECGStylePitchVisualizer(QWidget):
                         except Exception:
                             continue
                         try:
-                            filtered = self._apply_pitch_masks_to_series(
+                            filtered_t, filtered_p = self._apply_mask_breaks_to_series(
                                 list(seg_times), list(seg_pitches))
-                            seg_times = filtered[0]
-                            seg_pitches = filtered[1] if len(filtered) > 1 else []
                         except Exception:
-                            pass
-                        if seg_times:
-                            masked_segments.append((seg_times, seg_pitches))
+                            filtered_t, filtered_p = seg_times, seg_pitches
+                        if filtered_t and any(not (isinstance(x, float) and x != x) for x in filtered_t):
+                            masked_segments.append((filtered_t, filtered_p))
+                        elif filtered_t:
+                            masked_segments.append((filtered_t, filtered_p))
                     segments = masked_segments
                 except Exception:
                     pass
@@ -46855,7 +46916,8 @@ class ECGStylePitchVisualizer(QWidget):
         """[pyqtgraph] 同步重录覆盖预览点到 GPU 渲染器。
 
         对齐 normal 模式 _update_overlay_preview_artists，
-        从 _retake_overlay_preview_points 读取预览点并推送。
+        从 _retake_overlay_preview_points 读取预览点，经 EMA 平滑
+        与自适应抽样后推送到 PyQtGraphPitchRenderer。
         """
         try:
             pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
@@ -46865,7 +46927,75 @@ class ECGStylePitchVisualizer(QWidget):
             points = list(getattr(self, '_retake_overlay_preview_points', []))
             rng = getattr(self, '_retake_overlay_preview_range', (0.0, 0.0))
             start_t, end_t = float(rng[0]), float(rng[1])
-            pgw.set_retake_overlay_preview(points, active, start_t, end_t)
+
+            if not active or not points:
+                pgw.set_retake_overlay_preview([], False, start_t, end_t)
+                return
+
+            # ── 构建分段（NaN 断点处理无音高间隙），对齐 _update_overlay_preview_artists ──
+            import math as _m
+            segments_orig = []
+            cur_t, cur_p = [], []
+            for t_val, y_val, _c_val in points:
+                try:
+                    t_f = float(t_val)
+                except Exception:
+                    continue
+                try:
+                    y_f = float(y_val)
+                except Exception:
+                    y_f = float('nan')
+                if not _m.isfinite(y_f):
+                    if cur_t:
+                        segments_orig.append((cur_t, cur_p))
+                        cur_t, cur_p = [], []
+                    continue
+                cur_t.append(t_f)
+                cur_p.append(y_f)
+            if cur_t:
+                segments_orig.append((cur_t, cur_p))
+
+            if not segments_orig:
+                pgw.set_retake_overlay_preview([], False, start_t, end_t)
+                return
+
+            # ── 噪音过滤（对齐 _pg_render_segmented / _update_overlay_preview_artists 的终端防抖1/2）──
+            try:
+                segments_filtered = self._pg_filter_noise_segments(segments_orig)
+            except Exception:
+                segments_filtered = segments_orig
+
+            if not segments_filtered:
+                pgw.set_retake_overlay_preview([], False, start_t, end_t)
+                return
+
+            # ── 小缺口跨段合并（对齐 _pg_render_segmented / _update_overlay_preview_artists 的终端防抖1.5）──
+            try:
+                segments_merged = self._pg_merge_small_gaps(segments_filtered)
+            except Exception:
+                segments_merged = segments_filtered
+
+            # ── EMA 平滑 + 自适应抽样（对齐 _pg_render_segmented）──
+            try:
+                processed_segments = self._pg_prepare_segments_for_render(segments_merged)
+            except Exception:
+                processed_segments = segments_merged
+
+            # 将处理后的分段展平为点列表，供 pyqtgraph 渲染
+            import numpy as _np
+            processed_points = []
+            for seg_idx, (ts, ps) in enumerate(processed_segments):
+                if seg_idx > 0:
+                    # 段间插入 NaN 断点，避免跨段连线
+                    processed_points.append((float('nan'), float('nan'), 0.0))
+                for i in range(min(len(ts), len(ps))):
+                    ts_i, ps_i = float(ts[i]), float(ps[i])
+                    if _m.isfinite(ts_i) and _m.isfinite(ps_i):
+                        processed_points.append((ts_i, ps_i, 1.0))
+
+            # 同步主轨线条颜色，确保重录覆盖预览与正常录制风格一致
+            line_color = getattr(self, 'line_color', None)
+            pgw.set_retake_overlay_preview(processed_points, active, start_t, end_t, line_color=line_color)
         except Exception:
             pass
 
@@ -58364,11 +58494,39 @@ class IntegratedRecordingInterface(QMainWindow):
                 pass
         use_batch_restore = bool(viz is not None and hasattr(viz, 'restore_pitch_points'))
         batch_records: List[Tuple[float, float, float, Any]] = []
+        # ── 重录覆盖提交过滤器（对齐 render_retake_overlay_points 的置信度+RMS门控）──
+        try:
+            commit_min_conf = float(getattr(self, '_retake_overlay_preview_min_conf', 0.15))
+        except Exception:
+            commit_min_conf = 0.15
+        try:
+            commit_min_rms = float(getattr(self, '_retake_overlay_preview_min_rms', 0.005))
+        except Exception:
+            commit_min_rms = 0.005
         for pkt in packets:
             try:
                 clone = dict(pkt)
             except Exception:
                 clone = pkt
+            # ── 提交阶段噪音过滤（对齐 render_retake_overlay_points）──
+            try:
+                hp = clone.get('has_pitch')
+                if hp is False:
+                    continue
+            except Exception:
+                pass
+            try:
+                conf_raw = clone.get('confidence', clone.get('probability', None))
+                if conf_raw is not None and float(conf_raw) < commit_min_conf:
+                    continue
+            except Exception:
+                pass
+            try:
+                rms_val = clone.get('audio_rms', clone.get('rms', None))
+                if rms_val is not None and float(rms_val) < commit_min_rms:
+                    continue
+            except Exception:
+                pass
             try:
                 hist.append(clone)
             except Exception:
@@ -58969,13 +59127,10 @@ class IntegratedRecordingInterface(QMainWindow):
         else:
             self._require_manual_retake_resume("manual-flag")
         has_backing = bool(self.backing_pcm_accompaniment is not None and self.backing_sample_rate)
-        preroll_start = float(target_time)
+        # 视觉倒计时时间线始终从 target-3s 读秒到 target，与是否有伴奏无关
+        preroll_start = max(0.0, float(target_time) - countdown)
+        self._retake_countdown_preroll_start = float(preroll_start)
         if has_backing:
-            try:
-                preroll_start = max(0.0, float(target_time) - countdown)
-            except Exception:
-                preroll_start = max(0.0, float(target_time))
-            self._retake_countdown_preroll_start = float(preroll_start)
             try:
                 self._seek_backing_audio(preroll_start)
                 if should_auto_resume:
@@ -59225,13 +59380,13 @@ class IntegratedRecordingInterface(QMainWindow):
             if self._retake_countdown_timer is None:
                 self._retake_countdown_timer = QTimer(self)
                 try:
-                    self._retake_countdown_timer.setInterval(60)
+                    self._retake_countdown_timer.setInterval(25)
                 except Exception:
                     pass
                 self._retake_countdown_timer.timeout.connect(self._on_retake_countdown_tick)
-            interval = 60
+            interval = 25
             if countdown < 1.5:
-                interval = 40
+                interval = 16
             try:
                 self._retake_countdown_timer.setInterval(int(interval))
             except Exception:

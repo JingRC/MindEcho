@@ -1985,7 +1985,7 @@ class PyQtGraphPitchRenderer(QWidget):
             except Exception:
                 pass
 
-            # ── 倒计时文本 ──
+            # ── 倒计时文本（仅显示值变化时才更新 setText，避免频繁触发重排）──
             try:
                 if visible and rem > 0:
                     import math as _m
@@ -1995,27 +1995,42 @@ class PyQtGraphPitchRenderer(QWidget):
                         display_val = f"{rem:.1f}"
                     else:
                         display_val = str(int(max(1, _m.ceil(rem))))
-                    self._cd_text.setText(display_val)
+                    last_val = getattr(self, '_cd_last_text_val', '')
+                    if display_val != last_val:
+                        self._cd_text.setText(display_val)
+                        self._cd_last_text_val = display_val
                     mid_x = (x_min + x_max) * 0.5
                     mid_y = (y_min + y_max) * 0.55
                     self._cd_text.setPos(mid_x, mid_y)
                     self._cd_text.setVisible(True)
                 else:
                     self._cd_text.setVisible(False)
+                    try:
+                        self._cd_last_text_val = ''
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
-            # ── 提示文字 ──
+            # ── 提示文字（仅文本变化时更新 setText）──
             try:
                 if visible and rem > 0:
                     hint_text = f"准备回录… {cur_t:.2f}s → {target_t:.2f}s"
-                    self._cd_hint.setText(hint_text.strip())
+                    hint_text = hint_text.strip()
+                    last_hint = getattr(self, '_cd_last_hint_text', '')
+                    if hint_text != last_hint:
+                        self._cd_hint.setText(hint_text)
+                        self._cd_last_hint_text = hint_text
                     mid_x = (x_min + x_max) * 0.5
                     hint_y = (y_min + y_max) * 0.40
                     self._cd_hint.setPos(mid_x, hint_y)
                     self._cd_hint.setVisible(True)
                 else:
                     self._cd_hint.setVisible(False)
+                    try:
+                        self._cd_last_hint_text = ''
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -2071,7 +2086,7 @@ class PyQtGraphPitchRenderer(QWidget):
             self._overlay_label.setOpacity(0.95)
             vb.addItem(self._overlay_label)
 
-    def set_retake_overlay_preview(self, points, active, start_t=0.0, end_t=0.0):
+    def set_retake_overlay_preview(self, points, active, start_t=0.0, end_t=0.0, line_color=None):
         """更新重录覆盖预览点（对齐 normal 模式 _update_overlay_preview_artists）。
 
         Args:
@@ -2079,11 +2094,19 @@ class PyQtGraphPitchRenderer(QWidget):
             active: 是否激活
             start_t: 选区起始时间（用于标签）
             end_t: 选区结束时间（用于标签）
+            line_color: 线条颜色（可选，与主轨 line_color 对齐）
         """
         if not self._ready:
             return
         try:
             self._ensure_overlay_preview_items()
+            # 同步线条颜色与主轨
+            if line_color is not None:
+                try:
+                    overlay_color = pg.mkPen(color=str(line_color), width=1.0)
+                    self._overlay_line.setPen(overlay_color)
+                except Exception:
+                    pass
 
             if not active or not points:
                 self._overlay_line.setData([], [])
@@ -2236,6 +2259,13 @@ class PyQtGraphPitchRenderer(QWidget):
         pen = pg.mkPen(color=self._line_color, width=getattr(self, '_line_width', 1.5))
         for line in self._line_pool:
             line.setPen(pen)
+        # 同步覆盖预览线颜色
+        try:
+            ovl = getattr(self, '_overlay_line', None)
+            if ovl is not None:
+                ovl.setPen(pen)
+        except Exception:
+            pass
 
     def set_line_width(self, width):
         """设置全线宽度（对齐 normal 模式 current_linewidth）。"""
@@ -2246,6 +2276,13 @@ class PyQtGraphPitchRenderer(QWidget):
         pen = pg.mkPen(color=color, width=self._line_width)
         for line in self._line_pool:
             line.setPen(pen)
+        # 同步覆盖预览线宽度
+        try:
+            ovl = getattr(self, '_overlay_line', None)
+            if ovl is not None:
+                ovl.setPen(pen)
+        except Exception:
+            pass
 
     def set_point_size(self, size):
         """设置散点符号大小（对齐 normal 模式 _calc_marker_size）。"""
@@ -2254,6 +2291,13 @@ class PyQtGraphPitchRenderer(QWidget):
         self._point_size = float(size)
         for scatter in self._scatter_pool:
             scatter.setSymbolSize(self._point_size)
+        # 同步覆盖预览散点大小
+        try:
+            ovs = getattr(self, '_overlay_scatter', None)
+            if ovs is not None:
+                ovs.setSize(self._point_size)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════
