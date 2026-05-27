@@ -1047,6 +1047,21 @@ _TECHNIQUE_SECTION_DEFS = (
     },
 )
 
+# 声部选项：用于真假声分类的音高阈值自适应（女声整体高约八度）
+_VOICE_TYPE_OPTIONS = (
+    ('unspecified', '不指定（默认）'),
+    ('tenor', '男高音'),
+    ('baritone', '男中音'),
+    ('bass', '男低音'),
+    ('soprano', '女高音'),
+    ('mezzo_soprano', '女中音'),
+    ('contralto', '女低音'),
+)
+# 女声声部列表（用于判断是否需要上移音高阈值）
+_FEMALE_VOICE_TYPES = frozenset({'soprano', 'mezzo_soprano', 'contralto'})
+# 男声声部列表
+_MALE_VOICE_TYPES = frozenset({'tenor', 'baritone', 'bass'})
+
 
 def _iter_technique_catalog_items() -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
@@ -1184,6 +1199,7 @@ class TechniqueRecognitionConfig:
     show_fill_overlay: bool = False
     show_summary_panel: bool = False
     auto_focus_after_analysis: bool = False
+    voice_type: str = 'unspecified'  # unspecified / tenor / baritone / bass / soprano / mezzo_soprano / contralto
 
 
 @dataclass
@@ -31752,7 +31768,7 @@ class ECGStylePitchVisualizer(QWidget):
                 base_text = '技巧识别'
             btn.setText(f"{base_text} ({count})" if count > 0 else base_text)
             if enabled and bool(getattr(state, 'last_source_frame_count', 0) or 0) > 0:
-                btn.setToolTip('点击后可对当前普通模式数据做技巧分区与标注；录音完成后分析整段，暂停时分析当前已播放片段；按住 Ctrl 再点击可打开设置')
+                btn.setToolTip('点击打开技巧识别设置，可选择启用/关闭技巧分析并配置识别项目与展示方式')
             else:
                 btn.setToolTip('配置录音完成后的技巧识别项目与展示方式')
         except Exception:
@@ -33877,6 +33893,10 @@ class ECGStylePitchVisualizer(QWidget):
         mean_zcr: float = 0.0,
         mean_breath_score: float = 0.0,
         breath_hint_ratio: float = 0.0,
+        voice_type: str = 'unspecified',
+        mean_spectral_tilt: float = 0.0,
+        mean_hm_over_hh: float = 0.0,
+        mean_mid_high_ratio: float = 0.0,
     ) -> Dict[str, Any]:
         chest_prob = max(0.0, float(chest_prob or 0.0))
         falsetto_prob = max(0.0, float(falsetto_prob or 0.0))
@@ -33887,10 +33907,27 @@ class ECGStylePitchVisualizer(QWidget):
         mean_zcr = max(0.0, float(mean_zcr or 0.0))
         mean_breath_score = max(0.0, float(mean_breath_score or 0.0))
         breath_hint_ratio = max(0.0, float(breath_hint_ratio or 0.0))
+        mean_spectral_tilt = float(mean_spectral_tilt or 0.0)
+        mean_hm_over_hh = max(0.0, float(mean_hm_over_hh or 0.0))
+        mean_mid_high_ratio = max(0.0, float(mean_mid_high_ratio or 0.0))
 
         chest_bias = 0.0
         falsetto_bias = 0.0
         force_chest = False
+
+        # ── 声部自适应：女声整体音区高于男声约一个八度，上移音高阈值 ──
+        is_female = str(voice_type or 'unspecified').lower() in _FEMALE_VOICE_TYPES
+        pitch_shift = 120.0 if is_female else 0.0  # 女声阈值上移约半个八度（更保守的上移量，避免过度修正）
+        T1 = 240.0 + pitch_shift   # 强力真声偏置上界
+        T2 = 290.0 + pitch_shift   # 中等真声偏置上界
+        T3 = 340.0 + pitch_shift   # 轻度真声偏置上界
+        T4 = 420.0 + pitch_shift   # 假声偏置下界
+        T5 = 520.0 + pitch_shift   # 假声偏置上界
+        T_voiced_lo = 300.0 + pitch_shift
+        T_voiced_hi = 320.0 + pitch_shift
+        T_falsetto_hi = 360.0 + pitch_shift
+        T_zcr_pitch = 340.0 + pitch_shift
+
         breath_like = bool(
             0.00008 <= mean_rms <= 0.0026
             and (mean_zcr >= 0.09 or mean_breath_score >= 0.22 or breath_hint_ratio >= 0.14)
@@ -33900,35 +33937,57 @@ class ECGStylePitchVisualizer(QWidget):
 
         # 低音区默认更应保守地判为真声，避免把轻薄真声误判为假声。
         if mean_pitch_hz > 0.0:
-            if mean_pitch_hz < 240.0:
+            if mean_pitch_hz < T1:
                 chest_bias += 0.42
                 if falsetto_prob < 0.88:
                     force_chest = True
-            elif mean_pitch_hz < 290.0:
+            elif mean_pitch_hz < T2:
                 chest_bias += 0.22
-            elif mean_pitch_hz < 340.0:
+            elif mean_pitch_hz < T3:
                 chest_bias += 0.20
-            elif mean_pitch_hz < 420.0:
+            elif mean_pitch_hz < T4:
                 chest_bias += 0.08
-            elif mean_pitch_hz >= 520.0:
+            elif mean_pitch_hz >= T5:
                 falsetto_bias += 0.04
-            elif mean_pitch_hz >= 420.0:
+            elif mean_pitch_hz >= T4:
                 falsetto_bias += 0.02
 
-        if mean_pitch_hz < 300.0:
+        if mean_pitch_hz < T_voiced_lo:
             if voiced_ratio >= 0.56 and stable_ratio >= 0.14:
                 chest_bias += 0.09
             if mean_rms >= 0.00055 and mean_zcr <= 0.13:
                 chest_bias += 0.05
-        if mean_pitch_hz < 320.0 and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
+        if mean_pitch_hz < T_voiced_hi and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
             chest_bias += 0.08
-        if mean_pitch_hz >= 360.0 and mean_rms <= 0.00045 and stable_ratio < 0.18:
+        if mean_pitch_hz >= T_falsetto_hi and mean_rms <= 0.00045 and stable_ratio < 0.18:
             falsetto_bias += 0.03
         if breath_like:
             chest_bias += 0.14
             falsetto_bias -= 0.18
-        if mean_pitch_hz < 340.0 and mean_zcr >= 0.12 and stable_ratio < 0.12:
+        if mean_pitch_hz < T_zcr_pitch and mean_zcr >= 0.12 and stable_ratio < 0.12:
             falsetto_bias -= 0.05
+
+        # ── 频谱特征证据（性别无关）：利用谐波结构辅助判别 ──
+        # hm_over_hh > 1.0 表示中高频谐波能量高于高频谐波 → 更丰富的泛音 → 倾向真声
+        if mean_hm_over_hh > 0.0:
+            if mean_hm_over_hh > 1.50 and voiced_ratio >= 0.35:
+                chest_bias += 0.07
+            elif mean_hm_over_hh > 1.20 and voiced_ratio >= 0.40:
+                chest_bias += 0.04
+            elif mean_hm_over_hh < 0.80 and mean_pitch_hz >= T3:
+                falsetto_bias += 0.04
+        # mid_high_ratio > 1.5 表示中频能量高于高频 → 更厚的音色 → 倾向真声
+        if mean_mid_high_ratio > 0.0:
+            if mean_mid_high_ratio > 2.0 and voiced_ratio >= 0.35:
+                chest_bias += 0.06
+            elif mean_mid_high_ratio > 1.5 and voiced_ratio >= 0.40:
+                chest_bias += 0.03
+        # spectral_tilt: 负值(高频衰减慢) = 更丰富泛音 = 倾向真声; 正值(高频衰减快) = 倾向假声
+        if mean_spectral_tilt != 0.0:
+            if mean_spectral_tilt < -0.50 and voiced_ratio >= 0.30:
+                chest_bias += 0.05
+            elif mean_spectral_tilt > 0.60 and mean_pitch_hz >= T3:
+                falsetto_bias += 0.05
 
         adjusted_chest = chest_prob + chest_bias
         adjusted_falsetto = max(0.0, falsetto_prob + falsetto_bias)
@@ -33972,6 +34031,14 @@ class ECGStylePitchVisualizer(QWidget):
         if not (self._technique_type_selected('chest_voice') or self._technique_type_selected('falsetto')):
             self._last_voice_type_debug['reason'] = 'not_selected'
             return []
+        voice_type = 'unspecified'
+        try:
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None) if state is not None else None
+            if cfg is not None:
+                voice_type = str(getattr(cfg, 'voice_type', 'unspecified') or 'unspecified')
+        except Exception:
+            pass
         if audio_samples is None or sample_rate is None:
             self._last_voice_type_debug['reason'] = 'missing_audio'
             return []
@@ -34024,6 +34091,9 @@ class ECGStylePitchVisualizer(QWidget):
         breath_scores = np.asarray([float(getattr(item, 'breath_score', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
         breath_hints = np.asarray([1.0 if bool(getattr(item, 'breath_detect_hint', False)) else 0.0 for item in valid_frames], dtype=np.float32)
         pitches = np.asarray([float(getattr(item, 'display_frequency_hz', 0.0) or getattr(item, 'detected_frequency_hz', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        spectral_tilts = np.asarray([float(getattr(item, 'spectral_tilt', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        hm_over_hhs = np.asarray([float(getattr(item, 'hm_over_hh', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        mid_high_ratios = np.asarray([float(getattr(item, 'mid_high_ratio', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
         voiced_mask = np.logical_and(has_pitch, confidences >= 0.34)
         stable_mask = np.logical_and(has_pitch, confidences >= 0.50)
 
@@ -34091,6 +34161,9 @@ class ECGStylePitchVisualizer(QWidget):
             pitch_slice = pitches[frame_mask]
             positive_pitch = pitch_slice[pitch_slice > 0.0]
             mean_pitch_hz = float(np.mean(positive_pitch)) if positive_pitch.size else 0.0
+            mean_spectral_tilt = float(np.mean(spectral_tilts[frame_mask])) if frame_count > 0 else 0.0
+            mean_hm_over_hh = float(np.mean(hm_over_hhs[frame_mask])) if frame_count > 0 else 0.0
+            mean_mid_high_ratio = float(np.mean(mid_high_ratios[frame_mask])) if frame_count > 0 else 0.0
             candidate_meta = {
                 'start_time': start_time,
                 'end_time': min(total_duration, end_time),
@@ -34102,6 +34175,9 @@ class ECGStylePitchVisualizer(QWidget):
                 'mean_breath_score': mean_breath_score,
                 'breath_hint_ratio': breath_hint_ratio,
                 'mean_pitch_hz': mean_pitch_hz,
+                'mean_spectral_tilt': mean_spectral_tilt,
+                'mean_hm_over_hh': mean_hm_over_hh,
+                'mean_mid_high_ratio': mean_mid_high_ratio,
             }
             window_audio = np.asarray(window, dtype=np.float32)
             if bundle is not None:
@@ -34160,6 +34236,10 @@ class ECGStylePitchVisualizer(QWidget):
                             mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
                             mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
                             breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
+                            voice_type=voice_type,
+                            mean_spectral_tilt=float(record.get('mean_spectral_tilt', 0.0) or 0.0),
+                            mean_hm_over_hh=float(record.get('mean_hm_over_hh', 0.0) or 0.0),
+                            mean_mid_high_ratio=float(record.get('mean_mid_high_ratio', 0.0) or 0.0),
                         )
                         record.update({
                             'event_type': adjusted['event_type'],
@@ -34218,6 +34298,10 @@ class ECGStylePitchVisualizer(QWidget):
                     mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
                     mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
                     breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
+                    voice_type=voice_type,
+                    mean_spectral_tilt=float(record.get('mean_spectral_tilt', 0.0) or 0.0),
+                    mean_hm_over_hh=float(record.get('mean_hm_over_hh', 0.0) or 0.0),
+                    mean_mid_high_ratio=float(record.get('mean_mid_high_ratio', 0.0) or 0.0),
                 )
                 record.update({
                     'event_type': adjusted['event_type'],
@@ -60978,7 +61062,7 @@ class IntegratedRecordingInterface(QMainWindow):
                 base_text = '技巧识别'
             btn.setText(f"{base_text} ({count})" if count > 0 else base_text)
             if enabled and source_ready:
-                btn.setToolTip('点击后可对当前普通模式数据做技巧分区与标注；录音完成后分析整段，本地实时暂停时分析已播放片段，一次性绘制模式下优先分析整段；按住 Ctrl 再点击可打开设置')
+                btn.setToolTip('点击打开技巧识别设置，可选择启用/关闭技巧分析并配置识别项目与展示方式')
             else:
                 btn.setToolTip('配置录音完成后的技巧识别项目与展示方式')
         except Exception:
@@ -62628,19 +62712,6 @@ class IntegratedRecordingInterface(QMainWindow):
             state = TechniquePanelState()
             cfg = TechniqueRecognitionConfig()
             selected_types = []
-        try:
-            modifiers = QApplication.keyboardModifiers()
-            open_settings_only = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
-        except Exception:
-            open_settings_only = False
-        if (not open_settings_only) and bool(getattr(cfg, 'enabled', False)) and bool(selected_types) and self._technique_analysis_source_ready():
-            try:
-                analysis_result = self._run_offline_technique_analysis(show_feedback=True)
-            except Exception:
-                analysis_result = None
-            if analysis_result and bool(analysis_result.get('ok', False)):
-                return
-
         dlg = QDialog(self)
         dlg.setWindowTitle('技巧识别')
         dlg.setModal(True)
@@ -62663,6 +62734,32 @@ class IntegratedRecordingInterface(QMainWindow):
         enable_chk = QCheckBox('启用技巧识别')
         enable_chk.setChecked(bool(getattr(cfg, 'enabled', False)))
         layout.addWidget(enable_chk)
+
+        voice_type_row = QHBoxLayout()
+        voice_type_label = QLabel('声部选择：')
+        voice_type_label.setStyleSheet('color: #E6EEF8;')
+        voice_type_combo = QComboBox()
+        voice_type_combo.setStyleSheet("""
+            QComboBox { background-color: #1E2D3D; border: 1px solid #4A647D; border-radius: 4px;
+                        padding: 4px 8px; color: #F4FAFF; }
+            QComboBox:hover { border-color: #74B7E6; }
+            QComboBox QAbstractItemView { background-color: #1E2D3D; color: #F4FAFF;
+                                          selection-background-color: #2B5A7A; }
+        """)
+        current_voice = str(getattr(cfg, 'voice_type', 'unspecified') or 'unspecified')
+        for idx, (v_key, v_label) in enumerate(_VOICE_TYPE_OPTIONS):
+            voice_type_combo.addItem(v_label, v_key)
+            if v_key == current_voice:
+                voice_type_combo.setCurrentIndex(idx)
+        voice_type_row.addWidget(voice_type_label)
+        voice_type_row.addWidget(voice_type_combo, 1)
+        voice_type_row.addStretch()
+        layout.addLayout(voice_type_row)
+
+        voice_type_hint = QLabel('选择声部可优化真假声识别准确率；女声建议选择对应声部以减少真声误判为假声。')
+        voice_type_hint.setWordWrap(True)
+        voice_type_hint.setStyleSheet('color: #9FB5C9; font-size: 12px; margin-bottom: 4px;')
+        layout.addWidget(voice_type_hint)
 
         group = QGroupBox('识别项目')
         group_layout = QVBoxLayout(group)
@@ -62774,6 +62871,7 @@ class IntegratedRecordingInterface(QMainWindow):
             show_fill_overlay=bool(fill_chk.isChecked()),
             show_summary_panel=bool(summary_chk.isChecked()),
             auto_focus_after_analysis=False,
+            voice_type=str(voice_type_combo.currentData() or 'unspecified'),
         )
         self._technique_panel_state = _normalize_technique_panel_state(TechniquePanelState(
             config=new_cfg,
