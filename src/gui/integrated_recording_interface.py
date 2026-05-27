@@ -18578,13 +18578,9 @@ class ECGStylePitchVisualizer(QWidget):
                 diameter = max(2.0, min(base_w * 3.6 / (0.6 if zoom < 1 else min(zoom, 3.0)), 5.0))
                 s_val_global = float(diameter ** 2)
                 scatter.set_sizes(np.full(len(s_times), s_val_global, dtype=float))
-                try:
-                    rgba = self._retake_overlay_base_rgba(0.92)
-                    detail_rgb = (float(rgba[0]), float(rgba[1]), float(rgba[2]))
-                    detail_alpha = min(1.0, max(0.10, float(rgba[3]) + 0.12))
-                except Exception:
-                    detail_rgb = tuple(c/255.0 for c in (255, 255, 255))
-                    detail_alpha = 0.98
+                # 与主轨散点保持一致：白色，alpha=0.96
+                detail_rgb = (1.0, 1.0, 1.0)
+                detail_alpha = 0.96
                 scatter.set_color(detail_rgb)
                 scatter.set_alpha(detail_alpha if offsets.size > 0 else 0.0)
                 scatter.set_linewidths(0.0)
@@ -47358,13 +47354,13 @@ class ECGStylePitchVisualizer(QWidget):
                     except Exception:
                         continue
                     try:
-                        filtered = self._apply_pitch_masks_to_series(list(seg_times), list(seg_pitches))
-                        seg_times = filtered[0]
-                        seg_pitches = filtered[1] if len(filtered) > 1 else []
+                        filtered_t, filtered_p = self._apply_mask_breaks_to_series(list(seg_times), list(seg_pitches))
                     except Exception:
-                        pass
-                    if seg_times:
-                        masked_segments.append((seg_times, seg_pitches))
+                        filtered_t, filtered_p = seg_times, seg_pitches
+                    if filtered_t and any(not (isinstance(x, float) and x != x) for x in filtered_t):
+                        masked_segments.append((filtered_t, filtered_p))
+                    elif filtered_t:
+                        masked_segments.append((filtered_t, filtered_p))
                 processed_segments = masked_segments
             self._segments = processed_segments
             segments = processed_segments
