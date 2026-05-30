@@ -1,0 +1,10 @@
+{
+  "temperature": 1.946364825781211,
+  "platt_cn_coef": 2.018626629234231,
+  "platt_cn_intercept": -0.5908594552986817,
+  "platt_en_coef": 0.4249980932612647,
+  "platt_en_intercept": -0.04151451793900756,
+  "method": "platt_per_language",
+  "cn_val_n": 381,
+  "en_val_n": 1845
+}

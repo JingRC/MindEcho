@@ -37,10 +37,13 @@ except NameError:
     project_root = Path.cwd()
 
 _CHEST_FALSETTO_CHECKPOINT_CANDIDATES = (
+    project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts_mel_safe_v2' / 'best_squeezenet_fourclass.pt',
     project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts_mel_safe_v2' / 'best_squeezenet_binary.pt',
     project_root / 'ml_dl_models' / 'chest_falsetto' / 'squeezenet_binary' / 'artifacts' / 'best_squeezenet_binary.pt',
 )
 _MIX_BINARY_CHECKPOINT_CANDIDATES = (
+    project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_latefusion_v6_song_level' / 'best_mix_binary_latefusion.pt',
+    project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_latefusion_v1' / 'best_mix_binary_latefusion.pt',
     project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu' / 'best_mix_binary_squeezenet.pt',
     project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_ce_v2_calibrated_gpu' / 'best_mix_binary_squeezenet.pt',
     project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'mix_binary_ce_v1_gpu' / 'best_mix_binary_squeezenet.pt',
@@ -48,9 +51,12 @@ _MIX_BINARY_CHECKPOINT_CANDIDATES = (
 _MIX_BINARY_SOFTWARE_THRESHOLD_FLOORS = {
     'mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu': 0.55,
 }
+_MIX_BINARY_FEMALE_THRESHOLD = 0.225
 _CHEST_FALSETTO_TARGET_SR = 22050
 _CHEST_FALSETTO_WINDOW_S = 0.64
 _CHEST_FALSETTO_HOP_S = 0.16
+_MIX_BINARY_WINDOW_S = 2.4
+_MIX_BINARY_HOP_S = 0.16
 _CHEST_FALSETTO_IMAGE_SIZE = 224
 _CHEST_FALSETTO_BATCH_SIZE = 24
 _CHEST_FALSETTO_MEAN = (0.485, 0.456, 0.406)
@@ -1019,15 +1025,15 @@ _TECHNIQUE_SECTION_DEFS = (
     {
         'title': '混声技术（Mix Voice）',
         'items': (
-            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'parent_key': 'mix_voice'},
-            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'parent_key': 'mix_voice'},
-            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'parent_key': 'mix_voice'},
+            {'key': 'strong_mix', 'label': '强混声', 'implemented': True, 'default_selected': True, 'parent_key': 'mix_voice'},
+            {'key': 'weak_mix', 'label': '弱混声', 'implemented': True, 'default_selected': True, 'parent_key': 'mix_voice'},
+            {'key': 'balanced_mix', 'label': '气混声', 'implemented': True, 'default_selected': True, 'parent_key': 'mix_voice'},
         ),
     },
     {
         'title': '装饰性技巧（Ornamentation）',
         'items': (
-            {'key': 'runs', 'label': '转音', 'implemented': False},
+            {'key': 'runs', 'label': '转音', 'implemented': True},
             {'key': 'slide', 'label': '滑音', 'implemented': False},
             {'key': 'vibrato', 'label': '颤音', 'implemented': True, 'default_selected': True},
             {'key': 'distortion', 'label': '怒音/撕裂音', 'implemented': False},
@@ -1185,10 +1191,12 @@ class TechniqueRecognitionConfig:
     detect_slide: bool = False
     detect_vibrato: bool = True
     detect_breathy_phonation: bool = False
+    detect_runs: bool = True
     min_event_confidence: float = 0.55
     merge_gap_s: float = 0.12
     min_breath_duration_s: float = 0.06
     min_slide_duration_s: float = 0.08
+    min_runs_duration_s: float = 0.12
     min_vibrato_duration_s: float = 0.18
     min_register_transition_s: float = 0.10
     min_breathy_duration_s: float = 0.10
@@ -1200,6 +1208,11 @@ class TechniqueRecognitionConfig:
     show_summary_panel: bool = False
     auto_focus_after_analysis: bool = False
     voice_type: str = 'unspecified'  # unspecified / tenor / baritone / bass / soprano / mezzo_soprano / contralto
+    # P1: Mix voice rule engine enhancements
+    enable_spectral_mix_evidence: bool = True
+    enable_pitch_continuity_mix: bool = True
+    enable_strict_mix_duration: bool = True
+    mix_min_duration_s: float = 0.20
 
 
 @dataclass
@@ -1298,6 +1311,21 @@ class SlideEvent(BaseTechniqueEvent):
     continuity_score: Optional[float] = None
     interrupted_by_breath: bool = False
     note_crossings: int = 0
+
+
+@dataclass
+class RunsEvent(BaseTechniqueEvent):
+    direction: str = 'mixed'
+    start_pitch_hz: Optional[float] = None
+    end_pitch_hz: Optional[float] = None
+    pitch_span_semitones: Optional[float] = None
+    mean_semitone_rate: Optional[float] = None
+    peak_semitone_rate: Optional[float] = None
+    note_count: int = 0
+    note_changes: int = 0
+    smoothness_score: Optional[float] = None
+    continuity_score: Optional[float] = None
+    interrupted_by_breath: bool = False
 
 
 @dataclass
@@ -32461,6 +32489,42 @@ class ECGStylePitchVisualizer(QWidget):
                 continuity_score=state.get('continuity_score'),
             )
             self._append_technique_event(event)
+        elif event_type == 'runs':
+            min_dur = float(getattr(cfg, 'min_runs_duration_s', 0.12) or 0.12) if cfg is not None else 0.12
+            note_changes = int(state.get('note_changes', 0) or 0)
+            total_span = float(state.get('total_semitone_span', 0.0) or 0.0)
+            if duration < min_dur or note_changes < 3 or total_span < 3.0:
+                self._technique_active_states.pop(event_type, None)
+                return
+            start_pitch = float(state.get('start_pitch_hz', 0.0) or 0.0)
+            end_pitch = float(state.get('last_pitch_hz', start_pitch) or start_pitch)
+            try:
+                span = abs(12.0 * math.log2(max(end_pitch, 1e-9) / max(start_pitch, 1e-9))) if start_pitch > 0 and end_pitch > 0 else 0.0
+            except Exception:
+                span = 0.0
+            event = RunsEvent(
+                event_type='runs',
+                start_time=start_time,
+                end_time=end_time,
+                confidence=float(state.get('confidence', 0.60) or 0.60),
+                strength=float(state.get('strength', 0.56) or 0.56),
+                center_time=0.5 * (start_time + end_time),
+                duration=duration,
+                source_layer='state_machine',
+                display_label='转音',
+                display_color='#FFD54F',
+                direction=str(state.get('direction', 'mixed') or 'mixed'),
+                start_pitch_hz=start_pitch,
+                end_pitch_hz=end_pitch,
+                pitch_span_semitones=span,
+                mean_semitone_rate=state.get('mean_rate'),
+                peak_semitone_rate=state.get('peak_rate'),
+                note_count=int(note_changes),
+                note_changes=int(note_changes),
+                smoothness_score=state.get('smoothness_score'),
+                continuity_score=state.get('continuity_score'),
+            )
+            self._append_technique_event(event)
         elif event_type == 'vibrato':
             min_dur = float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18) if cfg is not None else 0.18
             if duration < min_dur:
@@ -32740,6 +32804,61 @@ class ECGStylePitchVisualizer(QWidget):
                 slide_state['continuity_score'] = max(float(slide_state.get('continuity_score', 0.0) or 0.0), float(features.continuity_score or 0.0))
         elif slide_state is not None:
             self._finalize_active_event('slide', float(features.timeline_time), final_features=features)
+
+        # ── 转音检测：连续快速音高变化，至少 3 次方向改变，半音速率 > 8 st/s ──
+        runs_state = self._technique_active_states.get('runs')
+        runs_candidate = bool(
+            self._technique_type_selected('runs')
+            and features.has_pitch
+            and (breath_state is None)
+            and voiced_score >= 0.58
+            and float(features.confidence or 0.0) >= 0.48
+            and float(features.audio_rms or 0.0) >= 0.00045
+            and semitone_rate >= 8.0
+            and semitone_rate <= 28.0
+            and float(features.continuity_score or 0.0) >= 0.22
+            and float(features.breath_score or 0.0) <= 0.35
+        )
+        if runs_candidate:
+            direction = 'mixed'
+            try:
+                prev_pitch = float(getattr(self, '_technique_last_frame_pitch', 0.0) or 0.0)
+                if prev_pitch > 0.0:
+                    diff_semi = abs(float(features.semitone_delta_prev or 0.0))
+                    if diff_semi > 0.8:
+                        direction = 'up' if float(features.detected_frequency_hz or 0.0) > prev_pitch else 'down'
+            except Exception:
+                pass
+            if runs_state is None:
+                self._technique_active_states['runs'] = {
+                    'start_time': float(features.timeline_time),
+                    'last_time': float(features.timeline_time),
+                    'start_pitch_hz': float(features.detected_frequency_hz or 0.0),
+                    'last_pitch_hz': float(features.detected_frequency_hz or 0.0),
+                    'direction': direction,
+                    'peak_rate': float(features.semitone_rate or 0.0),
+                    'mean_rate': float(features.semitone_rate or 0.0),
+                    'smoothness_score': max(0.0, min(1.0, 1.0 - float(features.semitone_accel or 0.0) / 24.0)),
+                    'continuity_score': float(features.continuity_score or 0.0),
+                    'confidence': max(0.48, min(0.82, 0.44 + float(features.confidence or 0.0) * 0.30)),
+                    'strength': max(0.48, min(0.84, float(features.semitone_rate or 0.0) / 12.0)),
+                    'note_changes': 1,
+                    'total_semitone_span': abs(float(features.semitone_delta_prev or 0.0)),
+                }
+            else:
+                new_dir = direction
+                prev_dir = str(runs_state.get('direction', 'mixed') or 'mixed')
+                if new_dir != 'mixed' and new_dir != prev_dir:
+                    runs_state['direction'] = 'mixed'
+                runs_state['last_time'] = float(features.timeline_time)
+                runs_state['last_pitch_hz'] = float(features.detected_frequency_hz or 0.0)
+                runs_state['peak_rate'] = max(float(runs_state.get('peak_rate', 0.0) or 0.0), float(features.semitone_rate or 0.0))
+                runs_state['mean_rate'] = 0.82 * float(runs_state.get('mean_rate', 0.0) or 0.0) + 0.18 * float(features.semitone_rate or 0.0)
+                runs_state['continuity_score'] = max(float(runs_state.get('continuity_score', 0.0) or 0.0), float(features.continuity_score or 0.0))
+                runs_state['note_changes'] = int(runs_state.get('note_changes', 1) or 1) + (1 if abs(float(features.semitone_delta_prev or 0.0)) > 0.55 else 0)
+                runs_state['total_semitone_span'] = float(runs_state.get('total_semitone_span', 0.0) or 0.0) + abs(float(features.semitone_delta_prev or 0.0))
+        elif runs_state is not None:
+            self._finalize_active_event('runs', float(features.timeline_time), final_features=features)
 
         vibrato_state = self._technique_active_states.get('vibrato')
         vibrato_info = dict(features.vibrato_info or {})
@@ -33081,8 +33200,10 @@ class ECGStylePitchVisualizer(QWidget):
             pass
         return {}
 
-    def _resolve_mix_binary_threshold(self) -> float:
+    def _resolve_mix_binary_threshold(self, *, is_female: Optional[bool] = None) -> float:
         default_threshold = 0.45
+        if is_female:
+            return float(_MIX_BINARY_FEMALE_THRESHOLD)
         checkpoint_path = self._resolve_mix_binary_checkpoint_path()
         if checkpoint_path is None:
             return default_threshold
@@ -33443,14 +33564,14 @@ class ECGStylePitchVisualizer(QWidget):
             return None
         device = torch.device('cpu')
 
-        def _build_torchvision_model():
+        def _build_torchvision_model(num_classes: int = 2):
             from torchvision import models  # type: ignore
             model_obj = models.squeezenet1_1(weights=None)
-            model_obj.classifier[1] = torch.nn.Conv2d(512, 2, kernel_size=1)
-            model_obj.num_classes = 2
+            model_obj.classifier[1] = torch.nn.Conv2d(512, num_classes, kernel_size=1)
+            model_obj.num_classes = num_classes
             return model_obj, 'torchvision'
 
-        def _build_torch_only_model():
+        def _build_torch_only_model(num_classes: int = 2):
             nn = torch.nn
 
             class _Fire(nn.Module):
@@ -33501,23 +33622,33 @@ class ECGStylePitchVisualizer(QWidget):
                     x = self.classifier(x)
                     return torch.flatten(x, 1)
 
-            return _SqueezeNet(num_classes=2), 'torch_only_fallback'
+            return _SqueezeNet(num_classes=num_classes), 'torch_only_fallback'
 
-        model_backend = 'unknown'
-        try:
-            model, model_backend = _build_torchvision_model()
-        except Exception as exc:
-            try:
-                model, model_backend = _build_torch_only_model()
-            except Exception as fallback_exc:
-                self._last_chest_falsetto_model_error = f'model_build_failed:{type(exc).__name__}:{type(fallback_exc).__name__}'
-                return None
+        # Load checkpoint first to auto-detect num_classes from state dict
         try:
             checkpoint = torch.load(str(checkpoint_path), map_location=device)
         except Exception as exc:
             self._last_chest_falsetto_model_error = f'checkpoint_load_failed:{type(exc).__name__}'
             return None
         state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        # Auto-detect num_classes from classifier output layer weight shape
+        num_classes = 2
+        use_four_class = False
+        for key, tensor in state_dict.items():
+            if 'classifier.1.weight' in key:
+                num_classes = int(tensor.shape[0])
+                break
+        use_four_class = num_classes == 4
+
+        model_backend = 'unknown'
+        try:
+            model, model_backend = _build_torchvision_model(num_classes=num_classes)
+        except Exception as exc:
+            try:
+                model, model_backend = _build_torch_only_model(num_classes=num_classes)
+            except Exception as fallback_exc:
+                self._last_chest_falsetto_model_error = f'model_build_failed:{type(exc).__name__}:{type(fallback_exc).__name__}'
+                return None
         try:
             model.load_state_dict(state_dict)
         except Exception as exc:
@@ -33532,6 +33663,8 @@ class ECGStylePitchVisualizer(QWidget):
             'device': device,
             'model': model,
             'backend': model_backend,
+            'num_classes': num_classes,
+            'use_four_class': use_four_class,
             'mean': torch.tensor(_CHEST_FALSETTO_MEAN, dtype=torch.float32).view(3, 1, 1),
             'std': torch.tensor(_CHEST_FALSETTO_STD, dtype=torch.float32).view(3, 1, 1),
         }
@@ -33558,22 +33691,28 @@ class ECGStylePitchVisualizer(QWidget):
                 pass
         summary_payload = self._resolve_mix_binary_summary_payload(checkpoint_path)
         backbone_name = str(summary_payload.get('backbone_name', 'squeezenet11') or 'squeezenet11').strip().lower()
+        model_type = str(summary_payload.get('model_type', 'plain') or 'plain').strip().lower()
         threshold = self._resolve_mix_binary_threshold()
         image_size = max(64, int(summary_payload.get('image_size', 224) or 224))
         sample_rate = max(8000, int(summary_payload.get('sample_rate', _CHEST_FALSETTO_TARGET_SR) or _CHEST_FALSETTO_TARGET_SR))
         n_fft = max(128, int(summary_payload.get('n_fft', 1024) or 1024))
         hop_length = max(32, int(summary_payload.get('hop_length', 256) or 256))
         n_mels = max(32, int(summary_payload.get('n_mels', 128) or 128))
+        spectral_dim = max(4, int(summary_payload.get('spectral_dim', 16) or 16))
+        is_latefusion = model_type == 'squeezenet_latefusion'
         bundle = {
             'path': str(checkpoint_path),
             'mtime': mtime,
             'threshold': max(0.05, min(0.95, threshold)),
             'backbone_name': backbone_name,
+            'model_type': model_type,
+            'is_latefusion': is_latefusion,
             'image_size': image_size,
             'sample_rate': sample_rate,
             'n_fft': n_fft,
             'hop_length': hop_length,
             'n_mels': n_mels,
+            'spectral_dim': spectral_dim,
             'force_external': False,
         }
         torch, torch_error = _import_torch_safely()
@@ -33584,7 +33723,7 @@ class ECGStylePitchVisualizer(QWidget):
             return bundle
         device = torch.device('cpu')
         try:
-            model = self._build_mix_binary_model_architecture(torch, backbone_name)
+            model = self._build_mix_binary_model_architecture(torch, backbone_name, model_type=model_type)
         except Exception as exc:
             bundle['force_external'] = True
             self._last_mix_binary_model_error = f'model_build_failed:{type(exc).__name__}'
@@ -33615,6 +33754,14 @@ class ECGStylePitchVisualizer(QWidget):
                 self._last_mix_binary_model_error = f'checkpoint_load_failed:{type(exc).__name__}'
                 self._mix_binary_model_bundle = bundle
                 return bundle
+        # Detect model_type from checkpoint metadata (takes precedence over summary)
+        if isinstance(checkpoint, dict) and str(checkpoint.get('model_type', '') or '').strip().lower() == 'squeezenet_latefusion':
+            bundle['model_type'] = 'squeezenet_latefusion'
+            bundle['is_latefusion'] = True
+            bundle['spectral_dim'] = max(4, int(checkpoint.get('spectral_dim', bundle.get('spectral_dim', 16)) or 16))
+            # Rebuild model if the summary-based build used 'plain'
+            if not getattr(model, '_is_latefusion', False):
+                model = self._build_mix_binary_model_architecture(torch, backbone_name, model_type='squeezenet_latefusion')
         state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
         try:
             model.load_state_dict(state_dict)
@@ -33645,9 +33792,11 @@ class ECGStylePitchVisualizer(QWidget):
         self._mix_binary_model_bundle = bundle
         return bundle
 
-    def _build_mix_binary_model_architecture(self, torch_module: Any, backbone_name: str) -> Any:
+    def _build_mix_binary_model_architecture(self, torch_module: Any, backbone_name: str, model_type: str = 'plain') -> Any:
         name = str(backbone_name or 'squeezenet11').strip().lower()
         from torchvision import models  # type: ignore
+        if str(model_type or 'plain') == 'squeezenet_latefusion':
+            return self._build_mix_binary_latefusion_architecture(torch_module, name)
         if name == 'squeezenet11':
             model = models.squeezenet1_1(weights=None)
             model.classifier[1] = torch_module.nn.Conv2d(512, 2, kernel_size=1)
@@ -33664,6 +33813,62 @@ class ECGStylePitchVisualizer(QWidget):
             model.classifier[-1] = torch_module.nn.Linear(in_features, 2)
             return model
         raise ValueError(f'unsupported_backbone:{name}')
+
+    def _build_mix_binary_latefusion_architecture(self, torch_module: Any, backbone_name: str, spectral_dim: int = 16, backbone_dim: int | None = None) -> Any:
+        """Build a late-fusion mix model: SqueezeNet backbone + spectral encoder + fusion head."""
+        from torchvision import models  # type: ignore
+        nn = torch_module.nn
+        if str(backbone_name or 'squeezenet11').strip().lower() == 'squeezenet11':
+            backbone = models.squeezenet1_1(weights=None)
+            backbone.classifier[1] = nn.Identity()
+            if backbone_dim is None:
+                backbone_dim = 512
+        elif backbone_name == 'mobilenet_v3_small':
+            backbone = models.mobilenet_v3_small(weights=None)
+            if backbone_dim is None:
+                backbone_dim = 576
+        elif backbone_name == 'efficientnet_b0':
+            backbone = models.efficientnet_b0(weights=None)
+            if backbone_dim is None:
+                backbone_dim = 1280
+        else:
+            raise ValueError(f'unsupported_backbone:{backbone_name}')
+
+        fused_dim = int(backbone_dim) + int(spectral_dim)
+        fusion_head = nn.Sequential(
+            nn.Linear(fused_dim, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 2),
+        )
+        spectral_encoder = nn.Sequential(
+            nn.Linear(3, int(spectral_dim)),
+            nn.ReLU(inplace=True),
+        )
+
+        class LateFusionWrapper(nn.Module):
+            def __init__(self, backbone, spectral_encoder, fusion_head):
+                super().__init__()
+                self.backbone = backbone
+                self.spectral_encoder = spectral_encoder
+                self.fusion_head = fusion_head
+                self._is_latefusion = True
+                self.num_classes = 2
+
+            def forward(self, mel_images, spectral_features=None):
+                if spectral_features is None:
+                    spectral_features = torch_module.zeros(mel_images.size(0), 3, device=mel_images.device)
+                features = self.backbone.features(mel_images)
+                backbone_emb = nn.functional.adaptive_avg_pool2d(features, (1, 1)).flatten(1)
+                spectral_emb = self.spectral_encoder(spectral_features)
+                return self.fusion_head(torch_module.cat([backbone_emb, spectral_emb], dim=1))
+
+        model = LateFusionWrapper(backbone, spectral_encoder, fusion_head)
+        setattr(model, '_mix_backbone_name', str(backbone_name or 'squeezenet11').strip().lower())
+        setattr(model, '_is_latefusion', True)
+        return model
 
     def _build_mix_binary_mel_filterbank(self, *, sample_rate: int, n_fft: int, n_mels: int) -> np.ndarray:
         upper_hz = float(sample_rate) * 0.5
@@ -33690,6 +33895,44 @@ class ECGStylePitchVisualizer(QWidget):
             if right > center:
                 filterbank[mel_idx - 1, center:right] = np.linspace(1.0, 0.0, max(right - center, 1), endpoint=False, dtype=np.float32)
         return filterbank
+
+    def _compute_mix_spectral_features(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Compute [spectral_tilt, hm_over_hh, mid_high_ratio] from raw audio window.
+
+        Returns float32 array of shape (3,). Values match the features used by the
+        late-fusion mix model and the P1 rule engine.
+        """
+        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        n = len(x)
+        if n < 64:
+            return np.array([0.0, 1.0, 1.0], dtype=np.float32)
+        sr_val = float(sample_rate)
+        spec = np.fft.rfft(x)
+        mag = np.abs(spec) + 1e-12
+        freqs = np.fft.rfftfreq(n, 1.0 / sr_val)
+
+        valid = freqs > 0
+        if np.sum(valid) > 4:
+            mag_db = 20.0 * np.log10(mag[valid])
+            log2_f = np.log2(freqs[valid])
+            slope, _ = np.polyfit(log2_f, mag_db, 1)
+            spectral_tilt = float(slope)
+        else:
+            spectral_tilt = 0.0
+
+        mid_mask = (freqs >= 300.0) & (freqs <= 3000.0)
+        high_mask = freqs > 3000.0
+        mid_energy = float(np.mean(mag[mid_mask])) if np.any(mid_mask) else 0.0
+        high_energy = float(np.mean(mag[high_mask])) if np.any(high_mask) else 1e-12
+        mid_high_ratio = (mid_energy + 1e-9) / (high_energy + 1e-9)
+
+        hm_mask = (freqs >= 2000.0) & (freqs <= 6000.0)
+        hh_mask = freqs > 6000.0
+        e_hm = float(np.mean(mag[hm_mask])) if np.any(hm_mask) else 1e-12
+        e_hh = float(np.mean(mag[hh_mask])) if np.any(hh_mask) else 1e-12
+        hm_over_hh = (e_hm + 1e-9) / (e_hh + 1e-9)
+
+        return np.array([spectral_tilt, hm_over_hh, mid_high_ratio], dtype=np.float32)
 
     def _build_mix_binary_window_tensor(self, audio_window: np.ndarray, bundle: Dict[str, Any]) -> Optional[Any]:
         try:
@@ -33755,7 +33998,9 @@ class ECGStylePitchVisualizer(QWidget):
             std = bundle.get('std')
             if mean is not None and std is not None:
                 tensor = (tensor - mean) / std
-            return tensor
+            spectral = self._compute_mix_spectral_features(y, target_sample_rate)
+            spectral_tensor = torch.from_numpy(spectral)
+            return (tensor, spectral_tensor)
         except Exception:
             return None
 
@@ -33763,25 +34008,33 @@ class ECGStylePitchVisualizer(QWidget):
         torch = bundle.get('torch') if isinstance(bundle, dict) else None
         model = bundle.get('model') if isinstance(bundle, dict) else None
         device = bundle.get('device') if isinstance(bundle, dict) else None
+        is_latefusion = bool(bundle.get('is_latefusion', False))
         if torch is None or model is None or device is None:
             return None
-        tensors = []
+        mel_tensors = []
+        spectral_tensors = []
         for item in list(audio_windows or []):
-            tensor = self._build_mix_binary_window_tensor(item, bundle)
-            if tensor is None:
+            result = self._build_mix_binary_window_tensor(item, bundle)
+            if result is None:
                 self._last_mix_binary_model_error = 'local_preprocess_failed'
                 return None
-            tensors.append(tensor)
-        if not tensors:
+            mel_tensor, spectral_tensor = result
+            mel_tensors.append(mel_tensor)
+            spectral_tensors.append(spectral_tensor)
+        if not mel_tensors:
             self._last_mix_binary_model_error = 'local_no_valid_windows'
             return None
         results: List[Dict[str, Any]] = []
         batch_size = int(_CHEST_FALSETTO_BATCH_SIZE)
         try:
             with torch.no_grad():
-                for start_idx in range(0, len(tensors), batch_size):
-                    batch = torch.stack(tensors[start_idx:start_idx + batch_size]).to(device)
-                    logits = model(batch)
+                for start_idx in range(0, len(mel_tensors), batch_size):
+                    mel_batch = torch.stack(mel_tensors[start_idx:start_idx + batch_size]).to(device)
+                    if is_latefusion:
+                        spec_batch = torch.stack(spectral_tensors[start_idx:start_idx + batch_size]).to(device)
+                        logits = model(mel_batch, spec_batch)
+                    else:
+                        logits = model(mel_batch)
                     probs = torch.softmax(logits, dim=1).cpu().numpy()
                     for prob in probs:
                         results.append({
@@ -33854,6 +34107,51 @@ class ECGStylePitchVisualizer(QWidget):
             cur_item['probability_margin'] = abs(float(cur_item.get('chest_prob', 0.0) or 0.0) - float(cur_item.get('falsetto_prob', 0.0) or 0.0))
         return smoothed
 
+    def _smooth_mix_probabilities(
+        self,
+        predictions: List[Dict[str, Any]],
+        half_window: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """Rescue isolated low-confidence mix frames where neighbors strongly suggest mix.
+
+        Adjacent windows overlap ~99% (2.4s windows at ~11.6ms hop). A single-frame
+        probability dip is model noise, not a real acoustic change. Only boosts UP.
+        """
+        n = len(predictions)
+        if n < 3:
+            return predictions
+        for i in range(n):
+            cur = predictions[i]
+            cur_prob = float(cur.get('mix_prob', 0.0) or 0.0)
+            cur_thr = float(cur.get('mix_threshold', 0.45) or 0.45)
+            if cur_prob >= cur_thr:
+                continue
+            neighbor_probs = []
+            above_count = 0
+            for j in range(max(0, i - half_window), min(n, i + half_window + 1)):
+                if j == i:
+                    continue
+                p = float(predictions[j].get('mix_prob', 0.0) or 0.0)
+                t = float(predictions[j].get('mix_threshold', 0.45) or 0.45)
+                if p > 0:
+                    neighbor_probs.append(p)
+                    if p >= t:
+                        above_count += 1
+            if len(neighbor_probs) < 2 or above_count < 2:
+                continue
+            neighbor_mean = sum(neighbor_probs) / len(neighbor_probs)
+            if neighbor_mean <= cur_prob:
+                continue
+            # Adaptive blend: stronger boost when neighbors are clearly above threshold
+            if neighbor_mean > cur_thr + 0.05:
+                blend = 0.65
+            elif neighbor_mean > cur_thr:
+                blend = 0.55
+            else:
+                blend = 0.40
+            cur['mix_prob'] = float(cur_prob + blend * (neighbor_mean - cur_prob))
+        return predictions
+
     def _voice_prediction_accepted(self, confidence: float, probability_margin: float, *, relaxed: bool = False) -> bool:
         if relaxed:
             return confidence >= 0.48 and probability_margin >= 0.018
@@ -33897,6 +34195,7 @@ class ECGStylePitchVisualizer(QWidget):
         mean_spectral_tilt: float = 0.0,
         mean_hm_over_hh: float = 0.0,
         mean_mid_high_ratio: float = 0.0,
+        auto_gender_is_female: Optional[bool] = None,
     ) -> Dict[str, Any]:
         chest_prob = max(0.0, float(chest_prob or 0.0))
         falsetto_prob = max(0.0, float(falsetto_prob or 0.0))
@@ -33913,10 +34212,18 @@ class ECGStylePitchVisualizer(QWidget):
 
         chest_bias = 0.0
         falsetto_bias = 0.0
+        pitch_chest_bias = 0.0
+        pitch_falsetto_bias = 0.0
         force_chest = False
 
         # ── 声部自适应：女声整体音区高于男声约一个八度，上移音高阈值 ──
-        is_female = str(voice_type or 'unspecified').lower() in _FEMALE_VOICE_TYPES
+        if auto_gender_is_female is not None:
+            is_female = bool(auto_gender_is_female)
+            # 4-class 模型已编码性别×音高关系，音高先验降至30%避免双修正
+            pitch_prior_scale = 0.30
+        else:
+            is_female = str(voice_type or 'unspecified').lower() in _FEMALE_VOICE_TYPES
+            pitch_prior_scale = 1.0
         pitch_shift = 120.0 if is_female else 0.0  # 女声阈值上移约半个八度（更保守的上移量，避免过度修正）
         T1 = 240.0 + pitch_shift   # 强力真声偏置上界
         T2 = 290.0 + pitch_shift   # 中等真声偏置上界
@@ -33936,36 +34243,41 @@ class ECGStylePitchVisualizer(QWidget):
         )
 
         # 低音区默认更应保守地判为真声，避免把轻薄真声误判为假声。
+        # 音高先验 → pitch_*_bias (受 pitch_prior_scale 缩放)
         if mean_pitch_hz > 0.0:
             if mean_pitch_hz < T1:
-                chest_bias += 0.42
+                pitch_chest_bias += 0.42
                 if falsetto_prob < 0.88:
                     force_chest = True
             elif mean_pitch_hz < T2:
-                chest_bias += 0.22
+                pitch_chest_bias += 0.22
             elif mean_pitch_hz < T3:
-                chest_bias += 0.20
+                pitch_chest_bias += 0.20
             elif mean_pitch_hz < T4:
-                chest_bias += 0.08
+                pitch_chest_bias += 0.08
             elif mean_pitch_hz >= T5:
-                falsetto_bias += 0.04
+                pitch_falsetto_bias += 0.04
             elif mean_pitch_hz >= T4:
-                falsetto_bias += 0.02
+                pitch_falsetto_bias += 0.02
 
         if mean_pitch_hz < T_voiced_lo:
             if voiced_ratio >= 0.56 and stable_ratio >= 0.14:
-                chest_bias += 0.09
+                pitch_chest_bias += 0.09
             if mean_rms >= 0.00055 and mean_zcr <= 0.13:
-                chest_bias += 0.05
+                pitch_chest_bias += 0.05
         if mean_pitch_hz < T_voiced_hi and voiced_ratio >= 0.62 and stable_ratio >= 0.24:
-            chest_bias += 0.08
+            pitch_chest_bias += 0.08
         if mean_pitch_hz >= T_falsetto_hi and mean_rms <= 0.00045 and stable_ratio < 0.18:
-            falsetto_bias += 0.03
+            pitch_falsetto_bias += 0.03
         if breath_like:
-            chest_bias += 0.14
-            falsetto_bias -= 0.18
+            pitch_chest_bias += 0.14
+            pitch_falsetto_bias -= 0.18
         if mean_pitch_hz < T_zcr_pitch and mean_zcr >= 0.12 and stable_ratio < 0.12:
-            falsetto_bias -= 0.05
+            pitch_falsetto_bias -= 0.05
+
+        # 应用音高先验缩放（4-class 模型时降至 30%，2-class 保持 100%）
+        chest_bias += pitch_chest_bias * pitch_prior_scale
+        falsetto_bias += pitch_falsetto_bias * pitch_prior_scale
 
         # ── 频谱特征证据（性别无关）：利用谐波结构辅助判别 ──
         # hm_over_hh > 1.0 表示中高频谐波能量高于高频谐波 → 更丰富的泛音 → 倾向真声
@@ -34094,6 +34406,7 @@ class ECGStylePitchVisualizer(QWidget):
         spectral_tilts = np.asarray([float(getattr(item, 'spectral_tilt', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
         hm_over_hhs = np.asarray([float(getattr(item, 'hm_over_hh', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
         mid_high_ratios = np.asarray([float(getattr(item, 'mid_high_ratio', 0.0) or 0.0) for item in valid_frames], dtype=np.float32)
+        semitone_deltas = np.asarray([abs(float(getattr(item, 'semitone_delta_prev', 0.0) or 0.0)) for item in valid_frames], dtype=np.float32)
         voiced_mask = np.logical_and(has_pitch, confidences >= 0.34)
         stable_mask = np.logical_and(has_pitch, confidences >= 0.50)
 
@@ -34164,6 +34477,7 @@ class ECGStylePitchVisualizer(QWidget):
             mean_spectral_tilt = float(np.mean(spectral_tilts[frame_mask])) if frame_count > 0 else 0.0
             mean_hm_over_hh = float(np.mean(hm_over_hhs[frame_mask])) if frame_count > 0 else 0.0
             mean_mid_high_ratio = float(np.mean(mid_high_ratios[frame_mask])) if frame_count > 0 else 0.0
+            mean_semitone_delta = float(np.mean(semitone_deltas[frame_mask])) if frame_count > 0 else 0.0
             candidate_meta = {
                 'start_time': start_time,
                 'end_time': min(total_duration, end_time),
@@ -34178,6 +34492,7 @@ class ECGStylePitchVisualizer(QWidget):
                 'mean_spectral_tilt': mean_spectral_tilt,
                 'mean_hm_over_hh': mean_hm_over_hh,
                 'mean_mid_high_ratio': mean_mid_high_ratio,
+                'mean_semitone_delta': mean_semitone_delta,
             }
             window_audio = np.asarray(window, dtype=np.float32)
             if bundle is not None:
@@ -34197,6 +34512,22 @@ class ECGStylePitchVisualizer(QWidget):
             self._last_voice_type_debug['reason'] = 'no_candidate_windows'
             return []
 
+        # Build 2.4s mix windows from full audio (model was trained on 2.4s, not 0.64s)
+        mix_window_s = float(_MIX_BINARY_WINDOW_S)
+        mix_window_samples = max(1, int(round(mix_window_s * float(_CHEST_FALSETTO_TARGET_SR))))
+        mix_audio_windows: List[np.ndarray] = []
+        for meta in candidate_windows:
+            center_time = float(meta.get('center_time', 0.0) or 0.0)
+            center_sample = int(round(center_time * float(_CHEST_FALSETTO_TARGET_SR)))
+            half = mix_window_samples // 2
+            start_s = max(0, center_sample - half)
+            end_s = min(int(audio.size), start_s + mix_window_samples)
+            start_s = max(0, end_s - mix_window_samples)  # re-align if near end
+            mix_chunk = np.asarray(audio[start_s:end_s], dtype=np.float32)
+            if mix_chunk.size < mix_window_samples:
+                mix_chunk = np.pad(mix_chunk, (0, mix_window_samples - mix_chunk.size), mode='constant')
+            mix_audio_windows.append(mix_chunk)
+
         all_predictions: List[Dict[str, Any]] = []
         predictions: List[Dict[str, Any]] = []
         if bundle is not None:
@@ -34204,9 +34535,9 @@ class ECGStylePitchVisualizer(QWidget):
             mix_threshold = float(mix_bundle.get('threshold', self._resolve_mix_binary_threshold()) or self._resolve_mix_binary_threshold()) if isinstance(mix_bundle, dict) else self._resolve_mix_binary_threshold()
             mix_results = None
             if isinstance(mix_bundle, dict) and not bool(mix_bundle.get('force_external', False)):
-                mix_results = self._predict_mix_binary_local(audio_windows, mix_bundle)
+                mix_results = self._predict_mix_binary_local(mix_audio_windows, mix_bundle)
             if mix_results is None:
-                mix_results = self._run_mix_binary_external_inference(audio_windows)
+                mix_results = self._run_mix_binary_external_inference(mix_audio_windows)
             batch_size = int(_CHEST_FALSETTO_BATCH_SIZE)
             with torch.no_grad():
                 for start_idx in range(0, len(tensors), batch_size):
@@ -34217,6 +34548,7 @@ class ECGStylePitchVisualizer(QWidget):
                         probs = torch.softmax(logits, dim=1).cpu().numpy()
                     except Exception:
                         continue
+                    use_four_class = bool(bundle.get('use_four_class', False))
                     for offset, prob in enumerate(probs):
                         record_idx = start_idx + offset
                         record = dict(candidate_windows[record_idx])
@@ -34226,21 +34558,51 @@ class ECGStylePitchVisualizer(QWidget):
                                 record['mix_threshold'] = float(mix_threshold)
                             except Exception:
                                 pass
-                        adjusted = self._apply_voice_type_context_priors(
-                            float(prob[0]),
-                            float(prob[1]),
-                            mean_pitch_hz=float(record.get('mean_pitch_hz', 0.0) or 0.0),
-                            voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
-                            stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
-                            mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
-                            mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
-                            mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
-                            breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
-                            voice_type=voice_type,
-                            mean_spectral_tilt=float(record.get('mean_spectral_tilt', 0.0) or 0.0),
-                            mean_hm_over_hh=float(record.get('mean_hm_over_hh', 0.0) or 0.0),
-                            mean_mid_high_ratio=float(record.get('mean_mid_high_ratio', 0.0) or 0.0),
-                        )
+                        if use_four_class:
+                            # Collapse 4 probs → chest/falsetto + auto-gender
+                            collapsed_chest = float(prob[0]) + float(prob[1])
+                            collapsed_falsetto = float(prob[2]) + float(prob[3])
+                            collapsed_female = float(prob[1]) + float(prob[3])
+                            collapsed_male = float(prob[0]) + float(prob[2])
+                            auto_gender_is_female = collapsed_female > collapsed_male
+                            adjusted = self._apply_voice_type_context_priors(
+                                collapsed_chest, collapsed_falsetto,
+                                mean_pitch_hz=float(record.get('mean_pitch_hz', 0.0) or 0.0),
+                                voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
+                                stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
+                                mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
+                                mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
+                                mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
+                                breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
+                                voice_type=voice_type,
+                                mean_spectral_tilt=float(record.get('mean_spectral_tilt', 0.0) or 0.0),
+                                mean_hm_over_hh=float(record.get('mean_hm_over_hh', 0.0) or 0.0),
+                                mean_mid_high_ratio=float(record.get('mean_mid_high_ratio', 0.0) or 0.0),
+                                auto_gender_is_female=auto_gender_is_female,
+                            )
+                            record['m_chest_prob'] = float(prob[0])
+                            record['f_chest_prob'] = float(prob[1])
+                            record['m_falsetto_prob'] = float(prob[2])
+                            record['f_falsetto_prob'] = float(prob[3])
+                            record['auto_gender_is_female'] = auto_gender_is_female
+                            if auto_gender_is_female:
+                                record['mix_threshold'] = float(_MIX_BINARY_FEMALE_THRESHOLD)
+                        else:
+                            adjusted = self._apply_voice_type_context_priors(
+                                float(prob[0]),
+                                float(prob[1]),
+                                mean_pitch_hz=float(record.get('mean_pitch_hz', 0.0) or 0.0),
+                                voiced_ratio=float(record.get('voiced_ratio', 0.0) or 0.0),
+                                stable_ratio=float(record.get('stable_ratio', 0.0) or 0.0),
+                                mean_rms=float(record.get('mean_rms', 0.0) or 0.0),
+                                mean_zcr=float(record.get('mean_zcr', 0.0) or 0.0),
+                                mean_breath_score=float(record.get('mean_breath_score', 0.0) or 0.0),
+                                breath_hint_ratio=float(record.get('breath_hint_ratio', 0.0) or 0.0),
+                                voice_type=voice_type,
+                                mean_spectral_tilt=float(record.get('mean_spectral_tilt', 0.0) or 0.0),
+                                mean_hm_over_hh=float(record.get('mean_hm_over_hh', 0.0) or 0.0),
+                                mean_mid_high_ratio=float(record.get('mean_mid_high_ratio', 0.0) or 0.0),
+                            )
                         record.update({
                             'event_type': adjusted['event_type'],
                             'voice_type': adjusted['voice_type'],
@@ -34268,9 +34630,9 @@ class ECGStylePitchVisualizer(QWidget):
             mix_threshold = float(mix_bundle.get('threshold', self._resolve_mix_binary_threshold()) or self._resolve_mix_binary_threshold()) if isinstance(mix_bundle, dict) else self._resolve_mix_binary_threshold()
             mix_results = None
             if isinstance(mix_bundle, dict) and not bool(mix_bundle.get('force_external', False)):
-                mix_results = self._predict_mix_binary_local(audio_windows, mix_bundle)
+                mix_results = self._predict_mix_binary_local(mix_audio_windows, mix_bundle)
             if mix_results is None:
-                mix_results = self._run_mix_binary_external_inference(audio_windows)
+                mix_results = self._run_mix_binary_external_inference(mix_audio_windows)
             self._last_voice_type_debug['model_ready'] = True
             self._last_voice_type_debug['backend'] = 'external_python'
             for idx, prob in enumerate(list(external_results or [])):
@@ -34288,6 +34650,17 @@ class ECGStylePitchVisualizer(QWidget):
                         record['mix_threshold'] = float(mix_threshold)
                     except Exception:
                         pass
+                # Auto-detect gender from 4-class collapsed results
+                auto_gender = None
+                try:
+                    male_prob = float(prob.get('male_prob', -1.0) or -1.0)
+                    female_prob = float(prob.get('female_prob', -1.0) or -1.0)
+                    if male_prob >= 0.0 and female_prob >= 0.0:
+                        auto_gender = bool(female_prob > male_prob)
+                except Exception:
+                    pass
+                if auto_gender is True:
+                    record['mix_threshold'] = float(_MIX_BINARY_FEMALE_THRESHOLD)
                 adjusted = self._apply_voice_type_context_priors(
                     chest_prob,
                     falsetto_prob,
@@ -34302,6 +34675,7 @@ class ECGStylePitchVisualizer(QWidget):
                     mean_spectral_tilt=float(record.get('mean_spectral_tilt', 0.0) or 0.0),
                     mean_hm_over_hh=float(record.get('mean_hm_over_hh', 0.0) or 0.0),
                     mean_mid_high_ratio=float(record.get('mean_mid_high_ratio', 0.0) or 0.0),
+                    auto_gender_is_female=auto_gender,
                 )
                 record.update({
                     'event_type': adjusted['event_type'],
@@ -34345,6 +34719,7 @@ class ECGStylePitchVisualizer(QWidget):
 
         predictions = sorted(predictions, key=lambda item: float(item.get('center_time', 0.0) or 0.0))
         predictions = self._smooth_chest_falsetto_predictions(predictions, hop_s)
+        predictions = self._smooth_mix_probabilities(predictions)
         checkpoint_label = ''
         source_kind = self._offline_local_file_source_kind(valid_frames)
         try:
@@ -34411,6 +34786,10 @@ class ECGStylePitchVisualizer(QWidget):
             margin_strength = max(0.0, min(1.0, probability_margin / 0.35))
             strength = max(0.0, min(1.0, confidence * 0.62 + margin_strength * 0.38))
             label_text, color = self._get_technique_event_style(event_type)
+            mean_spectral_tilt = float(np.mean(spectral_tilts[frame_mask])) if frame_count > 0 else 0.0
+            mean_hm_over_hh = float(np.mean(hm_over_hhs[frame_mask])) if frame_count > 0 else 0.0
+            mean_mid_high_ratio = float(np.mean(mid_high_ratios[frame_mask])) if frame_count > 0 else 0.0
+            mean_semitone_delta = float(np.mean(semitone_deltas[frame_mask])) if frame_count > 0 else float(np.mean([float(item.get('mean_semitone_delta', 0.0) or 0.0) for item in run]))
             event = VoiceTypeEvent(
                 event_type=event_type,
                 start_time=float(start_time),
@@ -34434,6 +34813,10 @@ class ECGStylePitchVisualizer(QWidget):
                     'falsetto_prob': falsetto_prob,
                     'mix_prob': mix_prob,
                     'mix_threshold': mix_threshold,
+                    'mean_spectral_tilt': mean_spectral_tilt,
+                    'mean_hm_over_hh': mean_hm_over_hh,
+                    'mean_mid_high_ratio': mean_mid_high_ratio,
+                    'mean_semitone_delta': mean_semitone_delta,
                 },
                 display_payload={
                     'model': 'squeezenet_binary_mel_safe_v2',
@@ -34468,6 +34851,28 @@ class ECGStylePitchVisualizer(QWidget):
     ) -> List[MixVoiceEvent]:
         if not any(self._technique_type_selected(name) for name in ('strong_mix', 'weak_mix', 'balanced_mix')):
             return []
+
+        voice_type = 'unspecified'
+        try:
+            state = getattr(self, '_technique_panel_state', None)
+            cfg = getattr(state, 'config', None) if state is not None else None
+            if cfg is not None:
+                voice_type = str(getattr(cfg, 'voice_type', 'unspecified') or 'unspecified')
+        except Exception:
+            pass
+        is_female = str(voice_type).lower() in _FEMALE_VOICE_TYPES
+        # 尝试从 4-class 模型输出中获取自动性别判定（优先于手动配置）
+        auto_gender_detected = False
+        for event in list(voice_events or []):
+            try:
+                snapshot = getattr(event, 'feature_snapshot', None)
+                if isinstance(snapshot, dict) and 'auto_gender_is_female' in snapshot:
+                    is_female = bool(snapshot['auto_gender_is_female'])
+                    auto_gender_detected = True
+                    break
+            except Exception:
+                pass
+        pitch_shift = 120.0 if is_female else 0.0
 
         capture_mix_rule_debug = bool(getattr(self, '_capture_mix_rule_debug', False))
         debug_rows: List[Dict[str, Any]] = []
@@ -34510,7 +34915,8 @@ class ECGStylePitchVisualizer(QWidget):
                     'voiced_ratio': voiced_ratio,
                     'mean_pitch_hz': mean_pitch_hz,
                 }
-            if duration < 0.18 or mean_pitch_hz <= 0.0:
+            mix_min_dur = float(getattr(cfg, 'mix_min_duration_s', 0.20) or 0.20)
+            if duration < mix_min_dur or mean_pitch_hz <= 0.0:
                 if debug_row is not None:
                     debug_row['skip_reason'] = 'invalid_duration_or_pitch'
                     debug_rows.append(debug_row)
@@ -34528,13 +34934,19 @@ class ECGStylePitchVisualizer(QWidget):
             learned_mix_prob = float(snapshot.get('mix_prob', getattr(event, 'mix_prob', 0.0) or 0.0) or 0.0)
             learned_mix_threshold = float(snapshot.get('mix_threshold', 0.45) or 0.45)
             learned_mix_margin = (learned_mix_prob - learned_mix_threshold) if learned_mix_prob > 0.0 else 0.0
+            # P1: spectral features from VoiceTypeEvent snapshot
+            mean_spectral_tilt = float(snapshot.get('mean_spectral_tilt', 0.0) or 0.0)
+            mean_hm_over_hh = float(snapshot.get('mean_hm_over_hh', 0.0) or 0.0)
+            mean_mid_high_ratio = float(snapshot.get('mean_mid_high_ratio', 0.0) or 0.0)
+            mean_semitone_delta = float(snapshot.get('mean_semitone_delta', 0.0) or 0.0)
 
             heuristic_mix_support = _clamp01(1.0 - (probability_margin / 0.40))
             learned_mix_support = _clamp01((learned_mix_prob - (learned_mix_threshold - 0.12)) / 0.42) if learned_mix_prob > 0.0 else 0.0
             mix_support = heuristic_mix_support
             if learned_mix_prob > 0.0:
                 mix_support = _clamp01(0.32 * heuristic_mix_support + 0.68 * learned_mix_support)
-            pitch_support = _clamp01((mean_pitch_hz - 210.0) / 230.0)
+            pitch_base = 210.0 + pitch_shift
+            pitch_support = _clamp01((mean_pitch_hz - pitch_base) / 230.0)
             stable_support = _clamp01((stable_ratio - 0.08) / 0.24)
             voiced_support = _clamp01((voiced_ratio - 0.34) / 0.34)
             low_energy_air = _clamp01((0.0014 - mean_rms) / 0.0011) if mean_rms > 0.0 else 0.0
@@ -34547,6 +34959,48 @@ class ECGStylePitchVisualizer(QWidget):
             )
             head_bias = _clamp01((falsetto_prob - chest_prob + 0.18) / 0.50)
             chest_bias = _clamp01((chest_prob - falsetto_prob + 0.18) / 0.50)
+
+            # ── P1.2: Spectral tilt evidence ──
+            if getattr(cfg, 'enable_spectral_mix_evidence', True):
+                if mean_spectral_tilt != 0.0:
+                    if mean_spectral_tilt > -8.0:
+                        # 频谱倾斜偏亮 → 弱化 head mix 信号
+                        head_bias = _clamp01(head_bias - 0.10)
+                    elif mean_spectral_tilt < -18.0:
+                        # 频谱倾斜偏暗 → 强化 head mix 信号
+                        head_bias = _clamp01(head_bias + 0.10)
+
+            # ── P1.3: Spectral balance evidence (hm_over_hh + mid_high_ratio) ──
+            if getattr(cfg, 'enable_spectral_mix_evidence', True):
+                if mean_hm_over_hh > 0.0:
+                    if mean_hm_over_hh < 0.80:
+                        # 高频谐波能量相对中频更高 → 更像 falsetto/head
+                        head_bias = _clamp01(head_bias + 0.06)
+                        mix_support = _clamp01(mix_support + 0.06)
+                    elif mean_hm_over_hh > 1.50:
+                        # 中高频谐波能量高于高频 → 更丰富泛音 → 更接近 chest
+                        chest_bias = _clamp01(chest_bias + 0.06)
+                        mix_support = _clamp01(mix_support - 0.04)
+                if mean_mid_high_ratio > 0.0:
+                    if mean_mid_high_ratio < 1.20:
+                        # 中频-高频差距小 → 音色薄 → 倾向 falsetto/head
+                        head_bias = _clamp01(head_bias + 0.04)
+                    elif mean_mid_high_ratio > 2.20:
+                        # 中频明显高于高频 → 音色厚 → 倾向 chest
+                        chest_bias = _clamp01(chest_bias + 0.05)
+
+            # ── P1.4: Pitch trajectory smoothness penalty ──
+            pitch_jump_penalty = 0.0
+            if getattr(cfg, 'enable_pitch_continuity_mix', True):
+                pitch_jump_penalty = _clamp01((0.16 - stable_ratio) / 0.14) if stable_ratio < 0.16 else 0.0
+                # Enhance with frame-level semitone delta: large jumps → less likely to be controlled mix
+                if mean_semitone_delta > 0.0:
+                    semi_penalty = _clamp01((mean_semitone_delta - 1.20) / 2.80)
+                    pitch_jump_penalty = max(pitch_jump_penalty, semi_penalty * 0.65)
+                if pitch_jump_penalty > 0.0:
+                    mix_support = _clamp01(mix_support - pitch_jump_penalty * 0.35)
+                    head_bias = _clamp01(head_bias - pitch_jump_penalty * 0.25)
+
             if debug_row is not None:
                 debug_row.update({
                     'mean_rms': mean_rms,
@@ -34562,6 +35016,11 @@ class ECGStylePitchVisualizer(QWidget):
                     'mix_support': mix_support,
                     'head_bias': head_bias,
                     'chest_bias': chest_bias,
+                    'mean_spectral_tilt': mean_spectral_tilt,
+                    'mean_hm_over_hh': mean_hm_over_hh,
+                    'mean_mid_high_ratio': mean_mid_high_ratio,
+                    'mean_semitone_delta': mean_semitone_delta,
+                    'pitch_jump_penalty': pitch_jump_penalty,
                 })
             pure_learned_head_mix = (
                 learned_mix_prob >= learned_mix_threshold
@@ -35564,6 +36023,9 @@ class ECGStylePitchVisualizer(QWidget):
                     'weak_mix_pitch_floor': weak_mix_pitch_floor,
                 })
 
+            # 声部自适应：女声的弱混声最低音高上移
+            weak_mix_pitch_floor = weak_mix_pitch_floor + pitch_shift
+
             if learned_mix_prob > 0.0 and learned_mix_prob < max(0.26, learned_mix_threshold - 0.08) and not (released_highpitch_long_lowprob_softhead_mix or released_midlow_balanced_lowprob_softhead_mix or released_lowmid_chesty_lowprob_softhead_mix or released_nearthreshold_extreme_energy_softhead_mix or released_sustained_highpitch_lowprob_softhead_mix or released_midhigh_long_lowprob_softhead_mix or released_midhigh_moderate_energy_lowprob_softhead_mix or released_highpitch_long_moderate_energy_lowprob_softhead_mix or released_highpitch_headbiased_combination_soft_mix or released_highpitch_chesty_nearthreshold_mix or released_ultrahigh_lowchest_zero_support_mix or released_midhigh_headbiased_zero_support_mix or released_supportful_midhigh_nearthreshold_mix or released_supportful_highpitch_nearthreshold_airy_mix or released_supportful_highpitch_nearthreshold_dense_mix):
                 if debug_row is not None:
                     debug_row['skip_reason'] = 'reject_low_learned_prob'
@@ -35593,7 +36055,7 @@ class ECGStylePitchVisualizer(QWidget):
             subtype = ''
             subtype_conf = 0.0
             subtype_mix_support = mix_support
-            if breathiness >= 0.42 and mix_support >= 0.34 and mean_pitch_hz >= 220.0:
+            if breathiness >= 0.42 and mix_support >= 0.34 and mean_pitch_hz >= (220.0 + pitch_shift):
                 subtype = 'balanced_mix'
                 subtype_conf = (
                     0.38 * mix_support
@@ -35602,7 +36064,7 @@ class ECGStylePitchVisualizer(QWidget):
                     + 0.10 * stable_support
                     + 0.08 * voiced_support
                 )
-            elif chest_bias >= 0.46 and mix_support >= 0.28 and mean_pitch_hz >= 180.0:
+            elif chest_bias >= 0.46 and mix_support >= 0.28 and mean_pitch_hz >= (180.0 + pitch_shift):
                 if learned_mix_prob > 0.0 and learned_mix_prob < learned_mix_threshold:
                     continue
                 subtype = 'strong_mix'
@@ -35635,12 +36097,12 @@ class ECGStylePitchVisualizer(QWidget):
 
             low_pitch_chesty_mix_guard = (
                 subtype in ('weak_mix', 'strong_mix')
-                and mean_pitch_hz < 300.0
+                and mean_pitch_hz < (300.0 + pitch_shift)
                 and (
                     learned_mix_margin >= 0.08
                     or (
                         subtype == 'weak_mix'
-                        and mean_pitch_hz < 280.0
+                        and mean_pitch_hz < (280.0 + pitch_shift)
                         and chest_prob >= 0.30
                         and falsetto_prob <= 0.70
                         and learned_mix_margin >= 0.03
@@ -35799,6 +36261,11 @@ class ECGStylePitchVisualizer(QWidget):
                     'breathiness': breathiness,
                     'head_bias': head_bias,
                     'chest_bias': chest_bias,
+                    'mean_spectral_tilt': mean_spectral_tilt,
+                    'mean_hm_over_hh': mean_hm_over_hh,
+                    'mean_mid_high_ratio': mean_mid_high_ratio,
+                    'mean_semitone_delta': mean_semitone_delta,
+                    'pitch_jump_penalty': pitch_jump_penalty,
                     'pure_learned_head_mix': pure_learned_head_mix,
                     'marginal_head_mix': marginal_head_mix,
                     'released_high_pitch_head_mix': released_high_pitch_head_mix,
@@ -35985,6 +36452,40 @@ class ECGStylePitchVisualizer(QWidget):
                         break
             if isolated_low_pitch_chest_tail_mix or isolated_lowmid_chesty_weak_mix_guard or isolated_supported_softhead_lowchest_guard or released_softhead_followed_by_low_pitch_chesty_tail:
                 return []
+
+        # ── P1.5: Strict duration — filter isolated single-frame mix events
+        if getattr(cfg, 'enable_strict_mix_duration', True) and len(mix_events) >= 1:
+            filtered: List[MixVoiceEvent] = []
+            for idx, event in enumerate(mix_events):
+                try:
+                    ev_start = float(getattr(event, 'start_time', 0.0) or 0.0)
+                    ev_end = float(getattr(event, 'end_time', 0.0) or 0.0)
+                    ev_dur = max(0.0, ev_end - ev_start)
+                except Exception:
+                    filtered.append(event)
+                    continue
+                min_dur = float(getattr(cfg, 'mix_min_duration_s', 0.20) or 0.20)
+                if ev_dur < min_dur * 0.75:
+                    # Check if any adjacent voice event also supports mix
+                    has_neighbor = False
+                    for other in mix_events:
+                        if other is event:
+                            continue
+                        try:
+                            other_start = float(getattr(other, 'start_time', 0.0) or 0.0)
+                            other_end = float(getattr(other, 'end_time', 0.0) or 0.0)
+                        except Exception:
+                            continue
+                        gap_before = ev_start - other_end
+                        gap_after = other_start - ev_end
+                        if max(gap_before, gap_after) <= 0.30:
+                            has_neighbor = True
+                            break
+                    if not has_neighbor:
+                        continue
+                filtered.append(event)
+            mix_events = filtered
+
         return mix_events
 
     def analyze_technique_frames(
@@ -36097,6 +36598,7 @@ class ECGStylePitchVisualizer(QWidget):
             'breath': ('换气', '#6EC6FF'),
             'register_transition': ('换声区', '#EF9A9A'),
             'slide': ('滑音', '#FFB74D'),
+            'runs': ('转音', '#FFD54F'),
             'vibrato': ('颤音', '#BA68C8'),
             'breathy_phonation': ('气声', '#80CBC4'),
             'strong_mix': ('强混声', '#FFB300'),
@@ -36171,6 +36673,17 @@ class ECGStylePitchVisualizer(QWidget):
                 target.peak_semitone_rate = max(float(target.peak_semitone_rate or 0.0), float(incoming.peak_semitone_rate or 0.0))
                 target.smoothness_score = max(float(target.smoothness_score or 0.0), float(incoming.smoothness_score or 0.0))
                 target.continuity_score = max(float(target.continuity_score or 0.0), float(incoming.continuity_score or 0.0))
+                if str(target.direction or 'mixed') != str(incoming.direction or 'mixed'):
+                    target.direction = 'mixed'
+            elif isinstance(target, RunsEvent) and isinstance(incoming, RunsEvent):
+                target.end_pitch_hz = incoming.end_pitch_hz or target.end_pitch_hz
+                target.pitch_span_semitones = max(float(target.pitch_span_semitones or 0.0), float(incoming.pitch_span_semitones or 0.0))
+                target.mean_semitone_rate = max(float(target.mean_semitone_rate or 0.0), float(incoming.mean_semitone_rate or 0.0))
+                target.peak_semitone_rate = max(float(target.peak_semitone_rate or 0.0), float(incoming.peak_semitone_rate or 0.0))
+                target.smoothness_score = max(float(target.smoothness_score or 0.0), float(incoming.smoothness_score or 0.0))
+                target.continuity_score = max(float(target.continuity_score or 0.0), float(incoming.continuity_score or 0.0))
+                target.note_changes = max(int(target.note_changes or 0), int(incoming.note_changes or 0))
+                target.note_count = max(int(target.note_count or 0), int(incoming.note_count or 0))
                 if str(target.direction or 'mixed') != str(incoming.direction or 'mixed'):
                     target.direction = 'mixed'
             elif isinstance(target, VibratoEvent) and isinstance(incoming, VibratoEvent):
@@ -36370,6 +36883,14 @@ class ECGStylePitchVisualizer(QWidget):
             continuity = float(getattr(event, 'continuity_score', 0.0) or 0.0)
             smoothness = float(getattr(event, 'smoothness_score', 0.0) or 0.0)
             return duration >= min_d and span >= 1.55 and 3.4 <= peak_rate <= 18.0 and continuity >= 0.34 and smoothness >= 0.24 and confidence >= 0.60 and strength >= 0.58
+        if event_type == 'runs':
+            min_d = max(0.20, float(getattr(cfg, 'min_runs_duration_s', 0.12) or 0.12)) if cfg is not None else 0.20
+            span = float(getattr(event, 'pitch_span_semitones', 0.0) or 0.0)
+            peak_rate = float(getattr(event, 'peak_semitone_rate', 0.0) or 0.0)
+            continuity = float(getattr(event, 'continuity_score', 0.0) or 0.0)
+            smoothness = float(getattr(event, 'smoothness_score', 0.0) or 0.0)
+            note_changes = int(getattr(event, 'note_changes', 0) or 0)
+            return duration >= min_d and span >= 3.0 and 7.0 <= peak_rate <= 28.0 and continuity >= 0.28 and smoothness >= 0.20 and note_changes >= 3 and confidence >= 0.56 and strength >= 0.52
         if event_type == 'vibrato':
             min_d = max(0.26, float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18)) if cfg is not None else 0.26
             rate_hz = float(getattr(event, 'rate_hz', 0.0) or 0.0)
@@ -36697,21 +37218,21 @@ class ECGStylePitchVisualizer(QWidget):
         breaths = [item for item in filtered if str(getattr(item, 'event_type', '') or '') == 'breath']
         for event in filtered:
             event_type = str(getattr(event, 'event_type', '') or '')
-            if event_type == 'slide':
-                suppress_slide = False
-                slide_start = float(getattr(event, 'start_time', 0.0) or 0.0)
-                slide_end = float(getattr(event, 'end_time', 0.0) or 0.0)
+            if event_type in ('slide', 'runs'):
+                suppress_event = False
+                ev_start = float(getattr(event, 'start_time', 0.0) or 0.0)
+                ev_end = float(getattr(event, 'end_time', 0.0) or 0.0)
                 for breath in breaths:
                     breath_start = float(getattr(breath, 'start_time', 0.0) or 0.0)
                     breath_end = float(getattr(breath, 'end_time', 0.0) or 0.0)
-                    overlap = min(slide_end, breath_end) - max(slide_start, breath_start)
+                    overlap = min(ev_end, breath_end) - max(ev_start, breath_start)
                     if overlap > 0.0:
-                        suppress_slide = True
+                        suppress_event = True
                         break
-                    if 0.0 <= (slide_start - breath_end) <= 0.08:
-                        suppress_slide = True
+                    if 0.0 <= (ev_start - breath_end) <= 0.08:
+                        suppress_event = True
                         break
-                if suppress_slide:
+                if suppress_event:
                     continue
             resolved.append(event)
 
@@ -36722,6 +37243,7 @@ class ECGStylePitchVisualizer(QWidget):
             'breath': 0.08,
             'register_transition': 0.07,
             'slide': 0.08,
+            'runs': 0.09,
             'vibrato': 0.06,
             'breathy_phonation': 0.07,
             'strong_mix': 0.07,
@@ -62857,10 +63379,12 @@ class IntegratedRecordingInterface(QMainWindow):
             detect_slide=False,
             detect_vibrato=bool(option_checks['vibrato'].isChecked()),
             detect_breathy_phonation=False,
+            detect_runs=bool(option_checks.get('runs', QCheckBox()).isChecked()) if 'runs' in option_checks else bool(getattr(cfg, 'detect_runs', True)),
             min_event_confidence=float(getattr(cfg, 'min_event_confidence', 0.55) or 0.55),
             merge_gap_s=float(getattr(cfg, 'merge_gap_s', 0.12) or 0.12),
             min_breath_duration_s=float(getattr(cfg, 'min_breath_duration_s', 0.06) or 0.06),
             min_slide_duration_s=float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08),
+            min_runs_duration_s=float(getattr(cfg, 'min_runs_duration_s', 0.12) or 0.12),
             min_vibrato_duration_s=float(getattr(cfg, 'min_vibrato_duration_s', 0.18) or 0.18),
             min_register_transition_s=float(getattr(cfg, 'min_register_transition_s', 0.10) or 0.10),
             min_breathy_duration_s=float(getattr(cfg, 'min_breathy_duration_s', 0.10) or 0.10),

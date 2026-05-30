@@ -1,0 +1,849 @@
+{
+  "total_samples": 1280,
+  "inference_time_s": 14.5,
+  "samples_per_second": 88.2,
+  "device": "cuda",
+  "checkpoint": "D:\\-MindEcho-main\\ml_dl_models\\chest_falsetto\\squeezenet_binary\\artifacts_mel_safe_v2\\best_squeezenet_fourclass.pt",
+  "num_classes": 4,
+  "use_four_class": true,
+  "four_class_raw": {
+    "m_chest": {
+      "precision": 0.9602,
+      "recall": 0.9435,
+      "f1": 0.9518,
+      "support": 230
+    },
+    "f_chest": {
+      "precision": 0.9913,
+      "recall": 0.8252,
+      "f1": 0.9007,
+      "support": 412
+    },
+    "m_falsetto": {
+      "precision": 0.9444,
+      "recall": 0.9609,
+      "f1": 0.9526,
+      "support": 230
+    },
+    "f_falsetto": {
+      "precision": 0.8491,
+      "recall": 0.9926,
+      "f1": 0.9153,
+      "support": 408
+    },
+    "accuracy": 0.9242
+  },
+  "four_class_with_priors": {
+    "m_chest": {
+      "precision": 0.9602,
+      "recall": 0.9435,
+      "f1": 0.9518,
+      "support": 230
+    },
+    "f_chest": {
+      "precision": 0.9913,
+      "recall": 0.8252,
+      "f1": 0.9007,
+      "support": 412
+    },
+    "m_falsetto": {
+      "precision": 0.9444,
+      "recall": 0.9609,
+      "f1": 0.9526,
+      "support": 230
+    },
+    "f_falsetto": {
+      "precision": 0.8491,
+      "recall": 0.9926,
+      "f1": 0.9153,
+      "support": 408
+    },
+    "accuracy": 0.9242
+  },
+  "four_class_direct": {
+    "m_chest": {
+      "precision": 0.9099,
+      "recall": 0.9217,
+      "f1": 0.9158,
+      "support": 230
+    },
+    "f_chest": {
+      "precision": 0.9708,
+      "recall": 0.8058,
+      "f1": 0.8806,
+      "support": 412
+    },
+    "m_falsetto": {
+      "precision": 0.7397,
+      "recall": 0.9391,
+      "f1": 0.8276,
+      "support": 230
+    },
+    "f_falsetto": {
+      "precision": 0.8959,
+      "recall": 0.9069,
+      "f1": 0.9013,
+      "support": 408
+    },
+    "accuracy": 0.8828
+  },
+  "binary_raw": {
+    "chest": {
+      "precision": 0.9789,
+      "recall": 0.8676,
+      "f1": 0.9199,
+      "support": 642
+    },
+    "falsetto": {
+      "precision": 0.8805,
+      "recall": 0.9812,
+      "f1": 0.9281,
+      "support": 638
+    },
+    "accuracy": 0.9242
+  },
+  "binary_with_priors": {
+    "chest": {
+      "precision": 0.9789,
+      "recall": 0.8676,
+      "f1": 0.9199,
+      "support": 642
+    },
+    "falsetto": {
+      "precision": 0.8805,
+      "recall": 0.9812,
+      "f1": 0.9281,
+      "support": 638
+    },
+    "accuracy": 0.9242
+  },
+  "male_binary_raw": {
+    "chest": {
+      "precision": 0.9602,
+      "recall": 0.9435,
+      "f1": 0.9518,
+      "support": 230
+    },
+    "falsetto": {
+      "precision": 0.9444,
+      "recall": 0.9609,
+      "f1": 0.9526,
+      "support": 230
+    },
+    "accuracy": 0.9522
+  },
+  "female_binary_raw": {
+    "chest": {
+      "precision": 0.9913,
+      "recall": 0.8252,
+      "f1": 0.9007,
+      "support": 412
+    },
+    "falsetto": {
+      "precision": 0.8491,
+      "recall": 0.9926,
+      "f1": 0.9153,
+      "support": 408
+    },
+    "accuracy": 0.9085
+  },
+  "confusion_matrix_4class": {
+    "m_chest": {
+      "m_chest": 217,
+      "m_falsetto": 13
+    },
+    "m_falsetto": {
+      "m_falsetto": 221,
+      "m_chest": 9
+    },
+    "f_chest": {
+      "f_chest": 340,
+      "f_falsetto": 72
+    },
+    "f_falsetto": {
+      "f_falsetto": 405,
+      "f_chest": 3
+    }
+  },
+  "errors": [
+    {
+      "entry": "audio/0031_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.5474,
+      "falsetto_prob": 0.4526
+    },
+    {
+      "entry": "audio/0095_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.4406,
+      "falsetto_prob": 0.5594
+    },
+    {
+      "entry": "audio/0124_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.0302,
+      "falsetto_prob": 0.9698
+    },
+    {
+      "entry": "audio/0125_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.0776,
+      "falsetto_prob": 0.9224
+    },
+    {
+      "entry": "audio/0130_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.2196,
+      "falsetto_prob": 0.7804
+    },
+    {
+      "entry": "audio/0137_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.3476,
+      "falsetto_prob": 0.6524
+    },
+    {
+      "entry": "audio/0205_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.2325,
+      "falsetto_prob": 0.7675
+    },
+    {
+      "entry": "audio/0213_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.4781,
+      "falsetto_prob": 0.5219
+    },
+    {
+      "entry": "audio/0232_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.8434,
+      "falsetto_prob": 0.1566
+    },
+    {
+      "entry": "audio/0291_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4762,
+      "falsetto_prob": 0.5238
+    },
+    {
+      "entry": "audio/0299_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3866,
+      "falsetto_prob": 0.6134
+    },
+    {
+      "entry": "audio/0303_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3809,
+      "falsetto_prob": 0.6191
+    },
+    {
+      "entry": "audio/0305_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1616,
+      "falsetto_prob": 0.8384
+    },
+    {
+      "entry": "audio/0309_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.349,
+      "falsetto_prob": 0.651
+    },
+    {
+      "entry": "audio/0311_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2756,
+      "falsetto_prob": 0.7244
+    },
+    {
+      "entry": "audio/0313_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2864,
+      "falsetto_prob": 0.7136
+    },
+    {
+      "entry": "audio/0321_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.29,
+      "falsetto_prob": 0.71
+    },
+    {
+      "entry": "audio/0323_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.432,
+      "falsetto_prob": 0.568
+    },
+    {
+      "entry": "audio/0325_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2092,
+      "falsetto_prob": 0.7908
+    },
+    {
+      "entry": "audio/0327_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0834,
+      "falsetto_prob": 0.9166
+    },
+    {
+      "entry": "audio/0331_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.106,
+      "falsetto_prob": 0.894
+    },
+    {
+      "entry": "audio/0333_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0362,
+      "falsetto_prob": 0.9638
+    },
+    {
+      "entry": "audio/0335_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0312,
+      "falsetto_prob": 0.9688
+    },
+    {
+      "entry": "audio/0365_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4295,
+      "falsetto_prob": 0.5705
+    },
+    {
+      "entry": "audio/0367_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4231,
+      "falsetto_prob": 0.5769
+    },
+    {
+      "entry": "audio/0375_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1379,
+      "falsetto_prob": 0.8621
+    },
+    {
+      "entry": "audio/0381_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.096,
+      "falsetto_prob": 0.904
+    },
+    {
+      "entry": "audio/0383_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2408,
+      "falsetto_prob": 0.7592
+    },
+    {
+      "entry": "audio/0385_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1854,
+      "falsetto_prob": 0.8146
+    },
+    {
+      "entry": "audio/0387_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4503,
+      "falsetto_prob": 0.5497
+    },
+    {
+      "entry": "audio/0389_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1948,
+      "falsetto_prob": 0.8052
+    },
+    {
+      "entry": "audio/0431_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1711,
+      "falsetto_prob": 0.8289
+    },
+    {
+      "entry": "audio/0481_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3913,
+      "falsetto_prob": 0.6087
+    },
+    {
+      "entry": "audio/0507_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2268,
+      "falsetto_prob": 0.7732
+    },
+    {
+      "entry": "audio/0517_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3204,
+      "falsetto_prob": 0.6796
+    },
+    {
+      "entry": "audio/0525_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2074,
+      "falsetto_prob": 0.7926
+    },
+    {
+      "entry": "audio/0531_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1124,
+      "falsetto_prob": 0.8876
+    },
+    {
+      "entry": "audio/0533_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0466,
+      "falsetto_prob": 0.9534
+    },
+    {
+      "entry": "audio/0535_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1471,
+      "falsetto_prob": 0.8529
+    },
+    {
+      "entry": "audio/0537_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1489,
+      "falsetto_prob": 0.8511
+    },
+    {
+      "entry": "audio/0539_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.454,
+      "falsetto_prob": 0.546
+    },
+    {
+      "entry": "audio/0541_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4411,
+      "falsetto_prob": 0.5589
+    },
+    {
+      "entry": "audio/0543_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3753,
+      "falsetto_prob": 0.6247
+    },
+    {
+      "entry": "audio/0545_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3066,
+      "falsetto_prob": 0.6934
+    },
+    {
+      "entry": "audio/0581_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1038,
+      "falsetto_prob": 0.8962
+    },
+    {
+      "entry": "audio/0597_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.5209,
+      "falsetto_prob": 0.4791
+    },
+    {
+      "entry": "audio/0695_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.3498,
+      "falsetto_prob": 0.6502
+    },
+    {
+      "entry": "audio/0724_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.0544,
+      "falsetto_prob": 0.9456
+    },
+    {
+      "entry": "audio/0725_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.0791,
+      "falsetto_prob": 0.9209
+    },
+    {
+      "entry": "audio/0730_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.2448,
+      "falsetto_prob": 0.7552
+    },
+    {
+      "entry": "audio/0734_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.4289,
+      "falsetto_prob": 0.5711
+    },
+    {
+      "entry": "audio/0787_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.6501,
+      "falsetto_prob": 0.3499
+    },
+    {
+      "entry": "audio/0792_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.6786,
+      "falsetto_prob": 0.3214
+    },
+    {
+      "entry": "audio/0813_m_chest.wav",
+      "true": "m_chest",
+      "pred": "m_falsetto",
+      "chest_prob": 0.2981,
+      "falsetto_prob": 0.7019
+    },
+    {
+      "entry": "audio/0832_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.854,
+      "falsetto_prob": 0.146
+    },
+    {
+      "entry": "audio/0837_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.7752,
+      "falsetto_prob": 0.2248
+    },
+    {
+      "entry": "audio/0884_f_falsetto.wav",
+      "true": "f_falsetto",
+      "pred": "f_chest",
+      "chest_prob": 0.6006,
+      "falsetto_prob": 0.3994
+    },
+    {
+      "entry": "audio/0905_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1436,
+      "falsetto_prob": 0.8564
+    },
+    {
+      "entry": "audio/0907_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4565,
+      "falsetto_prob": 0.5435
+    },
+    {
+      "entry": "audio/0909_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.431,
+      "falsetto_prob": 0.569
+    },
+    {
+      "entry": "audio/0911_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4712,
+      "falsetto_prob": 0.5288
+    },
+    {
+      "entry": "audio/0913_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3331,
+      "falsetto_prob": 0.6669
+    },
+    {
+      "entry": "audio/0917_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4222,
+      "falsetto_prob": 0.5778
+    },
+    {
+      "entry": "audio/0921_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3706,
+      "falsetto_prob": 0.6294
+    },
+    {
+      "entry": "audio/0923_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.325,
+      "falsetto_prob": 0.675
+    },
+    {
+      "entry": "audio/0925_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.167,
+      "falsetto_prob": 0.833
+    },
+    {
+      "entry": "audio/0927_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.059,
+      "falsetto_prob": 0.941
+    },
+    {
+      "entry": "audio/0928_f_falsetto.wav",
+      "true": "f_falsetto",
+      "pred": "f_chest",
+      "chest_prob": 0.5018,
+      "falsetto_prob": 0.4982
+    },
+    {
+      "entry": "audio/0931_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1914,
+      "falsetto_prob": 0.8086
+    },
+    {
+      "entry": "audio/0933_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0854,
+      "falsetto_prob": 0.9146
+    },
+    {
+      "entry": "audio/0935_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0104,
+      "falsetto_prob": 0.9896
+    },
+    {
+      "entry": "audio/0967_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2018,
+      "falsetto_prob": 0.7982
+    },
+    {
+      "entry": "audio/0975_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0353,
+      "falsetto_prob": 0.9647
+    },
+    {
+      "entry": "audio/0981_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0805,
+      "falsetto_prob": 0.9195
+    },
+    {
+      "entry": "audio/0983_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4105,
+      "falsetto_prob": 0.5895
+    },
+    {
+      "entry": "audio/0985_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2854,
+      "falsetto_prob": 0.7146
+    },
+    {
+      "entry": "audio/0987_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2658,
+      "falsetto_prob": 0.7342
+    },
+    {
+      "entry": "audio/0989_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4003,
+      "falsetto_prob": 0.5997
+    },
+    {
+      "entry": "audio/1031_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.118,
+      "falsetto_prob": 0.882
+    },
+    {
+      "entry": "audio/1081_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3834,
+      "falsetto_prob": 0.6166
+    },
+    {
+      "entry": "audio/1096_f_falsetto.wav",
+      "true": "f_falsetto",
+      "pred": "f_chest",
+      "chest_prob": 0.5422,
+      "falsetto_prob": 0.4578
+    },
+    {
+      "entry": "audio/1113_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2512,
+      "falsetto_prob": 0.7488
+    },
+    {
+      "entry": "audio/1115_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4195,
+      "falsetto_prob": 0.5805
+    },
+    {
+      "entry": "audio/1125_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1998,
+      "falsetto_prob": 0.8002
+    },
+    {
+      "entry": "audio/1131_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.1856,
+      "falsetto_prob": 0.8144
+    },
+    {
+      "entry": "audio/1133_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0559,
+      "falsetto_prob": 0.9441
+    },
+    {
+      "entry": "audio/1135_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3334,
+      "falsetto_prob": 0.6666
+    },
+    {
+      "entry": "audio/1139_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3971,
+      "falsetto_prob": 0.6029
+    },
+    {
+      "entry": "audio/1141_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4043,
+      "falsetto_prob": 0.5957
+    },
+    {
+      "entry": "audio/1143_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.3675,
+      "falsetto_prob": 0.6325
+    },
+    {
+      "entry": "audio/1181_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2314,
+      "falsetto_prob": 0.7686
+    },
+    {
+      "entry": "audio/1197_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.6166,
+      "falsetto_prob": 0.3834
+    },
+    {
+      "entry": "audio/1222_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2988,
+      "falsetto_prob": 0.7012
+    },
+    {
+      "entry": "audio/1226_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.0865,
+      "falsetto_prob": 0.9135
+    },
+    {
+      "entry": "audio/1253_m_falsetto.wav",
+      "true": "m_falsetto",
+      "pred": "m_chest",
+      "chest_prob": 0.6556,
+      "falsetto_prob": 0.3444
+    },
+    {
+      "entry": "audio/1262_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.4892,
+      "falsetto_prob": 0.5108
+    },
+    {
+      "entry": "audio/1265_f_chest.wav",
+      "true": "f_chest",
+      "pred": "f_falsetto",
+      "chest_prob": 0.2933,
+      "falsetto_prob": 0.7067
+    }
+  ]
+}

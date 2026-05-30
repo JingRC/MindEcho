@@ -12,6 +12,8 @@ from torchvision import models, transforms
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 
+FOUR_CLASS_LABELS = ('m_chest', 'f_chest', 'm_falsetto', 'f_falsetto')
+
 
 def build_transform(image_size: int = 224):
     return transforms.Compose([
@@ -22,23 +24,42 @@ def build_transform(image_size: int = 224):
     ])
 
 
-def build_model(checkpoint_path: Path, device: torch.device):
-    model = models.squeezenet1_1(weights=None)
-    model.classifier[1] = torch.nn.Conv2d(512, 2, kernel_size=1)
-    model.num_classes = 2
+def build_model(checkpoint_path: Path, device: torch.device, num_classes: int = 2):
     try:
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-    except RuntimeError as exc:
+        checkpoint = torch.load(str(checkpoint_path), map_location=device)
+    except Exception as exc:
         exc_text = str(exc or '')
-        if device.type != 'cpu' and ('device_count() is 0' in exc_text or 'Attempting to deserialize object on CUDA device' in exc_text):
+        if 'weights_only' in exc_text or 'UnpicklingError' in exc_text:
+            checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
+        elif isinstance(exc, RuntimeError) and device.type != 'cpu' and ('device_count() is 0' in exc_text or 'Attempting to deserialize object on CUDA device' in exc_text):
             device = torch.device('cpu')
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
         else:
             raise
-    model.load_state_dict(checkpoint['model_state_dict'])
+    state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    # Auto-detect num_classes from classifier output layer
+    for key, tensor in state_dict.items():
+        if 'classifier.1.weight' in key:
+            num_classes = int(tensor.shape[0])
+            break
+
+    model = models.squeezenet1_1(weights=None)
+    model.classifier[1] = torch.nn.Conv2d(512, num_classes, kernel_size=1)
+    model.num_classes = num_classes
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     return model
+
+
+def collapse_four_probs(probabilities) -> dict:
+    p = [float(x) for x in probabilities]
+    return {
+        'chest_prob': p[0] + p[1],
+        'falsetto_prob': p[2] + p[3],
+        'male_prob': p[0] + p[2],
+        'female_prob': p[1] + p[3],
+    }
 
 
 def resolve_device() -> torch.device:
@@ -123,13 +144,29 @@ def build_batch_from_windows(windows: np.ndarray, sample_rate: int, image_size: 
 
 
 @torch.no_grad()
-def predict_windows(model, batch: torch.Tensor, device: torch.device):
+def predict_windows(model, batch: torch.Tensor, device: torch.device, num_classes: int = 0):
+    if num_classes <= 0:
+        num_classes = int(getattr(model, 'num_classes', 2) or 2)
     probs = []
     for start_idx in range(0, batch.size(0), 24):
         sub = batch[start_idx:start_idx + 24].to(device)
         logits = model(sub)
         sub_probs = torch.softmax(logits, dim=1).cpu().numpy().tolist()
         probs.extend(sub_probs)
+    if num_classes >= 4:
+        results = []
+        for item in probs:
+            collapsed = collapse_four_probs(item)
+            predicted_idx = int(np.argmax(item))
+            results.append({
+                'm_chest_prob': float(item[0]),
+                'f_chest_prob': float(item[1]),
+                'm_falsetto_prob': float(item[2]),
+                'f_falsetto_prob': float(item[3]),
+                'predicted_four': FOUR_CLASS_LABELS[predicted_idx],
+                **collapsed,
+            })
+        return results
     return [
         {
             'chest_prob': float(item[0]),
@@ -145,6 +182,8 @@ def main():
     parser.add_argument('--output-json', required=True)
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--image-size', type=int, default=224)
+    parser.add_argument('--num-classes', type=int, default=2, choices=[2, 4],
+                        help='Number of output classes (2 for chest/falsetto, 4 for m_chest/f_chest/m_falsetto/f_falsetto)')
     args = parser.parse_args()
 
     payload = np.load(args.input_npz)
@@ -152,9 +191,10 @@ def main():
     sample_rate = int(np.asarray(payload['sample_rate']).reshape(-1)[0])
 
     device = resolve_device()
-    model = build_model(Path(args.checkpoint), device)
+    model = build_model(Path(args.checkpoint), device, num_classes=args.num_classes)
+    num_classes = int(getattr(model, 'num_classes', args.num_classes) or args.num_classes)
     batch = build_batch_from_windows(windows, sample_rate=sample_rate, image_size=args.image_size)
-    result = predict_windows(model, batch, device)
+    result = predict_windows(model, batch, device, num_classes=num_classes)
     Path(args.output_json).write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
 
 

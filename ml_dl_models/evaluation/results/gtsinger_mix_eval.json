@@ -1,0 +1,1464 @@
+{
+  "core": {
+    "manifest_name": "mix_binary_core",
+    "total": 378,
+    "missing": 0,
+    "errors": 0,
+    "mix_binary": {
+      "non_mix": {
+        "precision": 0.8301,
+        "recall": 0.5404,
+        "f1": 0.6546,
+        "support": 235
+      },
+      "mix": {
+        "precision": 0.52,
+        "recall": 0.8182,
+        "f1": 0.6359,
+        "support": 143
+      },
+      "accuracy": 0.6455
+    },
+    "falsetto_binary": {
+      "non_falsetto": {
+        "precision": 0.8571,
+        "recall": 0.3066,
+        "f1": 0.4516,
+        "support": 274
+      },
+      "falsetto": {
+        "precision": 0.3214,
+        "recall": 0.8654,
+        "f1": 0.4688,
+        "support": 104
+      },
+      "accuracy": 0.4603
+    },
+    "group_breakdown": {
+      "Breathy_Group": {
+        "count": 41,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.5366,
+            "f1": 0.6984,
+            "support": 41
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.5366
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.0244,
+            "f1": 0.0476,
+            "support": 41
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.0244
+        }
+      },
+      "Control_Group": {
+        "count": 104,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9268,
+            "recall": 0.481,
+            "f1": 0.6333,
+            "support": 79
+          },
+          "mix": {
+            "precision": 0.3492,
+            "recall": 0.88,
+            "f1": 0.5,
+            "support": 25
+          },
+          "accuracy": 0.5769
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.8947,
+            "recall": 0.3736,
+            "f1": 0.5271,
+            "support": 91
+          },
+          "falsetto": {
+            "precision": 0.1364,
+            "recall": 0.6923,
+            "f1": 0.2278,
+            "support": 13
+          },
+          "accuracy": 0.4135
+        }
+      },
+      "Falsetto_Group": {
+        "count": 87,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9322,
+            "recall": 0.6962,
+            "f1": 0.7971,
+            "support": 79
+          },
+          "mix": {
+            "precision": 0.1429,
+            "recall": 0.5,
+            "f1": 0.2222,
+            "support": 8
+          },
+          "accuracy": 0.6782
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.125,
+            "recall": 0.2,
+            "f1": 0.1538,
+            "support": 5
+          },
+          "falsetto": {
+            "precision": 0.9494,
+            "recall": 0.9146,
+            "f1": 0.9317,
+            "support": 82
+          },
+          "accuracy": 0.8736
+        }
+      },
+      "Mixed_Voice_Group": {
+        "count": 109,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "mix": {
+            "precision": 1.0,
+            "recall": 0.8257,
+            "f1": 0.9045,
+            "support": 109
+          },
+          "accuracy": 0.8257
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9355,
+            "recall": 0.2816,
+            "f1": 0.4328,
+            "support": 103
+          },
+          "falsetto": {
+            "precision": 0.0513,
+            "recall": 0.6667,
+            "f1": 0.0952,
+            "support": 6
+          },
+          "accuracy": 0.3028
+        }
+      },
+      "Pharyngeal_Group": {
+        "count": 33,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.3636,
+            "f1": 0.5333,
+            "support": 33
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.3636
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.95,
+            "recall": 0.5938,
+            "f1": 0.7308,
+            "support": 32
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 1
+          },
+          "accuracy": 0.5758
+        }
+      }
+    },
+    "variant_breakdown": {
+      "clear_mix": {
+        "count": 126,
+        "recall": 0.8254,
+        "avg_mix_prob": 0.7083
+      },
+      "head_mix": {
+        "count": 17,
+        "recall": 0.7647,
+        "avg_mix_prob": 0.6792
+      }
+    },
+    "avg_mix_prob_mix_samples": 0.7048,
+    "avg_mix_prob_nonmix_samples": 0.5032,
+    "avg_falsetto_prob_falsetto_samples": 0.7489,
+    "avg_falsetto_prob_nonfalsetto_samples": 0.623,
+    "test_csv_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core\\test_manifest.csv"
+  },
+  "controlhard": {
+    "manifest_name": "mix_binary_controlhard_v1",
+    "total": 367,
+    "missing": 0,
+    "errors": 0,
+    "mix_binary": {
+      "non_mix": {
+        "precision": 0.7833,
+        "recall": 0.4196,
+        "f1": 0.5465,
+        "support": 224
+      },
+      "mix": {
+        "precision": 0.4737,
+        "recall": 0.8182,
+        "f1": 0.6,
+        "support": 143
+      },
+      "accuracy": 0.5749
+    },
+    "falsetto_binary": {
+      "non_falsetto": {
+        "precision": 0.8352,
+        "recall": 0.2992,
+        "f1": 0.4406,
+        "support": 254
+      },
+      "falsetto": {
+        "precision": 0.3551,
+        "recall": 0.8673,
+        "f1": 0.5039,
+        "support": 113
+      },
+      "accuracy": 0.4741
+    },
+    "group_breakdown": {
+      "Breathy_Group": {
+        "count": 41,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.5366,
+            "f1": 0.6984,
+            "support": 41
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.5366
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.0244,
+            "f1": 0.0476,
+            "support": 41
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.0244
+        }
+      },
+      "Control_Group": {
+        "count": 97,
+        "mix": {
+          "non_mix": {
+            "precision": 0.4,
+            "recall": 0.0278,
+            "f1": 0.0519,
+            "support": 72
+          },
+          "mix": {
+            "precision": 0.2391,
+            "recall": 0.88,
+            "f1": 0.3761,
+            "support": 25
+          },
+          "accuracy": 0.2474
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9211,
+            "recall": 0.407,
+            "f1": 0.5645,
+            "support": 86
+          },
+          "falsetto": {
+            "precision": 0.1356,
+            "recall": 0.7273,
+            "f1": 0.2286,
+            "support": 11
+          },
+          "accuracy": 0.4433
+        }
+      },
+      "Falsetto_Group": {
+        "count": 98,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9385,
+            "recall": 0.6778,
+            "f1": 0.7871,
+            "support": 90
+          },
+          "mix": {
+            "precision": 0.1212,
+            "recall": 0.5,
+            "f1": 0.1951,
+            "support": 8
+          },
+          "accuracy": 0.6633
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.1,
+            "recall": 0.2,
+            "f1": 0.1333,
+            "support": 5
+          },
+          "falsetto": {
+            "precision": 0.9545,
+            "recall": 0.9032,
+            "f1": 0.9282,
+            "support": 93
+          },
+          "accuracy": 0.8673
+        }
+      },
+      "Mixed_Voice_Group": {
+        "count": 109,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "mix": {
+            "precision": 1.0,
+            "recall": 0.8257,
+            "f1": 0.9045,
+            "support": 109
+          },
+          "accuracy": 0.8257
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9355,
+            "recall": 0.2816,
+            "f1": 0.4328,
+            "support": 103
+          },
+          "falsetto": {
+            "precision": 0.0513,
+            "recall": 0.6667,
+            "f1": 0.0952,
+            "support": 6
+          },
+          "accuracy": 0.3028
+        }
+      },
+      "Pharyngeal_Group": {
+        "count": 18,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.5,
+            "f1": 0.6667,
+            "support": 18
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.5
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9091,
+            "recall": 0.5882,
+            "f1": 0.7143,
+            "support": 17
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 1
+          },
+          "accuracy": 0.5556
+        }
+      }
+    },
+    "variant_breakdown": {
+      "clear_mix": {
+        "count": 126,
+        "recall": 0.8254,
+        "avg_mix_prob": 0.7083
+      },
+      "head_mix": {
+        "count": 17,
+        "recall": 0.7647,
+        "avg_mix_prob": 0.6792
+      }
+    },
+    "avg_mix_prob_mix_samples": 0.7048,
+    "avg_mix_prob_nonmix_samples": 0.5909,
+    "avg_falsetto_prob_falsetto_samples": 0.7539,
+    "avg_falsetto_prob_nonfalsetto_samples": 0.6328,
+    "test_csv_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_controlhard_v1\\test_manifest.csv"
+  },
+  "confusable": {
+    "manifest_name": "mix_binary_confusable_cluster_v1",
+    "total": 378,
+    "missing": 0,
+    "errors": 0,
+    "mix_binary": {
+      "non_mix": {
+        "precision": 0.8301,
+        "recall": 0.5404,
+        "f1": 0.6546,
+        "support": 235
+      },
+      "mix": {
+        "precision": 0.52,
+        "recall": 0.8182,
+        "f1": 0.6359,
+        "support": 143
+      },
+      "accuracy": 0.6455
+    },
+    "falsetto_binary": {
+      "non_falsetto": {
+        "precision": 0.8571,
+        "recall": 0.3066,
+        "f1": 0.4516,
+        "support": 274
+      },
+      "falsetto": {
+        "precision": 0.3214,
+        "recall": 0.8654,
+        "f1": 0.4688,
+        "support": 104
+      },
+      "accuracy": 0.4603
+    },
+    "group_breakdown": {
+      "Breathy_Group": {
+        "count": 41,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.5366,
+            "f1": 0.6984,
+            "support": 41
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.5366
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.0244,
+            "f1": 0.0476,
+            "support": 41
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.0244
+        }
+      },
+      "Control_Group": {
+        "count": 104,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9268,
+            "recall": 0.481,
+            "f1": 0.6333,
+            "support": 79
+          },
+          "mix": {
+            "precision": 0.3492,
+            "recall": 0.88,
+            "f1": 0.5,
+            "support": 25
+          },
+          "accuracy": 0.5769
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.8947,
+            "recall": 0.3736,
+            "f1": 0.5271,
+            "support": 91
+          },
+          "falsetto": {
+            "precision": 0.1364,
+            "recall": 0.6923,
+            "f1": 0.2278,
+            "support": 13
+          },
+          "accuracy": 0.4135
+        }
+      },
+      "Falsetto_Group": {
+        "count": 87,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9322,
+            "recall": 0.6962,
+            "f1": 0.7971,
+            "support": 79
+          },
+          "mix": {
+            "precision": 0.1429,
+            "recall": 0.5,
+            "f1": 0.2222,
+            "support": 8
+          },
+          "accuracy": 0.6782
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.125,
+            "recall": 0.2,
+            "f1": 0.1538,
+            "support": 5
+          },
+          "falsetto": {
+            "precision": 0.9494,
+            "recall": 0.9146,
+            "f1": 0.9317,
+            "support": 82
+          },
+          "accuracy": 0.8736
+        }
+      },
+      "Mixed_Voice_Group": {
+        "count": 109,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "mix": {
+            "precision": 1.0,
+            "recall": 0.8257,
+            "f1": 0.9045,
+            "support": 109
+          },
+          "accuracy": 0.8257
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9355,
+            "recall": 0.2816,
+            "f1": 0.4328,
+            "support": 103
+          },
+          "falsetto": {
+            "precision": 0.0513,
+            "recall": 0.6667,
+            "f1": 0.0952,
+            "support": 6
+          },
+          "accuracy": 0.3028
+        }
+      },
+      "Pharyngeal_Group": {
+        "count": 33,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.3636,
+            "f1": 0.5333,
+            "support": 33
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.3636
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.95,
+            "recall": 0.5938,
+            "f1": 0.7308,
+            "support": 32
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 1
+          },
+          "accuracy": 0.5758
+        }
+      }
+    },
+    "variant_breakdown": {
+      "clear_mix": {
+        "count": 126,
+        "recall": 0.8254,
+        "avg_mix_prob": 0.7083
+      },
+      "head_mix": {
+        "count": 17,
+        "recall": 0.7647,
+        "avg_mix_prob": 0.6792
+      }
+    },
+    "avg_mix_prob_mix_samples": 0.7048,
+    "avg_mix_prob_nonmix_samples": 0.5032,
+    "avg_falsetto_prob_falsetto_samples": 0.7489,
+    "avg_falsetto_prob_nonfalsetto_samples": 0.623,
+    "test_csv_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_confusable_cluster_v1\\test_manifest.csv"
+  },
+  "controlstrata": {
+    "manifest_name": "mix_binary_controlstrata_v1",
+    "total": 367,
+    "missing": 0,
+    "errors": 0,
+    "mix_binary": {
+      "non_mix": {
+        "precision": 0.8088,
+        "recall": 0.4911,
+        "f1": 0.6111,
+        "support": 224
+      },
+      "mix": {
+        "precision": 0.5065,
+        "recall": 0.8182,
+        "f1": 0.6257,
+        "support": 143
+      },
+      "accuracy": 0.6185
+    },
+    "falsetto_binary": {
+      "non_falsetto": {
+        "precision": 0.8182,
+        "recall": 0.2857,
+        "f1": 0.4235,
+        "support": 252
+      },
+      "falsetto": {
+        "precision": 0.3548,
+        "recall": 0.8609,
+        "f1": 0.5025,
+        "support": 115
+      },
+      "accuracy": 0.4659
+    },
+    "group_breakdown": {
+      "Breathy_Group": {
+        "count": 41,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.5366,
+            "f1": 0.6984,
+            "support": 41
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.5366
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.0244,
+            "f1": 0.0476,
+            "support": 41
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.0244
+        }
+      },
+      "Control_Group": {
+        "count": 97,
+        "mix": {
+          "non_mix": {
+            "precision": 0.8571,
+            "recall": 0.25,
+            "f1": 0.3871,
+            "support": 72
+          },
+          "mix": {
+            "precision": 0.2895,
+            "recall": 0.88,
+            "f1": 0.4356,
+            "support": 25
+          },
+          "accuracy": 0.4124
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.8857,
+            "recall": 0.369,
+            "f1": 0.521,
+            "support": 84
+          },
+          "falsetto": {
+            "precision": 0.1452,
+            "recall": 0.6923,
+            "f1": 0.24,
+            "support": 13
+          },
+          "accuracy": 0.4124
+        }
+      },
+      "Falsetto_Group": {
+        "count": 98,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9385,
+            "recall": 0.6778,
+            "f1": 0.7871,
+            "support": 90
+          },
+          "mix": {
+            "precision": 0.1212,
+            "recall": 0.5,
+            "f1": 0.1951,
+            "support": 8
+          },
+          "accuracy": 0.6633
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.1,
+            "recall": 0.2,
+            "f1": 0.1333,
+            "support": 5
+          },
+          "falsetto": {
+            "precision": 0.9545,
+            "recall": 0.9032,
+            "f1": 0.9282,
+            "support": 93
+          },
+          "accuracy": 0.8673
+        }
+      },
+      "Mixed_Voice_Group": {
+        "count": 109,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "mix": {
+            "precision": 1.0,
+            "recall": 0.8257,
+            "f1": 0.9045,
+            "support": 109
+          },
+          "accuracy": 0.8257
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9355,
+            "recall": 0.2816,
+            "f1": 0.4328,
+            "support": 103
+          },
+          "falsetto": {
+            "precision": 0.0513,
+            "recall": 0.6667,
+            "f1": 0.0952,
+            "support": 6
+          },
+          "accuracy": 0.3028
+        }
+      },
+      "Pharyngeal_Group": {
+        "count": 18,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.5,
+            "f1": 0.6667,
+            "support": 18
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.5
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9091,
+            "recall": 0.5882,
+            "f1": 0.7143,
+            "support": 17
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 1
+          },
+          "accuracy": 0.5556
+        }
+      }
+    },
+    "variant_breakdown": {
+      "clear_mix": {
+        "count": 126,
+        "recall": 0.8254,
+        "avg_mix_prob": 0.7083
+      },
+      "head_mix": {
+        "count": 17,
+        "recall": 0.7647,
+        "avg_mix_prob": 0.6792
+      }
+    },
+    "avg_mix_prob_mix_samples": 0.7048,
+    "avg_mix_prob_nonmix_samples": 0.5381,
+    "avg_falsetto_prob_falsetto_samples": 0.7516,
+    "avg_falsetto_prob_nonfalsetto_samples": 0.6446,
+    "test_csv_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_controlstrata_v1\\test_manifest.csv"
+  },
+  "english_holdout": {
+    "manifest_name": "mix_binary_english_singer_holdout_v1",
+    "total": 1727,
+    "missing": 0,
+    "errors": 0,
+    "mix_binary": {
+      "non_mix": {
+        "precision": 0.4449,
+        "recall": 0.8149,
+        "f1": 0.5756,
+        "support": 724
+      },
+      "mix": {
+        "precision": 0.6658,
+        "recall": 0.2662,
+        "f1": 0.3803,
+        "support": 1003
+      },
+      "accuracy": 0.4962
+    },
+    "falsetto_binary": {
+      "non_falsetto": {
+        "precision": 0.9281,
+        "recall": 0.3702,
+        "f1": 0.5293,
+        "support": 1464
+      },
+      "falsetto": {
+        "precision": 0.1934,
+        "recall": 0.8403,
+        "f1": 0.3144,
+        "support": 263
+      },
+      "accuracy": 0.4418
+    },
+    "group_breakdown": {
+      "Breathy_Group": {
+        "count": 122,
+        "mix": {
+          "non_mix": {
+            "precision": 0.8689,
+            "recall": 1.0,
+            "f1": 0.9298,
+            "support": 106
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 16
+          },
+          "accuracy": 0.8689
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.0667,
+            "f1": 0.125,
+            "support": 120
+          },
+          "falsetto": {
+            "precision": 0.0175,
+            "recall": 1.0,
+            "f1": 0.0345,
+            "support": 2
+          },
+          "accuracy": 0.082
+        }
+      },
+      "Control_Group": {
+        "count": 741,
+        "mix": {
+          "non_mix": {
+            "precision": 0.3054,
+            "recall": 0.7028,
+            "f1": 0.4258,
+            "support": 249
+          },
+          "mix": {
+            "precision": 0.5595,
+            "recall": 0.1911,
+            "f1": 0.2848,
+            "support": 492
+          },
+          "accuracy": 0.363
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9857,
+            "recall": 0.3736,
+            "f1": 0.5419,
+            "support": 736
+          },
+          "falsetto": {
+            "precision": 0.0022,
+            "recall": 0.2,
+            "f1": 0.0043,
+            "support": 5
+          },
+          "accuracy": 0.3725
+        }
+      },
+      "Falsetto_Group": {
+        "count": 245,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.9959,
+            "f1": 0.998,
+            "support": 245
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.9959
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "falsetto": {
+            "precision": 1.0,
+            "recall": 0.8694,
+            "f1": 0.9301,
+            "support": 245
+          },
+          "accuracy": 0.8694
+        }
+      },
+      "Glissando_Group": {
+        "count": 126,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0161,
+            "recall": 0.25,
+            "f1": 0.0303,
+            "support": 4
+          },
+          "mix": {
+            "precision": 0.9531,
+            "recall": 0.5,
+            "f1": 0.6559,
+            "support": 122
+          },
+          "accuracy": 0.4921
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.4683,
+            "f1": 0.6378,
+            "support": 126
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.4683
+        }
+      },
+      "Mixed_Voice_Group": {
+        "count": 245,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0149,
+            "recall": 0.6,
+            "f1": 0.029,
+            "support": 5
+          },
+          "mix": {
+            "precision": 0.9535,
+            "recall": 0.1708,
+            "f1": 0.2898,
+            "support": 240
+          },
+          "accuracy": 0.1796
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9452,
+            "recall": 0.2911,
+            "f1": 0.4452,
+            "support": 237
+          },
+          "falsetto": {
+            "precision": 0.0233,
+            "recall": 0.5,
+            "f1": 0.0444,
+            "support": 8
+          },
+          "accuracy": 0.298
+        }
+      },
+      "Pharyngeal_Group": {
+        "count": 122,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9242,
+            "recall": 0.5304,
+            "f1": 0.674,
+            "support": 115
+          },
+          "mix": {
+            "precision": 0.0357,
+            "recall": 0.2857,
+            "f1": 0.0635,
+            "support": 7
+          },
+          "accuracy": 0.5164
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9872,
+            "recall": 0.6364,
+            "f1": 0.7739,
+            "support": 121
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 1
+          },
+          "accuracy": 0.6311
+        }
+      },
+      "Vibrato_Group": {
+        "count": 126,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "mix": {
+            "precision": 1.0,
+            "recall": 0.5476,
+            "f1": 0.7077,
+            "support": 126
+          },
+          "accuracy": 0.5476
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9818,
+            "recall": 0.4355,
+            "f1": 0.6034,
+            "support": 124
+          },
+          "falsetto": {
+            "precision": 0.0141,
+            "recall": 0.5,
+            "f1": 0.0274,
+            "support": 2
+          },
+          "accuracy": 0.4365
+        }
+      }
+    },
+    "variant_breakdown": {
+      "breathy_mix": {
+        "count": 25,
+        "recall": 0.04,
+        "avg_mix_prob": 0.3186
+      },
+      "clear_mix": {
+        "count": 972,
+        "recall": 0.2726,
+        "avg_mix_prob": 0.4286
+      },
+      "head_mix": {
+        "count": 6,
+        "recall": 0.1667,
+        "avg_mix_prob": 0.3314
+      }
+    },
+    "avg_mix_prob_mix_samples": 0.4252,
+    "avg_mix_prob_nonmix_samples": 0.3473,
+    "avg_falsetto_prob_falsetto_samples": 0.7499,
+    "avg_falsetto_prob_nonfalsetto_samples": 0.5854,
+    "test_csv_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_english_singer_holdout_v1\\test_manifest.csv"
+  },
+  "core_plus_english": {
+    "manifest_name": "mix_binary_core_plus_english_singer_holdout_v1",
+    "total": 1727,
+    "missing": 0,
+    "errors": 0,
+    "mix_binary": {
+      "non_mix": {
+        "precision": 0.4449,
+        "recall": 0.8149,
+        "f1": 0.5756,
+        "support": 724
+      },
+      "mix": {
+        "precision": 0.6658,
+        "recall": 0.2662,
+        "f1": 0.3803,
+        "support": 1003
+      },
+      "accuracy": 0.4962
+    },
+    "falsetto_binary": {
+      "non_falsetto": {
+        "precision": 0.9281,
+        "recall": 0.3702,
+        "f1": 0.5293,
+        "support": 1464
+      },
+      "falsetto": {
+        "precision": 0.1934,
+        "recall": 0.8403,
+        "f1": 0.3144,
+        "support": 263
+      },
+      "accuracy": 0.4418
+    },
+    "group_breakdown": {
+      "Breathy_Group": {
+        "count": 122,
+        "mix": {
+          "non_mix": {
+            "precision": 0.8689,
+            "recall": 1.0,
+            "f1": 0.9298,
+            "support": 106
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 16
+          },
+          "accuracy": 0.8689
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.0667,
+            "f1": 0.125,
+            "support": 120
+          },
+          "falsetto": {
+            "precision": 0.0175,
+            "recall": 1.0,
+            "f1": 0.0345,
+            "support": 2
+          },
+          "accuracy": 0.082
+        }
+      },
+      "Control_Group": {
+        "count": 741,
+        "mix": {
+          "non_mix": {
+            "precision": 0.3054,
+            "recall": 0.7028,
+            "f1": 0.4258,
+            "support": 249
+          },
+          "mix": {
+            "precision": 0.5595,
+            "recall": 0.1911,
+            "f1": 0.2848,
+            "support": 492
+          },
+          "accuracy": 0.363
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9857,
+            "recall": 0.3736,
+            "f1": 0.5419,
+            "support": 736
+          },
+          "falsetto": {
+            "precision": 0.0022,
+            "recall": 0.2,
+            "f1": 0.0043,
+            "support": 5
+          },
+          "accuracy": 0.3725
+        }
+      },
+      "Falsetto_Group": {
+        "count": 245,
+        "mix": {
+          "non_mix": {
+            "precision": 1.0,
+            "recall": 0.9959,
+            "f1": 0.998,
+            "support": 245
+          },
+          "mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.9959
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "falsetto": {
+            "precision": 1.0,
+            "recall": 0.8694,
+            "f1": 0.9301,
+            "support": 245
+          },
+          "accuracy": 0.8694
+        }
+      },
+      "Glissando_Group": {
+        "count": 126,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0161,
+            "recall": 0.25,
+            "f1": 0.0303,
+            "support": 4
+          },
+          "mix": {
+            "precision": 0.9531,
+            "recall": 0.5,
+            "f1": 0.6559,
+            "support": 122
+          },
+          "accuracy": 0.4921
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 1.0,
+            "recall": 0.4683,
+            "f1": 0.6378,
+            "support": 126
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "accuracy": 0.4683
+        }
+      },
+      "Mixed_Voice_Group": {
+        "count": 245,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0149,
+            "recall": 0.6,
+            "f1": 0.029,
+            "support": 5
+          },
+          "mix": {
+            "precision": 0.9535,
+            "recall": 0.1708,
+            "f1": 0.2898,
+            "support": 240
+          },
+          "accuracy": 0.1796
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9452,
+            "recall": 0.2911,
+            "f1": 0.4452,
+            "support": 237
+          },
+          "falsetto": {
+            "precision": 0.0233,
+            "recall": 0.5,
+            "f1": 0.0444,
+            "support": 8
+          },
+          "accuracy": 0.298
+        }
+      },
+      "Pharyngeal_Group": {
+        "count": 122,
+        "mix": {
+          "non_mix": {
+            "precision": 0.9242,
+            "recall": 0.5304,
+            "f1": 0.674,
+            "support": 115
+          },
+          "mix": {
+            "precision": 0.0357,
+            "recall": 0.2857,
+            "f1": 0.0635,
+            "support": 7
+          },
+          "accuracy": 0.5164
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9872,
+            "recall": 0.6364,
+            "f1": 0.7739,
+            "support": 121
+          },
+          "falsetto": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 1
+          },
+          "accuracy": 0.6311
+        }
+      },
+      "Vibrato_Group": {
+        "count": 126,
+        "mix": {
+          "non_mix": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "mix": {
+            "precision": 1.0,
+            "recall": 0.5476,
+            "f1": 0.7077,
+            "support": 126
+          },
+          "accuracy": 0.5476
+        },
+        "falsetto": {
+          "non_falsetto": {
+            "precision": 0.9818,
+            "recall": 0.4355,
+            "f1": 0.6034,
+            "support": 124
+          },
+          "falsetto": {
+            "precision": 0.0141,
+            "recall": 0.5,
+            "f1": 0.0274,
+            "support": 2
+          },
+          "accuracy": 0.4365
+        }
+      }
+    },
+    "variant_breakdown": {
+      "breathy_mix": {
+        "count": 25,
+        "recall": 0.04,
+        "avg_mix_prob": 0.3186
+      },
+      "clear_mix": {
+        "count": 972,
+        "recall": 0.2726,
+        "avg_mix_prob": 0.4286
+      },
+      "head_mix": {
+        "count": 6,
+        "recall": 0.1667,
+        "avg_mix_prob": 0.3314
+      }
+    },
+    "avg_mix_prob_mix_samples": 0.4252,
+    "avg_mix_prob_nonmix_samples": 0.3473,
+    "avg_falsetto_prob_falsetto_samples": 0.7499,
+    "avg_falsetto_prob_nonfalsetto_samples": 0.5854,
+    "test_csv_path": "D:\\-MindEcho-main\\ml_dl_models\\gtsinger_multitech\\dataset\\curated\\mix_binary_core_plus_english_singer_holdout_v1\\test_manifest.csv"
+  }
+}
