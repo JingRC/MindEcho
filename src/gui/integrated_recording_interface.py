@@ -52,6 +52,11 @@ _MIX_BINARY_SOFTWARE_THRESHOLD_FLOORS = {
     'mix_binary_efficientnet_b0_img256_mel160_mean3_h4f6_proxy_gpu': 0.55,
 }
 _MIX_BINARY_FEMALE_THRESHOLD = 0.225
+_BREATH_BINARY_CHECKPOINT_CANDIDATES = (
+    project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'breath_binary_latefusion_v1' / 'best_breath_binary_latefusion.pt',
+)
+_BREATH_BINARY_THRESHOLD = 0.25
+_BREATH_BINARY_WINDOW_S = 2.4
 _CHEST_FALSETTO_TARGET_SR = 22050
 _CHEST_FALSETTO_WINDOW_S = 0.64
 _CHEST_FALSETTO_HOP_S = 0.16
@@ -33792,7 +33797,136 @@ class ECGStylePitchVisualizer(QWidget):
         self._mix_binary_model_bundle = bundle
         return bundle
 
-    def _build_mix_binary_model_architecture(self, torch_module: Any, backbone_name: str, model_type: str = 'plain') -> Any:
+    def _resolve_breath_binary_checkpoint_path(self) -> Optional[Path]:
+        for candidate in list(_BREATH_BINARY_CHECKPOINT_CANDIDATES or ()):
+            try:
+                if Path(candidate).is_file():
+                    return Path(candidate)
+            except Exception:
+                continue
+        return None
+
+    def _resolve_breath_binary_summary_payload(self, checkpoint_path: Path) -> Dict[str, Any]:
+        summary_path = Path(checkpoint_path).parent / 'training_summary.json'
+        try:
+            if summary_path.is_file():
+                return json.loads(summary_path.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+        return {}
+
+    def _get_breath_binary_model_bundle(self) -> Optional[Dict[str, Any]]:
+        checkpoint_path = self._resolve_breath_binary_checkpoint_path()
+        if checkpoint_path is None:
+            return None
+        try:
+            mtime = float(checkpoint_path.stat().st_mtime)
+        except Exception:
+            mtime = 0.0
+        cached = getattr(self, '_breath_binary_model_bundle', None)
+        if isinstance(cached, dict):
+            try:
+                if str(cached.get('path', '')) == str(checkpoint_path) and float(cached.get('mtime', -1.0)) == mtime:
+                    return cached
+            except Exception:
+                pass
+        summary_payload = self._resolve_breath_binary_summary_payload(checkpoint_path)
+        backbone_name = str(summary_payload.get('backbone_name', 'squeezenet11') or 'squeezenet11').strip().lower()
+        image_size = max(64, int(summary_payload.get('image_size', 224) or 224))
+        sample_rate = max(8000, int(summary_payload.get('sample_rate', _CHEST_FALSETTO_TARGET_SR) or _CHEST_FALSETTO_TARGET_SR))
+        n_fft = max(128, int(summary_payload.get('n_fft', 1024) or 1024))
+        hop_length = max(32, int(summary_payload.get('hop_length', 256) or 256))
+        n_mels = max(32, int(summary_payload.get('n_mels', 128) or 128))
+        spectral_dim = max(4, int(summary_payload.get('spectral_dim', 16) or 16))
+        threshold = float(_BREATH_BINARY_THRESHOLD)
+        try:
+            if summary_payload:
+                threshold = float(summary_payload.get('best_threshold', threshold) or threshold)
+        except Exception:
+            pass
+        bundle = {
+            'path': str(checkpoint_path),
+            'mtime': mtime,
+            'threshold': max(0.05, min(0.95, threshold)),
+            'backbone_name': backbone_name,
+            'image_size': image_size,
+            'sample_rate': sample_rate,
+            'n_fft': n_fft,
+            'hop_length': hop_length,
+            'n_mels': n_mels,
+            'spectral_dim': spectral_dim,
+            'force_external': False,
+        }
+        torch_mod, torch_error = _import_torch_safely()
+        if torch_mod is None:
+            bundle['force_external'] = True
+            self._breath_binary_model_bundle = bundle
+            return bundle
+        device = torch.device('cpu')
+        try:
+            model = self._build_breath_binary_model_architecture(torch_mod, backbone_name, spectral_dim=spectral_dim)
+        except Exception:
+            bundle['force_external'] = True
+            self._breath_binary_model_bundle = bundle
+            return bundle
+        try:
+            checkpoint = torch_mod.load(str(checkpoint_path), map_location=device)
+        except TypeError:
+            try:
+                checkpoint = torch_mod.load(str(checkpoint_path), map_location=device, weights_only=False)
+            except Exception:
+                bundle['force_external'] = True
+                self._breath_binary_model_bundle = bundle
+                return bundle
+        except Exception:
+            bundle['force_external'] = True
+            self._breath_binary_model_bundle = bundle
+            return bundle
+        state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        try:
+            model.load_state_dict(state_dict)
+        except Exception:
+            bundle['force_external'] = True
+            self._breath_binary_model_bundle = bundle
+            return bundle
+        model.to(device)
+        model.eval()
+        try:
+            if isinstance(checkpoint, dict):
+                threshold = float(checkpoint.get('threshold', checkpoint.get('best_threshold', threshold)) or threshold)
+        except Exception:
+            pass
+        mel_filter = self._build_mix_binary_mel_filterbank(sample_rate=sample_rate, n_fft=n_fft, n_mels=n_mels)
+        bundle.update({
+            'torch': torch_mod,
+            'device': device,
+            'model': model,
+            'threshold': max(0.05, min(0.95, threshold)),
+            'mean': torch_mod.tensor(_CHEST_FALSETTO_MEAN, dtype=torch_mod.float32).view(3, 1, 1),
+            'std': torch_mod.tensor(_CHEST_FALSETTO_STD, dtype=torch_mod.float32).view(3, 1, 1),
+            'stft_window': torch_mod.hann_window(int(n_fft), dtype=torch_mod.float32),
+            'mel_filter': torch_mod.from_numpy(np.asarray(mel_filter, dtype=np.float32)),
+        })
+        self._breath_binary_model_bundle = bundle
+        return bundle
+
+    def _build_breath_binary_model_architecture(self, torch_module: Any, backbone_name: str, spectral_dim: int = 16) -> Any:
+        """Build LateFusionSqueezeNet for breath binary classification."""
+        import importlib.util
+        # Import the model class from the breath training script
+        spec = importlib.util.spec_from_file_location(
+            'breath_model',
+            str(project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'train_breath_binary_latefusion.py'),
+        )
+        breath_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(breath_module)
+        model = breath_module.LateFusionSqueezeNet(
+            num_classes=2,
+            backbone_name=backbone_name,
+            spectral_dim=spectral_dim,
+            fusion_dropout=0.3,
+        )
+        return model
         name = str(backbone_name or 'squeezenet11').strip().lower()
         from torchvision import models  # type: ignore
         if str(model_type or 'plain') == 'squeezenet_latefusion':
@@ -34270,6 +34404,8 @@ class ECGStylePitchVisualizer(QWidget):
         if mean_pitch_hz >= T_falsetto_hi and mean_rms <= 0.00045 and stable_ratio < 0.18:
             pitch_falsetto_bias += 0.03
         if breath_like:
+            # 呼吸段：增强真声偏置 + 压低假声偏置，防止气息被模型误判为假声
+            # 主要拦截交给 window_breath_like gate（前置），此处作为兜底
             pitch_chest_bias += 0.14
             pitch_falsetto_bias -= 0.18
         if mean_pitch_hz < T_zcr_pitch and mean_zcr >= 0.12 and stable_ratio < 0.12:
@@ -34447,26 +34583,33 @@ class ECGStylePitchVisualizer(QWidget):
             mean_breath_score = float(np.mean(breath_scores[frame_mask])) if frame_count > 0 else 0.0
             breath_hint_ratio = float(np.mean(breath_hints[frame_mask])) if frame_count > 0 else 0.0
             # 呼吸段跳过真假声分类：明显呼吸特征 → 不是声区，避免假声误判
-            # 三个触发条件覆盖不同呼吸表现形态
+            # 四个触发条件覆盖不同呼吸表现形态（v2 放宽阈值，新增 soft_breath）
             low_energy_breath = (
-                voiced_ratio <= 0.48
-                and mean_rms <= 0.0050
-                and (mean_zcr >= 0.05 or mean_breath_score >= 0.13 or breath_hint_ratio >= 0.06)
+                voiced_ratio <= 0.52
+                and mean_rms <= 0.0055
+                and (mean_zcr >= 0.04 or mean_breath_score >= 0.10 or breath_hint_ratio >= 0.04)
             )
             high_hint_breath = (
-                breath_hint_ratio >= 0.14
-                and voiced_ratio <= 0.55
-                and mean_rms <= 0.0060
+                breath_hint_ratio >= 0.10
+                and voiced_ratio <= 0.58
+                and mean_rms <= 0.0065
             )
             # 中间态：有一定呼吸提示 + 低稳定度 + 低能量 → 很可能是换气
             moderate_breath = (
-                breath_hint_ratio >= 0.06
-                and voiced_ratio <= 0.45
-                and mean_rms <= 0.0035
-                and stable_ratio <= 0.14
-                and mean_zcr >= 0.04
+                breath_hint_ratio >= 0.04
+                and voiced_ratio <= 0.48
+                and mean_rms <= 0.0040
+                and stable_ratio <= 0.16
+                and mean_zcr >= 0.03
             )
-            window_breath_like = bool(low_energy_breath or high_hint_breath or moderate_breath)
+            # 弱呼吸：仅依赖 ZCR + 低能量，捕获早期/边缘换气（新增）
+            soft_breath = (
+                mean_zcr >= 0.10
+                and voiced_ratio <= 0.55
+                and mean_rms <= 0.0045
+                and stable_ratio <= 0.18
+            )
+            window_breath_like = bool(low_energy_breath or high_hint_breath or moderate_breath or soft_breath)
             if window_breath_like:
                 continue
             if voiced_ratio < 0.17 or stable_ratio < 0.03 or mean_rms < 0.00008:
@@ -34538,6 +34681,11 @@ class ECGStylePitchVisualizer(QWidget):
                 mix_results = self._predict_mix_binary_local(mix_audio_windows, mix_bundle)
             if mix_results is None:
                 mix_results = self._run_mix_binary_external_inference(mix_audio_windows)
+            # Breath model inference (same 2.4s windows as mix)
+            breath_bundle = self._get_breath_binary_model_bundle()
+            breath_results = None
+            if isinstance(breath_bundle, dict) and not bool(breath_bundle.get('force_external', False)):
+                breath_results = self._predict_mix_binary_local(mix_audio_windows, breath_bundle)
             batch_size = int(_CHEST_FALSETTO_BATCH_SIZE)
             with torch.no_grad():
                 for start_idx in range(0, len(tensors), batch_size):
@@ -34556,6 +34704,12 @@ class ECGStylePitchVisualizer(QWidget):
                             try:
                                 record['mix_prob'] = float(mix_results[record_idx].get('mix_prob', 0.0) or 0.0)
                                 record['mix_threshold'] = float(mix_threshold)
+                            except Exception:
+                                pass
+                        if breath_results is not None and record_idx < len(breath_results):
+                            try:
+                                record['breath_prob'] = float(breath_results[record_idx].get('mix_prob', 0.0) or 0.0)
+                                record['breath_threshold'] = float(breath_bundle.get('threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD) if isinstance(breath_bundle, dict) else float(_BREATH_BINARY_THRESHOLD)
                             except Exception:
                                 pass
                         if use_four_class:
@@ -34614,6 +34768,12 @@ class ECGStylePitchVisualizer(QWidget):
                         })
                         if bool(adjusted.get('context_forced_chest', False)):
                             self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
+                        # Breath model gate: skip chest/falsetto if breath detected
+                        _breath_p = float(record.get('breath_prob', 0.0) or 0.0)
+                        _breath_t = float(record.get('breath_threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD)
+                        if _breath_p >= _breath_t:
+                            record['event_type'] = 'breath'
+                            record['voice_type'] = 'breath'
                         all_predictions.append(record)
                         event_type = str(record.get('event_type', '') or '')
                         if not self._technique_type_selected(event_type):
@@ -34633,6 +34793,11 @@ class ECGStylePitchVisualizer(QWidget):
                 mix_results = self._predict_mix_binary_local(mix_audio_windows, mix_bundle)
             if mix_results is None:
                 mix_results = self._run_mix_binary_external_inference(mix_audio_windows)
+            # Breath model inference (same 2.4s windows)
+            breath_bundle_ext = self._get_breath_binary_model_bundle()
+            breath_results_ext = None
+            if isinstance(breath_bundle_ext, dict) and not bool(breath_bundle_ext.get('force_external', False)):
+                breath_results_ext = self._predict_mix_binary_local(mix_audio_windows, breath_bundle_ext)
             self._last_voice_type_debug['model_ready'] = True
             self._last_voice_type_debug['backend'] = 'external_python'
             for idx, prob in enumerate(list(external_results or [])):
@@ -34648,6 +34813,12 @@ class ECGStylePitchVisualizer(QWidget):
                     try:
                         record['mix_prob'] = float(mix_results[idx].get('mix_prob', 0.0) or 0.0)
                         record['mix_threshold'] = float(mix_threshold)
+                    except Exception:
+                        pass
+                if breath_results_ext is not None and idx < len(breath_results_ext):
+                    try:
+                        record['breath_prob'] = float(breath_results_ext[idx].get('mix_prob', 0.0) or 0.0)
+                        record['breath_threshold'] = float(breath_bundle_ext.get('threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD) if isinstance(breath_bundle_ext, dict) else float(_BREATH_BINARY_THRESHOLD)
                     except Exception:
                         pass
                 # Auto-detect gender from 4-class collapsed results
@@ -34688,6 +34859,12 @@ class ECGStylePitchVisualizer(QWidget):
                 })
                 if bool(adjusted.get('context_forced_chest', False)):
                     self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
+                # Breath model gate: skip chest/falsetto if breath detected
+                _breath_p_ext = float(record.get('breath_prob', 0.0) or 0.0)
+                _breath_t_ext = float(record.get('breath_threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD)
+                if _breath_p_ext >= _breath_t_ext:
+                    record['event_type'] = 'breath'
+                    record['voice_type'] = 'breath'
                 all_predictions.append(record)
                 event_type = str(record.get('event_type', '') or '')
                 if not self._technique_type_selected(event_type):
@@ -39663,6 +39840,15 @@ class ECGStylePitchVisualizer(QWidget):
                         return
                     # Gate 1 — 静默期间低置信度点丢弃：避免换气/无声时噪声产生异常弧线
                     if audio_rms < rms_thr * 0.5 and confidence < conf_thr * 0.6:
+                        self.current_pitch_active = False
+                        try:
+                            self.update_guides()
+                        except Exception:
+                            pass
+                        return
+                    # Gate 1b — 换气检测：breath_detect_hint 为 True 时丢弃音高点
+                    # 避免换气时的微弱伪音高被绘制成音调线
+                    if bool(pitch_data.get('breath_detect_hint', False)):
                         self.current_pitch_active = False
                         try:
                             self.update_guides()
