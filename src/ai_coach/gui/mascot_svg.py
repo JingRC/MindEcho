@@ -491,32 +491,38 @@ def _mianmian_body() -> str:
 <!-- 地面阴影 -->
 <ellipse cx="200" cy="370" rx="42" ry="7" fill="#00000005"/>
 <!-- 脚掌 (紧贴身体底部, 无缝) -->
-<ellipse cx="178" cy="350" rx="13" ry="9" fill="{body_dark}"/>
-<ellipse cx="222" cy="350" rx="13" ry="9" fill="{body_dark}"/>
-<!-- 身体 (头身重叠 ~22px: 头底218, 体顶196) -->
-<ellipse cx="200" cy="270" rx="56" ry="74" fill="url(#bodyGrad)" filter="url(#shadow)"/>
-<!-- 肚皮 -->
-<ellipse cx="200" cy="284" rx="33" ry="42" fill="{belly}" opacity="0.6"/>
-<!-- 棉花尾 -->
-<circle cx="268" cy="300" r="15" fill="{body_light}" filter="url(#shadow)"/>
-<circle cx="266" cy="297" r="9" fill="#FFFFFF" opacity="0.65"/>
-<circle cx="272" cy="295" r="4.5" fill="#FFFFFF" opacity="0.4"/>"""
+<ellipse cx="178" cy="350" rx="14" ry="10" fill="{body_dark}"/>
+<ellipse cx="222" cy="350" rx="14" ry="10" fill="{body_dark}"/>
+<!-- 身体 (头身重叠 ~30px: 头底220, 体顶190) -->
+<ellipse cx="200" cy="268" rx="58" ry="76" fill="url(#bodyGrad)" filter="url(#shadow)"/>
+<!-- 肚皮 (更圆润) -->
+<ellipse cx="200" cy="282" rx="34" ry="44" fill="{belly}" opacity="0.55"/>
+<!-- 棉花尾 (更蓬松) -->
+<circle cx="270" cy="302" r="16" fill="{body_light}" filter="url(#shadow)"/>
+<circle cx="267" cy="298" r="10" fill="#FFFFFF" opacity="0.6"/>
+<circle cx="274" cy="296" r="5" fill="#FFFFFF" opacity="0.35"/>"""
 
 
 def _mianmian_head() -> str:
+    # 注意：耳朵在头部椭圆之前绘制 → 耳朵从脑袋后面伸出，自然可爱
     return """
-<!-- 头部 (圆脸, 中心 y=148) -->
-<ellipse cx="200" cy="148" rx="78" ry="70" fill="url(#bodyGrad)"/>
-<!-- 左耳 (完全垂落, 长!) -->
-<path d="M158 100 Q135 48 132 22 Q130 8 143 10 Q156 12 152 38 Q147 72 150 108"
-      fill="{body}" stroke="{body_dark}" stroke-width="2.2" stroke-linejoin="round"/>
-<path d="M155 96 Q138 50 135 28 Q133 16 143 18 Q152 20 149 40 Q145 70 148 100"
-      fill="{ear_inner}"/>
-<!-- 右耳 (竖立, 像伊布) -->
-<ellipse cx="240" cy="62" rx="13" ry="50" fill="{body}" stroke="{body_dark}" stroke-width="2.2" transform="rotate(8 240 62)"/>
-<ellipse cx="240" cy="62" rx="7" ry="40" fill="{ear_inner}" transform="rotate(8 240 62)"/>
-<!-- 耳根小饰 -->
-<circle cx="246" cy="50" r="5" fill="{accent}" opacity="0.7"/>"""
+<!-- ══ 耳朵 (在头部后面) ══ -->
+<!-- 左耳 (厚实垂落) -->
+<path d="M146 124 Q115 56 112 24 Q110 6 134 8 Q160 12 156 44 Q148 82 166 118"
+      fill="{body}" stroke="{body_dark}" stroke-width="2.5" stroke-linejoin="round"/>
+<path d="M148 120 Q122 58 119 28 Q117 12 134 13 Q156 16 153 44 Q146 78 162 114"
+      fill="{ear_inner}" opacity="0.85"/>
+<!-- 右耳 (厚实垂落, 镜像) -->
+<path d="M254 124 Q285 56 288 24 Q290 6 266 8 Q240 12 244 44 Q252 82 234 118"
+      fill="{body}" stroke="{body_dark}" stroke-width="2.5" stroke-linejoin="round"/>
+<path d="M252 120 Q278 58 281 28 Q283 12 266 13 Q244 16 247 44 Q254 78 238 114"
+      fill="{ear_inner}" opacity="0.85"/>
+<!-- 耳根绒毛装饰 -->
+<circle cx="154" cy="118" r="5" fill="{body_light}" opacity="0.7"/>
+<circle cx="246" cy="118" r="5" fill="{body_light}" opacity="0.7"/>
+<!-- ══ 头部 (盖在耳朵上面) ══ -->
+<ellipse cx="200" cy="148" rx="82" ry="72" fill="url(#bodyGrad)" filter="url(#shadow)"/>
+"""
 
 
 def _mianmian_extras() -> str:
@@ -525,9 +531,9 @@ def _mianmian_extras() -> str:
 <path d="M164 196 Q200 207 236 196" stroke="{scarf}" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.7"/>
 <path d="M230 194 Q236 222 232 240 Q228 218 222 206" fill="{scarf}" opacity="0.7"/>"""
 
-# 绵绵面部: 眼睛+大腮红
-N_FACE = {"cx_l": 168, "cx_r": 232, "cy_eye": 140, "r_eye": 9,
-          "cy_blush": 162, "r_blush": 14, "cx_mouth": 200, "cy_mouth": 168}
+# 绵绵面部: 大眼睛 + 大腮红 (萌系比例)
+N_FACE = {"cx_l": 166, "cx_r": 234, "cy_eye": 138, "r_eye": 11,
+          "cy_blush": 160, "r_blush": 16, "cx_mouth": 200, "cy_mouth": 170}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -773,3 +779,129 @@ def get_html_widget(expression: str = "idle", theme: str = DEFAULT_THEME,
   <div class="mascot-speech-bubble">需要帮助吗？</div>
   {svg.replace('<svg ', f'<svg width="{size}" height="{size}" ')}
 </div>"""
+
+
+# ═══════════════════════════════════════════════════════════════
+# 毛茸茸肉球手掌光标 SVG
+# ═══════════════════════════════════════════════════════════════
+
+
+PAW_CURSOR_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <defs>
+    <filter id="fluff" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.08" numOctaves="3" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <radialGradient id="pawGrad" cx="50%" cy="55%" r="50%">
+      <stop offset="0%" stop-color="#FFF5EE"/>
+      <stop offset="100%" stop-color="#F5DCC3"/>
+    </radialGradient>
+    <radialGradient id="beanGrad" cx="40%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#FFD0D9"/>
+      <stop offset="100%" stop-color="#F4A0B5"/>
+    </radialGradient>
+    <filter id="softShadow">
+      <feDropShadow dx="0.5" dy="1" stdDeviation="1.5" flood-color="#C4956A" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- 主体肉球 (大掌垫) -->
+  <ellipse cx="22" cy="30" rx="15" ry="13" fill="url(#pawGrad)" stroke="#E8C9A0" stroke-width="1.2" filter="url(#softShadow)"/>
+
+  <!-- 掌垫中央大肉球 -->
+  <ellipse cx="22" cy="32" rx="8" ry="7.5" fill="url(#beanGrad)" opacity="0.85"/>
+  <!-- 肉球高光 -->
+  <ellipse cx="19" cy="29" rx="3" ry="2" fill="white" opacity="0.3"/>
+
+  <!-- 食指肉球 (左上) -->
+  <circle cx="13" cy="18" r="5" fill="url(#pawGrad)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow)"/>
+  <circle cx="13" cy="18.5" r="2.8" fill="url(#beanGrad)" opacity="0.8"/>
+  <circle cx="11.5" cy="17" r="1.2" fill="white" opacity="0.25"/>
+
+  <!-- 中指肉球 (中上) -->
+  <circle cx="22" cy="14" r="5.5" fill="url(#pawGrad)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow)"/>
+  <circle cx="22" cy="14.5" r="3" fill="url(#beanGrad)" opacity="0.8"/>
+  <circle cx="20.5" cy="13" r="1.3" fill="white" opacity="0.25"/>
+
+  <!-- 无名指肉球 (右上) -->
+  <circle cx="31" cy="16" r="5" fill="url(#pawGrad)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow)"/>
+  <circle cx="31" cy="16.5" r="2.8" fill="url(#beanGrad)" opacity="0.8"/>
+  <circle cx="29.5" cy="15" r="1.2" fill="white" opacity="0.25"/>
+
+  <!-- 小指肉球 (右侧) -->
+  <circle cx="35" cy="22" r="4.3" fill="url(#pawGrad)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow)"/>
+  <circle cx="35" cy="22.5" r="2.3" fill="url(#beanGrad)" opacity="0.8"/>
+  <circle cx="34" cy="21" r="1" fill="white" opacity="0.25"/>
+
+  <!-- 毛茸茸边缘小突起 -->
+  <circle cx="8" cy="22" r="2.5" fill="#FFF5EE" opacity="0.7"/>
+  <circle cx="6" cy="28" r="2" fill="#FFF5EE" opacity="0.6"/>
+  <circle cx="10" cy="38" r="2.2" fill="#F5DCC3" opacity="0.5"/>
+  <circle cx="18" cy="42" r="2.5" fill="#F5DCC3" opacity="0.5"/>
+  <circle cx="30" cy="41" r="2.3" fill="#F5DCC3" opacity="0.5"/>
+  <circle cx="36" cy="34" r="2" fill="#F5DCC3" opacity="0.5"/>
+  <circle cx="38" cy="26" r="2" fill="#FFF5EE" opacity="0.6"/>
+</svg>"""
+
+
+# 抚摸时的手掌 (按下角度 — 肉球向外摊开 + 旋转 15°)
+PAW_PETTING_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <defs>
+    <filter id="fluff2" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.08" numOctaves="3" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <radialGradient id="pawGrad2" cx="50%" cy="55%" r="50%">
+      <stop offset="0%" stop-color="#FFF5EE"/>
+      <stop offset="100%" stop-color="#F5DCC3"/>
+    </radialGradient>
+    <radialGradient id="beanGrad2" cx="40%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#FFD0D9"/>
+      <stop offset="100%" stop-color="#F4A0B5"/>
+    </radialGradient>
+    <filter id="softShadow2">
+      <feDropShadow dx="0.5" dy="1" stdDeviation="1.5" flood-color="#C4956A" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- 整体旋转 + 位移: 微倾按压感 -->
+  <g transform="rotate(15 24 24) translate(2 -4)">
+
+    <!-- 主体肉球 (稍微压扁的椭圆 → 按压感) -->
+    <ellipse cx="22" cy="30" rx="16" ry="12" fill="url(#pawGrad2)" stroke="#E8C9A0" stroke-width="1.2" filter="url(#softShadow2)"/>
+
+    <!-- 掌垫中央大肉球 (更扁) -->
+    <ellipse cx="22" cy="31" rx="9" ry="6.5" fill="url(#beanGrad2)" opacity="0.85"/>
+    <ellipse cx="19" cy="28.5" rx="3.5" ry="1.8" fill="white" opacity="0.3"/>
+
+    <!-- 食指肉球 (更摊开) -->
+    <circle cx="11" cy="17" r="5.2" fill="url(#pawGrad2)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow2)"/>
+    <circle cx="11" cy="17.5" r="2.8" fill="url(#beanGrad2)" opacity="0.8"/>
+    <circle cx="9.5" cy="16" r="1.3" fill="white" opacity="0.25"/>
+
+    <!-- 中指肉球 (更摊开) -->
+    <circle cx="22" cy="12" r="5.8" fill="url(#pawGrad2)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow2)"/>
+    <circle cx="22" cy="12.5" r="3.2" fill="url(#beanGrad2)" opacity="0.8"/>
+    <circle cx="20.5" cy="11" r="1.5" fill="white" opacity="0.25"/>
+
+    <!-- 无名指肉球 (更摊开) -->
+    <circle cx="33" cy="15" r="5.2" fill="url(#pawGrad2)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow2)"/>
+    <circle cx="33" cy="15.5" r="2.8" fill="url(#beanGrad2)" opacity="0.8"/>
+    <circle cx="31.5" cy="14" r="1.3" fill="white" opacity="0.25"/>
+
+    <!-- 小指肉球 -->
+    <circle cx="37" cy="21" r="4.5" fill="url(#pawGrad2)" stroke="#E8C9A0" stroke-width="1" filter="url(#softShadow2)"/>
+    <circle cx="37" cy="21.5" r="2.4" fill="url(#beanGrad2)" opacity="0.8"/>
+    <circle cx="36" cy="20" r="1.1" fill="white" opacity="0.25"/>
+
+    <!-- 毛茸茸边缘小突起 -->
+    <circle cx="6" cy="21" r="2.5" fill="#FFF5EE" opacity="0.7"/>
+    <circle cx="4" cy="28" r="2" fill="#FFF5EE" opacity="0.6"/>
+    <circle cx="9" cy="38" r="2.2" fill="#F5DCC3" opacity="0.5"/>
+    <circle cx="17" cy="42" r="2.5" fill="#F5DCC3" opacity="0.5"/>
+    <circle cx="31" cy="41" r="2.3" fill="#F5DCC3" opacity="0.5"/>
+    <circle cx="38" cy="34" r="2" fill="#F5DCC3" opacity="0.5"/>
+    <circle cx="40" cy="25" r="2" fill="#FFF5EE" opacity="0.6"/>
+
+  </g>
+</svg>"""

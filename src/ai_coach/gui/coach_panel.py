@@ -474,6 +474,11 @@ class AICoachPanel(QWidget):
             latest = max(candidates, key=lambda p: p.stat().st_mtime)
             song_name = latest.stem
             self._append_message("user", f"[分析最近录音] {song_name}")
+            # 累计分析次数 +1
+            try:
+                self.agent.session_mgr.increment_analysis_count()
+            except Exception:
+                pass
             self._run_agent_task("analyze", json_path=str(latest), song_name=song_name)
         except Exception as e:
             self._append_message("assistant", f"❌ 分析失败: {str(e)}")
@@ -487,6 +492,11 @@ class AICoachPanel(QWidget):
             return
         song_name = Path(path).stem.replace("_analysis", "").replace("_", " ")
         self._append_message("user", f"[分析演唱] {song_name}")
+        # 累计分析次数 +1
+        try:
+            self.agent.session_mgr.increment_analysis_count()
+        except Exception:
+            pass
         self._run_agent_task("analyze", json_path=path, song_name=song_name)
 
     def _on_compare(self):
@@ -632,60 +642,32 @@ class AICoachPanel(QWidget):
             return ""
 
     def _refresh_charts(self):
-        """刷新练习数据可视化图表。"""
+        """刷新练习数据可视化 — 3 张卡片同一行并排。
+
+        QTextBrowser 基于 Qt Rich Text (HTML4 子集)，不支持:
+          flexbox, gradient, text-shadow, pseudo-elements, CSS variables, animation.
+        因此使用 <table> 布局 + 纯色 + 简单边框。"""
         try:
-            from .charts import sparkline_svg, bar_chart_svg, progress_ring_svg
-            sessions = self.agent.session_mgr.sessions
-
-            parts = ['<div style="padding:16px;font-family:sans-serif;">']
-
-            # ── 标题行 ──
-            parts.append(
-                '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">'
-                '<span style="font-size:16px;">📊</span>'
-                '<span style="font-size:14px;font-weight:bold;color:#A78BFA;">练习数据总览</span>'
-                '</div>'
-            )
-
-            # ── 指标卡片 ──
             stats = self.agent.session_mgr.get_stats()
             total = stats["total_sessions"]
+            total_analyses = stats.get("total_analyses", 0)
             total_minutes = stats.get("total_minutes", 0.0) or stats["total_hours"] * 60
 
-            parts.append('<div style="display:flex;gap:12px;margin-bottom:16px;">')
-
-            # 练习次数卡片
-            ring_pct = min(total / max(30, total), 1.0) if total > 0 else 0.0
-            parts.append(
-                f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
-                f'{progress_ring_svg(ring_pct, size=56, stroke_width=5, color="#7C5CFC", label=str(total))}'
-                f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">练习次数</div>'
-                f'<div style="font-size:10px;color:#888;margin-top:2px;">累计录音分析</div>'
-                f'</div>'
-            )
-
-            # 练习时长卡片（精确到分钟：X小时Y分钟）
+            # ── 时长格式化 ──
             if total_minutes >= 60:
                 h = int(total_minutes // 60)
                 m = int(total_minutes % 60)
-                time_label = f"{h}h{m:02d}"
-                time_sub = f"{h}小时{m}分钟"
+                time_big = f"{h}"
+                time_unit = "h"
+                time_sub = f"{m}min"
             elif total_minutes >= 1:
-                time_label = f"{int(total_minutes)}"
-                time_sub = f"{int(total_minutes)}分钟"
+                time_big = f"{int(total_minutes)}"
+                time_unit = "min"
+                time_sub = ""
             else:
-                time_label = "—"
-                time_sub = "累计演唱时间"
-            time_ring = min(total_minutes / max(600, total_minutes), 1.0) if total_minutes > 0 else 0.0
-            parts.append(
-                f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
-                f'{progress_ring_svg(time_ring, size=56, stroke_width=5, color="#4ADE80", label=time_label)}'
-                f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">练习时长</div>'
-                f'<div style="font-size:10px;color:#888;margin-top:2px;">{time_sub}</div>'
-                f'</div>'
-            )
-
-            parts.append('</div>')  # end 指标卡片
+                time_big = "—"
+                time_unit = ""
+                time_sub = ""
 
             # ── 状态描述 ──
             if total == 0:
@@ -693,15 +675,102 @@ class AICoachPanel(QWidget):
             elif total < 5:
                 desc = f"刚起步，已完成 {total} 次练习。坚持下去，每一遍都在进步！"
             else:
-                desc = f"共 {total} 次练习，累计 {time_sub}。继续加油，每一遍都在进步！"
-            parts.append(
-                f'<div style="font-size:11px;color:#999;line-height:1.5;margin-bottom:14px;">'
-                f'{desc}'
-                f'</div>'
-            )
+                h = int(total_minutes // 60) if total_minutes >= 60 else 0
+                m = int(total_minutes % 60)
+                if h > 0:
+                    time_str = f"{h}小时{m}分钟"
+                else:
+                    time_str = f"{m}分钟"
+                desc = f"共 {total} 次练习，累计 {time_str}。继续加油，每一遍都在进步！"
 
-            parts.append("</div>")
-            self.chart_display.setHtml("".join(parts))
+            # 时长标签: 数字+单位在一行
+            duration_label = f"练习时长 {time_sub}" if time_sub else "练习时长"
+
+            # ── Qt Rich Text 兼容的 3 卡片布局 ──
+            # 用 <table> 保证同一行、等宽
+            html = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><style>
+  body {{
+    margin:0; padding:18px 16px;
+    background:#1a1a2e;
+    font-family:"Microsoft YaHei","Segoe UI",sans-serif;
+  }}
+  .title {{
+    font-size:14px; font-weight:bold; color:#C4B5FD;
+    margin-bottom:4px;
+  }}
+  .subtitle {{
+    font-size:10px; color:#6B7280;
+    margin-bottom:16px;
+  }}
+  table.cards {{
+    width:100%;
+    border-collapse:separate;
+    border-spacing:12px;
+    margin-bottom:14px;
+  }}
+  td.card {{
+    width:33%;
+    background:#1E1E3A;
+    border:1.5px solid #2D2D5A;
+    border-radius:6px;
+    padding:18px 8px 14px 8px;
+    text-align:center;
+  }}
+  .num {{
+    font-size:34px; font-weight:900;
+    line-height:1.15;
+  }}
+  .num.c-purple {{ color:#A78BFA; }}
+  .num.c-blue   {{ color:#60A5FA; }}
+  .num.c-green  {{ color:#4ADE80; }}
+  .unit {{
+    font-size:16px; font-weight:600;
+  }}
+  .c-purple .unit {{ color:#A78BFA; }}
+  .c-blue   .unit {{ color:#60A5FA; }}
+  .c-green  .unit {{ color:#4ADE80; }}
+  .label {{
+    font-size:13px; font-weight:bold; color:#D1D5DB;
+    margin-top:6px;
+  }}
+  .sub {{
+    font-size:10px; color:#9CA3AF;
+    margin-top:2px;
+  }}
+  .desc {{
+    font-size:12px; color:#9CA3AF;
+    line-height:1.6;
+    border-left:2px solid #7C5CFC;
+    padding:4px 0 4px 12px;
+  }}
+</style></head><body>
+
+<div class="title">📊 练习数据总览</div>
+<div class="subtitle">数据实时更新</div>
+
+<table class="cards"><tr>
+  <td class="card">
+    <div class="num c-purple">{total}</div>
+    <div class="label">练习次数</div>
+    <div class="sub">PRACTICE SESSIONS</div>
+  </td>
+  <td class="card">
+    <div class="num c-blue">{total_analyses}</div>
+    <div class="label">AI 分析</div>
+    <div class="sub">ANALYSIS REPORTS</div>
+  </td>
+  <td class="card">
+    <div class="num c-green">{time_big}<span class="unit"> {time_unit}</span></div>
+    <div class="label">{duration_label}</div>
+    <div class="sub">PRACTICE DURATION</div>
+  </td>
+</tr></table>
+
+<div class="desc">{desc}</div>
+</body></html>'''
+
+            self.chart_display.setHtml(html)
 
         except Exception:
             pass  # 图表失败不影响主功能

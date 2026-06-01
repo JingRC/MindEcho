@@ -23,6 +23,7 @@ class UserProfile:
     vocal_range_high: float = 0.0                  # 最高有效音高 (Hz)
     total_practice_sessions: int = 0
     total_practice_time_minutes: float = 0.0
+    total_analyses: int = 0  # 累计 AI 分析次数
     recent_accuracy_history: list[float] = field(default_factory=list)  # 最近 10 次的音准命中率
     focus_areas: list[str] = field(default_factory=list)                # 当前需关注的领域
     completed_stages: list[str] = field(default_factory=list)           # 已完成的课程阶段
@@ -118,6 +119,12 @@ class SessionManager:
             self.profile.vocal_range_high = vocal_range[1]
         if focus_areas is not None:
             self.profile.focus_areas = focus_areas
+        self.profile.last_active = datetime.now().isoformat()
+        self.save_profile()
+
+    def increment_analysis_count(self):
+        """AI 分析次数 +1"""
+        self.profile.total_analyses += 1
         self.profile.last_active = datetime.now().isoformat()
         self.save_profile()
 
@@ -271,6 +278,7 @@ class SessionManager:
         return {
             "level": self.profile.level,
             "total_sessions": self.profile.total_practice_sessions,
+            "total_analyses": self.profile.total_analyses,
             "total_hours": round(self.profile.total_practice_time_minutes / 60, 1),
             "total_minutes": round(self.profile.total_practice_time_minutes, 1),
             "vocal_range": f"{self.profile.vocal_range_low:.0f}-{self.profile.vocal_range_high:.0f}Hz",

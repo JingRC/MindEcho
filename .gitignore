@@ -48,5 +48,8 @@ Thumbs.db
 # Logs
 *.log
 
+# GitHub release packaging (separate repo)
+_github_release/
+
 # Jupyter
 .ipynb_checkpoints/

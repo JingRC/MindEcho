@@ -15,14 +15,14 @@ from pathlib import Path
 from typing import Optional
 
 from .coach_panel import AICoachPanel, _QT_AVAILABLE
-from .mascot_svg import get_svg, MASCOT_ANIMATION_CSS, THEMES, DEFAULT_THEME
+from .mascot_svg import get_svg, MASCOT_ANIMATION_CSS, THEMES, DEFAULT_THEME, PAW_CURSOR_SVG, PAW_PETTING_SVG
 
 if _QT_AVAILABLE:
     from PyQt6.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QLabel, QPushButton, QSizePolicy,
     )
-    from PyQt6.QtCore import Qt, QTimer, QSize
+    from PyQt6.QtCore import Qt, QTimer, QSize, QEvent, QObject
     from PyQt6.QtGui import QIcon, QPixmap, QPainter
     try:
         from PyQt6.QtSvgWidgets import QSvgWidget
@@ -31,6 +31,156 @@ if _QT_AVAILABLE:
         _QT_SVG_AVAILABLE = False
 else:
     _QT_SVG_AVAILABLE = False
+
+
+# ═══════════════════════════════════════════════════════════════
+# 毛茸茸肉球手掌光标
+# ═══════════════════════════════════════════════════════════════
+
+_paw_cursor_cache = None
+
+
+def _get_paw_cursor(size: int = 36):
+    """创建毛茸茸肉球手掌光标（缓存复用）。
+
+    优先使用 SVG 渲染（高清），失败则用 QPainter 直接绘制（零依赖）。
+    """
+    global _paw_cursor_cache
+    if _paw_cursor_cache is not None:
+        return _paw_cursor_cache
+
+    try:
+        # QSvgRenderer 在 PyQt6.QtSvg，不在 QtSvgWidgets
+        from PyQt6.QtSvg import QSvgRenderer
+        from PyQt6.QtGui import QPixmap, QPainter, QCursor
+        from PyQt6.QtCore import Qt as QtCore_Qt
+
+        renderer = QSvgRenderer(PAW_CURSOR_SVG.encode("utf-8"))
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QtCore_Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        renderer.render(painter)
+        painter.end()
+
+        hot_x = int(size * 0.46)
+        hot_y = int(size * 0.28)
+        _paw_cursor_cache = QCursor(pixmap, hot_x, hot_y)
+        return _paw_cursor_cache
+    except Exception:
+        pass
+
+    # ── Fallback: QPainter 直接绘制肉球手掌（无需 SVG 模块）──
+    try:
+        from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QBrush, QPen, QCursor
+        from PyQt6.QtCore import Qt as QtCore_Qt, QPointF
+        from PyQt6.QtGui import QRadialGradient, QColor
+
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QtCore_Qt.GlobalColor.transparent)
+        p = QPainter(pixmap)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        s = size / 48.0  # 缩放因子 (SVG viewBox=48)
+
+        # ── 主体大掌垫 ──
+        body_color = QColor(245, 230, 210)
+        body_stroke = QColor(232, 201, 160)
+        p.setBrush(QBrush(body_color))
+        p.setPen(QPen(body_stroke, 1.2 * s))
+        p.drawEllipse(QPointF(22 * s, 30 * s), 15 * s, 13 * s)
+
+        # ── 掌垫中央大肉球 ──
+        pad_grad = QRadialGradient(QPointF(22 * s, 32 * s), 8 * s)
+        pad_grad.setColorAt(0, QColor(255, 208, 217))
+        pad_grad.setColorAt(1, QColor(244, 160, 181))
+        p.setBrush(QBrush(pad_grad))
+        p.setPen(QtCore_Qt.PenStyle.NoPen)
+        p.setOpacity(0.85)
+        p.drawEllipse(QPointF(22 * s, 32 * s), 8 * s, 7.5 * s)
+        p.setOpacity(1.0)
+
+        # ── 四个指头肉球 ──
+        toes = [
+            (13, 18, 5.0, 2.8),    # 食指
+            (22, 14, 5.5, 3.0),    # 中指
+            (31, 16, 5.0, 2.8),    # 无名指
+            (35, 22, 4.3, 2.3),    # 小指
+        ]
+        for cx, cy, outer_r, inner_r in toes:
+            # 外圈（奶油色）
+            p.setBrush(QBrush(body_color))
+            p.setPen(QPen(body_stroke, 1.0 * s))
+            p.drawEllipse(QPointF(cx * s, cy * s), outer_r * s, outer_r * s)
+            # 内圈（粉色肉球）
+            igrad = QRadialGradient(QPointF(cx * s, cy * s), inner_r * s)
+            igrad.setColorAt(0, QColor(255, 215, 222))
+            igrad.setColorAt(1, QColor(244, 160, 181))
+            p.setBrush(QBrush(igrad))
+            p.setPen(QtCore_Qt.PenStyle.NoPen)
+            p.setOpacity(0.8)
+            p.drawEllipse(QPointF(cx * s, (cy + 0.5) * s), inner_r * s, inner_r * s)
+            p.setOpacity(1.0)
+
+        # ── 毛茸边缘小突起 ──
+        fluff_color = QColor(255, 245, 238)
+        fluff_color2 = QColor(245, 220, 195)
+        fluffs = [
+            (8, 22, 2.5, fluff_color),
+            (6, 28, 2.0, fluff_color),
+            (10, 38, 2.2, fluff_color2),
+            (18, 42, 2.5, fluff_color2),
+            (30, 41, 2.3, fluff_color2),
+            (36, 34, 2.0, fluff_color2),
+            (38, 26, 2.0, fluff_color),
+        ]
+        p.setPen(QtCore_Qt.PenStyle.NoPen)
+        for cx, cy, r, color in fluffs:
+            p.setBrush(QBrush(color))
+            p.setOpacity(0.55)
+            p.drawEllipse(QPointF(cx * s, cy * s), r * s, r * s)
+        p.setOpacity(1.0)
+
+        p.end()
+
+        hot_x = int(size * 0.46)
+        hot_y = int(size * 0.28)
+        _paw_cursor_cache = QCursor(pixmap, hot_x, hot_y)
+        return _paw_cursor_cache
+    except Exception:
+        return None
+
+
+_petting_cursor_cache = None
+
+
+def _get_petting_cursor(size: int = 40):
+    """抚摸时的手掌光标（旋转按压角度，稍大一圈）。"""
+    global _petting_cursor_cache
+    if _petting_cursor_cache is not None:
+        return _petting_cursor_cache
+
+    try:
+        from PyQt6.QtSvg import QSvgRenderer
+        from PyQt6.QtGui import QPixmap, QPainter, QCursor
+        from PyQt6.QtCore import Qt as QtCore_Qt
+
+        renderer = QSvgRenderer(PAW_PETTING_SVG.encode("utf-8"))
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QtCore_Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        renderer.render(painter)
+        painter.end()
+
+        hot_x = int(size * 0.50)
+        hot_y = int(size * 0.20)
+        _petting_cursor_cache = QCursor(pixmap, hot_x, hot_y)
+        return _petting_cursor_cache
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -62,7 +212,12 @@ class MascotWidget(QWidget):
 
         self.setFixedSize(size, size)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)  # 手型光标
+        # 毛茸茸肉球手掌光标
+        paw = _get_paw_cursor()
+        if paw is not None:
+            self.setCursor(paw)
+        else:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         if _QT_SVG_AVAILABLE:
             self._svg_widget = QSvgWidget(self)
@@ -144,8 +299,7 @@ class MascotWidget(QWidget):
     def anim_loved(self, duration_ms: int = 3000):
         """被抚摸 — 爱心雨 + 极度开心 (♥‿♥)"""
         self.set_expression("loved")
-        # 抚摸时切换成大爱心光标
-        self.setCursor(Qt.CursorShape.CrossCursor)
+        # 抚摸时保持肉球手掌光标（更贴合抚摸感受）
         if self._anim_timer:
             self._anim_timer.stop()
         self._anim_timer = QTimer(self)
@@ -155,15 +309,20 @@ class MascotWidget(QWidget):
 
     def _on_loved_end(self):
         """抚摸结束 → 恢复待机"""
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.anim_idle()
 
     def mousePressEvent(self, event):
-        """点击桌宠 — 智能交互
+        """点击桌宠 — 智能交互 + 肉球手掌抚摸动画
         第 1-2 次点击: 开心 (^_^)
         第 3+ 次点击(2秒内): 被抚摸 (♥‿♥ + 爱心雨)
+
+        每次点击时肉球手掌会变为"按下抚摸"角度 (~400ms)，
+        模拟手掌放在 agent 头上轻拍的效果。
         """
         if event.button() == Qt.MouseButton.LeftButton:
+            # ── 肉球手掌 → 按下抚摸角度 ──
+            self._show_petting_cursor()
+
             # 累加点击计数
             self._click_count += 1
             # 重置计时器
@@ -192,6 +351,28 @@ class MascotWidget(QWidget):
             menu.addAction("💤 休息").triggered.connect(self.anim_idle)
             menu.exec(event.globalPos())
         super().mousePressEvent(event)
+
+    def _show_petting_cursor(self):
+        """短暂切换到「按下抚摸」角度的手掌光标"""
+        petting = _get_petting_cursor()
+        if petting is None:
+            return
+        self.setCursor(petting)
+        # 400ms 后恢复普通肉球手掌
+        if hasattr(self, '_cursor_restore_timer') and self._cursor_restore_timer:
+            self._cursor_restore_timer.stop()
+        self._cursor_restore_timer = QTimer(self)
+        self._cursor_restore_timer.setSingleShot(True)
+        self._cursor_restore_timer.timeout.connect(self._restore_paw_cursor)
+        self._cursor_restore_timer.start(400)
+
+    def _restore_paw_cursor(self):
+        """恢复普通肉球手掌光标"""
+        paw = _get_paw_cursor()
+        if paw is not None:
+            self.setCursor(paw)
+        else:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _reset_clicks(self):
         """超时重置点击计数"""
@@ -229,7 +410,7 @@ class AICoachDockPanel(QWidget):
         mascot_bar.addLayout(mascot_info)
         mascot_bar.addStretch()
 
-        # 设置按钮 — 放在桌宠栏右侧，不占用对话区
+        # 设置按钮 — 放在桌宠栏右侧
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setFixedSize(28, 28)
         self.btn_settings.setToolTip("AI 教练设置 — API 密钥、模型、教练身份")
@@ -362,7 +543,12 @@ class _FloatingBubble(QWidget):
         mascot_container.setContentsMargins(0, 4, 0, 0)
         mascot_container.addStretch()
         self.mascot = MascotWidget(size=68, display_name="麦麦", theme=mascot_theme)
-        self.mascot.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 悬浮球桌宠也用毛茸茸肉球手掌光标
+        paw = _get_paw_cursor()
+        if paw is not None:
+            self.mascot.setCursor(paw)
+        else:
+            self.mascot.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mascot.setGraphicsEffect(self._make_glow())
         mascot_container.addWidget(self.mascot)
         mascot_container.addStretch()
@@ -546,10 +732,9 @@ class _FloatingBubble(QWidget):
                             self._do_snap_dock(edge)
                 self._hide_snap_hint()
             else:
-                # 点击 (没有拖拽) → 直接唤回面板
+                # 点击 (没有拖拽) → 唤回面板并重新停靠
                 if abs(delta.x()) < 5 and abs(delta.y()) < 5:
-                    self._dock.show()
-                    self._dock.raise_()
+                    self._restore_dock()
         self._drag_pos = None
         self._dragging = False
         self.mascot.setFixedSize(68, 68)
@@ -569,14 +754,164 @@ class _FloatingBubble(QWidget):
         self._dock.show()
         self._dock.raise_()
 
+    def _restore_dock(self):
+        """唤回 dock 面板 — 处理浮动/隐藏状态"""
+        dock = self._dock
+        # 如果 dock 处于浮动状态，先取消浮动才能重新停靠
+        if dock.isFloating():
+            dock.setFloating(False)
+        dock.show()
+        dock.raise_()
+
     def mouseDoubleClickEvent(self, event):
-        self._dock.show()
-        self._dock.raise_()
+        self._restore_dock()
         super().mouseDoubleClickEvent(event)
 
     def set_theme(self, theme: str):
         """更新桌宠主题"""
         self.mascot.set_theme(theme)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 自定义 Dock 标题栏
+# ═══════════════════════════════════════════════════════════════
+
+
+class _CoachTitleBar(QWidget):
+    """自定义标题栏：标题 + 最小化 / 浮动 / 关闭 三个按钮。
+    支持拖拽分离 dock，双击切换浮动/停靠。"""
+
+    def __init__(self, title: str, dock: "QDockWidget", parent=None):
+        super().__init__(parent)
+        self._dock = dock
+        self._drag_start = None
+        self._dragging = False
+
+        self.setFixedHeight(36)
+        self.setStyleSheet(
+            "background:#1E1E36; border-bottom:1px solid #2A2A4A;"
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 0, 4, 0)
+        layout.setSpacing(2)
+
+        # 标题
+        self._label = QLabel(title)
+        self._label.setStyleSheet(
+            "color:#B8A9E8; font-weight:600; font-size:12px;"
+            "background:transparent; border:none;"
+        )
+        layout.addWidget(self._label)
+        layout.addStretch()
+
+        # ── 统一按钮样式：极简扁平，hover 才显底色 ──
+        _btn_common = """
+            QPushButton {
+                background:transparent;
+                color:#8888AA;
+                border:none;
+                border-radius:5px;
+                font-size:13px; font-weight:bold;
+                font-family:"Segoe UI","Microsoft YaHei",sans-serif;
+                padding:0px;
+                min-width:28px; max-width:28px;
+                min-height:28px; max-height:28px;
+            }
+            QPushButton:hover {
+                background:#454568;
+                color:#E8E8FF;
+            }
+            QPushButton:pressed {
+                background:#2E2E48;
+            }
+        """
+
+        # ① 最小化
+        self.btn_min = QPushButton("–")
+        self.btn_min.setToolTip("最小化 — 缩小为悬浮桌宠")
+        self.btn_min.setStyleSheet(_btn_common)
+        layout.addWidget(self.btn_min)
+
+        # ② 浮动/停靠
+        self.btn_float = QPushButton("□")
+        self.btn_float.setToolTip("分离窗口 / 重新停靠")
+        self.btn_float.setStyleSheet(_btn_common)
+        self.btn_float.clicked.connect(self._toggle_float)
+        layout.addWidget(self.btn_float)
+
+        # ③ 关闭
+        self.btn_close = QPushButton("×")
+        self.btn_close.setToolTip("关闭（最小化到悬浮球）")
+        self.btn_close.setStyleSheet(_btn_common + """
+            QPushButton:hover { background:#D94A4A; color:#FFF; }
+            QPushButton:pressed { background:#A83232; }
+        """)
+        layout.addWidget(self.btn_close)
+
+    def _toggle_float(self):
+        """切换浮动/停靠"""
+        self._dock.setFloating(not self._dock.isFloating())
+
+    # ── 拖拽支持 ──
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.globalPosition().toPoint()
+            self._dragging = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.MouseButton.LeftButton and self._drag_start is not None:
+            delta = event.globalPosition().toPoint() - self._drag_start
+            if abs(delta.x()) > 6 or abs(delta.y()) > 6:
+                if not self._dragging:
+                    self._dragging = True
+                    if not self._dock.isFloating():
+                        self._dock.setFloating(True)
+                # 移动浮动窗口
+                self._dock.move(event.globalPosition().toPoint() - self._drag_start +
+                                self._dock.mapToGlobal(self._dock.rect().topLeft()))
+                self._drag_start = event.globalPosition().toPoint()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        self._dragging = False
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        self._toggle_float()
+        super().mouseDoubleClickEvent(event)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 自定义 Dock Widget
+# ═══════════════════════════════════════════════════════════════
+
+
+class _CoachDockWidget(QDockWidget):
+    """自定义 Dock：追踪显式关闭 vs 窗口最小化，支持最小化到悬浮球。"""
+
+    minimize_requested = None  # signal placeholder, set after init
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(title, parent)
+        self._explicitly_hidden = False
+
+    def closeEvent(self, event):
+        """用户点击关闭按钮 → 标记为显式隐藏 → 触发悬浮球"""
+        self._explicitly_hidden = True
+        super().closeEvent(event)
+
+    def showEvent(self, event):
+        """dock 重新显示 → 清除标记"""
+        self._explicitly_hidden = False
+        super().showEvent(event)
+
+    def minimize_to_bubble(self):
+        """最小化 → 隐藏 dock 并显示悬浮球"""
+        self._explicitly_hidden = True
+        self.hide()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -600,53 +935,99 @@ def integrate_ai_coach(main_window, dock_area=Qt.DockWidgetArea.RightDockWidgetA
 
     from PyQt6.QtGui import QAction, QKeySequence
 
-    # 创建停靠面板
-    dock = QDockWidget("AI 声乐教练", main_window)
+    # ── 自定义 Dock ──
+    dock = _CoachDockWidget("AI 声乐教练", main_window)
     dock.setObjectName("ai_coach_dock")
+    dock.setMinimumWidth(380)
+    dock.resize(420, 700)
+    dock.setAllowedAreas(
+        Qt.DockWidgetArea.LeftDockWidgetArea |
+        Qt.DockWidgetArea.RightDockWidgetArea
+    )
+    dock.setFeatures(
+        QDockWidget.DockWidgetFeature.DockWidgetMovable |
+        QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+        QDockWidget.DockWidgetFeature.DockWidgetClosable
+    )
 
     # 创建内容
     panel = AICoachDockPanel(dock)
     dock.setWidget(panel)
 
-    # 设置允许的停靠区域
-    dock.setAllowedAreas(
-        Qt.DockWidgetArea.LeftDockWidgetArea |
-        Qt.DockWidgetArea.RightDockWidgetArea
-    )
+    # ── 自定义标题栏 (替换原生) ──
+    title_bar = _CoachTitleBar("AI 声乐教练", dock)
+    dock.setTitleBarWidget(title_bar)
+
+    # dock widget 整体风格
+    dock.setStyleSheet("""
+        QDockWidget {
+            color: #e0e0e0; font-size:13px;
+            background:#1a1a2e; border:none;
+        }
+    """)
 
     # 添加到主窗口
     main_window.addDockWidget(dock_area, dock)
 
-    # 设置默认尺寸
-    dock.setMinimumWidth(380)
-    dock.resize(420, 700)
-
-    # 设置样式
-    dock.setStyleSheet("""
-        QDockWidget {
-            color: #e0e0e0;
-            font-size: 13px;
-        }
-        QDockWidget::title {
-            background-color: #2a2a4a;
-            padding: 8px;
-            border-bottom: 2px solid #5B3FD9;
-        }
-    """)
-
-    # ── 悬浮球机制 ──
+    # ── 悬浮球 ──
     theme = panel.coach_panel.agent.identity.avatar_theme
     bubble = _FloatingBubble(dock, theme)
     bubble.hide()
 
+    def _show_bubble():
+        _sync_bubble_theme()
+        bubble.show()
+
+    # ── 标题栏按钮接线 ──
+    # ① 最小化 → 悬浮球
+    title_bar.btn_min.clicked.connect(lambda: dock.minimize_to_bubble())
+    # ③ 关闭 → 悬浮球
+    title_bar.btn_close.clicked.connect(lambda: dock.minimize_to_bubble())
+    # ② 浮动/停靠 — 已在 _CoachTitleBar._toggle_float 中处理
+
+    # ── Dock 显隐逻辑 ──
     def _on_dock_visibility(visible: bool):
         if visible:
             bubble.hide()
         else:
-            _sync_bubble_theme()
-            bubble.show()
+            # 主窗口最小化 → 不触发悬浮球
+            if hasattr(main_window, 'isMinimized') and main_window.isMinimized():
+                return
+            # 只有显式关闭才显示悬浮球
+            if not dock._explicitly_hidden:
+                return
+            dock._explicitly_hidden = False
+            _show_bubble()
 
     dock.visibilityChanged.connect(_on_dock_visibility)
+
+    # ── 修复：主窗口最小化再恢复后 dock 消失 ──
+    # Qt 在父窗口最小化时会隐藏 QDockWidget，但恢复时不会自动显示回来。
+    # 使用 EventFilter 监听 WindowStateChange 事件，恢复后重新显示 dock。
+    _dock_was_visible = True
+
+    class _WindowStateFilter(QObject):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._prev_state = None
+
+        def eventFilter(self, obj, event):
+            nonlocal _dock_was_visible
+            if event.type() == QEvent.Type.WindowStateChange:
+                is_min = main_window.isMinimized()
+                _min_flag = Qt.WindowState.WindowMinimized.value
+                if self._prev_state is not None:
+                    was_min = bool(self._prev_state & _min_flag)
+                    if was_min and not is_min:
+                        if _dock_was_visible and not dock._explicitly_hidden:
+                            dock.show()
+                    if not was_min and is_min:
+                        _dock_was_visible = dock.isVisible()
+                self._prev_state = main_window.windowState().value
+            return False
+
+    _state_filter = _WindowStateFilter(main_window)
+    main_window.installEventFilter(_state_filter)
 
     # ── 配置变更时同步悬浮球主题 ──
     def _sync_bubble_theme():
