@@ -341,6 +341,8 @@ class PyQtGraphPitchRenderer(QWidget):
         vb = self.plot_widget.getViewBox()
         vb.disableAutoRange()
         vb.setAutoVisible(y=False)
+        # X 轴硬边界：不可拖到时间 0 左侧（左边界 = 0）
+        vb.setLimits(xMin=0.0)
 
         # Y 轴默认范围：1-7 八度（对应 C2-C7）
         self.plot_widget.setYRange(1.0, 7.0, padding=0.02)

@@ -47331,6 +47331,17 @@ class ECGStylePitchVisualizer(QWidget):
         """[pyqtgraph] 用户手动缩放/平移后，将新范围同步回状态变量。"""
         try:
             x0, x1 = x_range
+            # 钳制：左边界不可 < 0（不允许拖到时间轴负方向）
+            if x0 < 0.0:
+                x1 -= x0  # 保持窗口宽度
+                x0 = 0.0
+                # 将修正后的范围推送回 pyqtgraph ViewBox
+                try:
+                    pgw = getattr(self, 'pyqtgraph_gradient_widget', None)
+                    if pgw is not None:
+                        pgw.plot_widget.setXRange(x0, x1, padding=0.0)
+                except Exception:
+                    pass
             self.time_offset = float(x0)
             self.time_window = float(x1 - x0)
             y0, y1 = y_range
