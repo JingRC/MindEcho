@@ -50241,7 +50241,7 @@ class ECGStylePitchVisualizer(QWidget):
                 # (否则会短暂显示 __init__ 的默认范围 C1-C7，造成与缩放控制不一致)
                 QTimer.singleShot(0, self._pg_sync_view)
             self._ensure_gpu_indicator()
-            # 低延模式 GPU 检测提示（仅弹一次）
+            # 低延模式 GPU 检测提示（仅输出一次，不弹窗阻塞 UI）
             if not getattr(self, '_low_latency_gpu_warned', False):
                 self._low_latency_gpu_warned = True
                 try:
@@ -50250,12 +50250,7 @@ class ECGStylePitchVisualizer(QWidget):
                 except Exception:
                     gpu_available = False
                 if not gpu_available:
-                    QTimer.singleShot(800, lambda: QMessageBox.information(
-                        self, "低延模式提示",
-                        "未检测到 NVIDIA GPU。\n\n"
-                        "低延模式可在 CPU 上运行，但帧率可能不达预期。\n"
-                        "如有卡顿，建议切换回「普通模式」使用。",
-                        QMessageBox.Ok))
+                    print("💡 低延模式提示: 未检测到 NVIDIA GPU，低延模式可在 CPU 上运行但帧率可能不达预期。如有卡顿建议切换回「普通模式」。")
         else:
             was_gpu = bool(getattr(self, '_use_pyqtgraph', False))
             self._use_pyqtgraph = False
