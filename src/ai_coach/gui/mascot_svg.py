@@ -238,6 +238,22 @@ def _eyes_surprised(cx_l: float, cx_r: float, cy: float, r: float) -> str:
     return _eyes_idle(cx_l, cx_r, cy - 1, r * 1.12)
 
 
+def _eyes_loved(cx_l: float, cx_r: float, cy: float, r: float) -> str:
+    """被抚摸 — 极度开心眯眼 + 爱心瞳 (♥‿♥)"""
+    return (
+        # 眯眼弧
+        f'<path d="M{cx_l-r:.0f} {cy+2:.0f} Q{cx_l:.0f} {cy-r*0.6:.0f} {cx_l+r:.0f} {cy+2:.0f}" '
+        f'stroke="{C_EYE}" stroke-width="2.8" fill="none" stroke-linecap="round"/>\n'
+        f'<path d="M{cx_r-r:.0f} {cy+2:.0f} Q{cx_r:.0f} {cy-r*0.6:.0f} {cx_r+r:.0f} {cy+2:.0f}" '
+        f'stroke="{C_EYE}" stroke-width="2.8" fill="none" stroke-linecap="round"/>\n'
+        # 爱心装饰
+        f'<text x="{cx_l-1:.0f}" y="{cy-r*0.3:.0f}" font-size="{r*0.7:.0f}" text-anchor="middle" '
+        f'fill="{C_EYE_HL}" opacity="0.6">♥</text>\n'
+        f'<text x="{cx_r-1:.0f}" y="{cy-r*0.3:.0f}" font-size="{r*0.7:.0f}" text-anchor="middle" '
+        f'fill="{C_EYE_HL}" opacity="0.6">♥</text>'
+    )
+
+
 # ── 嘴巴 ──
 
 def _mouth_smile(cx: float, cy: float) -> str:
@@ -265,6 +281,11 @@ def _mouth_surprised(cx: float, cy: float) -> str:
     )
 
 
+def _mouth_loved(cx: float, cy: float) -> str:
+    """被抚摸 — 大开心张嘴"""
+    return _mouth_open(cx, cy)
+
+
 # ═══════════════════════════════════════════════════════════════
 # 麦麦 V5 — 音乐小猫 (皮卡丘比例)
 #   超大圆头 + 大三角耳 + 圆耳机 + 小巧身体 (头身重叠)
@@ -273,10 +294,10 @@ def _mouth_surprised(cx: float, cy: float) -> str:
 def _maimai_body() -> str:
     return """
 <!-- 地面阴影 -->
-<ellipse cx="200" cy="380" rx="50" ry="8" fill="#00000008"/>
-<!-- 后脚 -->
-<ellipse cx="172" cy="370" rx="14" ry="10" fill="{body_dark}"/>
-<ellipse cx="228" cy="370" rx="14" ry="10" fill="{body_dark}"/>
+<ellipse cx="200" cy="365" rx="50" ry="8" fill="#00000008"/>
+<!-- 后脚 (紧贴身体底部, 无缝) -->
+<ellipse cx="172" cy="340" rx="14" ry="10" fill="{body_dark}"/>
+<ellipse cx="228" cy="340" rx="14" ry="10" fill="{body_dark}"/>
 <!-- 身体 (头身重叠 ~24px: 头底216, 体顶192) -->
 <ellipse cx="200" cy="264" rx="62" ry="72" fill="url(#bodyGrad)" filter="url(#shadow)"/>
 <!-- 肚皮 -->
@@ -335,10 +356,10 @@ M_FACE = {"cx_l": 162, "cx_r": 238, "cy_eye": 132, "r_eye": 9,
 def _tuantuan_body() -> str:
     return """
 <!-- 地面阴影 -->
-<ellipse cx="200" cy="385" rx="55" ry="9" fill="#00000006"/>
-<!-- 后脚掌 -->
-<ellipse cx="168" cy="378" rx="18" ry="11" fill="{body_dark}"/>
-<ellipse cx="232" cy="378" rx="18" ry="11" fill="{body_dark}"/>
+<ellipse cx="200" cy="370" rx="55" ry="9" fill="#00000006"/>
+<!-- 后脚掌 (紧贴身体底部, 无缝) -->
+<ellipse cx="168" cy="360" rx="18" ry="11" fill="{body_dark}"/>
+<ellipse cx="232" cy="360" rx="18" ry="11" fill="{body_dark}"/>
 <!-- 身体 (头身重叠 ~24px: 头底222, 体顶198) -->
 <ellipse cx="200" cy="276" rx="68" ry="78" fill="url(#bodyGrad)" filter="url(#shadow)"/>
 <!-- 肚皮 -->
@@ -468,10 +489,10 @@ Q_FACE = {"cx_l": 158, "cx_r": 242, "cy_eye": 218, "r_eye": 11,
 def _mianmian_body() -> str:
     return """
 <!-- 地面阴影 -->
-<ellipse cx="200" cy="388" rx="42" ry="7" fill="#00000005"/>
-<!-- 脚掌 -->
-<ellipse cx="178" cy="378" rx="13" ry="9" fill="{body_dark}"/>
-<ellipse cx="222" cy="378" rx="13" ry="9" fill="{body_dark}"/>
+<ellipse cx="200" cy="370" rx="42" ry="7" fill="#00000005"/>
+<!-- 脚掌 (紧贴身体底部, 无缝) -->
+<ellipse cx="178" cy="350" rx="13" ry="9" fill="{body_dark}"/>
+<ellipse cx="222" cy="350" rx="13" ry="9" fill="{body_dark}"/>
 <!-- 身体 (头身重叠 ~22px: 头底218, 体顶196) -->
 <ellipse cx="200" cy="270" rx="56" ry="74" fill="url(#bodyGrad)" filter="url(#shadow)"/>
 <!-- 肚皮 -->
@@ -563,6 +584,20 @@ def _surprise_marks() -> str:
       opacity="0.45" font-family="Arial, sans-serif">!</text>"""
 
 
+def _heart_shower() -> str:
+    """被抚摸 — 爱心雨 (大小爱心飘浮)"""
+    return """
+<g filter="url(#glow)">
+  <text x="85" y="50" font-size="18" fill="{accent}" opacity="0.85" font-family="Arial">♥</text>
+  <text x="290" y="40" font-size="22" fill="{accent}" opacity="0.8" font-family="Arial">♥</text>
+  <text x="310" y="70" font-size="14" fill="{cheek}" opacity="0.7" font-family="Arial">♥</text>
+  <text x="65" y="72" font-size="15" fill="{cheek}" opacity="0.65" font-family="Arial">♥</text>
+  <text x="275" y="55" font-size="12" fill="{star}" opacity="0.55" font-family="Arial">♥</text>
+  <text x="95" y="36" font-size="10" fill="{star}" opacity="0.45" font-family="Arial">♥</text>
+  <text x="255" y="30" font-size="9" fill="{accent}" opacity="0.4" font-family="Arial">♥</text>
+</g>"""
+
+
 # ═══════════════════════════════════════════════════════════════
 # 角色部件注册表
 # ═══════════════════════════════════════════════════════════════
@@ -608,6 +643,7 @@ def get_svg(expression: str = "idle", theme: str = DEFAULT_THEME) -> str:
         "thinking":  lambda: _eyes_thinking(f["cx_l"], f["cx_r"], f["cy_eye"], f["r_eye"]),
         "happy":     lambda: _eyes_happy(f["cx_l"], f["cx_r"], f["cy_eye"], f["r_eye"]),
         "surprised": lambda: _eyes_surprised(f["cx_l"], f["cx_r"], f["cy_eye"], f["r_eye"]),
+        "loved":     lambda: _eyes_loved(f["cx_l"], f["cx_r"], f["cy_eye"], f["r_eye"]),
     }
     mouth_map = {
         "idle":      lambda: _mouth_smile(f["cx_mouth"], f["cy_mouth"]),
@@ -615,6 +651,7 @@ def get_svg(expression: str = "idle", theme: str = DEFAULT_THEME) -> str:
         "thinking":  lambda: _mouth_smile(f["cx_mouth"], f["cy_mouth"]),
         "happy":     lambda: _mouth_open(f["cx_mouth"], f["cy_mouth"]),
         "surprised": lambda: _mouth_surprised(f["cx_mouth"], f["cy_mouth"]),
+        "loved":     lambda: _mouth_loved(f["cx_mouth"], f["cy_mouth"]),
     }
     extras_map = {
         "idle":      _idle_note(),
@@ -622,6 +659,7 @@ def get_svg(expression: str = "idle", theme: str = DEFAULT_THEME) -> str:
         "happy":     _happy_stars(),
         "thinking":  _thinking_dots(),
         "surprised": _surprise_marks(),
+        "loved":     _heart_shower(),
     }
 
     inner = _assemble(

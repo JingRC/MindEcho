@@ -39,9 +39,12 @@ else:
 
 
 class MascotWidget(QWidget):
-    """桌面宠物小部件 —— 显示 AI 教练的当前状态，支持多主题切换"""
+    """桌面宠物小部件 —— 显示 AI 教练的当前状态，支持多主题切换 + 多点抚摸交互"""
 
-    EXPRESSIONS = ["idle", "singing", "thinking", "happy", "surprised"]
+    EXPRESSIONS = ["idle", "singing", "thinking", "happy", "surprised", "loved"]
+    # 连续点击阈值：3 次以内 = 开心，3 次以上 = 抚摸
+    _PET_CLICK_THRESHOLD = 3
+    _PET_CLICK_WINDOW_MS = 2000
 
     def __init__(self, size: int = 120, display_name: str = "麦麦",
                  theme: str = DEFAULT_THEME, parent=None):
@@ -53,8 +56,13 @@ class MascotWidget(QWidget):
         self._svg_data: dict[str, str] = {}
         self._load_svgs()
 
+        # 抚摸交互状态
+        self._click_count = 0
+        self._click_reset_timer: Optional[QTimer] = None
+
         self.setFixedSize(size, size)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)  # 手型光标
 
         if _QT_SVG_AVAILABLE:
             self._svg_widget = QSvgWidget(self)
@@ -66,7 +74,10 @@ class MascotWidget(QWidget):
             self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._label.setText("🎵")
 
-        self.setToolTip(f"MindEcho AI 声乐教练 - {display_name}")
+        self.setToolTip(
+            f"MindEcho AI 声乐教练 - {display_name}\n"
+            "点击互动  |  连续点击抚摸  |  右键菜单"
+        )
         self._anim_timer: Optional[QTimer] = None
 
     def _load_svgs(self):
@@ -130,10 +141,61 @@ class MascotWidget(QWidget):
         self._anim_timer.timeout.connect(self.anim_idle)
         self._anim_timer.start(duration_ms)
 
+    def anim_loved(self, duration_ms: int = 3000):
+        """被抚摸 — 爱心雨 + 极度开心 (♥‿♥)"""
+        self.set_expression("loved")
+        # 抚摸时切换成大爱心光标
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        if self._anim_timer:
+            self._anim_timer.stop()
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setSingleShot(True)
+        self._anim_timer.timeout.connect(self._on_loved_end)
+        self._anim_timer.start(duration_ms)
+
+    def _on_loved_end(self):
+        """抚摸结束 → 恢复待机"""
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.anim_idle()
+
     def mousePressEvent(self, event):
-        """点击桌宠时触发交互"""
-        self.anim_happy(1500)
+        """点击桌宠 — 智能交互
+        第 1-2 次点击: 开心 (^_^)
+        第 3+ 次点击(2秒内): 被抚摸 (♥‿♥ + 爱心雨)
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            # 累加点击计数
+            self._click_count += 1
+            # 重置计时器
+            if self._click_reset_timer:
+                self._click_reset_timer.stop()
+            self._click_reset_timer = QTimer(self)
+            self._click_reset_timer.setSingleShot(True)
+            self._click_reset_timer.timeout.connect(self._reset_clicks)
+            self._click_reset_timer.start(self._PET_CLICK_WINDOW_MS)
+
+            if self._click_count >= self._PET_CLICK_THRESHOLD:
+                # 连续点击 ≥ 3 → 抚摸模式
+                self._click_count = 0
+                if self._click_reset_timer:
+                    self._click_reset_timer.stop()
+                self.anim_loved(3000)
+            else:
+                # 1-2 次点击 → 开心
+                self.anim_happy(1800)
+        elif event.button() == Qt.MouseButton.RightButton:
+            # 右键 — 预留菜单（后续扩展：投喂/洗澡等）
+            from PyQt6.QtWidgets import QMenu
+            menu = QMenu(self)
+            menu.addAction("🐟 投喂").triggered.connect(lambda: self.anim_surprised(2000))
+            menu.addAction("🫧 洗澡").triggered.connect(lambda: self.anim_happy(2500))
+            menu.addAction("💤 休息").triggered.connect(self.anim_idle)
+            menu.exec(event.globalPos())
         super().mousePressEvent(event)
+
+    def _reset_clicks(self):
+        """超时重置点击计数"""
+        self._click_count = 0
 
 
 # ═══════════════════════════════════════════════════════════════
