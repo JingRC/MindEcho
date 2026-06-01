@@ -50241,14 +50241,16 @@ class ECGStylePitchVisualizer(QWidget):
                 # (否则会短暂显示 __init__ 的默认范围 C1-C7，造成与缩放控制不一致)
                 QTimer.singleShot(0, self._pg_sync_view)
             self._ensure_gpu_indicator()
-            # 低延模式 GPU 检测提示（仅输出一次，不弹窗阻塞 UI）
+            # 低延模式 GPU 检测提示（仅输出一次，复用已有检测器，0 开销）
             if not getattr(self, '_low_latency_gpu_warned', False):
                 self._low_latency_gpu_warned = True
+                gpu_available = False
                 try:
-                    import torch
-                    gpu_available = torch.cuda.is_available()
+                    acc = getattr(self, 'gpu_accelerator', None)
+                    if acc is not None:
+                        gpu_available = bool(acc.is_gpu_available())
                 except Exception:
-                    gpu_available = False
+                    pass
                 if not gpu_available:
                     print("💡 低延模式提示: 未检测到 NVIDIA GPU，低延模式可在 CPU 上运行但帧率可能不达预期。如有卡顿建议切换回「普通模式」。")
         else:
