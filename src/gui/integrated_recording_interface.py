@@ -23071,7 +23071,7 @@ class ECGStylePitchVisualizer(QWidget):
         self.display_mode = QComboBox()
         self.display_mode.addItems([
             "普通模式",
-            "普通模式 (GPU)",
+            "低延模式",
             "彩色渐变",
             "专业模式"
         ])
@@ -44928,7 +44928,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 _mode_now = '普通模式'
             normal_realtime_mode = bool(
-                (_mode_now == '普通模式' or _mode_now == '普通模式 (GPU)')
+                (_mode_now == '普通模式' or _mode_now == '低延模式')
                 and getattr(self, 'is_recording_active', False)
                 and (not bool(getattr(self, '_in_onepass_mode', False)))
                 and getattr(self, '_lfm_ctrl', None) is None
@@ -50230,7 +50230,7 @@ class ECGStylePitchVisualizer(QWidget):
             self.pitch_line.set_drawstyle('default')
 
         # ── pyqtgraph GPU 模式切换 ──
-        if mode == "普通模式 (GPU)":
+        if mode == "低延模式":
             self._use_pyqtgraph = True
             self._apply_zoom_profile_center()
             self.update_axis_ranges()  # 同步 y_view_range 到当前 zoom profile
@@ -50241,6 +50241,21 @@ class ECGStylePitchVisualizer(QWidget):
                 # (否则会短暂显示 __init__ 的默认范围 C1-C7，造成与缩放控制不一致)
                 QTimer.singleShot(0, self._pg_sync_view)
             self._ensure_gpu_indicator()
+            # 低延模式 GPU 检测提示（仅弹一次）
+            if not getattr(self, '_low_latency_gpu_warned', False):
+                self._low_latency_gpu_warned = True
+                try:
+                    import torch
+                    gpu_available = torch.cuda.is_available()
+                except Exception:
+                    gpu_available = False
+                if not gpu_available:
+                    QTimer.singleShot(800, lambda: QMessageBox.information(
+                        self, "低延模式提示",
+                        "未检测到 NVIDIA GPU。\n\n"
+                        "低延模式可在 CPU 上运行，但帧率可能不达预期。\n"
+                        "如有卡顿，建议切换回「普通模式」使用。",
+                        QMessageBox.Ok))
         else:
             was_gpu = bool(getattr(self, '_use_pyqtgraph', False))
             self._use_pyqtgraph = False
@@ -50271,7 +50286,7 @@ class ECGStylePitchVisualizer(QWidget):
         # 若从专业模式切回，恢复主画布
         try:
             if mode != "专业模式" and getattr(self, 'main_plot_area', None) is getattr(self, 'professional_canvas', None):
-                self.switch_display_widget(use_pyqtgraph=(mode == "普通模式 (GPU)"))
+                self.switch_display_widget(use_pyqtgraph=(mode == "低延模式"))
         except Exception:
             pass
         
