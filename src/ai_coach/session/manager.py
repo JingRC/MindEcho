@@ -272,6 +272,7 @@ class SessionManager:
             "level": self.profile.level,
             "total_sessions": self.profile.total_practice_sessions,
             "total_hours": round(self.profile.total_practice_time_minutes / 60, 1),
+            "total_minutes": round(self.profile.total_practice_time_minutes, 1),
             "vocal_range": f"{self.profile.vocal_range_low:.0f}-{self.profile.vocal_range_high:.0f}Hz",
             "recent_accuracy_trend": self.get_progress_trend(),
             "completed_stages": self.profile.completed_stages,

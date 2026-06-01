@@ -444,34 +444,39 @@ class AICoachPanel(QWidget):
 
     def _on_analyze_recent(self):
         """自动查找并分析最近一次录音的 JSON。"""
-        recordings_dir = Path("recordings")
-        if not recordings_dir.exists():
-            self._append_message("assistant", "尚未找到录音目录。请先完成一次录音。")
-            return
+        try:
+            recordings_dir = Path("recordings")
+            if not recordings_dir.exists():
+                self._append_message("assistant", "尚未找到录音目录。请先完成一次录音。")
+                return
 
-        candidates = []
-        for p in recordings_dir.glob("*.json"):
-            if p.name.startswith("._") or p.name.endswith("_temp.json"):
-                continue
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    head = f.read(512)
-                if '"pitch_analysis"' in head or '"recording_info"' in head:
-                    candidates.append(p)
-            except Exception:
-                continue
+            candidates = []
+            for p in sorted(recordings_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+                if p.name.startswith("._") or p.name.endswith("_temp.json"):
+                    continue
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        head = f.read(512)
+                    if '"pitch_analysis"' in head or '"recording_info"' in head:
+                        candidates.append(p)
+                except Exception:
+                    continue
+                if len(candidates) >= 10:  # 只扫描最近 10 个文件
+                    break
 
-        if not candidates:
-            self._append_message(
-                "assistant",
-                "尚未找到录音分析文件。请先完成一次录音，或使用「选择分析」手动加载。"
-            )
-            return
+            if not candidates:
+                self._append_message(
+                    "assistant",
+                    "尚未找到录音分析文件。请先完成一次录音，或使用「选择分析」手动加载。"
+                )
+                return
 
-        latest = max(candidates, key=lambda p: p.stat().st_mtime)
-        song_name = latest.stem
-        self._append_message("user", f"[分析最近录音] {song_name}")
-        self._run_agent_task("analyze", json_path=str(latest), song_name=song_name)
+            latest = max(candidates, key=lambda p: p.stat().st_mtime)
+            song_name = latest.stem
+            self._append_message("user", f"[分析最近录音] {song_name}")
+            self._run_agent_task("analyze", json_path=str(latest), song_name=song_name)
+        except Exception as e:
+            self._append_message("assistant", f"❌ 分析失败: {str(e)}")
 
     def _on_analyze(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -592,8 +597,14 @@ class AICoachPanel(QWidget):
         task = getattr(self, '_current_task_type', '')
         if task in ("analyze", "report"):
             self._last_analysis_result = result
-            self.report_display.setMarkdown(result)
-        self._refresh_profile()
+            try:
+                self.report_display.setMarkdown(result)
+            except Exception:
+                pass
+        try:
+            self._refresh_profile()
+        except Exception:
+            pass  # 图表刷新失败不影响主流程
 
     def _append_message(self, role: str, content: str):
         """在对话区追加一条消息"""
@@ -639,7 +650,7 @@ class AICoachPanel(QWidget):
             # ── 指标卡片 ──
             stats = self.agent.session_mgr.get_stats()
             total = stats["total_sessions"]
-            hours = stats["total_hours"]
+            total_minutes = stats.get("total_minutes", 0.0) or stats["total_hours"] * 60
 
             parts.append('<div style="display:flex;gap:12px;margin-bottom:16px;">')
 
@@ -653,84 +664,41 @@ class AICoachPanel(QWidget):
                 f'</div>'
             )
 
-            # 练习时长卡片
-            time_min = stats.get("total_minutes", hours * 60)
-            time_ring = min(hours / max(10, hours), 1.0) if hours > 0 else 0.0
-            if hours >= 1.0:
-                time_label = f"{hours:.1f}h"
-            elif hours >= 0.01:
-                time_label = f"{hours * 60:.0f}min"
+            # 练习时长卡片（精确到分钟：X小时Y分钟）
+            if total_minutes >= 60:
+                h = int(total_minutes // 60)
+                m = int(total_minutes % 60)
+                time_label = f"{h}h{m:02d}"
+                time_sub = f"{h}小时{m}分钟"
+            elif total_minutes >= 1:
+                time_label = f"{int(total_minutes)}"
+                time_sub = f"{int(total_minutes)}分钟"
             else:
                 time_label = "—"
+                time_sub = "累计演唱时间"
+            time_ring = min(total_minutes / max(600, total_minutes), 1.0) if total_minutes > 0 else 0.0
             parts.append(
                 f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
                 f'{progress_ring_svg(time_ring, size=56, stroke_width=5, color="#4ADE80", label=time_label)}'
                 f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">练习时长</div>'
-                f'<div style="font-size:10px;color:#888;margin-top:2px;">累计演唱时间</div>'
-                f'</div>'
-            )
-
-            # 音准纯净度卡片（排除旧公式产生的 0 和 1.0 极端值）
-            acc_vals = [s.accuracy for s in sessions[-20:] if 0.01 < s.accuracy < 0.99]
-            avg_acc = sum(acc_vals) / len(acc_vals) if acc_vals else 0.0
-            acc_label = f"{avg_acc*100:.0f}%" if acc_vals else "—"
-            parts.append(
-                f'<div style="flex:1;background:#1e1e3a;border-radius:10px;padding:14px;text-align:center;">'
-                f'{progress_ring_svg(avg_acc, size=56, stroke_width=5, color="#F59E0B", label=acc_label)}'
-                f'<div style="font-size:12px;color:#ccc;margin-top:8px;font-weight:bold;">音准纯净度</div>'
-                f'<div style="font-size:10px;color:#888;margin-top:2px;">距标准音的偏差</div>'
+                f'<div style="font-size:10px;color:#888;margin-top:2px;">{time_sub}</div>'
                 f'</div>'
             )
 
             parts.append('</div>')  # end 指标卡片
 
             # ── 状态描述 ──
-            valid_count = len(acc_vals)
-            if valid_count == 0:
-                desc = "还没有有效练习记录，完成首次录音分析后这里会显示你的成长数据。"
-            elif valid_count < 5:
-                desc = f"刚起步，已完成 {valid_count} 次有效练习。坚持下去，每一遍都在进步！"
-            elif avg_acc >= 0.7:
-                desc = f"共 {valid_count} 次练习，音准纯净度 {avg_acc*100:.0f}%，表现很稳定，继续打磨细节！"
-            elif avg_acc >= 0.5:
-                desc = f"共 {valid_count} 次练习，音准纯净度 {avg_acc*100:.0f}%，基础不错，多录音多复盘。"
-            elif avg_acc >= 0.3:
-                desc = f"共 {valid_count} 次练习，音准还有提升空间，每次录音后仔细听回放会很有帮助。"
+            if total == 0:
+                desc = "还没有练习记录，点击录音按钮开始第一次练习吧！"
+            elif total < 5:
+                desc = f"刚起步，已完成 {total} 次练习。坚持下去，每一遍都在进步！"
             else:
-                desc = f"共 {valid_count} 次练习，坚持就是进步，多录音多复盘音准会越来越稳。"
+                desc = f"共 {total} 次练习，累计 {time_sub}。继续加油，每一遍都在进步！"
             parts.append(
                 f'<div style="font-size:11px;color:#999;line-height:1.5;margin-bottom:14px;">'
                 f'{desc}'
                 f'</div>'
             )
-
-            # ── 音准趋势 ──
-            acc_data = [s.accuracy for s in sessions[-20:] if 0.01 < s.accuracy < 0.99]
-            if len(acc_data) >= 3:
-                acc_labels = [
-                    s.timestamp[:10] if s.timestamp else ""
-                    for s in sessions[-20:] if 0.01 < s.accuracy < 0.99
-                ]
-                parts.append(
-                    '<div style="font-size:12px;color:#ccc;font-weight:bold;margin-bottom:6px;">'
-                    '音准趋势</div>'
-                )
-                parts.append(
-                    sparkline_svg(acc_data, width=340, height=64, labels=acc_labels)
-                )
-
-            # ── 最近练习 ──
-            recent = [s for s in sessions[-8:] if 0.01 < s.accuracy < 0.99]
-            if recent:
-                parts.append(
-                    '<div style="font-size:12px;color:#ccc;font-weight:bold;margin:14px 0 6px 0;">'
-                    '最近练习</div>'
-                )
-                bar_data = [
-                    (s.song_name[:6] if s.song_name else s.session_id[:6], s.accuracy)
-                    for s in recent
-                ]
-                parts.append(bar_chart_svg(bar_data, width=340, height=110))
 
             parts.append("</div>")
             self.chart_display.setHtml("".join(parts))

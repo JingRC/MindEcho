@@ -5840,10 +5840,14 @@ class IntegratedAudioProcessor(QThread):
             self.start_audio_processing_thread()
             
             self.is_recording = True
-            
+
+            # 更新练习统计：保存模式才计数（纯监听预览不计）
+            if should_save:
+                self._update_practice_stats(sessions_delta=1)
+
             start_msg = "开始录音和实时分析" if should_save else "开始实时分析（不保存）"
             self.status_updated.emit(start_msg)
-            
+
             return True
             
         except Exception as e:
@@ -6027,7 +6031,13 @@ class IntegratedAudioProcessor(QThread):
             self.is_paused = False
             self._pause_started_at = None
             self.is_recording = False
-            
+
+            # 更新练习统计：累计录音时长
+            if self.should_save:
+                self._update_practice_stats(
+                    minutes_delta=float(getattr(self, 'current_duration', 0)) / 60.0
+                )
+
             # 🎯 如果全局监听模式激活，不要停止音频流，只停止录音
             if self.is_global_monitoring_active:
                 print("🎯 全局监听模式激活中，只停止录音功能，保持监听")
@@ -6136,6 +6146,24 @@ class IntegratedAudioProcessor(QThread):
         except Exception as e:
             self.error_occurred.emit(f"停止录音失败: {e}")
     
+    def _update_practice_stats(self, sessions_delta: int = 0, minutes_delta: float = 0.0):
+        """更新练习统计到持久化存储（不影响主录音流程）。"""
+        try:
+            panel = getattr(self, '_ai_coach_panel', None)
+            if panel is None:
+                return
+            cp = getattr(panel, 'coach_panel', None)
+            if cp is None:
+                return
+            mgr = cp.agent.session_mgr
+            if sessions_delta:
+                mgr.profile.total_practice_sessions += sessions_delta
+            if minutes_delta > 0:
+                mgr.profile.total_practice_time_minutes += round(minutes_delta, 1)
+            mgr.save_profile()
+        except Exception:
+            pass  # 统计更新失败不影响录音
+
     def save_recording(self):
         """保存录音文件"""
         try:
