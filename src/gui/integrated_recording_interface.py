@@ -55,7 +55,7 @@ _MIX_BINARY_FEMALE_THRESHOLD = 0.225
 _BREATH_BINARY_CHECKPOINT_CANDIDATES = (
     project_root / 'ml_dl_models' / 'gtsinger_multitech' / 'lightweight_training' / 'artifacts' / 'breath_binary_latefusion_v1' / 'best_breath_binary_latefusion.pt',
 )
-_BREATH_BINARY_THRESHOLD = 0.25
+_BREATH_BINARY_THRESHOLD = 0.15  # 原 0.25；呼吸模型 recall 仅 0.65，降低阈值提高检出率
 _BREATH_BINARY_WINDOW_S = 2.4
 _CHEST_FALSETTO_TARGET_SR = 22050
 _CHEST_FALSETTO_WINDOW_S = 0.64
@@ -6085,7 +6085,16 @@ class IntegratedAudioProcessor(QThread):
                         self.status_updated.emit("录音完成，监听继续")
                         return
                 else:
-                    # 不需要保存，直接结束
+                    # 仅分析模式：不保存 WAV，但保存分析 JSON
+                    try:
+                        _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                        _ch = int(getattr(self, 'active_input_channels', self.channels))
+                        json_path = self._save_analysis_json_only(
+                            self.pitch_history, self.current_duration,
+                            getattr(self, '_technique_events', []), _sr, _ch)
+                        analysis_results['json_path'] = json_path
+                    except Exception:
+                        pass
                     self.recording_finished.emit("", analysis_results)
                     self.status_updated.emit("录音完成，监听继续")
                     return
@@ -6138,7 +6147,16 @@ class IntegratedAudioProcessor(QThread):
                     self.status_updated.emit("录音和分析完成")
                     return
             else:
-                # 不保存时直接结束
+                # 仅分析模式：不保存 WAV，但保存分析 JSON
+                try:
+                    _sr = int(getattr(self, 'active_input_samplerate', self.sample_rate))
+                    _ch = int(getattr(self, 'active_input_channels', self.channels))
+                    json_path = self._save_analysis_json_only(
+                        self.pitch_history, self.current_duration,
+                        getattr(self, '_technique_events', []), _sr, _ch)
+                    analysis_results['json_path'] = json_path
+                except Exception:
+                    pass
                 self.recording_finished.emit("", analysis_results)
                 self.status_updated.emit("录音和分析完成")
                 
@@ -6259,6 +6277,49 @@ class IntegratedAudioProcessor(QThread):
             return str(output_path)
         except Exception as e:
             self.error_occurred.emit(f"保存录音失败: {e}")
+            return ""
+
+    def _save_analysis_json_only(self, pitch_history: list, duration: float,
+                                 technique_events: list | None = None,
+                                 sample_rate: int = 48000, channels: int = 1) -> str:
+        """「仅分析」模式：只保存分析 JSON，不保存 WAV 文件。"""
+        try:
+            recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            json_path = recordings_dir / f"analysis_{ts}.json"
+
+            serialized_events = []
+            if technique_events:
+                for ev in technique_events:
+                    try:
+                        d = self._technique_event_to_dict(ev)
+                        if d:
+                            serialized_events.append(d)
+                    except Exception:
+                        pass
+
+            analysis_data = {
+                'recording_info': {
+                    'filename': f"analysis_{ts}",
+                    'sample_rate': int(sample_rate),
+                    'channels': int(channels),
+                    'duration': float(duration),
+                    'mode': 'analyze_only',
+                },
+                'pitch_analysis': {
+                    'total_detections': len(pitch_history),
+                    'detection_rate': (len(pitch_history) / max(float(duration), 1.0)),
+                    'pitch_data': list(pitch_history),
+                },
+                'technique_events': serialized_events,
+            }
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(analysis_data, f, indent=2, ensure_ascii=False)
+            print(f"✅ 分析JSON已保存: {json_path}")
+            return str(json_path)
+        except Exception as e:
+            print(f"⚠ 保存分析JSON失败: {e}")
             return ""
 
     # 🔥 智能噪声抑制类（极简版本，减少电流音）
@@ -23380,15 +23441,6 @@ class ECGStylePitchVisualizer(QWidget):
         """)
         controls_row2_layout.addWidget(self.technique_recognition_btn)
 
-        self.technique_backend_label = QLabel('技巧推理: 自动/CPU优先')
-        self.technique_backend_label.setToolTip('显示当前技巧识别推理模式与 external 调度顺序')
-        self.technique_backend_label.setStyleSheet(
-            'color: #D9F6EA; background: rgba(18, 58, 42, 0.92); border: 1px solid #3BAA7B; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700;'
-        )
-        controls_row2_layout.addWidget(self.technique_backend_label)
-        self.technique_backend_label.hide()
-        self._update_technique_backend_status_visualizer()
-        
         # 清除按钮
         clear_btn = QPushButton("清除")
         clear_btn.clicked.connect(self.clear_data)
@@ -32286,7 +32338,7 @@ class ECGStylePitchVisualizer(QWidget):
         except Exception:
             frames = []
         if not frames:
-            return gap <= 0.28
+            return gap <= 0.60
         sparse_pitch = 0
         silence_like = 0
         solid_voiced = 0
@@ -33066,9 +33118,7 @@ class ECGStylePitchVisualizer(QWidget):
     ) -> List[BreathEvent]:
         if not self._technique_type_selected('breath'):
             return []
-        source_kind = self._offline_local_file_source_kind(frames)
-        if source_kind != 'local_file_onepass':
-            return []
+        # 对录音（包括实时录制）也启用间隙换气检测，不限于文件导入
         valid_frames: List[FrameFeatures] = []
         for item in list(frames or []):
             if not isinstance(item, FrameFeatures):
@@ -33112,7 +33162,7 @@ class ECGStylePitchVisualizer(QWidget):
             except Exception:
                 continue
             raw_gap = cur_t - prev_t
-            if raw_gap < max(0.07, base_dt * 1.8):
+            if raw_gap < max(0.06, base_dt * 1.5):
                 continue
             prev_support_gap = None
             next_support_gap = None
@@ -33126,7 +33176,7 @@ class ECGStylePitchVisualizer(QWidget):
                     next_support_gap = float(valid_frames[idx + 1].timeline_time) - cur_t
                 except Exception:
                     next_support_gap = None
-            support_gap_limit = max(0.09, base_dt * 1.7)
+            support_gap_limit = max(0.07, base_dt * 1.5)
             has_prev_support = bool(prev_support_gap is not None and prev_support_gap <= support_gap_limit)
             has_next_support = bool(next_support_gap is not None and next_support_gap <= support_gap_limit)
             both_support = has_prev_support and has_next_support
@@ -33134,19 +33184,26 @@ class ECGStylePitchVisualizer(QWidget):
             # 双侧支撑：正常检测；单侧支撑：需更明显的间隙特征
             if not (both_support or single_support):
                 continue
-            if single_support and raw_gap < max(0.12, base_dt * 3.0):
+            if single_support and raw_gap < max(0.09, base_dt * 2.2):
                 continue
             start_time = max(0.0, prev_t + base_dt * 0.45)
             end_time = max(start_time, cur_t - base_dt * 0.45)
             duration = max(0.0, end_time - start_time)
             startup_guard_s = 0.0
             try:
-                startup_guard_s = float(getattr(self, '_offline_gap_breath_start_guard_s', 0.50) or 0.50)
+                startup_guard_s = float(getattr(self, '_offline_gap_breath_start_guard_s', 0.15) or 0.15)
             except Exception:
                 startup_guard_s = 0.50
             if start_time < max(0.0, startup_guard_s):
                 continue
-            if duration < 0.09 or duration > 0.95:
+            # 录音末尾保护：最后 0.4s 内的间隙通常为录音结束后的静默
+            try:
+                total_dur = float(valid_frames[-1].timeline_time) if valid_frames else 0.0
+            except Exception:
+                total_dur = 0.0
+            if total_dur > 0.0 and end_time > total_dur - 0.40:
+                continue
+            if duration < 0.07 or duration > 0.95:
                 continue
             mean_rms = 0.0
             mean_zcr = 0.0
@@ -33195,10 +33252,51 @@ class ECGStylePitchVisualizer(QWidget):
                 },
                 display_payload={
                     'detector': 'offline_gap_breath',
-                    'source_kind': source_kind,
+                    'source_kind': 'any',
                 },
             )
             events.append(event)
+        # 合并碎片化换气：
+        # CREPE 在换气间隙中偶尔产生低置信度幻影帧，将一个真换气拆成多个假 gap。
+        # 两个相邻事件间隔 ≤ 0.85s 时，检查中间的 pitch 帧质量：
+        #   如果中间帧的平均置信度 < 0.42，视为幻影帧 → 合并
+        #   否则保持独立（中间的帧是真正的短乐句）
+        if len(events) > 1:
+            events.sort(key=lambda e: float(getattr(e, 'start_time', 0.0) or 0.0))
+            # 预计算 valid_frames 的 timeline → 用于检查帧质量
+            frame_times_conf = [(float(getattr(f, 'timeline_time', 0.0) or 0.0),
+                                float(getattr(f, 'confidence', 0.0) or 0.0))
+                               for f in valid_frames]
+            merged: List[BreathEvent] = []
+            for event in events:
+                if merged:
+                    prev = merged[-1]
+                    gap = float(getattr(event, 'start_time', 0.0) or 0.0) - float(getattr(prev, 'end_time', 0.0) or 0.0)
+                    should_merge = False
+                    if gap <= 0.35:
+                        should_merge = True  # 极近间隔直接合并
+                    elif gap <= 0.85:
+                        # 检查中间帧的置信度：幻影帧平均置信度 < 0.42
+                        mid_confs = [c for t, c in frame_times_conf
+                                    if float(getattr(prev, 'end_time', 0.0) or 0.0) <= t <= float(getattr(event, 'start_time', 0.0) or 0.0)]
+                        if mid_confs:
+                            avg_conf = sum(mid_confs) / len(mid_confs)
+                            if avg_conf < 0.42:
+                                should_merge = True
+                        else:
+                            should_merge = True  # 中间无帧，纯静默 → 合并
+                    if should_merge:
+                        new_end = max(float(getattr(prev, 'end_time', 0.0) or 0.0),
+                                     float(getattr(event, 'end_time', 0.0) or 0.0))
+                        prev.end_time = new_end
+                        prev.duration = max(0.0, new_end - float(getattr(prev, 'start_time', 0.0) or 0.0))
+                        prev.center_time = 0.5 * (float(getattr(prev, 'start_time', 0.0) or 0.0) + new_end)
+                        prev.confidence = max(float(getattr(prev, 'confidence', 0.0) or 0.0),
+                                            float(getattr(event, 'confidence', 0.0) or 0.0))
+                        prev.suppressed_pitch_frames = int(getattr(prev, 'suppressed_pitch_frames', 0) or 0) + int(getattr(event, 'suppressed_pitch_frames', 0) or 0)
+                        continue
+                merged.append(event)
+            events = merged
         return events
 
     def _resolve_chest_falsetto_checkpoint_path(self) -> Optional[Path]:
@@ -34326,6 +34424,25 @@ class ECGStylePitchVisualizer(QWidget):
         stable_ratio = float(record.get('stable_ratio', 0.0) or 0.0)
         confidence = float(record.get('confidence', 0.0) or 0.0)
         probability_margin = float(record.get('probability_margin', 0.0) or 0.0)
+        # ── 换气事件：使用呼吸模型置信度 + 声学特征判定，而非胸声/假声模型 ──
+        if event_type == 'breath':
+            breath_prob = float(record.get('breath_prob', 0.0) or 0.0)
+            breath_threshold = float(record.get('breath_threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD)
+            mean_rms_record = float(record.get('mean_rms', 0.0) or 0.0)
+            mean_zcr_record = float(record.get('mean_zcr', 0.0) or 0.0)
+            mean_breath_score = float(record.get('mean_breath_score', 0.0) or 0.0)
+            # 呼吸模型得分必须超过阈值
+            if breath_prob < max(0.10, breath_threshold * 0.72):
+                return False
+            # 声学一致性：呼吸段应为低能量 + 高过零率（气息噪声特征）
+            # 放宽容忍度，优先召回率
+            breath_like = (
+                (breath_prob >= breath_threshold * 0.80) or
+                (mean_rms_record < 0.006 and mean_zcr_record > 0.04) or
+                (mean_breath_score > 0.08) or
+                (breath_prob >= 0.12 and voiced_ratio < 0.40)
+            )
+            return bool(breath_like)
         if event_type == 'chest_voice':
             if mean_pitch_hz > 0.0 and mean_pitch_hz < 240.0:
                 if relaxed:
@@ -34796,12 +34913,16 @@ class ECGStylePitchVisualizer(QWidget):
                         })
                         if bool(adjusted.get('context_forced_chest', False)):
                             self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
-                        # Breath model gate: skip chest/falsetto if breath detected
+                        # Breath model gate: 呼吸模型检测到换气时覆盖胸声/假声分类
                         _breath_p = float(record.get('breath_prob', 0.0) or 0.0)
                         _breath_t = float(record.get('breath_threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD)
                         if _breath_p >= _breath_t:
                             record['event_type'] = 'breath'
                             record['voice_type'] = 'breath'
+                            # 用呼吸模型得分替换胸声/假声的置信度和边际（呼吸段胸声/假声天然低置信度）
+                            breath_margin = max(0.0, _breath_p - _breath_t)
+                            record['confidence'] = float(_breath_p)
+                            record['probability_margin'] = float(breath_margin + 0.04)  # 补偿呼吸模型固有的低边际
                         all_predictions.append(record)
                         event_type = str(record.get('event_type', '') or '')
                         if not self._technique_type_selected(event_type):
@@ -34887,12 +35008,15 @@ class ECGStylePitchVisualizer(QWidget):
                 })
                 if bool(adjusted.get('context_forced_chest', False)):
                     self._last_voice_type_debug['context_adjusted_windows'] = int(self._last_voice_type_debug.get('context_adjusted_windows', 0) or 0) + 1
-                # Breath model gate: skip chest/falsetto if breath detected
+                # Breath model gate: 呼吸模型检测到换气时覆盖胸声/假声分类
                 _breath_p_ext = float(record.get('breath_prob', 0.0) or 0.0)
                 _breath_t_ext = float(record.get('breath_threshold', _BREATH_BINARY_THRESHOLD) or _BREATH_BINARY_THRESHOLD)
                 if _breath_p_ext >= _breath_t_ext:
                     record['event_type'] = 'breath'
                     record['voice_type'] = 'breath'
+                    breath_margin_ext = max(0.0, _breath_p_ext - _breath_t_ext)
+                    record['confidence'] = float(_breath_p_ext)
+                    record['probability_margin'] = float(breath_margin_ext + 0.04)
                 all_predictions.append(record)
                 event_type = str(record.get('event_type', '') or '')
                 if not self._technique_type_selected(event_type):
@@ -37080,7 +37204,13 @@ class ECGStylePitchVisualizer(QWidget):
             short_breath_ok = duration >= 0.24 or breath_peak >= 0.60 or (mean_zcr >= 0.12 and suppressed >= 3)
             long_silent_breath_ok = duration >= 0.30 and suppressed >= 4 and mean_rms <= 0.0020
             strong_airflow_breath_ok = airflow_ok and gap_ok and short_breath_ok
-            return duration >= min_d and duration <= 1.10 and contextual and 0.00008 <= mean_rms <= 0.0080 and (strong_airflow_breath_ok or long_silent_breath_ok) and (confidence >= 0.52 or strength >= 0.48)
+            # mean_rms=0 表示分析时无音频数据，跳过 RMS 校验
+            has_audio = mean_rms > 0.0 or mean_zcr > 0.0
+            rms_ok = (not has_audio) or (0.00008 <= mean_rms <= 0.0080)
+            # 合并后的换气事件可能超过 1.10s（碎片归并），上限放宽到 2.00s
+            source_layer = str(getattr(event, 'source_layer', '') or '')
+            max_dur = 2.00 if source_layer == 'offline_gap_breath' else 1.10
+            return duration >= min_d and duration <= max_dur and contextual and rms_ok and (strong_airflow_breath_ok or long_silent_breath_ok) and (confidence >= 0.52 or strength >= 0.48)
         if event_type == 'slide':
             min_d = max(0.16, float(getattr(cfg, 'min_slide_duration_s', 0.08) or 0.08)) if cfg is not None else 0.16
             span = float(getattr(event, 'pitch_span_semitones', 0.0) or 0.0)
@@ -51742,15 +51872,8 @@ class ECGStylePitchVisualizer(QWidget):
             # 跟随模式
             follow_str = "开启" if self.auto_follow else "关闭"
 
-            technique_backend_text = '技巧推理: 未知'
-            try:
-                technique_backend_text = self._build_technique_backend_status_visualizer()[0]
-                self._update_technique_backend_status_visualizer()
-            except Exception:
-                pass
-            
             # 合并为一行显示状态信息
-            status_text = f"中心: {center_note} | 时间: {time_str} | 缩放: {self.zoom_level:.1f}x | 标注: {mode_str} | 跟随: {follow_str} | {technique_backend_text} | 数据: {data_count}点({buffer_usage:.1f}%){buffer_warning}"
+            status_text = f"中心: {center_note} | 时间: {time_str} | 缩放: {self.zoom_level:.1f}x | 标注: {mode_str} | 跟随: {follow_str} | 数据: {data_count}点({buffer_usage:.1f}%){buffer_warning}"
             if getattr(self, '_last_status_label_text', None) != status_text:
                 self._last_status_label_text = status_text
                 self.status_label.setText(status_text)
@@ -53515,6 +53638,12 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             
+            # 保存窗口尺寸，下次启动自动恢复
+            try:
+                QSettings("MindEcho", "IntegratedRecorder").setValue(
+                    "window_geometry", self.saveGeometry())
+            except Exception:
+                pass
             print("✅ MindEcho已安全关闭")
             event.accept()
             
@@ -53525,7 +53654,13 @@ class IntegratedRecordingInterface(QMainWindow):
     def init_ui(self):
         """初始化用户界面"""
         self.setWindowTitle("MindEcho - 集成录音与实时音高分析")
-        self.setGeometry(100, 100, 1400, 900)
+        # 尝试恢复上次关闭时的窗口尺寸，首次启动用默认 1280×800
+        _geo = QSettings("MindEcho", "IntegratedRecorder").value("window_geometry")
+        if _geo is not None:
+            self.restoreGeometry(_geo)
+        else:
+            self.setGeometry(100, 100, 1280, 900)
+        self.setMinimumSize(960, 600)
         
         # 设置深色主题
         self.setStyleSheet("""
@@ -66839,11 +66974,105 @@ class IntegratedRecordingInterface(QMainWindow):
                     border-color: #66BB6A;
                 }
             """)
-            
+
             self.pause_button.setEnabled(False)
-            
+
+            # ── 录音结束后：询问是否让 AI 教练分析 ──
+            QTimer.singleShot(600, self._offer_ai_coach_analysis)
+
         except Exception as e:
             QMessageBox.critical(self, "录音错误", f"停止录音失败: {e}")
+
+    def _offer_ai_coach_analysis(self):
+        """录音停止后弹出选项：是否让 AI 声乐教练分析这次录音。"""
+        try:
+            panel = getattr(self, '_ai_coach_panel', None)
+            if panel is None:
+                return
+            # 查找最近的分析 JSON
+            from pathlib import Path as _Path
+            recordings_dir = _Path(getattr(self, 'save_base_dir', 'recordings'))
+            if not recordings_dir.exists():
+                recordings_dir = _Path("recordings")
+            if not recordings_dir.exists():
+                return
+            candidates = sorted(
+                recordings_dir.glob("*.json"),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+            latest = None
+            for p in candidates:
+                if p.name.startswith("._") or p.name.endswith("_temp.json"):
+                    continue
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        head = f.read(512)
+                    if '"pitch_analysis"' in head or '"recording_info"' in head:
+                        latest = p
+                        break
+                except Exception:
+                    continue
+            if latest is None:
+                return
+
+            song_name = latest.stem
+            # 创建自定义样式的确认对话框（暗色主题适配）
+            msg1 = QMessageBox(self)
+            msg1.setWindowTitle("AI 教练分析")
+            msg1.setIcon(QMessageBox.Icon.Question)
+            msg1.setText(f"录音已保存：{song_name}\n\n是否让 AI 声乐教练分析这次演唱？")
+            msg1.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg1.setDefaultButton(QMessageBox.StandardButton.Yes)
+            msg1.setStyleSheet("""
+                QMessageBox { background-color: #1a1a2e; }
+                QMessageBox QLabel {
+                    color: #e8e8f0; font-size: 13px; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+                }
+                QPushButton {
+                    background-color: #222240; color: #e8e8f0;
+                    border: 1px solid #3a3a5a; border-radius: 6px;
+                    padding: 7px 22px; font-size: 13px; min-width: 75px;
+                    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+                }
+                QPushButton:hover { background-color: #2E2E4A; border-color: #7C5CFC; color: #fff; }
+                QPushButton:pressed { background-color: #1A1A36; }
+                QPushButton[text="Yes"], QPushButton[text="&Yes"] {
+                    background-color: #7C5CFC; color: white; border-color: #7C5CFC;
+                }
+                QPushButton[text="Yes"]:hover, QPushButton[text="&Yes"]:hover {
+                    background-color: #A78BFA; border-color: #A78BFA;
+                }
+            """)
+            reply = msg1.exec()
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            # 询问是否含技巧分析
+            msg2 = QMessageBox(self)
+            msg2.setWindowTitle("技巧分析选项")
+            msg2.setIcon(QMessageBox.Icon.Question)
+            msg2.setText("是否同时进行演唱技巧分析？\n技巧分析会识别胸声、假声、混声等演唱技巧。")
+            msg2.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg2.setDefaultButton(QMessageBox.StandardButton.Yes)
+            msg2.setStyleSheet(msg1.styleSheet())
+            reply2 = msg2.exec()
+            with_technique = (reply2 == QMessageBox.StandardButton.Yes)
+
+            # 触发 AI 教练分析
+            cp = getattr(panel, 'coach_panel', None)
+            if cp is not None:
+                cp._append_message("user",
+                    f"[分析录音] {song_name}{' [含技巧分析]' if with_technique else ''}")
+                try:
+                    cp.agent.session_mgr.increment_analysis_count()
+                except Exception:
+                    pass
+                cp._run_agent_task("analyze", json_path=str(latest),
+                                   song_name=song_name, with_technique=with_technique)
+        except Exception:
+            pass  # 不影响主流程
     
     def pause_recording(self):
         """暂停/恢复录音"""

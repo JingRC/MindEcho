@@ -293,8 +293,15 @@ PRACTICE_PLAN_PROMPT = """
 # ═══════════════════════════════════════════════════════════════
 
 
-def build_analysis_prompt(singing_context: str) -> str:
-    return ANALYSIS_PROMPT.format(singing_context=singing_context)
+def build_analysis_prompt(singing_context: str, *, with_technique: bool = False) -> str:
+    prompt = ANALYSIS_PROMPT.format(singing_context=singing_context)
+    if with_technique:
+        prompt += (
+            "\n\n**额外要求**：用户请求了演唱技巧分析。"
+            "请重点分析录音中的技巧事件（如胸声/假声/混声切换、颤音、滑音等），"
+            "逐项点评每项技巧的使用质量，并给出针对性改进建议。"
+        )
+    return prompt
 
 
 def build_comparison_prompt(

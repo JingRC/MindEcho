@@ -534,12 +534,16 @@ class _IdentityTab(QWidget):
         # 从当前主题推断选中的角色
         current_palette = MASCOT_THEMES.get(self._current_theme, MASCOT_THEMES[DEFAULT_THEME])
         self._current_character = current_palette.get("character", "maimai")
+        self._preview_svg: Optional[object] = None  # QSvgWidget ref
+        self._preview_expr_widgets: dict = {}  # expression thumbnails
+        self._current_preview_expr: str = "idle"  # 当前大预览的表情
         self._init_ui()
 
     def _init_ui(self):
-        outer = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
+        # ── 左侧：设置区域 ──
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(_FRAME_NOFRAME)
@@ -648,7 +652,158 @@ class _IdentityTab(QWidget):
         layout.addStretch()
 
         scroll.setWidget(content)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, 1)  # stretch=1: 设置区域占据剩余空间
+
+        # ── 右侧：形象实时预览 ──
+        self._preview_panel = self._build_preview_panel()
+        outer.addWidget(self._preview_panel)
+        # 初始化预览
+        self._update_preview()
+
+    def _build_preview_panel(self) -> QFrame:
+        """构建右侧形象预览面板"""
+        panel = QFrame()
+        panel.setFixedWidth(220)
+        panel.setStyleSheet(f"""
+            QFrame {{
+                background: {_BG_CARD};
+                border: 1px solid {_BORDER};
+                border-radius: {_RADIUS};
+            }}
+        """)
+        pv = QVBoxLayout(panel)
+        pv.setContentsMargins(14, 14, 14, 14)
+        pv.setSpacing(8)
+
+        # 标题
+        title = QLabel("形象预览")
+        title.setAlignment(_ALIGN_CENTER)
+        title.setStyleSheet(f"color: {_PRIMARY_LIGHT}; font-weight: bold; font-size: 13px;")
+        pv.addWidget(title)
+
+        # 核心大预览（idle）
+        self._preview_container = QFrame()
+        self._preview_container.setFixedSize(180, 180)
+        self._preview_container.setStyleSheet(f"""
+            QFrame {{
+                background: {_BG_DARK};
+                border: 2px solid {_BORDER};
+                border-radius: 12px;
+            }}
+        """)
+        pc_layout = QVBoxLayout(self._preview_container)
+        pc_layout.setContentsMargins(0, 0, 0, 0)
+        pc_layout.setAlignment(_ALIGN_CENTER)
+        try:
+            from PyQt6.QtSvgWidgets import QSvgWidget
+            self._preview_svg = QSvgWidget(self._preview_container)
+            self._preview_svg.setFixedSize(160, 160)
+            pc_layout.addWidget(self._preview_svg, 0, _ALIGN_CENTER)
+        except ImportError:
+            self._preview_svg = QLabel("🐱")
+            self._preview_svg.setAlignment(_ALIGN_CENTER)
+            self._preview_svg.setStyleSheet(f"font-size: 64px;")
+            pc_layout.addWidget(self._preview_svg, 0, _ALIGN_CENTER)
+        pv.addWidget(self._preview_container, 0, _ALIGN_CENTER)
+
+        # 当前角色/主题名称
+        self._preview_info = QLabel("")
+        self._preview_info.setAlignment(_ALIGN_CENTER)
+        self._preview_info.setWordWrap(True)
+        self._preview_info.setStyleSheet(f"color: {_TEXT_SECONDARY}; font-size: 11px;")
+        pv.addWidget(self._preview_info)
+
+        # 表情小预览行
+        expr_label = QLabel("点击表情预览")
+        expr_label.setAlignment(_ALIGN_CENTER)
+        expr_label.setStyleSheet(f"color: {_TEXT_HINT}; font-size: 10px;")
+        pv.addWidget(expr_label)
+
+        expr_row = QHBoxLayout()
+        expr_row.setSpacing(6)
+        _expr_emoji = [("happy", "😊"), ("singing", "🎤"),
+                       ("thinking", "🤔"), ("loved", "😍")]
+        for expr_key, emoji in _expr_emoji:
+            mini = QPushButton(emoji)
+            mini.setFixedSize(36, 36)
+            mini.setCheckable(True)
+            mini.setChecked(False)  # idle 是默认，其他都不选中
+            mini.setToolTip(f"点击预览「{expr_key}」表情")
+            mini.setStyleSheet(f"""
+                QPushButton {{
+                    background: {_BG_DARK};
+                    color: {_TEXT_PRIMARY};
+                    border: 1px solid {_BORDER};
+                    border-radius: 8px;
+                    font-size: 18px;
+                    padding: 0px;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid {_PRIMARY_LIGHT};
+                    background: #2A2A4A;
+                }}
+                QPushButton:checked {{
+                    border: 2px solid #FFD93D;
+                    background: #2E2E4A;
+                }}
+            """)
+            mini.clicked.connect(
+                lambda checked, k=expr_key: self._on_expression_clicked(k)
+            )
+            self._preview_expr_widgets[expr_key] = mini
+            expr_row.addWidget(mini)
+        expr_row.addStretch()
+        pv.addLayout(expr_row)
+
+        pv.addStretch()
+        return panel
+
+    def _on_expression_clicked(self, expr_key: str):
+        """点击表情缩略图 → 切换大预览"""
+        if self._current_preview_expr == expr_key:
+            # 再次点击同一个 → 回到 idle
+            self._current_preview_expr = "idle"
+        else:
+            self._current_preview_expr = expr_key
+        # 更新按钮高亮
+        for key, btn in self._preview_expr_widgets.items():
+            btn.setChecked(key == self._current_preview_expr)
+        self._update_preview()
+
+    def _update_preview(self, expression: str | None = None):
+        """刷新右侧形象预览——角色/主题变更时调用。
+
+        Args:
+            expression: 要预览的表情名称，默认使用 _current_preview_expr
+        """
+        expr = expression if expression is not None else self._current_preview_expr
+        try:
+            # 更新大预览
+            if self._preview_svg is not None:
+                palette = MASCOT_THEMES.get(self._current_theme, MASCOT_THEMES[DEFAULT_THEME])
+                char_key = palette.get("character", "maimai")
+                svg_data = get_svg(expr, self._current_theme)
+                try:
+                    from PyQt6.QtSvgWidgets import QSvgWidget
+                    if isinstance(self._preview_svg, QSvgWidget):
+                        self._preview_svg.load(svg_data.encode("utf-8"))
+                except ImportError:
+                    pass
+            # 更新信息文本
+            palette = MASCOT_THEMES.get(self._current_theme, MASCOT_THEMES[DEFAULT_THEME])
+            char_key = palette.get("character", "maimai")
+            char_name = AVATAR_CHARACTERS.get(char_key, char_key)
+            theme_name = AVATAR_THEMES.get(self._current_theme, self._current_theme)
+            # 标注当前表情
+            expr_labels = {"idle": "常态", "happy": "开心", "singing": "唱歌",
+                           "thinking": "思考", "loved": "心动"}
+            expr_display = expr_labels.get(expr, expr)
+            self._preview_info.setText(f"{char_name}\n{theme_name}\n[{expr_display}]")
+            # 更新 expression thumbnail 高亮
+            for key, btn in self._preview_expr_widgets.items():
+                btn.setChecked(key == expr)
+        except Exception:
+            pass
 
     def _make_character_card(self, char_key: str, char_info: dict) -> QPushButton:
         """创建角色选择卡片"""
@@ -705,6 +860,7 @@ class _IdentityTab(QWidget):
             self._on_theme_selected(char_themes[0])
 
         self._refresh_theme_cards()
+        self._update_preview()
 
     def _get_themes_for_character(self, char_key: str) -> list[str]:
         """获取指定角色的所有主题 key"""
@@ -827,6 +983,8 @@ class _IdentityTab(QWidget):
             """)
             swatch.setToolTip(f"{color_key}: {palette[color_key]}")
 
+        self._update_preview()
+
     def collect_identity(self) -> CoachIdentity:
         return CoachIdentity(
             name=self.name_input.text().strip() or DEFAULT_IDENTITY.name,
@@ -857,8 +1015,8 @@ class CoachSettingsDialog(QDialog):
 
     def _init_ui(self):
         self.setWindowTitle("AI 教练设置")
-        self.setMinimumSize(560, 620)
-        self.resize(580, 660)
+        self.setMinimumSize(720, 600)
+        self.resize(780, 680)
         self.setStyleSheet(_dialog_style())
 
         layout = QVBoxLayout(self)

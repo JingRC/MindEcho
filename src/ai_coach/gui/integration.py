@@ -938,8 +938,8 @@ def integrate_ai_coach(main_window, dock_area=Qt.DockWidgetArea.RightDockWidgetA
     # ── 自定义 Dock ──
     dock = _CoachDockWidget("AI 声乐教练", main_window)
     dock.setObjectName("ai_coach_dock")
-    dock.setMinimumWidth(380)
-    dock.resize(420, 700)
+    dock.setMinimumWidth(340)
+    dock.resize(370, 700)
     dock.setAllowedAreas(
         Qt.DockWidgetArea.LeftDockWidgetArea |
         Qt.DockWidgetArea.RightDockWidgetArea

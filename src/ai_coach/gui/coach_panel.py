@@ -58,46 +58,67 @@ class _AgentWorker(QThread):
 
 
 class _AgentThread(QThread):
-    """Agent 分析线程"""
+    """Agent 分析线程 — 所有 UI 回调通过信号在主线程执行，确保线程安全"""
     result_ready = pyqtSignal(str)
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(str)       # 流式 token → 主线程
+    agent_thinking = pyqtSignal()    # 思考状态 → 主线程
+    agent_response = pyqtSignal(str) # 响应完成 → 主线程
 
     def __init__(self, agent: VocalCoachAgent, task_type: str, **kwargs):
         super().__init__()
         self.agent = agent
         self.task_type = task_type  # "chat", "analyze", "compare", "plan", "report"
         self.kwargs = kwargs
+        # 保存原始回调以便恢复
+        self._orig_stream = agent._on_stream
+        self._orig_thinking = agent._on_thinking
+        self._orig_response = agent._on_response
 
     def run(self):
+        """在后台线程执行 Agent 任务，所有 UI 交互通过 pyqtSignal 桥接"""
         try:
-            if self.task_type == "chat":
-                result = self.agent.chat(
-                    self.kwargs["message"],
-                    with_knowledge=self.kwargs.get("with_knowledge", True),
-                )
-            elif self.task_type == "analyze":
-                result = self.agent.analyze_performance(
-                    analysis_json_path=self.kwargs.get("json_path"),
-                    song_name=self.kwargs.get("song_name", ""),
-                )
-            elif self.task_type == "compare":
-                result = self.agent.compare_with_reference(
-                    self.kwargs["user_json"],
-                    self.kwargs["ref_json"],
-                    song_name=self.kwargs.get("song_name", ""),
-                    reference_name=self.kwargs.get("reference_name", "专业歌手"),
-                )
-            elif self.task_type == "plan":
-                result = self.agent.generate_practice_plan(
-                    user_goal=self.kwargs.get("user_goal", "全面提升"),
-                )
-            elif self.task_type == "report":
-                result = self.agent.generate_report(
-                    analysis_json_path=self.kwargs.get("json_path"),
-                    song_name=self.kwargs.get("song_name", ""),
-                )
-            else:
-                result = "未知任务类型"
+            # ── 将 Agent 回调替换为线程安全的信号发射 ──
+            self.agent._on_stream = lambda token: self.progress.emit(token)
+            if self._orig_thinking:
+                self.agent._on_thinking = lambda: self.agent_thinking.emit()
+            # 抑制 _on_response：由 _on_agent_result 在主线程统一处理
+            self.agent._on_response = lambda resp: self.agent_response.emit(resp)
+
+            try:
+                if self.task_type == "chat":
+                    result = self.agent.chat(
+                        self.kwargs["message"],
+                        with_knowledge=self.kwargs.get("with_knowledge", True),
+                    )
+                elif self.task_type == "analyze":
+                    result = self.agent.analyze_performance(
+                        analysis_json_path=self.kwargs.get("json_path"),
+                        song_name=self.kwargs.get("song_name", ""),
+                        with_technique=self.kwargs.get("with_technique", False),
+                    )
+                elif self.task_type == "compare":
+                    result = self.agent.compare_with_reference(
+                        self.kwargs["user_json"],
+                        self.kwargs["ref_json"],
+                        song_name=self.kwargs.get("song_name", ""),
+                        reference_name=self.kwargs.get("reference_name", "专业歌手"),
+                    )
+                elif self.task_type == "plan":
+                    result = self.agent.generate_practice_plan(
+                        user_goal=self.kwargs.get("user_goal", "全面提升"),
+                    )
+                elif self.task_type == "report":
+                    result = self.agent.generate_report(
+                        analysis_json_path=self.kwargs.get("json_path"),
+                        song_name=self.kwargs.get("song_name", ""),
+                    )
+                else:
+                    result = "未知任务类型"
+            finally:
+                # ── 恢复 Agent 的原始回调 ──
+                self.agent._on_stream = self._orig_stream
+                self.agent._on_thinking = self._orig_thinking
+                self.agent._on_response = self._orig_response
             self.result_ready.emit(result)
         except Exception as e:
             self.result_ready.emit(f"❌ 出错了: {str(e)}")
@@ -170,6 +191,7 @@ class AICoachPanel(QWidget):
             on_stream_token=self._on_stream_token,
         )
         self._pending_tokens: list[str] = []
+        self._streaming_received: bool = False  # 标记是否已收到流式 token
 
         # 流式输出定时器：每 50ms 刷新一次，产生连续打字效果
         self._stream_timer = QTimer(self)
@@ -365,7 +387,7 @@ class AICoachPanel(QWidget):
         input_layout.addWidget(self.btn_send)
         layout.addLayout(input_layout)
 
-        self.setMinimumSize(400, 500)
+        self.setMinimumSize(340, 450)
 
     def _connect_signals(self):
         self.btn_send.clicked.connect(self._on_send)
@@ -473,13 +495,46 @@ class AICoachPanel(QWidget):
 
             latest = max(candidates, key=lambda p: p.stat().st_mtime)
             song_name = latest.stem
-            self._append_message("user", f"[分析最近录音] {song_name}")
+
+            # 询问是否同时进行技巧分析（暗色主题样式）
+            msg = QMessageBox(self)
+            msg.setWindowTitle("技巧分析选项")
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setText(f"已找到最近录音「{song_name}」\n\n是否同时进行演唱技巧分析？\n技巧分析会识别胸声、假声、混声等演唱技巧。")
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+            msg.setStyleSheet("""
+                QMessageBox { background-color: #1a1a2e; }
+                QMessageBox QLabel {
+                    color: #e8e8f0; font-size: 13px; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+                }
+                QPushButton {
+                    background-color: #222240; color: #e8e8f0;
+                    border: 1px solid #3a3a5a; border-radius: 6px;
+                    padding: 7px 22px; font-size: 13px; min-width: 75px;
+                    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+                }
+                QPushButton:hover { background-color: #2E2E4A; border-color: #7C5CFC; color: #fff; }
+                QPushButton:pressed { background-color: #1A1A36; }
+                QPushButton[text="Yes"], QPushButton[text="&Yes"] {
+                    background-color: #7C5CFC; color: white; border-color: #7C5CFC;
+                }
+                QPushButton[text="Yes"]:hover, QPushButton[text="&Yes"]:hover {
+                    background-color: #A78BFA; border-color: #A78BFA;
+                }
+            """)
+            reply = msg.exec()
+            with_technique = (reply == QMessageBox.StandardButton.Yes)
+            technique_tag = " [含技巧分析]" if with_technique else ""
+            self._append_message("user", f"[分析最近录音] {song_name}{technique_tag}")
             # 累计分析次数 +1
             try:
                 self.agent.session_mgr.increment_analysis_count()
             except Exception:
                 pass
-            self._run_agent_task("analyze", json_path=str(latest), song_name=song_name)
+            self._run_agent_task("analyze", json_path=str(latest),
+                                 song_name=song_name, with_technique=with_technique)
         except Exception as e:
             self._append_message("assistant", f"❌ 分析失败: {str(e)}")
 
@@ -560,12 +615,20 @@ class AICoachPanel(QWidget):
         self.thinking_bar.setVisible(True)
 
     def _on_stream_token(self, token: str):
+        self._streaming_received = True
         self._pending_tokens.append(token)
         # 首个 token 到达时启动定时刷新 (50ms 间隔，连续打字效果)
         if not self._stream_timer.isActive():
             self._stream_timer.start()
 
+    def _on_agent_response(self, response: str):
+        """Agent 响应完成（在主线程执行，替代 _on_response_done 的线程安全版本）"""
+        self._stream_timer.stop()
+        self._flush_pending_tokens()
+        # 注意: thinking_bar/input_field/btn_send 由 finished 信号统一恢复
+
     def _on_response_done(self, response: str):
+        """Agent 响应完成（仅在主线程直接调用时使用；线程模式使用 _on_agent_response）"""
         self._stream_timer.stop()
         self._flush_pending_tokens()
         self.thinking_bar.setVisible(False)
@@ -586,13 +649,18 @@ class AICoachPanel(QWidget):
     # ── 工具方法 ─────────────────────────────────────────────
 
     def _run_agent_task(self, task_type: str, **kwargs):
-        """在后台线程中运行 Agent 任务"""
+        """在后台线程中运行 Agent 任务（所有 UI 回调通过信号桥接保证线程安全）"""
         self._current_task_type = task_type  # 记录任务类型供结果处理用
         self.thinking_bar.setVisible(True)
         self._pending_tokens.clear()
+        self._streaming_received = False
         self._stream_timer.stop()
 
         self.thread = _AgentThread(self.agent, task_type, **kwargs)
+        # 线程安全信号 → 主线程槽
+        self.thread.progress.connect(self._on_stream_token)
+        self.thread.agent_thinking.connect(self._on_thinking)
+        self.thread.agent_response.connect(self._on_agent_response)
         self.thread.result_ready.connect(self._on_agent_result)
         self.thread.finished.connect(lambda: self.thinking_bar.setVisible(False))
         self.thread.finished.connect(lambda: self.input_field.setEnabled(True))
@@ -600,9 +668,14 @@ class AICoachPanel(QWidget):
         self.thread.start()
 
     def _on_agent_result(self, result: str):
-        # 流式会话已通过 on_stream 更新，直接追加最终结果
-        if not self._pending_tokens:
+        """Agent 任务完成（主线程）"""
+        # 若未流式输出过，追加完整消息
+        if not self._streaming_received and not self._pending_tokens:
             self._append_message("assistant", result)
+        # 若还有残留 token（极端情况：_on_agent_response 尚未处理完）
+        self._stream_timer.stop()
+        self._flush_pending_tokens()
+        self._streaming_received = False
         # 分析/报告类任务：自动填充到报告标签页
         task = getattr(self, '_current_task_type', '')
         if task in ("analyze", "report"):

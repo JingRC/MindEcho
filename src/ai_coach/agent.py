@@ -567,6 +567,7 @@ class VocalCoachAgent:
         *,
         singing_context: Optional[SingingContext] = None,
         song_name: str = "",
+        with_technique: bool = False,
     ) -> str:
         """演唱后分析 —— 对刚完成的演唱给出详细反馈。"""
         if singing_context:
@@ -605,7 +606,7 @@ class VocalCoachAgent:
             )
 
         memory_text = self.memory.to_context_text(max_items=5)
-        task_prompt = build_analysis_prompt(singing_text)
+        task_prompt = build_analysis_prompt(singing_text, with_technique=with_technique)
         system = build_system_prompt(self._identity, memory_text) + "\n" + task_prompt
 
         if self._on_thinking:

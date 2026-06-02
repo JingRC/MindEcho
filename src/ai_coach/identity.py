@@ -16,17 +16,31 @@ AVATAR_CHARACTERS = {
 }
 
 AVATAR_THEMES = {
+    # 麦麦
     "classic": "麦麦·经典紫",
     "ocean": "麦麦·海洋蓝",
     "midnight": "麦麦·暗夜紫",
+    "cherry": "麦麦·樱莓粉",
+    # 团团
     "honey": "团团·蜂蜜棕",
     "caramel": "团团·焦糖橘",
+    "matcha": "团团·抹茶绿",
+    "cocoa": "团团·可可棕",
+    # 音音
     "mint": "音音·薄荷绿",
     "sky": "音音·天蓝",
+    "peach": "音音·蜜桃粉",
+    "lavender": "音音·薰衣草",
+    # 球球
     "sunset": "球球·暖橙",
-    "bubblegum": "球球·泡泡糖粉",
+    "bubblegum": "球球·泡泡糖",
+    "seafoam": "球球·海沫绿",
+    "starry": "球球·星辰紫",
+    # 绵绵
     "sakura": "绵绵·樱花粉",
     "snow": "绵绵·雪白",
+    "latte": "绵绵·奶茶棕",
+    "haze": "绵绵·雾霾蓝",
 }
 
 

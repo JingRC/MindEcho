@@ -34,7 +34,7 @@ CHARACTERS = {
 # ═══════════════════════════════════════════════════════════════
 
 THEMES = {
-    # ── 麦麦 (MaiMai) ──
+    # ── 麦麦 (MaiMai) — 音乐小猫，4 套 ──
     "classic": {
         "name": "麦麦·经典紫", "character": "maimai",
         "body": "#B794F4", "body_light": "#DDD6FE", "body_dark": "#7C3AED",
@@ -62,7 +62,16 @@ THEMES = {
         "mic": "#F472B6", "mic_body": "#581C87",
         "scarf": "#E2C6FB", "note": "#22D3EE", "star": "#F472B6",
     },
-    # ── 团团 (TuanTuan) ──
+    "cherry": {
+        "name": "麦麦·樱莓粉", "character": "maimai",
+        "body": "#F4A3B8", "body_light": "#FECDD3", "body_dark": "#DB6B8A",
+        "belly": "#FFF0F3", "cheek": "#FFB0C0",
+        "ear_inner": "#FEE2E6", "accent": "#FB7185",
+        "headphone": "#831843", "headphone_pad": "#FBC5CD",
+        "mic": "#FDE047", "mic_body": "#831843",
+        "scarf": "#F472B6", "note": "#6EE7B7", "star": "#FDE047",
+    },
+    # ── 团团 (TuanTuan) — 豆豆小熊，4 套 ──
     "honey": {
         "name": "团团·蜂蜜棕", "character": "tuantuan",
         "body": "#F0A854", "body_light": "#FDE68A", "body_dark": "#D97706",
@@ -81,7 +90,25 @@ THEMES = {
         "mic": "#FDE047", "mic_body": "#7C2D12",
         "scarf": "#F472B6", "note": "#A78BFA", "star": "#FDE047",
     },
-    # ── 音音 (YinYin) ──
+    "matcha": {
+        "name": "团团·抹茶绿", "character": "tuantuan",
+        "body": "#8CB882", "body_light": "#C5E0C2", "body_dark": "#5E8C58",
+        "belly": "#F2F7F1", "cheek": "#FDBA74",
+        "ear_inner": "#D4E8D0", "accent": "#F472B6",
+        "headphone": "#3E5C3A", "headphone_pad": "#A8D4A0",
+        "mic": "#FDE047", "mic_body": "#3E5C3A",
+        "scarf": "#F472B6", "note": "#A78BFA", "star": "#FDE047",
+    },
+    "cocoa": {
+        "name": "团团·可可棕", "character": "tuantuan",
+        "body": "#C4A882", "body_light": "#E6D5C0", "body_dark": "#9B7E5E",
+        "belly": "#F9F3EC", "cheek": "#FDBA74",
+        "ear_inner": "#EFE2D2", "accent": "#A78BFA",
+        "headphone": "#5C3D2E", "headphone_pad": "#D4C0A8",
+        "mic": "#FDE047", "mic_body": "#5C3D2E",
+        "scarf": "#A78BFA", "note": "#34D399", "star": "#FDE047",
+    },
+    # ── 音音 (YinYin) — 破壳小鸡，4 套 ──
     "mint": {
         "name": "音音·薄荷绿", "character": "yinyin",
         "body": "#5EDB82", "body_light": "#BBF7D0", "body_dark": "#16A34A",
@@ -100,7 +127,25 @@ THEMES = {
         "mic": "#FDE047", "mic_body": "#1E40AF",
         "scarf": "#BAE6FD", "note": "#F472B6", "star": "#FDE047",
     },
-    # ── 球球 (QiuQiu) ──
+    "peach": {
+        "name": "音音·蜜桃粉", "character": "yinyin",
+        "body": "#F8A4B8", "body_light": "#FECDD3", "body_dark": "#E87890",
+        "belly": "#FFF0F3", "cheek": "#FDBA74",
+        "ear_inner": "#FEE2E6", "accent": "#FDE047",
+        "headphone": "#8B2252", "headphone_pad": "#FBC5CD",
+        "mic": "#FDE047", "mic_body": "#8B2252",
+        "scarf": "#FECDD3", "note": "#6EE7B7", "star": "#FDE047",
+    },
+    "lavender": {
+        "name": "音音·薰衣草", "character": "yinyin",
+        "body": "#C4A5DF", "body_light": "#E8DCF5", "body_dark": "#9B7EC4",
+        "belly": "#F8F5FC", "cheek": "#FFB0C0",
+        "ear_inner": "#EEE4F8", "accent": "#FDE047",
+        "headphone": "#553C7B", "headphone_pad": "#D4C0F0",
+        "mic": "#FDE047", "mic_body": "#553C7B",
+        "scarf": "#D4C0F0", "note": "#6EE7B7", "star": "#FDE047",
+    },
+    # ── 球球 (QiuQiu) — 水滴史莱姆，4 套 ──
     "sunset": {
         "name": "球球·暖橙", "character": "qiuqiu",
         "body": "#FF9A6C", "body_light": "#FFD4BE", "body_dark": "#E8652C",
@@ -119,7 +164,25 @@ THEMES = {
         "mic": "#FDE047", "mic_body": "#831843",
         "scarf": "#FDE047", "note": "#34D399", "star": "#FDE047",
     },
-    # ── 绵绵 (MianMian) ──
+    "seafoam": {
+        "name": "球球·海沫绿", "character": "qiuqiu",
+        "body": "#6ED7C4", "body_light": "#B2ECE0", "body_dark": "#3EB89E",
+        "belly": "#F0FDFA", "cheek": "#FFB0C0",
+        "ear_inner": "#DCF8F0", "accent": "#FDE047",
+        "headphone": "#0F4C3F", "headphone_pad": "#8EE6D0",
+        "mic": "#FDE047", "mic_body": "#0F4C3F",
+        "scarf": "#FDE047", "note": "#F472B6", "star": "#FDE047",
+    },
+    "starry": {
+        "name": "球球·星辰紫", "character": "qiuqiu",
+        "body": "#A78BFA", "body_light": "#DDD6FE", "body_dark": "#7C3AED",
+        "belly": "#F5F3FF", "cheek": "#FDBA74",
+        "ear_inner": "#EDE9FE", "accent": "#FDE047",
+        "headphone": "#4C1D95", "headphone_pad": "#C4B5FD",
+        "mic": "#FDE047", "mic_body": "#4C1D95",
+        "scarf": "#FDE047", "note": "#34D399", "star": "#FDE047",
+    },
+    # ── 绵绵 (MianMian) — 垂耳兔兔，4 套 ──
     "sakura": {
         "name": "绵绵·樱花粉", "character": "mianmian",
         "body": "#FFCCDA", "body_light": "#FFE4EC", "body_dark": "#F9A8C9",
@@ -137,6 +200,24 @@ THEMES = {
         "headphone": "#475569", "headphone_pad": "#E2E8F0",
         "mic": "#FBBF24", "mic_body": "#475569",
         "scarf": "#38BDF8", "note": "#F472B6", "star": "#FBBF24",
+    },
+    "latte": {
+        "name": "绵绵·奶茶棕", "character": "mianmian",
+        "body": "#D4B896", "body_light": "#EDE0D4", "body_dark": "#B89B7C",
+        "belly": "#FAF5F0", "cheek": "#FDBA74",
+        "ear_inner": "#F2E6DA", "accent": "#C084FC",
+        "headphone": "#6B4226", "headphone_pad": "#E0CFBF",
+        "mic": "#FDE047", "mic_body": "#6B4226",
+        "scarf": "#C084FC", "note": "#6EE7B7", "star": "#FDE047",
+    },
+    "haze": {
+        "name": "绵绵·雾霾蓝", "character": "mianmian",
+        "body": "#A8BFD4", "body_light": "#D6E4F0", "body_dark": "#7E9AB5",
+        "belly": "#F5F8FA", "cheek": "#FDBA74",
+        "ear_inner": "#E8EFF5", "accent": "#F472B6",
+        "headphone": "#3D5A6E", "headphone_pad": "#C0D0E0",
+        "mic": "#FDE047", "mic_body": "#3D5A6E",
+        "scarf": "#F472B6", "note": "#A78BFA", "star": "#FDE047",
     },
 }
 
@@ -482,44 +563,56 @@ Q_FACE = {"cx_l": 158, "cx_r": 242, "cy_eye": 218, "r_eye": 11,
 
 
 # ═══════════════════════════════════════════════════════════════
-# 绵绵 V5 — 垂耳兔兔 (伊布长耳风格)
-#   圆脸 + 一耳垂一耳立 + 棉花尾 + 领巾
+# 绵绵 V5.1 — 垂耳兔兔 (伊布长耳风格)
+#   圆脸 + 左耳垂右耳立 + 棉花尾 + 三角领巾 + 小短手
 # ═══════════════════════════════════════════════════════════════
 
 def _mianmian_body() -> str:
     return """
 <!-- 地面阴影 -->
-<ellipse cx="200" cy="370" rx="42" ry="7" fill="#00000005"/>
-<!-- 脚掌 (紧贴身体底部, 无缝) -->
-<ellipse cx="178" cy="350" rx="14" ry="10" fill="{body_dark}"/>
-<ellipse cx="222" cy="350" rx="14" ry="10" fill="{body_dark}"/>
-<!-- 身体 (头身重叠 ~30px: 头底220, 体顶190) -->
-<ellipse cx="200" cy="268" rx="58" ry="76" fill="url(#bodyGrad)" filter="url(#shadow)"/>
-<!-- 肚皮 (更圆润) -->
-<ellipse cx="200" cy="282" rx="34" ry="44" fill="{belly}" opacity="0.55"/>
-<!-- 棉花尾 (更蓬松) -->
-<circle cx="270" cy="302" r="16" fill="{body_light}" filter="url(#shadow)"/>
-<circle cx="267" cy="298" r="10" fill="#FFFFFF" opacity="0.6"/>
-<circle cx="274" cy="296" r="5" fill="#FFFFFF" opacity="0.35"/>"""
+<ellipse cx="200" cy="370" rx="44" ry="8" fill="#00000006"/>
+<!-- 脚掌 (小兔爪，圆润带肉垫高光) -->
+<ellipse cx="176" cy="348" rx="16" ry="11" fill="{body_dark}"/>
+<ellipse cx="176" cy="344" rx="9" ry="5" fill="{body_light}" opacity="0.45"/>
+<ellipse cx="224" cy="348" rx="16" ry="11" fill="{body_dark}"/>
+<ellipse cx="224" cy="344" rx="9" ry="5" fill="{body_light}" opacity="0.45"/>
+<!-- 身体 (头身重叠 ~28px: 头底218, 体顶190) -->
+<ellipse cx="200" cy="268" rx="60" ry="78" fill="url(#bodyGrad)" filter="url(#shadow)"/>
+<!-- 肚皮 -->
+<ellipse cx="200" cy="282" rx="36" ry="46" fill="{belly}" opacity="0.55"/>
+<!-- 小短手 (身体两侧，乖巧) -->
+<ellipse cx="148" cy="268" rx="13" ry="9" fill="{body}" stroke="{body_dark}" stroke-width="1.8" transform="rotate(-18 148 268)"/>
+<ellipse cx="152" cy="265" rx="5" ry="3" fill="{body_light}" opacity="0.4" transform="rotate(-18 152 265)"/>
+<ellipse cx="252" cy="268" rx="13" ry="9" fill="{body}" stroke="{body_dark}" stroke-width="1.8" transform="rotate(18 252 268)"/>
+<ellipse cx="248" cy="265" rx="5" ry="3" fill="{body_light}" opacity="0.4" transform="rotate(18 248 265)"/>
+<!-- 棉花尾 (三层蓬松圆圈) -->
+<circle cx="274" cy="300" r="19" fill="{body_light}" filter="url(#shadow)"/>
+<circle cx="270" cy="296" r="13" fill="#FFFFFF" opacity="0.55"/>
+<circle cx="278" cy="294" r="8" fill="#FFFFFF" opacity="0.4"/>
+<circle cx="266" cy="302" r="6" fill="#FFFFFF" opacity="0.28"/>
+<circle cx="280" cy="304" r="4.5" fill="#FFFFFF" opacity="0.2"/>"""
 
 
 def _mianmian_head() -> str:
-    # 注意：耳朵在头部椭圆之前绘制 → 耳朵从脑袋后面伸出，自然可爱
+    # 耳朵在头部椭圆之前绘制 → 从脑袋后面伸出，自然可爱
     return """
 <!-- ══ 耳朵 (在头部后面) ══ -->
-<!-- 左耳 (厚实垂落) -->
-<path d="M146 124 Q115 56 112 24 Q110 6 134 8 Q160 12 156 44 Q148 82 166 118"
+<!-- 左耳 (厚实垂落，软萌) -->
+<path d="M148 122 Q116 54 112 22 Q110 4 134 6 Q162 10 158 42 Q150 80 168 116"
       fill="{body}" stroke="{body_dark}" stroke-width="2.5" stroke-linejoin="round"/>
-<path d="M148 120 Q122 58 119 28 Q117 12 134 13 Q156 16 153 44 Q146 78 162 114"
-      fill="{ear_inner}" opacity="0.85"/>
-<!-- 右耳 (厚实垂落, 镜像) -->
-<path d="M254 124 Q285 56 288 24 Q290 6 266 8 Q240 12 244 44 Q252 82 234 118"
+<path d="M150 118 Q122 56 118 26 Q116 10 134 11 Q158 14 154 42 Q146 76 162 112"
+      fill="{ear_inner}" opacity="0.88"/>
+<!-- 右耳 (挺立竖起！精神活泼) -->
+<path d="M252 118 Q266 58 280 28 Q284 8 268 4 Q252 2 246 28 Q242 64 240 110"
       fill="{body}" stroke="{body_dark}" stroke-width="2.5" stroke-linejoin="round"/>
-<path d="M252 120 Q278 58 281 28 Q283 12 266 13 Q244 16 247 44 Q254 78 238 114"
-      fill="{ear_inner}" opacity="0.85"/>
+<path d="M250 116 Q262 62 274 34 Q278 18 266 14 Q254 12 250 32 Q246 62 244 106"
+      fill="{ear_inner}" opacity="0.88"/>
 <!-- 耳根绒毛装饰 -->
-<circle cx="154" cy="118" r="5" fill="{body_light}" opacity="0.7"/>
-<circle cx="246" cy="118" r="5" fill="{body_light}" opacity="0.7"/>
+<circle cx="156" cy="116" r="5.5" fill="{body_light}" opacity="0.72"/>
+<circle cx="244" cy="116" r="5.5" fill="{body_light}" opacity="0.72"/>
+<!-- 头顶绒毛 (呆毛) -->
+<path d="M196 78 Q198 64 204 72 Q206 64 208 78" fill="{body}" stroke="{body_dark}" stroke-width="1.5" stroke-linecap="round"/>
+<circle cx="200" cy="70" r="3" fill="{body_light}" opacity="0.5"/>
 <!-- ══ 头部 (盖在耳朵上面) ══ -->
 <ellipse cx="200" cy="148" rx="82" ry="72" fill="url(#bodyGrad)" filter="url(#shadow)"/>
 """
@@ -527,12 +620,30 @@ def _mianmian_head() -> str:
 
 def _mianmian_extras() -> str:
     return """
-<!-- 领巾 (头身交界处) -->
-<path d="M164 196 Q200 207 236 196" stroke="{scarf}" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.7"/>
-<path d="M230 194 Q236 222 232 240 Q228 218 222 206" fill="{scarf}" opacity="0.7"/>"""
+<!-- ══ 三角领巾/围巾 (头身交界处) ══ -->
+<!-- 后面环绕带 (隐约绕颈) -->
+<path d="M158 186 Q200 173 242 186" stroke="{scarf}" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.45"/>
+<!-- 主体倒三角领巾 (覆盖胸前) -->
+<path d="M160 190 Q200 175 240 190 Q246 204 242 226 Q200 240 158 226 Q154 204 160 190Z"
+      fill="{scarf}" opacity="0.88"/>
+<!-- 领巾褶皱纹理 (增加立体感) -->
+<path d="M172 198 Q200 189 228 198" stroke="{body_dark}" stroke-width="1.2" fill="none" opacity="0.15" stroke-linecap="round"/>
+<path d="M168 210 Q200 202 232 210" stroke="{body_dark}" stroke-width="0.8" fill="none" opacity="0.1" stroke-linecap="round"/>
+<!-- 围巾结 (右侧，双层圆) -->
+<circle cx="238" cy="218" r="9" fill="{body_dark}" opacity="0.25"/>
+<circle cx="238" cy="218" r="6.5" fill="{scarf}" opacity="0.92"/>
+<circle cx="236" cy="216" r="3" fill="{star}" opacity="0.35"/>
+<!-- 飘带1 (从结垂下，较长，飘逸) -->
+<path d="M234 224 Q228 250 232 272 Q234 280 238 274 Q244 258 242 234 Q243 224 238 222Z"
+      fill="{scarf}" opacity="0.85"/>
+<!-- 飘带2 (从结垂下，较短，叠在后面) -->
+<path d="M241 222 Q246 246 242 262 Q240 268 238 262 Q234 248 236 228Z"
+      fill="{scarf}" opacity="0.7"/>
+<!-- 飘带末端小装饰 -->
+<circle cx="234" cy="274" r="2.2" fill="{star}" opacity="0.4"/>"""
 
 # 绵绵面部: 大眼睛 + 大腮红 (萌系比例)
-N_FACE = {"cx_l": 166, "cx_r": 234, "cy_eye": 138, "r_eye": 11,
+N_FACE = {"cx_l": 166, "cx_r": 234, "cy_eye": 138, "r_eye": 11.5,
           "cy_blush": 160, "r_blush": 16, "cx_mouth": 200, "cy_mouth": 170}
 
 
