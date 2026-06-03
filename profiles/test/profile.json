@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "id": "16153181-e24",
+  "name": "test",
+  "voice_type_manual": "baritone",
+  "voice_type_inferred": "",
+  "gender_manual": "male",
+  "gender_inferred": "",
+  "passaggio": {
+    "t4_hz": 0.0,
+    "source": "default",
+    "confidence": 0.0,
+    "last_calibrated": "",
+    "auto_estimated_t4": 0.0,
+    "calibration_scan_file": ""
+  },
+  "pitch_stats": {
+    "p5_hz": 0.0,
+    "p25_hz": 0.0,
+    "p50_hz": 0.0,
+    "p75_hz": 0.0,
+    "p85_hz": 0.0,
+    "p95_hz": 0.0,
+    "min_hz": 0.0,
+    "max_hz": 0.0,
+    "total_voiced_frames": 0,
+    "session_count": 0
+  },
+  "timbre": {
+    "avg_spectral_tilt": 0.0,
+    "avg_hm_over_hh": 0.0,
+    "avg_mid_high_ratio": 0.0,
+    "avg_zcr": 0.0,
+    "avg_rms": 0.0,
+    "sample_count": 0,
+    "_ema_alpha": 0.02
+  },
+  "usage": {
+    "total_sessions": 0,
+    "total_minutes": 0.0,
+    "last_active": "",
+    "technique_distribution": {}
+  },
+  "created_at": "2026-06-03T15:07:56",
+  "updated_at": "2026-06-03T15:07:56"
+}

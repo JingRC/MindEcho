@@ -966,7 +966,7 @@ def integrate_ai_coach(main_window, dock_area=Qt.DockWidgetArea.RightDockWidgetA
         }
     """)
 
-    # 添加到主窗口
+    # 添加到主窗口（侧边栏默认显示，点击 AI 教练按钮可切换显隐）
     main_window.addDockWidget(dock_area, dock)
 
     # ── 悬浮球 ──
@@ -1046,12 +1046,12 @@ def integrate_ai_coach(main_window, dock_area=Qt.DockWidgetArea.RightDockWidgetA
     panel._sync_mascot_identity = _sync_all
 
     # ── 菜单/快捷键 ──
-    # 添加到主窗口的 View 菜单（如果存在）或作为独立 action
+    # 添加到主窗口的 View 菜单（如果存在），否则只注册快捷键不占菜单栏
     toggle_action = QAction("AI 声乐教练", main_window)
     toggle_action.setCheckable(True)
     toggle_action.setChecked(True)
     toggle_action.setShortcut(QKeySequence("Ctrl+Shift+A"))
-    toggle_action.setToolTip("显示/隐藏 AI 声乐教练面板")
+    toggle_action.setToolTip("显示/隐藏 AI 声乐教练面板 (Ctrl+Shift+A)")
 
     def _toggle_coach(checked: bool):
         dock.setVisible(checked)
@@ -1059,23 +1059,32 @@ def integrate_ai_coach(main_window, dock_area=Qt.DockWidgetArea.RightDockWidgetA
     toggle_action.toggled.connect(_toggle_coach)
     dock.visibilityChanged.connect(toggle_action.setChecked)
 
-    # 尝试添加到 View 菜单，否则添加到 Window 或第一个菜单
+    # 只有当前已存在菜单栏且其中有视图/窗口类菜单时才添加进去，避免凭空创建菜单栏
     menu_bar = main_window.menuBar()
-    added = False
-    for menu in menu_bar.findChildren(menu_bar.__class__):
-        if menu.title() in ("查看", "视图", "View", "窗口", "Window"):
-            menu.addAction(toggle_action)
-            added = True
-            break
-    if not added:
-        # 尝试添加到帮助菜单前
-        for action in menu_bar.actions():
-            if action.text() in ("帮助", "Help", "关于", "About"):
-                menu_bar.insertAction(action, toggle_action)
+    existing_menus = menu_bar.findChildren(menu_bar.__class__)
+    if existing_menus:
+        added = False
+        for menu in existing_menus:
+            if menu.title() in ("查看", "视图", "View", "窗口", "Window"):
+                menu.addAction(toggle_action)
                 added = True
                 break
-    if not added:
-        menu_bar.addAction(toggle_action)
+        if not added:
+            for action in menu_bar.actions():
+                if action.text() in ("帮助", "Help", "关于", "About"):
+                    menu_bar.insertAction(action, toggle_action)
+                    added = True
+                    break
+        if not added:
+            # 作为最后手段放到已有菜单中，而不是直接加到菜单栏
+            for menu in existing_menus:
+                menu.addAction(toggle_action)
+                added = True
+                break
+    # 如果没有任何已有菜单，不把 action 挂到菜单栏（会凭空创建菜单栏显示"AI 声乐教练"文字）
+    # 但仍然注册到主窗口以确保快捷键生效
+    if not existing_menus:
+        main_window.addAction(toggle_action)
 
     # ── 保存引用以便外部访问 ──
     main_window._ai_coach_dock = dock

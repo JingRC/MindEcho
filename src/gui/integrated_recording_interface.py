@@ -14,6 +14,14 @@ import time, threading, queue, json, os, sys, wave, math
 import importlib
 from pathlib import Path
 
+# 歌手存档系统
+try:
+    from src.profiles.profile_manager import ProfileManager
+    from src.profiles.profile_model import SingerProfile
+except ImportError:
+    ProfileManager = None  # type: ignore
+    SingerProfile = None   # type: ignore
+
 try:
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -6292,7 +6300,15 @@ class IntegratedAudioProcessor(QThread):
                                  duration: float, technique_events: list | None = None) -> str:
         """使用提供的快照数据保存录音与分析，避免与实时状态竞争。返回保存的wav路径。"""
         try:
-            recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            # Phase 1: 优先使用存档目录，回退到 save_base_dir / 默认 recordings
+            _host = getattr(self, '_host_interface', None)
+            if _host is not None and hasattr(_host, '_get_profile_save_dir'):
+                try:
+                    recordings_dir = _host._get_profile_save_dir()
+                except Exception:
+                    recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            else:
+                recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
             recordings_dir.mkdir(parents=True, exist_ok=True)
             filename = filename.strip(" .")
             if not filename.endswith('.wav'):
@@ -6344,7 +6360,15 @@ class IntegratedAudioProcessor(QThread):
                                  sample_rate: int = 48000, channels: int = 1) -> str:
         """「仅分析」模式：只保存分析 JSON，不保存 WAV 文件。"""
         try:
-            recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            # Phase 1: 优先使用存档目录，回退到 save_base_dir / 默认 recordings
+            _host = getattr(self, '_host_interface', None)
+            if _host is not None and hasattr(_host, '_get_profile_save_dir'):
+                try:
+                    recordings_dir = _host._get_profile_save_dir()
+                except Exception:
+                    recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
+            else:
+                recordings_dir = Path(getattr(self, 'save_base_dir', project_root / "recordings"))
             recordings_dir.mkdir(parents=True, exist_ok=True)
             ts = time.strftime("%Y%m%d_%H%M%S")
             json_path = recordings_dir / f"analysis_{ts}.json"
@@ -15793,6 +15817,7 @@ class ECGStylePitchVisualizer(QWidget):
         self._technique_recent_frames = deque(maxlen=240)
         self._technique_events = deque(maxlen=240)
         self._technique_active_states = {}
+
         self._technique_region_artists = []
         self._technique_label_artists = []
         self._technique_summary_artist = None
@@ -34606,9 +34631,20 @@ class ECGStylePitchVisualizer(QWidget):
             T4 = _VOICE_TYPE_PASSAGGIO_HZ[voice_lower]
             # passaggio 映射已编码性别差异，不需要额外 pitch_shift
         else:
-            # 未知声部：回退到通用阈值（保持向后兼容）
-            pitch_shift = 120.0 if is_female else 0.0
-            T4 = 420.0 + pitch_shift  # 女声阈值上移约半个八度
+            # ── 方案2：未指定声部 → 性别中性 T4 + 降权先验 ──
+            # 旧值 420Hz(男)/540Hz(女) 对多数声部偏差过大：
+            #   男中音 E4=330 → 旧T4=420 偏高90Hz，G4假声被误加chest bias
+            #   男高音 G4=392 → 旧T4=420 偏高28Hz，passaggio区域分类摇摆
+            # 新值取同性别声部 passaggio 中位值：
+            #   男性 360Hz (男中330 ↔ 男高392的中点)
+            #   女性 660Hz (女中659 ↔ 女高740的中点)
+            # 2-class 模型下先验强度从 100% 降至 45%，依赖模型原始输出+频谱证据
+            if is_female:
+                T4 = 660.0
+            else:
+                T4 = 360.0
+            if auto_gender_is_female is None:
+                pitch_prior_scale = 0.45
 
         # T1-T5 及辅助阈值相对 T4 计算（间距与旧逻辑一致）
         T1 = T4 - 180.0   # 强力真声偏置上界
@@ -37020,6 +37056,37 @@ class ECGStylePitchVisualizer(QWidget):
                 self.canvas.draw_idle()
         except Exception:
             pass
+
+        # Phase 1: 更新存档统计数据
+        try:
+            if self._profile_manager is not None and self._active_profile is not None:
+                voiced_hz = []
+                timbre_samples = []
+                for f in (frames or []):
+                    try:
+                        if getattr(f, 'has_pitch', False) and float(getattr(f, 'confidence', 0.0) or 0.0) >= 0.34:
+                            pitch = float(getattr(f, 'pitch_hz', 0.0) or 0.0)
+                            if pitch > 0:
+                                voiced_hz.append(pitch)
+                        if getattr(f, 'has_pitch', False):
+                            timbre_samples.append({
+                                'spectral_tilt': float(getattr(f, 'spectral_tilt', 0.0) or 0.0),
+                                'hm_over_hh': float(getattr(f, 'hm_over_hh', 0.0) or 0.0),
+                                'mid_high_ratio': float(getattr(f, 'mid_high_ratio', 0.0) or 0.0),
+                                'zcr': float(getattr(f, 'zcr_once', 0.0) or 0.0),
+                                'rms': float(getattr(f, 'rms', 0.0) or 0.0),
+                            })
+                    except Exception:
+                        continue
+                self._update_profile_after_session(
+                    voiced_frequencies_hz=voiced_hz,
+                    session_duration_minutes=float(duration) / 60.0 if duration > 0 else 0.0,
+                    technique_counts=dict(counts),
+                    timbre_samples=timbre_samples[:500],  # 采样500帧，避免过大
+                )
+        except Exception:
+            pass
+
         return summary
 
     def _technique_event_min_confidence_threshold(self, event: BaseTechniqueEvent, default_min_conf: float) -> float:
@@ -53383,6 +53450,36 @@ class IntegratedRecordingInterface(QMainWindow):
         self._record_epoch = 0
         self._ui_epoch = 0
 
+        # ── 歌手存档系统（Phase 1） ──
+        self._profile_manager: Optional[ProfileManager] = None
+        self._active_profile: Optional[SingerProfile] = None
+        self._session_remember_profile: bool = False
+        # ① 创建 ProfileManager
+        if ProfileManager is not None:
+            try:
+                self._profile_manager = ProfileManager(profiles_root=project_root / "profiles")
+                print(f"[存档] ProfileManager 初始化成功 (root={self._profile_manager._root})")
+            except Exception as _e:
+                import traceback
+                print(f"[存档] ProfileManager 创建失败: {_e}")
+                traceback.print_exc()
+                self._profile_manager = None
+        else:
+            print("[存档] ProfileManager 导入失败 (ProfileManager is None)")
+        # ② 恢复上次存档 + 清理
+        if self._profile_manager is not None:
+            try:
+                restored = self._profile_manager.get_active_profile()
+                if restored is not None:
+                    self._active_profile = restored
+                    self._sync_profile_to_technique_config()
+            except Exception as _e:
+                print(f"[存档] 恢复上次存档失败: {_e}")
+            try:
+                self._profile_manager.cleanup_old_guest_recordings(max_age_days=7)
+            except Exception as _e:
+                print(f"[存档] 清理过期访客录音失败: {_e}")
+
         # 回退/倒计时与伴奏预卷状态
         self._retake_countdown_seconds = 3.0
         self._pending_retake_resume = False
@@ -53855,6 +53952,18 @@ class IntegratedRecordingInterface(QMainWindow):
         )
         self.settings_btn.clicked.connect(self.open_settings_dialog)
         header_layout.addWidget(self.settings_btn)
+
+        # 用户中心按钮
+        self.user_center_btn = QPushButton("用户中心")
+        self.user_center_btn.setStyleSheet(
+            """
+            QPushButton { background-color: #2C2C2C; border: 2px solid #66BB6A; border-radius: 6px; padding: 6px 12px; color: white; }
+            QPushButton:hover { border-color: #A5D6A7; background-color: #333; }
+            """
+        )
+        self.user_center_btn.setToolTip("管理歌手存档：查看/切换/新建/编辑")
+        self.user_center_btn.clicked.connect(self._open_user_center)
+        header_layout.addWidget(self.user_center_btn)
 
         # AI 教练切换按钮
         self.ai_coach_btn = QPushButton(" AI 教练")
@@ -62024,9 +62133,159 @@ class IntegratedRecordingInterface(QMainWindow):
         self.audio_processor.recording_finished.connect(self.on_recording_finished)
         self.audio_processor.error_occurred.connect(self.on_error_occurred)
     
+    # ── 歌手存档管理（Phase 1） ───────────────────────────────
+
+    def _ensure_profile_selected(self) -> bool:
+        """确保已选择存档；访客模式或选择已有存档均返回 True，用户取消返回 False"""
+        if self._active_profile is not None and self._session_remember_profile:
+            return True  # 本次会话已记住
+
+        if getattr(self, '_profile_manager', None) is None:
+            return True  # 存档系统不可用时静默放行（使用方案2默认参数）
+
+        try:
+            from src.gui.profile_dialog import ProfileSelectionDialog
+        except ImportError:
+            return True
+
+        dlg = ProfileSelectionDialog(
+            self._profile_manager,
+            parent=self,
+            session_remembered=self._session_remember_profile,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False  # 用户关闭对话框
+
+        self._session_remember_profile = dlg.remember_choice()
+        if dlg.result_is_guest:
+            # 访客模式
+            self._active_profile = None
+            if getattr(self, '_profile_manager', None) is not None:
+                self._profile_manager.clear_active_profile()
+        elif dlg.result_profile is not None:
+            # 选择了存档
+            self._active_profile = dlg.result_profile
+            if getattr(self, '_profile_manager', None) is not None:
+                self._profile_manager.set_active_profile(dlg.result_profile)
+            self._sync_profile_to_technique_config()
+
+        return True
+
+    def _sync_profile_to_technique_config(self) -> None:
+        """将活跃存档的声部/性别同步到技巧识别配置"""
+        if self._active_profile is None:
+            return
+        try:
+            panel_state = getattr(self, '_technique_panel_state', None)
+            if panel_state is None:
+                return
+            cfg = getattr(panel_state, 'config', None)
+            if cfg is None:
+                return
+            vt = self._active_profile.effective_voice_type
+            if vt:
+                cfg.voice_type = vt
+        except Exception:
+            pass
+
+    def _get_profile_save_dir(self) -> Path:
+        """获取当前应使用的录音保存目录"""
+        _mgr = getattr(self, '_profile_manager', None)
+        _active = getattr(self, '_active_profile', None)
+        if _mgr is not None and _active is not None:
+            return _mgr.get_recordings_dir(_active.id)
+        if _mgr is not None:
+            return _mgr.guest_recordings_dir
+        # 回退：原始 recordings 目录
+        return project_root / "recordings"
+
+    def _update_profile_after_session(
+        self,
+        voiced_frequencies_hz: list,
+        session_duration_minutes: float,
+        technique_counts: dict,
+        timbre_samples: list,
+    ) -> None:
+        """录音结束后将统计数据写入活跃存档"""
+        _mgr = getattr(self, '_profile_manager', None)
+        _active = getattr(self, '_active_profile', None)
+        if _mgr is None or _active is None:
+            return
+        try:
+            _mgr.update_profile_from_session(
+                profile_id=_active.id,
+                voiced_frequencies_hz=voiced_frequencies_hz,
+                session_duration_minutes=session_duration_minutes,
+                technique_counts=technique_counts,
+                timbre_samples=timbre_samples,
+            )
+        except Exception:
+            pass
+
+    def _open_user_center(self) -> None:
+        """打开用户中心 —— 管理歌手存档"""
+        try:
+            from src.gui.profile_dialog import UserCenterDialog
+        except ImportError as _e:
+            print(f"[存档] UserCenterDialog 导入失败: {_e}")
+            QMessageBox.warning(self, "提示", "存档系统暂时不可用。")
+            return
+
+        # 如果初始化时失败，尝试延迟初始化
+        if getattr(self, '_profile_manager', None) is None:
+            try:
+                from src.profiles.profile_manager import ProfileManager as _PM
+                if _PM is not None:
+                    self._profile_manager = _PM(profiles_root=project_root / "profiles")
+                    print("[存档] 延迟初始化 ProfileManager 成功")
+                else:
+                    print("[存档] 延迟初始化失败: ProfileManager import 为 None")
+            except Exception as _e:
+                print(f"[存档] 延迟初始化失败: {_e}")
+                import traceback
+                traceback.print_exc()
+
+        if getattr(self, '_profile_manager', None) is None:
+            QMessageBox.warning(self, "提示",
+                "存档系统初始化失败，请检查控制台日志后重启应用。")
+            return
+
+        # 如果已有窗口打开，激活它
+        existing = getattr(self, '_user_center_dlg', None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        dlg = UserCenterDialog(
+            self._profile_manager,
+            active_profile=self._active_profile,
+            parent=self,
+        )
+        # 连接信号：切换存档时同步到技巧配置
+        dlg.profile_changed.connect(self._on_user_center_profile_changed)
+        # 保存引用防止 GC（非模态对话框）
+        self._user_center_dlg = dlg
+        dlg.destroyed.connect(lambda: setattr(self, '_user_center_dlg', None))
+        dlg.show()  # 非模态，允许多窗口并存
+
+    def _on_user_center_profile_changed(self, profile_name: str) -> None:
+        """用户中心切换存档后的回调"""
+        if getattr(self, '_profile_manager', None) is None:
+            return
+        if profile_name:
+            self._active_profile = self._profile_manager.get_profile_by_name(profile_name)
+        else:
+            self._active_profile = None
+        self._session_remember_profile = True  # 用户手动选择后不再弹窗
+        self._sync_profile_to_technique_config()
+
     def toggle_main_recording(self):
         """切换主录音状态"""
         if not self.is_recording:
+            # 确保已选择歌手存档（首次录音时弹出选择对话框）
+            if not self._ensure_profile_selected():
+                return
             # 开始录音前先进行环境噪音智能评估，支持手动覆盖
             try:
                 if not self._run_environment_noise_assessment_dialog():

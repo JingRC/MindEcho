@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "16153181-e24",
+      "name": "test",
+      "folder": "test",
+      "voice_type": "baritone",
+      "gender": "male",
+      "created_at": "2026-06-03T15:07:56",
+      "last_active": "",
+      "total_minutes": 0.0,
+      "passaggio_confidence": 0.0
+    }
+  ]
+}
