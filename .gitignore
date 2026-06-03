@@ -53,3 +53,10 @@ _github_release/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Claude Code — 提交 CLAUDE.md 和 .claude/skills/ 是安全的（项目文档/工具）
+# 仅忽略含密钥和权限的 settings 文件
+.claude/settings.json
+.claude/settings.local.json
+.claude/settings.*.json
+.claude/worktrees/

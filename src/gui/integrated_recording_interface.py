@@ -1072,6 +1072,17 @@ _VOICE_TYPE_OPTIONS = (
 _FEMALE_VOICE_TYPES = frozenset({'soprano', 'mezzo_soprano', 'contralto'})
 # 男声声部列表
 _MALE_VOICE_TYPES = frozenset({'tenor', 'baritone', 'bass'})
+# 各声部第二换声点 (secondo passaggio) 频率 (Hz)
+# 数据来源：Richard Miller "Training Tenor Voices" / "Securing Baritone, Bass-Baritone, and Bass Voices"
+# 男低音 D4, 男中音 E4, 男高音 G4；女低音 D5, 女中音 E5, 女高音 F#5
+_VOICE_TYPE_PASSAGGIO_HZ = {
+    'bass': 294.0,           # D4
+    'baritone': 330.0,       # E4
+    'tenor': 392.0,          # G4
+    'contralto': 587.0,      # D5
+    'mezzo_soprano': 659.0,  # E5
+    'soprano': 740.0,        # F#5
+}
 
 
 def _iter_technique_catalog_items() -> List[Dict[str, Any]]:
@@ -4022,6 +4033,7 @@ class IntegratedAudioProcessor(QThread):
         audio_rms: float,
         min_voice_rms: float,
         head_voice_like: bool = False,
+        falsetto_confidence: float = 0.0,
         preview_only: bool = False,
     ) -> float:
         try:
@@ -4069,6 +4081,8 @@ class IntegratedAudioProcessor(QThread):
         weak_voice_mul = float(getattr(self, '_normal_display_weak_voice_mul', 1.55) or 1.55)
         high_register_hz = float(getattr(self, '_normal_display_high_register_hz', 460.0) or 460.0)
         spike_guard_semi = float(getattr(self, '_normal_display_spike_guard_semi', 1.45) or 1.45)
+        # 假声置信度（EMA平滑值，0~1）：供下拉阈值调节使用
+        _falsetto_conf = float(falsetto_confidence or 0.0)
         onset_like = bool(last_display <= 0.0 or ((now_t - last_display_t) >= onset_gap))
         if recent_head_context_hz >= 420.0:
             head_voice_trigger_floor = max(280.0, high_register_hz * 0.60)
@@ -4183,6 +4197,31 @@ class IntegratedAudioProcessor(QThread):
                             display_frequency = 0.88 * float(display_frequency) + 0.12 * float(lower_candidate)
                     else:
                         display_frequency = 0.75 * float(display_frequency) + 0.25 * float(lower_candidate)
+                # 改法C：假声感知宽松阈值
+                # 假声段guard活跃时，常规下拉门槛(5.5~9.5半音)对假声虚高(通常3~5半音)过高
+                # 当假声置信度≥0.5且lower候选匹配历史时，降低门槛至3.5半音
+                # 保留rising_head_voice和slow_head_rise保护，避免正常升调被误拉
+                elif (_falsetto_conf >= 0.50 and lower_matches_history
+                      and lower_gap >= 3.5 and (not rising_head_voice) and (not slow_head_rise)):
+                    # 假声虚高修正：权重随gap增大而增强
+                    if lower_gap >= 4.8:
+                        _fw = 0.52  # 较可信：给lower 52%权重
+                    elif lower_gap >= 4.0:
+                        _fw = 0.42  # 中等可信
+                    else:
+                        _fw = 0.32  # 保守：仅给32%避免过度修正
+                    display_frequency = (1.0 - _fw) * float(display_frequency) + _fw * float(lower_candidate)
+                # B1：细粒度假声修正 —— 弱假声通常仅偏高1~3半音，3.5门槛覆盖不到
+                # 当假声置信度≥0.55且lower候选匹配历史时，对1.5~3.5半音的小偏差施加轻量下拉
+                # 权重保守（0.18~0.44），避免对正常颤音/滑音产生误拉
+                elif (_falsetto_conf >= 0.55 and lower_matches_history
+                      and lower_gap >= 1.5 and (not rising_head_voice) and (not slow_head_rise)):
+                    _fw = 0.18 + (_falsetto_conf - 0.55) * 0.40
+                    if lower_gap >= 2.5:
+                        _fw = min(_fw + 0.08, 0.38)
+                    if lower_gap >= 3.0:
+                        _fw = min(_fw + 0.06, 0.44)
+                    display_frequency = (1.0 - _fw) * float(display_frequency) + _fw * float(lower_candidate)
             else:
                 if onset_like and lower_gap >= 5.0 and float(audio_rms) <= float(min_voice_rms) * 2.8:
                     display_frequency = 0.42 * float(display_frequency) + 0.58 * float(lower_candidate)
@@ -4193,6 +4232,27 @@ class IntegratedAudioProcessor(QThread):
                 elif harmonic_like and lower_gap >= (8.6 if high_harmonic_like else 5.2) and (not raw_supports_display):
                     lower_weight = 0.74 if high_harmonic_like else 0.64
                     display_frequency = (1.0 - lower_weight) * float(display_frequency) + lower_weight * float(lower_candidate)
+                # 改法C补充：非guard路径假声感知宽松阈值
+                # 弱假声时guard可能不活跃（RMS低），但EMA追踪器通过_low_rms_falsetto仍可积累置信度
+                # 与guard路径Condition D一致：_falsetto_conf>=0.5 + lower_matches_history + gap>=3.5
+                elif (_falsetto_conf >= 0.50 and lower_matches_history
+                      and lower_gap >= 3.5 and (not raw_supports_display)):
+                    if lower_gap >= 4.8:
+                        _fw = 0.52  # 较可信
+                    elif lower_gap >= 4.0:
+                        _fw = 0.42  # 中等可信
+                    else:
+                        _fw = 0.32  # 保守
+                    display_frequency = (1.0 - _fw) * float(display_frequency) + _fw * float(lower_candidate)
+                # B1：非guard路径细粒度假声修正 —— 弱假声guard不活跃时的小偏差修正
+                elif (_falsetto_conf >= 0.55 and lower_matches_history
+                      and lower_gap >= 1.5 and (not raw_supports_display)):
+                    _fw = 0.18 + (_falsetto_conf - 0.55) * 0.40
+                    if lower_gap >= 2.5:
+                        _fw = min(_fw + 0.08, 0.38)
+                    if lower_gap >= 3.0:
+                        _fw = min(_fw + 0.06, 0.44)
+                    display_frequency = (1.0 - _fw) * float(display_frequency) + _fw * float(lower_candidate)
                 elif lower_matches_history and lower_gap >= 5.2 and (not raw_supports_display):
                     display_frequency = 0.28 * float(display_frequency) + 0.72 * float(lower_candidate)
                 elif better_than_current and lower_gap >= 6.0:
@@ -10350,6 +10410,7 @@ class IntegratedAudioProcessor(QThread):
                 true_candidates = []
 
             # 普通模式主唱优先：在进入平滑前，基于多候选做一次轻量纠偏，减少伴唱低音抢占。
+            _falsetto_conf_name = '_mon_falsetto_confidence' if preview_only else '_falsetto_confidence'
             lead_bias_enabled = False
             try:
                 host = getattr(self, '_host_interface', None)
@@ -10369,6 +10430,7 @@ class IntegratedAudioProcessor(QThread):
                         true_candidates,
                         audio_rms=float(audio_rms),
                         preview_only=bool(preview_only),
+                        falsetto_confidence=float(getattr(self, '_mon_falsetto_confidence' if preview_only else '_falsetto_confidence', 0.0) or 0.0),
                     ) or raw_frequency)
                     try:
                         if lfm_active and lfm_diag_enabled and hasattr(self, '_lfm_parse_diag') and abs(float(raw_frequency) - raw_before_bias) >= 0.8:
@@ -10443,6 +10505,7 @@ class IntegratedAudioProcessor(QThread):
                         true_candidates,
                         audio_rms=float(audio_rms),
                         min_voice_rms=float(min_voice_rms),
+                        falsetto_confidence=float(getattr(self, _falsetto_conf_name, 0.0) or 0.0),
                         head_voice_like=bool(
                             (
                                 ('voiced_bright' in locals() and voiced_bright)
@@ -10474,6 +10537,27 @@ class IntegratedAudioProcessor(QThread):
                     )
                 except Exception:
                     display_frequency = smooth_frequency
+
+            # 假声置信度EMA追踪器：供_select_lead_vocal_frequency和_compute_normal_mode_display_frequency使用
+            # 在head_voice_like计算后更新，下一帧生效（单帧延迟~10ms，对假声检测无影响）
+            _falsetto_conf_name = '_mon_falsetto_confidence' if preview_only else '_falsetto_confidence'
+            try:
+                # 弱假声补检测：head_voice_like最低RMS门槛为min_voice_rms*0.55（条件4）
+                # 弱假声气息多、基频弱、RMS低，可能不触发head_voice_like但仍会偏高
+                # 降低RMS门槛至0.35，结合高频+低ZCR+高泛音比判定弱假声
+                _low_rms_falsetto = bool(
+                    float(raw_frequency or 0.0) >= 285.0
+                    and float(zcr_once or 0.0) <= 0.20
+                    and float(hf_to_mid_est or 0.0) >= 0.26
+                    and float(audio_rms) >= float(min_voice_rms) * 0.35
+                )
+                _falsetto_raw = 1.0 if (head_voice_like or _low_rms_falsetto) else 0.0
+                _falsetto_prev = float(getattr(self, _falsetto_conf_name, 0.0) or 0.0)
+                _falsetto_alpha = 0.18  # EMA平滑系数：约需~5帧(50ms)收敛
+                _falsetto_smoothed = _falsetto_alpha * _falsetto_raw + (1.0 - _falsetto_alpha) * _falsetto_prev
+                setattr(self, _falsetto_conf_name, float(_falsetto_smoothed))
+            except Exception:
+                pass
 
             # ========= 换气抑制：低能量 + 短时多半音跨幅（轻量规则） ========= #
             # 目标：在换气时常出现半个八度到一个八度的快速上下抖动；在低能量段触发抑制绘制，但不影响时间推进
@@ -12222,7 +12306,7 @@ class IntegratedAudioProcessor(QThread):
         except Exception:
             return []
 
-    def _select_lead_vocal_frequency(self, raw_frequency: float, true_candidates: List[Dict[str, float]], *, audio_rms: float, preview_only: bool = False) -> float:
+    def _select_lead_vocal_frequency(self, raw_frequency: float, true_candidates: List[Dict[str, float]], *, audio_rms: float, preview_only: bool = False, falsetto_confidence: float = 0.0) -> float:
         """在普通模式实时链路中做主唱优先候选选择。
 
         设计目标：
@@ -12254,6 +12338,15 @@ class IntegratedAudioProcessor(QThread):
                 near_boost = near_boost * 0.38
             elif _cold_stable_count < 2:
                 near_boost = near_boost * 0.58
+
+            # 改法A：假声感知近讲偏置削弱
+            # 假声天然高泛音能量 → 高RMS → near_boost偏高 → 推动raw_freq向上偏移
+            # 当假声置信度较高时，按比例削弱near_boost，从源头减少偏高偏置
+            _falsetto_conf = float(falsetto_confidence or 0.0)
+            if _falsetto_conf > 0.15:
+                # 平滑削弱：假声置信度1.0时near_boost保留15%，0.15~1.0之间线性过渡
+                _falsetto_scale = 1.0 - _falsetto_conf * 0.85
+                near_boost = near_boost * max(0.15, _falsetto_scale)
 
             try:
                 max_up_semi = float(getattr(self, '_lead_vocal_max_up_semi', 13.0))
@@ -34495,24 +34588,37 @@ class ECGStylePitchVisualizer(QWidget):
         pitch_falsetto_bias = 0.0
         force_chest = False
 
-        # ── 声部自适应：女声整体音区高于男声约一个八度，上移音高阈值 ──
+        # ── 声部自适应：使用声部对应的第二换声点(secondo passaggio)作为假声偏置下界 ──
+        # 数据来源：Richard Miller 声乐声学教材
+        # 男低音 D4(294Hz), 男中音 E4(330Hz), 男高音 G4(392Hz)
+        # 女低音 D5(587Hz), 女中音 E5(659Hz), 女高音 F#5(740Hz)
+        voice_lower = str(voice_type or 'unspecified').lower()
         if auto_gender_is_female is not None:
             is_female = bool(auto_gender_is_female)
             # 4-class 模型已编码性别×音高关系，音高先验降至30%避免双修正
             pitch_prior_scale = 0.30
         else:
-            is_female = str(voice_type or 'unspecified').lower() in _FEMALE_VOICE_TYPES
+            is_female = voice_lower in _FEMALE_VOICE_TYPES
             pitch_prior_scale = 1.0
-        pitch_shift = 120.0 if is_female else 0.0  # 女声阈值上移约半个八度（更保守的上移量，避免过度修正）
-        T1 = 240.0 + pitch_shift   # 强力真声偏置上界
-        T2 = 290.0 + pitch_shift   # 中等真声偏置上界
-        T3 = 340.0 + pitch_shift   # 轻度真声偏置上界
-        T4 = 420.0 + pitch_shift   # 假声偏置下界
-        T5 = 520.0 + pitch_shift   # 假声偏置上界
-        T_voiced_lo = 300.0 + pitch_shift
-        T_voiced_hi = 320.0 + pitch_shift
-        T_falsetto_hi = 360.0 + pitch_shift
-        T_zcr_pitch = 340.0 + pitch_shift
+
+        if voice_lower in _VOICE_TYPE_PASSAGGIO_HZ:
+            # 已知声部：使用精确 passaggio 锚定 T4（假声偏置下界）
+            T4 = _VOICE_TYPE_PASSAGGIO_HZ[voice_lower]
+            # passaggio 映射已编码性别差异，不需要额外 pitch_shift
+        else:
+            # 未知声部：回退到通用阈值（保持向后兼容）
+            pitch_shift = 120.0 if is_female else 0.0
+            T4 = 420.0 + pitch_shift  # 女声阈值上移约半个八度
+
+        # T1-T5 及辅助阈值相对 T4 计算（间距与旧逻辑一致）
+        T1 = T4 - 180.0   # 强力真声偏置上界
+        T2 = T4 - 130.0   # 中等真声偏置上界
+        T3 = T4 - 80.0    # 轻度真声偏置上界
+        T5 = T4 + 100.0   # 假声偏置上界
+        T_voiced_lo = T4 - 120.0
+        T_voiced_hi = T4 - 100.0
+        T_falsetto_hi = T4 - 60.0
+        T_zcr_pitch = T4 - 80.0
 
         breath_like = bool(
             0.00008 <= mean_rms <= 0.0026
@@ -35396,23 +35502,24 @@ class ECGStylePitchVisualizer(QWidget):
                 and learned_mix_support >= 0.115
                 and learned_mix_support <= 0.16
             )
+            # A2：拓宽原过拟合条件 —— 原范围440-470Hz(30Hz)+RMS≥0.11 → 420-500Hz+RMS≥0.08
             released_high_energy_midhigh_head_mix = (
                 not released_high_pitch_head_mix
                 and not released_near_threshold_high_pitch_head_mix
                 and not released_ultra_high_pitch_head_mix
-                and learned_mix_margin >= -0.072
-                and learned_mix_margin <= -0.045
-                and learned_mix_prob >= max(0.479, learned_mix_threshold - 0.072)
+                and learned_mix_margin >= -0.080
+                and learned_mix_margin <= -0.030
+                and learned_mix_prob >= max(0.45, learned_mix_threshold - 0.080)
                 and head_bias >= 0.95
-                and mean_pitch_hz >= 440.0
-                and mean_pitch_hz <= 470.0
-                and falsetto_prob >= 0.95
-                and mean_rms >= 0.11
-                and heuristic_mix_support <= 0.08
-                and learned_mix_support >= 0.115
-                and learned_mix_support <= 0.14
-                and stable_ratio >= 0.98
-                and voiced_ratio >= 0.98
+                and mean_pitch_hz >= 420.0
+                and mean_pitch_hz <= 500.0
+                and falsetto_prob >= 0.93
+                and mean_rms >= 0.08
+                and heuristic_mix_support <= 0.12
+                and learned_mix_support >= 0.08
+                and learned_mix_support <= 0.20
+                and stable_ratio >= 0.96
+                and voiced_ratio >= 0.96
             )
             released_supported_low_pitch_head_mix = (
                 pure_learned_head_mix
@@ -35429,6 +35536,7 @@ class ECGStylePitchVisualizer(QWidget):
                 and stable_ratio >= 0.98
                 and voiced_ratio >= 0.98
             )
+            # A2：拓宽原过拟合条件 —— 原范围326-340Hz(14Hz精度) → 300-370Hz
             released_lowmid_near_threshold_head_mix = (
                 not released_high_pitch_head_mix
                 and not released_near_threshold_high_pitch_head_mix
@@ -35436,22 +35544,23 @@ class ECGStylePitchVisualizer(QWidget):
                 and not released_high_energy_midhigh_head_mix
                 and not released_supported_low_pitch_head_mix
                 and learned_mix_prob < learned_mix_threshold
-                and learned_mix_margin >= -0.0045
-                and learned_mix_margin <= -0.0015
-                and head_bias >= 0.95
-                and mean_pitch_hz >= 326.0
-                and mean_pitch_hz <= 340.0
-                and falsetto_prob >= 0.805
-                and falsetto_prob <= 0.830
-                and chest_prob >= 0.175
-                and chest_prob <= 0.200
-                and mean_rms >= 0.060
-                and mean_rms <= 0.068
-                and learned_mix_support >= 0.278
-                and learned_mix_support <= 0.282
-                and stable_ratio >= 0.98
-                and voiced_ratio >= 0.98
+                and learned_mix_margin >= -0.008
+                and learned_mix_margin <= 0.0
+                and head_bias >= 0.92
+                and mean_pitch_hz >= 300.0
+                and mean_pitch_hz <= 370.0
+                and falsetto_prob >= 0.75
+                and falsetto_prob <= 0.88
+                and chest_prob >= 0.13
+                and chest_prob <= 0.25
+                and mean_rms >= 0.04
+                and mean_rms <= 0.10
+                and learned_mix_support >= 0.22
+                and learned_mix_support <= 0.35
+                and stable_ratio >= 0.96
+                and voiced_ratio >= 0.96
             )
+            # A2：拓宽原过拟合条件 —— 原范围396-442Hz(46Hz)+极窄prob → 370-470Hz
             released_midhigh_near_threshold_head_mix = (
                 not released_high_pitch_head_mix
                 and not released_near_threshold_high_pitch_head_mix
@@ -35460,22 +35569,23 @@ class ECGStylePitchVisualizer(QWidget):
                 and not released_supported_low_pitch_head_mix
                 and not released_lowmid_near_threshold_head_mix
                 and learned_mix_prob < learned_mix_threshold
-                and learned_mix_margin >= -0.0065
-                and learned_mix_margin <= -0.0025
-                and head_bias >= 0.95
-                and mean_pitch_hz >= 396.0
-                and mean_pitch_hz <= 442.0
-                and falsetto_prob >= 0.868
-                and falsetto_prob <= 0.885
-                and chest_prob >= 0.117
-                and chest_prob <= 0.132
-                and mean_rms >= 0.029
-                and mean_rms <= 0.043
-                and learned_mix_support >= 0.270
-                and learned_mix_support <= 0.279
-                and stable_ratio >= 0.98
-                and voiced_ratio >= 0.98
+                and learned_mix_margin >= -0.010
+                and learned_mix_margin <= 0.0
+                and head_bias >= 0.92
+                and mean_pitch_hz >= 370.0
+                and mean_pitch_hz <= 470.0
+                and falsetto_prob >= 0.83
+                and falsetto_prob <= 0.93
+                and chest_prob >= 0.08
+                and chest_prob <= 0.18
+                and mean_rms >= 0.02
+                and mean_rms <= 0.07
+                and learned_mix_support >= 0.22
+                and learned_mix_support <= 0.34
+                and stable_ratio >= 0.96
+                and voiced_ratio >= 0.96
             )
+            # A2：拓宽原过拟合条件 —— 原范围524.5-525.5Hz(1Hz精度) → 490-570Hz(~3半音)
             released_ultrahigh_bright_head_point_mix = (
                 not released_high_pitch_head_mix
                 and not released_near_threshold_high_pitch_head_mix
@@ -35485,22 +35595,23 @@ class ECGStylePitchVisualizer(QWidget):
                 and not released_lowmid_near_threshold_head_mix
                 and not released_midhigh_near_threshold_head_mix
                 and learned_mix_prob < learned_mix_threshold
-                and learned_mix_margin >= -0.0160
-                and learned_mix_margin <= -0.0153
+                and learned_mix_margin >= -0.025
+                and learned_mix_margin <= -0.008
                 and head_bias >= 0.95
-                and mean_pitch_hz >= 524.5
-                and mean_pitch_hz <= 525.5
-                and falsetto_prob >= 0.9610
-                and falsetto_prob <= 0.9625
-                and chest_prob >= 0.0375
-                and chest_prob <= 0.0395
-                and mean_rms >= 0.0950
-                and mean_rms <= 0.0960
-                and learned_mix_support >= 0.2480
-                and learned_mix_support <= 0.2488
-                and stable_ratio >= 0.99
-                and voiced_ratio >= 0.99
+                and mean_pitch_hz >= 490.0
+                and mean_pitch_hz <= 570.0
+                and falsetto_prob >= 0.94
+                and falsetto_prob <= 0.98
+                and chest_prob >= 0.01
+                and chest_prob <= 0.08
+                and mean_rms >= 0.06
+                and mean_rms <= 0.15
+                and learned_mix_support >= 0.18
+                and learned_mix_support <= 0.32
+                and stable_ratio >= 0.98
+                and voiced_ratio >= 0.98
             )
+            # A2：拓宽原过拟合条件 —— falsetto_prob 0.8635-0.8790 → 0.84-0.91, chest 0.225-0.271 → 0.18-0.32
             released_midchest_near_threshold_head_mix = (
                 not released_high_pitch_head_mix
                 and not released_near_threshold_high_pitch_head_mix
@@ -35511,21 +35622,21 @@ class ECGStylePitchVisualizer(QWidget):
                 and not released_midhigh_near_threshold_head_mix
                 and not released_ultrahigh_bright_head_point_mix
                 and learned_mix_prob < learned_mix_threshold
-                and learned_mix_margin >= -0.027
-                and learned_mix_margin <= -0.009
-                and head_bias >= 0.95
-                and mean_pitch_hz >= 319.0
-                and mean_pitch_hz <= 406.1
-                and falsetto_prob >= 0.8635
-                and falsetto_prob <= 0.8790
-                and chest_prob >= 0.225
-                and chest_prob <= 0.271
-                and mean_rms >= 0.0528
-                and mean_rms <= 0.0937
-                and learned_mix_support >= 0.2217
-                and learned_mix_support <= 0.2635
-                and stable_ratio >= 0.99
-                and voiced_ratio >= 0.99
+                and learned_mix_margin >= -0.035
+                and learned_mix_margin <= -0.005
+                and head_bias >= 0.92
+                and mean_pitch_hz >= 300.0
+                and mean_pitch_hz <= 420.0
+                and falsetto_prob >= 0.84
+                and falsetto_prob <= 0.91
+                and chest_prob >= 0.18
+                and chest_prob <= 0.32
+                and mean_rms >= 0.04
+                and mean_rms <= 0.11
+                and learned_mix_support >= 0.18
+                and learned_mix_support <= 0.32
+                and stable_ratio >= 0.96
+                and voiced_ratio >= 0.96
             )
             underpowered_low_pitch_head_mix = (
                 learned_mix_prob >= learned_mix_threshold
@@ -36914,12 +37025,13 @@ class ECGStylePitchVisualizer(QWidget):
     def _technique_event_min_confidence_threshold(self, event: BaseTechniqueEvent, default_min_conf: float) -> float:
         event_type = str(getattr(event, 'event_type', '') or '')
         base = max(0.0, float(default_min_conf or 0.0))
+        # A3：提高置信度阈值，过滤低质量伪触发
         if event_type == 'chest_voice':
-            return min(base, 0.48)
+            return min(base, 0.52)  # 原0.48 → 0.52
         if event_type == 'falsetto':
-            return min(base, 0.54)
+            return min(base, 0.56)  # 原0.54 → 0.56
         if event_type in {'strong_mix', 'weak_mix', 'balanced_mix'}:
-            return min(base, 0.46)
+            return min(base, 0.50)  # 原0.46 → 0.50
         return base
 
     def _get_technique_event_style(self, event_type: str) -> Tuple[str, str]:
@@ -37274,14 +37386,15 @@ class ECGStylePitchVisualizer(QWidget):
         return duration >= 0.10 and confidence >= 0.58
 
     def _technique_event_spacing(self, event_type: str) -> float:
+        # A4：增大合并间距，减少声区事件碎片化
         spacing_map = {
             'breath': 0.42,
             'register_transition': 0.58,
             'slide': 0.46,
             'vibrato': 0.90,
             'breathy_phonation': 0.65,
-            'chest_voice': 0.26,
-            'falsetto': 0.26,
+            'chest_voice': 0.38,   # 原0.26 → 0.38
+            'falsetto': 0.38,      # 原0.26 → 0.38
         }
         return float(spacing_map.get(str(event_type or ''), 0.35))
 
@@ -37570,6 +37683,29 @@ class ECGStylePitchVisualizer(QWidget):
                 if suppress_event:
                     continue
             resolved.append(event)
+
+        # A1：父-子抑制 —— 混声事件存在时抑制同时间段底层 chest/falsetto
+        # 混声（强/弱/气混声）是真假声的细化分类，同一时间段不应同时显示两层标签
+        mix_events_in_resolved = [e for e in resolved if str(getattr(e, 'event_type', '') or '') in {'strong_mix', 'weak_mix', 'balanced_mix'}]
+        if mix_events_in_resolved:
+            final_resolved = []
+            for event in resolved:
+                event_type = str(getattr(event, 'event_type', '') or '')
+                if event_type in ('chest_voice', 'falsetto'):
+                    ev_start = float(getattr(event, 'start_time', 0.0) or 0.0)
+                    ev_end = float(getattr(event, 'end_time', 0.0) or 0.0)
+                    ev_dur = ev_end - ev_start
+                    if ev_dur > 0.0:
+                        total_overlap = 0.0
+                        for mix_ev in mix_events_in_resolved:
+                            mix_start = float(getattr(mix_ev, 'start_time', 0.0) or 0.0)
+                            mix_end = float(getattr(mix_ev, 'end_time', 0.0) or 0.0)
+                            total_overlap += max(0.0, min(ev_end, mix_end) - max(ev_start, mix_start))
+                        # 超过40%时长被混声覆盖 → 抑制底层真/假声
+                        if total_overlap > ev_dur * 0.40:
+                            continue
+                final_resolved.append(event)
+            resolved = final_resolved
 
         return resolved
 
@@ -62994,12 +63130,13 @@ class IntegratedRecordingInterface(QMainWindow):
     def _technique_event_min_confidence_threshold(self, event: BaseTechniqueEvent, default_min_conf: float) -> float:
         event_type = str(getattr(event, 'event_type', '') or '')
         base = max(0.0, float(default_min_conf or 0.0))
+        # A3：提高置信度阈值，过滤低质量伪触发
         if event_type == 'chest_voice':
-            return min(base, 0.48)
+            return min(base, 0.52)  # 原0.48 → 0.52
         if event_type == 'falsetto':
-            return min(base, 0.54)
+            return min(base, 0.56)  # 原0.54 → 0.56
         if event_type in {'strong_mix', 'weak_mix', 'balanced_mix'}:
-            return min(base, 0.46)
+            return min(base, 0.50)  # 原0.46 → 0.50
         return base
 
     def _extract_technique_audio_samples_upto(self, cutoff_sec: float) -> Tuple[Optional[np.ndarray], Optional[int], str]:
