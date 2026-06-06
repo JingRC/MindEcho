@@ -193,6 +193,9 @@ class AICoachPanel(QWidget):
         self._pending_tokens: list[str] = []
         self._streaming_received: bool = False  # 标记是否已收到流式 token
 
+        # 当前活跃存档的录音目录（由主窗口设置）
+        self._profile_recordings_dir: Optional[Path] = None
+
         # 流式输出定时器：每 50ms 刷新一次，产生连续打字效果
         self._stream_timer = QTimer(self)
         self._stream_timer.setInterval(50)
@@ -464,10 +467,15 @@ class AICoachPanel(QWidget):
             QPushButton:hover { background-color: #3a3a5a; border-color: #4ADE80; }
         """)
 
+    def set_profile_recordings_dir(self, path: Optional[Path]) -> None:
+        """由主窗口调用：设置当前活跃存档的录音目录，用于「分析最近录音」定位文件"""
+        self._profile_recordings_dir = path
+
     def _on_analyze_recent(self):
-        """自动查找并分析最近一次录音的 JSON。"""
+        """自动查找并分析最近一次录音的 JSON（优先当前存档目录，回退全局目录）。"""
         try:
-            recordings_dir = Path("recordings")
+            # 优先使用当前存档的录音目录
+            recordings_dir = self._profile_recordings_dir or Path("recordings")
             if not recordings_dir.exists():
                 self._append_message("assistant", "尚未找到录音目录。请先完成一次录音。")
                 return

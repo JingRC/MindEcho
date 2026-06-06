@@ -2,15 +2,26 @@
   "version": 1,
   "profiles": [
     {
-      "id": "16153181-e24",
-      "name": "test",
-      "folder": "test",
-      "voice_type": "baritone",
+      "id": "1f43da60-828",
+      "name": "jingrc",
+      "folder": "jingrc",
+      "voice_type": "tenor",
       "gender": "male",
-      "created_at": "2026-06-03T15:07:56",
+      "created_at": "2026-06-04T12:07:00",
       "last_active": "",
       "total_minutes": 0.0,
-      "passaggio_confidence": 0.0
+      "passaggio_confidence": 0.30103146156683114
+    },
+    {
+      "id": "abaa617a-40f",
+      "name": "杜一诺",
+      "folder": "杜一诺",
+      "voice_type": "tenor",
+      "gender": "male",
+      "created_at": "2026-06-06T15:07:07",
+      "last_active": "",
+      "total_minutes": 0.0,
+      "passaggio_confidence": 0.3028730082384245
     }
   ]
 }

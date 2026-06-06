@@ -156,6 +156,9 @@ class TimbreFingerprint:
     avg_mid_high_ratio: float = 0.0
     avg_zcr: float = 0.0
     avg_rms: float = 0.0
+    fhe_hz: float = 0.0                 # 半能量频率 (Frequency of Half Energy)
+    spectral_centroid_hz: float = 0.0   # 频谱质心
+    timbre_quality: float = 0.0          # 音色质量评分
     sample_count: int = 0
     _ema_alpha: float = field(default=0.02, repr=False)  # 慢速 EMA 用于长期指纹
 
@@ -170,6 +173,9 @@ class TimbreFingerprint:
             avg_mid_high_ratio=float(d.get("avg_mid_high_ratio", 0.0) or 0.0),
             avg_zcr=float(d.get("avg_zcr", 0.0) or 0.0),
             avg_rms=float(d.get("avg_rms", 0.0) or 0.0),
+            fhe_hz=float(d.get("fhe_hz", 0.0) or 0.0),
+            spectral_centroid_hz=float(d.get("spectral_centroid_hz", 0.0) or 0.0),
+            timbre_quality=float(d.get("timbre_quality", 0.0) or 0.0),
             sample_count=int(d.get("sample_count", 0) or 0),
         )
 

@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "id": "16153181-e24",
-  "name": "test",
-  "voice_type_manual": "baritone",
-  "voice_type_inferred": "",
+  "id": "1f43da60-828",
+  "name": "jingrc",
+  "voice_type_manual": "",
+  "voice_type_inferred": "tenor",
   "gender_manual": "male",
   "gender_inferred": "",
   "passaggio": {
-    "t4_hz": 0.0,
-    "source": "default",
-    "confidence": 0.0,
-    "last_calibrated": "",
+    "t4_hz": 384.0083780941447,
+    "source": "calibrated",
+    "confidence": 0.30103146156683114,
+    "last_calibrated": "2026-06-04",
     "auto_estimated_t4": 0.0,
     "calibration_scan_file": ""
   },
@@ -21,18 +21,18 @@
     "p75_hz": 0.0,
     "p85_hz": 0.0,
     "p95_hz": 0.0,
-    "min_hz": 0.0,
-    "max_hz": 0.0,
-    "total_voiced_frames": 0,
+    "min_hz": 91.1238859272442,
+    "max_hz": 648.6247253260607,
+    "total_voiced_frames": 100,
     "session_count": 0
   },
   "timbre": {
-    "avg_spectral_tilt": 0.0,
+    "avg_spectral_tilt": -1.2974706286156086,
     "avg_hm_over_hh": 0.0,
     "avg_mid_high_ratio": 0.0,
     "avg_zcr": 0.0,
     "avg_rms": 0.0,
-    "sample_count": 0,
+    "sample_count": 1,
     "_ema_alpha": 0.02
   },
   "usage": {
@@ -41,6 +41,6 @@
     "last_active": "",
     "technique_distribution": {}
   },
-  "created_at": "2026-06-03T15:07:56",
-  "updated_at": "2026-06-03T15:07:56"
+  "created_at": "2026-06-04T12:07:00",
+  "updated_at": "2026-06-04T18:31:35"
 }

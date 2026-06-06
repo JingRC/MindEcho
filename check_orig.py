@@ -2483,52 +2483,20 @@ class IntegratedAudioProcessor(QThread):
             return 0
     
     def _generate_smart_device_configs(self, device_id, max_channels, device_samplerate, host_api, callback):
-    # 为设备生成智能配置序列（WASAPI优先 → 从低延迟到最兼容）
+    # 为设备生成智能配置序列（从最兼容到最高性能）
         try:
             configs = []
-
+            
             # 智能通道数选择
             safe_channels = min(max_channels, 2) if max_channels > 0 else 1
-
+            
             # 智能采样率选择
             safe_samplerates = [44100, 48000]
-            if device_samplerate > 0:
-                safe_samplerates.append(int(device_samplerate))
-            safe_samplerates = sorted(list(set(safe_samplerates)))
-
-            # ═════════════════════════════════════════════════
-            # P0: WASAPI 共享模式作为所有设备的首选
-            # 几乎所有 Windows 音频设备都支持 WASAPI 共享模式
-            # ═════════════════════════════════════════════════
-            for sr in safe_samplerates:
-                for bs in (128, 256, 512):
-                    configs.append({
-                        'device': device_id,
-                        'channels': safe_channels,
-                        'samplerate': sr,
-                        'blocksize': bs,
-                        'callback': callback,
-                        'dtype': np.float32,
-                        'latency': 'low' if bs <= 256 else 'high',
-                        'extra_settings': sd.WasapiSettings(exclusive=False),
-                        'name': f'设备{device_id} WASAPI共享({sr}Hz/{bs}样本)',
-                    })
-
-            # 通用模式兜底（无 WASAPI settings）
-            for sr in safe_samplerates[:2]:
-                for bs in (128, 256, 512):
-                    configs.append({
-                        'device': device_id,
-                        'channels': safe_channels,
-                        'samplerate': sr,
-                        'blocksize': bs,
-                        'callback': callback,
-                        'dtype': np.float32,
-                        'latency': 'low' if bs <= 256 else 'high',
-                        'name': f'设备{device_id}通用模式({sr}Hz/{bs}样本)',
-                    })
-
-            # 最高兼容性兜底（单声道 + 大缓冲区）
+            if device_samplerate <= 96000:
+                safe_samplerates.extend([int(device_samplerate)])
+            safe_samplerates = sorted(list(set(safe_samplerates)))  # 去重并排序
+            
+            # 配置1：最高兼容性（单声道 + 44100Hz + 大缓冲区）
             configs.append({
                 'device': device_id,
                 'channels': 1,
@@ -2538,9 +2506,48 @@ class IntegratedAudioProcessor(QThread):
                 'dtype': np.float32,
                 'name': f'设备{device_id}最高兼容性'
             })
-
+            
+            # 配置2：标准配置（设备通道数 + 标准采样率）
+            configs.append({
+                'device': device_id,
+                'channels': safe_channels,
+                'samplerate': safe_samplerates[0],  # 最安全的采样率
+                'blocksize': 512,
+                'callback': callback,
+                'dtype': np.float32,
+                'latency': 'low',
+                'name': f'设备{device_id}标准配置'
+            })
+            
+            # 配置3：优化配置（如果有更高的采样率可用）
+            if len(safe_samplerates) > 1:
+                configs.append({
+                    'device': device_id,
+                    'channels': safe_channels,
+                    'samplerate': safe_samplerates[-1],  # 最高的安全采样率
+                    'blocksize': 256,
+                    'callback': callback,
+                    'dtype': np.float32,
+                    'latency': 'low',
+                    'name': f'设备{device_id}优化配置'
+                })
+            
+            # 配置4：WASAPI配置（仅对WASAPI主机API）
+            if host_api == 2:  # WASAPI
+                configs.append({
+                    'device': device_id,
+                    'channels': safe_channels,
+                    'samplerate': min(safe_samplerates[-1], 48000),  # WASAPI用保守采样率
+                    'blocksize': 256,
+                    'callback': callback,
+                    'dtype': np.float32,
+                    'latency': 'low',
+                    'extra_settings': sd.WasapiSettings(exclusive=False),
+                    'name': f'设备{device_id}WASAPI共享'
+                })
+            
             return configs
-
+            
         except Exception as e:
             print(f"⚠️ 智能配置生成失败: {e}")
             # 返回最基础的配置
@@ -6088,8 +6095,6 @@ class IntegratedAudioProcessor(QThread):
     def stop_recording(self):
         """停止录音"""
         try:
-            # 停止选区重录按钮高亮
-            self._stop_retake_highlight()
             # 停止时清理暂停标志，恢复到默认非暂停状态
             self.is_paused = False
             self._pause_started_at = None
@@ -6505,23 +6510,14 @@ class IntegratedAudioProcessor(QThread):
                 
                 # 音频回调函数（与录音相同，但不保存）
                 def monitoring_callback(indata, frames, time_info, status):
-                    # ═══════════════════════════════════════════════════
-                    # 🚀 纯监听快速路径：不需要录音/分析时跳过批处理和异步队列
-                    # ═══════════════════════════════════════════════════
-                    _pure_monitor = (
-                        not self.is_recording
-                        and getattr(self, 'is_monitoring_only', False)
-                        and not getattr(self, 'enable_pitch_visualization', True)
-                    )
-
                     # 🎯 开始延迟监控
                     callback_start_time = time.time()
-
+                    
                     if status:
                         if 'input overflow' not in str(status).lower():
-                            print(f"\U0001f50a 监听音频状态: {status}")
-
-                    # 获取单声道”原始”数据（与录音路径一致），并限定幅度到[-1,1]
+                            print(f"🔊 监听音频状态: {status}")
+                    
+                    # 获取单声道“原始”数据（与录音路径一致），并限定幅度到[-1,1]
                     if self.channels == 1 and indata.shape[1] > 1:
                         raw_audio = np.mean(indata, axis=1)
                     else:
@@ -6530,26 +6526,6 @@ class IntegratedAudioProcessor(QThread):
                         raw_audio = np.clip(raw_audio, -1.0, 1.0)
                     except Exception:
                         pass
-
-                    # 若启用了分离式耳返，推入耳返缓冲
-                    try:
-                        if bool(getattr(self, '_monitor_output_enabled', False)) and hasattr(self, '_append_to_monitor_outbuf'):
-                            self._append_to_monitor_outbuf(raw_audio)
-                    except Exception:
-                        pass
-
-                    # ── 纯监听快速路径：只发VU表电平，跳过批处理/队列/延迟统计 ──
-                    if _pure_monitor:
-                        try:
-                            now_t = time.time()
-                            if (now_t - self._last_level_emit_t) >= getattr(self, '_level_emit_interval', 0.05):
-                                audio_level = np.sqrt(np.mean(raw_audio ** 2))
-                                if not self.isFinished():
-                                    self.audio_level_updated.emit(float(audio_level))
-                                self._last_level_emit_t = now_t
-                        except RuntimeError:
-                            return
-                        return
 
                     # 可选：仅用于耳返/表头的轻量处理（不影响入队raw）
                     audio_for_level = raw_audio
@@ -6568,6 +6544,14 @@ class IntegratedAudioProcessor(QThread):
                             audio_for_level = np.clip(tmp, -1.0, 1.0)
                         except Exception:
                             audio_for_level = raw_audio
+
+                    # 若启用了分离式耳返（独立输出流），将当前原始单声道数据推入耳返缓冲
+                    try:
+                        if bool(getattr(self, '_monitor_output_enabled', False)) and hasattr(self, '_append_to_monitor_outbuf'):
+                            # 使用原始raw_audio，输出端会负责必要的重采样与限幅
+                            self._append_to_monitor_outbuf(raw_audio)
+                    except Exception:
+                        pass
 
                     # 🎯 处理监听和录音（全局模式）— 合批入队（与录音一致），始终用raw_audio
                     try:
@@ -6844,13 +6828,10 @@ class IntegratedAudioProcessor(QThread):
                                     # WASAPI共享模式：尽量让系统做重采样；为输入输出分别设置（若可用）
                                 }
                                 try:
-                                    # 只在输入和输出都是 WASAPI (hostapi==2) 时加 extra_settings
-                                    in_hostapi = int(sd.query_devices(input_dev_id).get('hostapi', -1))
-                                    out_hostapi = int(sd.query_devices(out_dev_id).get('hostapi', -1))
-                                    if in_hostapi == 2 and out_hostapi == 2:
-                                        _in_es = config.get('settings') if config.get('settings') else sd.WasapiSettings(exclusive=False)
-                                        _out_es = sd.WasapiSettings(exclusive=False)
-                                        duplex_args['extra_settings'] = (_in_es, _out_es)
+                                    import sounddevice as sd
+                                    _in_es = config.get('settings') if config.get('settings') else sd.WasapiSettings(exclusive=False)
+                                    _out_es = sd.WasapiSettings(exclusive=False)
+                                    duplex_args['extra_settings'] = (_in_es, _out_es)
                                 except Exception:
                                     pass
                                 self.audio_stream = sd.Stream(callback=monitoring_callback_duplex, **duplex_args)
@@ -7072,15 +7053,15 @@ class IntegratedAudioProcessor(QThread):
                                                 mono_block = self._apply_monitor_output_filters(mono_block, _in_sr)
                                             except Exception:
                                                 pass
-                                            # 预充：启动初期填充8-18ms，减少开声爆音（已缩短以降低启动延迟）
+                                            # 预充：启动初期填充20–30ms，减少开声爆音
                                             with self._monitor_outbuf_lock:
                                                 _cur_len = int(self._monitor_outbuf.size)
                                             if not self._monitor_warmup_done:
-                                                # 🚀 缩短预充长度以降低启动延迟
+                                                # 更短的预充长度，降低起始端到端延迟
                                                 if getattr(self, '_monitor_hifi_mode', False):
-                                                    _warm_ms = 0.008
+                                                    _warm_ms = 0.012
                                                 else:
-                                                    _warm_ms = 0.012 if _out_sr >= 44100 else 0.018
+                                                    _warm_ms = 0.018 if _out_sr >= 44100 else 0.028
                                                 _need = int(self._monitor_output_sr * _warm_ms) - _cur_len
                                                 if _need > 0:
                                                     pad = np.zeros(min(_need, mono_block.size), dtype=np.float32)
@@ -7091,11 +7072,11 @@ class IntegratedAudioProcessor(QThread):
                                             # 基于缓冲占用的PLL式微调，平滑变速抵消时钟漂移
                                             with self._monitor_outbuf_lock:
                                                 _cur_len = int(self._monitor_outbuf.size)
-                                            # 🚀 降低目标缓冲以减少端到端延迟（原值: hifi=22ms, std=35/55ms）
+                                            # 降低目标缓冲以减少端到端延迟
                                             if getattr(self, '_monitor_hifi_mode', False):
-                                                _target_ms = 0.014
+                                                _target_ms = 0.022
                                             else:
-                                                _target_ms = 0.022 if _out_sr >= 44100 else 0.035
+                                                _target_ms = 0.035 if _out_sr >= 44100 else 0.055
                                             _target_len = int(self._monitor_output_sr * _target_ms)
                                             if _target_len <= 0:
                                                 _target_len = int(self._monitor_output_sr * 0.05)
@@ -7114,11 +7095,11 @@ class IntegratedAudioProcessor(QThread):
                                             y = np.clip(y * vol, -1.0, 1.0)
                                             with self._monitor_outbuf_lock:
                                                 self._monitor_outbuf = np.concatenate((self._monitor_outbuf, y))
-                                                # 🚀 缩短目标缓冲以减少延迟（原值: 22/35/55ms）
+                                                # 目标缓冲维持在 ~28–55ms 之间，避免“吞吐-饥饿”抖动
                                                 if getattr(self, '_monitor_hifi_mode', False):
-                                                    _target_ms = 0.014
+                                                    _target_ms = 0.022
                                                 else:
-                                                    _target_ms = 0.022 if _out_sr >= 44100 else 0.035
+                                                    _target_ms = 0.035 if _out_sr >= 44100 else 0.055
                                                 _max_len = int(self._monitor_output_sr * (2.0 * _target_ms))
                                                 _max_len = max(_in_bs, max(1024, _max_len))
                                                 if self._monitor_outbuf.size > _max_len:
@@ -7499,80 +7480,9 @@ class IntegratedAudioProcessor(QThread):
             # 使用外层finally确保标志恢复
             try:
                 import sounddevice as sd
-
-                # ═══════════════════════════════════════════════════
-                # 🚀 快速路径：复用上次成功的监听配置
-                # ═══════════════════════════════════════════════════
-                cached_cfg = getattr(self, '_cached_monitor_config', None)
-                if cached_cfg is not None:
-                    try:
-                        quick_cfg = dict(cached_cfg)
-                        quick_dev = quick_cfg.pop('device', None)
-                        quick_cb = quick_cfg.pop('callback', None)
-                        if quick_cb is not None and quick_dev is not None:
-                            self.monitoring_stream = sd.Stream(
-                                device=quick_dev,
-                                callback=quick_cb,
-                                **quick_cfg
-                            )
-                            self.monitoring_stream.start()
-                            self.monitor_audio_passthrough = True
-                            self.active_audio_stream = self.monitoring_stream
-                            self.channels = quick_cfg.get('channels', 1)
-                            self.active_input_samplerate = int(quick_cfg.get('samplerate', 44100))
-                            self.active_input_channels = int(quick_cfg.get('channels', 1))
-                            self.active_blocksize = int(quick_cfg.get('blocksize', 128))
-                            if hasattr(self, 'sample_rate'):
-                                self.sample_rate = quick_cfg.get('samplerate', 44100)
-                            try:
-                                self._apply_actual_input_samplerate(int(quick_cfg.get('samplerate', 44100)))
-                            except Exception:
-                                pass
-                            self.is_global_monitoring_active = True
-                            self.monitoring_mode = 'unified'
-                            self.is_monitoring_only = True
-                            self.monitoring_filename = None
-                            self.monitoring_should_save = False
-                            self.audio_buffer = []
-                            self.channels = quick_cfg.get('channels', 1)
-                            self.enable_pitch_visualization = False
-                            if hasattr(self, 'pitch_history'):
-                                self.pitch_history.clear()
-                            self.recording_start_time = time.time()
-                            try:
-                                if not getattr(self, 'pitch_service', None):
-                                    self.setup_analyzers()
-                            except Exception:
-                                pass
-                            self.start_audio_processing_thread()
-                            print(f"⚡ 复用缓存监听配置 (设备{quick_dev}, {quick_cfg.get('samplerate')}Hz/{quick_cfg.get('blocksize')}样本) 启动成功")
-                            self.status_updated.emit("监听已启动（缓存复用）")
-                            return True
-                    except Exception:
-                        self._cached_monitor_config = None
-                        self._cached_monitor_device_id = None
-                        try:
-                            if getattr(self, 'monitoring_stream', None) is not None:
-                                self.monitoring_stream.close()
-                        except Exception:
-                            pass
-                        self.monitoring_stream = None
-
                 # 🔎 早期环境判定：若不存在可用HECATE输入，但存在蓝牙语音输入候选，则直接走标准全局监听（带蓝牙优先）
                 try:
                     devices = sd.query_devices()
-
-                    # ── 用户指定设备优先：如果用户在对话框中选择了一个设备，优先尝试 ──
-                    _user_dev = getattr(self, '_selected_monitor_device_id', None)
-                    if _user_dev is not None:
-                        try:
-                            _user_devinfo = sd.query_devices(int(_user_dev))
-                            _user_name = _user_devinfo.get('name', f'设备{_user_dev}')
-                            print(f"🎯 优先尝试用户选择的设备: {_user_name} (设备{_user_dev})")
-                        except Exception:
-                            _user_dev = None
-                            self._selected_monitor_device_id = None
-
                     has_hecate_input = False
                     has_bt_input = False
                     for i, d in enumerate(devices):
@@ -7609,53 +7519,7 @@ class IntegratedAudioProcessor(QThread):
 
                             optimal_configs = []
                             try:
-                                # 用户指定设备优先：直接为该设备生成配置
-                                _user_dev = getattr(self, '_selected_monitor_device_id', None)
-                                if _user_dev is not None:
-                                    try:
-                                        _ud = sd.query_devices(int(_user_dev))
-                                        _usr_sr = int(_ud.get('default_samplerate', 44100) or 44100)
-                                        _usr_ch = int(_ud.get('max_input_channels', 1) or 1)
-                                        _usr_api = int(_ud.get('hostapi', -1) or -1)
-                                        _usr_name = _ud.get('name', '')
-                                        print(f"🎯 为用户选择的设备生成专用配置: {_usr_name} (设备{_user_dev})")
-                                        # 构建设备信息 dict 供 _generate_device_wasapi_configs 使用
-                                        _dev_info = {
-                                            'id': int(_user_dev),
-                                            'name': _usr_name,
-                                            'sample_rate': _usr_sr,
-                                            'input_channels': _usr_ch,
-                                            'host_api': _usr_api,
-                                            'score': 100,
-                                        }
-                                        _usr_configs = self._generate_device_wasapi_configs(_dev_info)
-                                        if _usr_configs:
-                                            optimal_configs = _usr_configs
-                                        else:
-                                            # 降级：直接用 _generate_smart_device_configs
-                                            def _basic_cb(indata, frames, time_info, status):
-                                                pass
-                                            optimal_configs = self._generate_smart_device_configs(
-                                                _user_dev, _usr_ch, _usr_sr, _usr_api, _basic_cb
-                                            )
-                                            # 转换为 monitoring config 格式
-                                            optimal_configs = [
-                                                {
-                                                    'name': c.pop('name', f'用户选择-设备{_user_dev}'),
-                                                    'device': _user_dev,
-                                                    'samplerate': c.get('samplerate', _usr_sr),
-                                                    'blocksize': c.get('blocksize', 128),
-                                                    'channels': c.get('channels', _usr_ch),
-                                                    'settings': c.get('extra_settings'),
-                                                    'driver_mode': 'user-selected',
-                                                }
-                                                for c in optimal_configs
-                                            ]
-                                    except Exception as _usr_e:
-                                        print(f"⚠️ 用户设备配置生成失败，回退到自动探测: {_usr_e}")
-                                        optimal_configs = self._get_optimal_wasapi_configs()
-                                else:
-                                    optimal_configs = self._get_optimal_wasapi_configs()
+                                optimal_configs = self._get_optimal_wasapi_configs()
                             except Exception as _cfg_e:
                                 print(f"⚠️ 获取智能监听配置失败，将使用基础监听流程: {_cfg_e}")
 
@@ -8437,19 +8301,6 @@ class IntegratedAudioProcessor(QThread):
                                 self.active_audio_stream = self.monitoring_stream
                                 self.channels = config['channels']  # 更新全局通道数
                                 print("🎧 HECATE备用设备全局监听已启动")
-
-                                # 💾 缓存成功配置，下次启动快速复用
-                                self._cached_monitor_device_id = device_id
-                                self._cached_monitor_config = {
-                                    'device': device_id,
-                                    'channels': config['channels'],
-                                    'samplerate': config['samplerate'],
-                                    'blocksize': config.get('blocksize', config.get('block', 128)),
-                                    'callback': config.get('callback'),
-                                    'extra_settings': config.get('extra_settings'),
-                                    'dtype': np.float32,
-                                    'latency': 'low',
-                                }
                                 
                                 # 🔥 重要修复：同步采样率/块大小/通道
                                 actual_samplerate = config['samplerate']
@@ -53628,8 +53479,6 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._profile_manager.cleanup_old_guest_recordings(max_age_days=7)
             except Exception as _e:
                 print(f"[存档] 清理过期访客录音失败: {_e}")
-            # 初始更新按钮文字
-            self._update_user_center_btn_text()
 
         # 回退/倒计时与伴奏预卷状态
         self._retake_countdown_seconds = 3.0
@@ -54002,10 +53851,9 @@ class IntegratedRecordingInterface(QMainWindow):
             except Exception:
                 pass
             
-            # 停止音频处理器（仅在录音进行中时才停止，避免保存空的 JSON）
+            # 停止音频处理器
             if hasattr(self, 'audio_processor') and self.audio_processor:
-                if getattr(self, 'is_recording', False) or getattr(self.audio_processor, 'is_recording', False):
-                    self.audio_processor.stop_recording()
+                self.audio_processor.stop_recording()
                 # 等待线程停止
                 if self.audio_processor.isRunning():
                     self.audio_processor.wait(3000)  # 等待最多3秒
@@ -54105,15 +53953,15 @@ class IntegratedRecordingInterface(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings_dialog)
         header_layout.addWidget(self.settings_btn)
 
-        # 用户中心按钮（动态显示存档数）
-        self.user_center_btn = QPushButton("🎤 用户中心")
+        # 用户中心按钮
+        self.user_center_btn = QPushButton("用户中心")
         self.user_center_btn.setStyleSheet(
             """
             QPushButton { background-color: #2C2C2C; border: 2px solid #66BB6A; border-radius: 6px; padding: 6px 12px; color: white; }
             QPushButton:hover { border-color: #A5D6A7; background-color: #333; }
             """
         )
-        self.user_center_btn.setToolTip("管理用户存档：查看/切换/新建/编辑")
+        self.user_center_btn.setToolTip("管理歌手存档：查看/切换/新建/编辑")
         self.user_center_btn.clicked.connect(self._open_user_center)
         header_layout.addWidget(self.user_center_btn)
 
@@ -62146,11 +61994,6 @@ class IntegratedRecordingInterface(QMainWindow):
         self.lyrics_button = QPushButton("歌词"); self.lyrics_button.setCheckable(True); self.lyrics_button.toggled.connect(self._toggle_lyrics)
         self.lyrics_button.setStyleSheet("QPushButton { padding:6px 14px; border:2px solid #444; border-radius:8px; background:#2C2C2C; color:white;} QPushButton:checked { border-color:#4A90E2; }")
         backing_layout.addWidget(self.lyrics_button)
-        self.redo_btn = QPushButton("🎯 选区重录")
-        self.redo_btn.setToolTip("对不满意的段落进行选区重新录制\n暂停后可点击此按钮进入选区重录模式")
-        self.redo_btn.clicked.connect(self._on_redo_in_main)
-        self.redo_btn.setObjectName("MainRetakeButton")
-        backing_layout.addWidget(self.redo_btn)
         backing_layout.addStretch(); layout.addLayout(backing_layout)
         self.update_backing_button_style()
 
@@ -62423,7 +62266,7 @@ class IntegratedRecordingInterface(QMainWindow):
         dlg.profile_changed.connect(self._on_user_center_profile_changed)
         # 保存引用防止 GC（非模态对话框）
         self._user_center_dlg = dlg
-        dlg.destroyed.connect(lambda: (setattr(self, '_user_center_dlg', None), self._update_user_center_btn_text()))
+        dlg.destroyed.connect(lambda: setattr(self, '_user_center_dlg', None))
         dlg.show()  # 非模态，允许多窗口并存
 
     def _on_user_center_profile_changed(self, profile_name: str) -> None:
@@ -62436,135 +62279,6 @@ class IntegratedRecordingInterface(QMainWindow):
             self._active_profile = None
         self._session_remember_profile = True  # 用户手动选择后不再弹窗
         self._sync_profile_to_technique_config()
-        self._update_user_center_btn_text()
-        # 通知 AI 教练：切换用户后发送个性化问候
-        self._notify_ai_coach_profile_changed()
-
-    def _update_user_center_btn_text(self) -> None:
-        """根据当前存档数量更新右上角按钮文字"""
-        try:
-            mgr = getattr(self, '_profile_manager', None)
-            if mgr is None:
-                return
-            profiles = mgr.list_profiles()
-            count = len(profiles)
-            btn = getattr(self, 'user_center_btn', None)
-            if btn is None:
-                return
-            if count == 0:
-                btn.setText("🎤 用户中心")
-            else:
-                btn.setText(f"🎤 {count}位用户")
-        except Exception:
-            pass
-
-    def _notify_ai_coach_profile_changed(self) -> None:
-        """切换歌手存档后通知 AI 教练：更新上下文 + 发送个性化问候"""
-        try:
-            panel = getattr(self, '_ai_coach_panel', None)
-            if panel is None:
-                return
-            cp = getattr(panel, 'coach_panel', None)
-            if cp is None:
-                return
-            agent = getattr(cp, 'agent', None)
-            profile = getattr(self, '_active_profile', None)
-
-            # ── 1. 更新 Agent 的用户上下文 ──
-            if agent is not None:
-                if profile is not None:
-                    agent._current_user_name = profile.name
-                    agent._current_user_vt = profile.effective_voice_type or ""
-                    agent._current_user_mins = profile.usage.total_minutes
-                    agent._current_user_passaggio = profile.passaggio.t4_hz
-                    agent._current_user_range = (
-                        profile.pitch_stats.min_hz if profile.pitch_stats.min_hz > 0 else 0.0,
-                        profile.pitch_stats.max_hz if profile.pitch_stats.max_hz > 0 else 0.0,
-                    )
-
-                    # 同步音域到 AI coach session
-                    try:
-                        if profile.pitch_stats.min_hz > 0 and profile.pitch_stats.max_hz > 0:
-                            agent.session_mgr.update_profile(
-                                vocal_range=(profile.pitch_stats.min_hz, profile.pitch_stats.max_hz),
-                            )
-                    except Exception:
-                        pass
-
-                    # 将用户信息注入对话历史
-                    ctx_parts = [
-                        f"[系统通知] 当前用户已切换为「{profile.name}」",
-                        f"声部：{agent._current_user_vt or '待校准'}",
-                    ]
-                    if profile.passaggio.t4_hz > 0:
-                        from src.gui.voice_type_assessment_dialog import _hz_to_note_name
-                        t4_note = _hz_to_note_name(profile.passaggio.t4_hz)
-                        ctx_parts.append(
-                            f"换声点 T4：{t4_note} ({profile.passaggio.t4_hz:.0f}Hz)"
-                            f" (置信度 {profile.passaggio.confidence:.0%}"
-                            f" {'已校准' if profile.passaggio.source == 'calibrated' else '自动估计'})"
-                        )
-                    if profile.pitch_stats.min_hz > 0 and profile.pitch_stats.max_hz > 0:
-                        ctx_parts.append(
-                            f"音域：{_hz_to_note_name(profile.pitch_stats.min_hz)} → "
-                            f"{_hz_to_note_name(profile.pitch_stats.max_hz)}"
-                        )
-                    ctx_parts.append(f"累计练习 {agent._current_user_mins:.0f} 分钟")
-                    ctx_parts.append(f"后续对话请用「{profile.name}」称呼用户")
-                    ctx_msg = "，".join(ctx_parts) + "。"
-
-                    try:
-                        agent.session_mgr._chat_history.append({"role": "system", "content": ctx_msg})
-                    except Exception:
-                        pass
-                else:
-                    agent._current_user_name = ""
-                    agent._current_user_vt = ""
-                    agent._current_user_passaggio = 0.0
-                    agent._current_user_range = (0.0, 0.0)
-
-            # ── 1.5. 同步当前存档的录音目录到 AI 教练面板 ──
-            try:
-                save_dir = self._get_profile_save_dir()
-                cp.set_profile_recordings_dir(save_dir)
-            except Exception:
-                pass
-
-            # ── 2. 发送个性化问候 ──
-            if profile is not None:
-                vt = profile.effective_voice_type or ""
-                _vt_map = {
-                    "tenor": "男高音", "baritone": "男中音", "bass": "男低音",
-                    "soprano": "女高音", "mezzo_soprano": "女中音", "contralto": "女低音",
-                }
-                vt_display = _vt_map.get(vt, vt) if vt else "待校准"
-                greeting_parts = [
-                    f"你好，{profile.name}！我是麦麦，你的专属 AI 声乐教练 🎤\n",
-                    f"我已经加载了你的歌手存档：",
-                    f"• 声部：{vt_display}",
-                ]
-                if profile.passaggio.t4_hz > 0:
-                    from src.gui.voice_type_assessment_dialog import _hz_to_note_name
-                    t4_note = _hz_to_note_name(profile.passaggio.t4_hz)
-                    conf_str = f"{profile.passaggio.confidence:.0%}"
-                    src_str = "已校准" if profile.passaggio.source == "calibrated" else "自动估计"
-                    greeting_parts.append(f"• 换声点 T4：{t4_note} ({profile.passaggio.t4_hz:.0f}Hz) — 置信度 {conf_str} ({src_str})")
-                if profile.pitch_stats.min_hz > 0 and profile.pitch_stats.max_hz > 0:
-                    greeting_parts.append(
-                        f"• 舒适音域：{_hz_to_note_name(profile.pitch_stats.min_hz)} → "
-                        f"{_hz_to_note_name(profile.pitch_stats.max_hz)}"
-                    )
-                greeting_parts.append(f"• 累计练习：{profile.usage.total_minutes:.0f} 分钟 · {profile.usage.total_sessions} 次录音")
-                if profile.timbre.sample_count > 0:
-                    greeting_parts.append(f"• 音色指纹：已分析 {profile.timbre.sample_count} 个样本")
-                greeting_parts.append("\n今天想练什么？可以直接告诉我～")
-                greeting = "\n".join(greeting_parts)
-            else:
-                greeting = "已切换到访客模式。使用默认参数，数据不会保存。建议创建存档以获得个性化识别。"
-
-            cp._append_message("assistant", greeting)
-        except Exception:
-            pass
 
     def toggle_main_recording(self):
         """切换主录音状态"""
@@ -62586,250 +62300,6 @@ class IntegratedRecordingInterface(QMainWindow):
             self.start_recording()
         else:
             self.stop_recording()
-
-    def _on_redo_in_main(self):
-        """主界面选区重录按钮：委托到 trigger_default_retake_selection"""
-        try:
-            success = bool(self.trigger_default_retake_selection())
-        except Exception as exc:
-            print(f"⚠️ 触发选区重录失败: {exc}")
-            success = False
-        if success:
-            self._stop_retake_highlight()
-            return
-        try:
-            self.open_retake_control_window()
-            return
-        except Exception:
-            pass
-        try:
-            QMessageBox.information(self, "区间重录", "当前无法进入选区重录模式，请稍后再试。")
-        except Exception:
-            pass
-
-    # ── 选区重录高亮动画 ──────────────────────────────────────
-
-    def _start_retake_highlight(self):
-        """开始选区重录按钮的脉冲高亮动画"""
-        try:
-            btn = getattr(self, 'redo_btn', None)
-            if btn is None:
-                return
-            self._retake_highlight_phase = 0
-            if not hasattr(self, '_retake_highlight_timer') or self._retake_highlight_timer is None:
-                self._retake_highlight_timer = QTimer(self)
-                self._retake_highlight_timer.timeout.connect(self._pulse_retake_highlight)
-            self._retake_highlight_timer.start(600)
-            self._pulse_retake_highlight()
-        except Exception:
-            pass
-
-    def _stop_retake_highlight(self):
-        """停止选区重录按钮的高亮动画，恢复正常样式"""
-        try:
-            timer = getattr(self, '_retake_highlight_timer', None)
-            if timer is not None:
-                try:
-                    timer.stop()
-                except Exception:
-                    pass
-            btn = getattr(self, 'redo_btn', None)
-            if btn is not None:
-                btn.setStyleSheet("")
-        except Exception:
-            pass
-
-    def _pulse_retake_highlight(self):
-        """脉冲切换高亮样式（游戏风格发光边框）"""
-        try:
-            btn = getattr(self, 'redo_btn', None)
-            if btn is None:
-                return
-            phase = getattr(self, '_retake_highlight_phase', 0)
-            if phase % 2 == 0:
-                # 亮状态：金色发光边框 + 深色背景
-                btn.setStyleSheet("""
-                    QPushButton#MainRetakeButton {
-                        background-color: #1a1a2e;
-                        border: 2px solid #f0c040;
-                        border-radius: 8px;
-                        padding: 8px 16px;
-                        color: #ffd700;
-                        font-size: 13px;
-                        font-weight: bold;
-                    }
-                """)
-            else:
-                # 暗状态：脉冲回落
-                btn.setStyleSheet("""
-                    QPushButton#MainRetakeButton {
-                        background-color: #16213e;
-                        border: 2px solid #e6a800;
-                        border-radius: 8px;
-                        padding: 8px 16px;
-                        color: #ffcc33;
-                        font-size: 13px;
-                        font-weight: bold;
-                    }
-                """)
-            self._retake_highlight_phase = phase + 1
-        except Exception:
-            pass
-
-    # ── 选区重录提示弹窗（游戏风格） ───────────────────────────
-
-    def _show_retake_hint_popup(self):
-        """暂停时弹出游戏风格的选区重录提示"""
-        try:
-            # 检查用户是否选择了"不再提醒"
-            settings = QSettings("MindEcho", "App")
-            if settings.value("ui/retakeHintDismissed", False, type=bool):
-                return
-        except Exception:
-            pass
-
-        try:
-            dlg = QDialog(self)
-            dlg.setWindowTitle("💡 提示")
-            dlg.setWindowFlags(
-                Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-            )
-            dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-            dlg.setFixedSize(440, 260)
-
-            # 主容器
-            container = QWidget(dlg)
-            container.setGeometry(0, 0, 440, 260)
-            container.setStyleSheet("""
-                QWidget#RetakeHintContainer {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #0d1117, stop:0.5 #161b22, stop:1 #0d1117);
-                    border: 2px solid #f0c040;
-                    border-radius: 16px;
-                }
-            """)
-            container.setObjectName("RetakeHintContainer")
-
-            layout = QVBoxLayout(container)
-            layout.setContentsMargins(24, 20, 24, 20)
-            layout.setSpacing(12)
-
-            # 标题行 - 游戏风格图标 + 文字
-            title = QLabel("🎮 录音已暂停")
-            title.setStyleSheet("""
-                color: #ffd700;
-                font-size: 18px;
-                font-weight: bold;
-                background: transparent;
-                font-family: "Microsoft YaHei", sans-serif;
-            """)
-            layout.addWidget(title)
-
-            # 分隔线
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 transparent, stop:0.3 #f0c040, stop:0.7 #f0c040, stop:1 transparent); border: none; min-height: 2px; max-height: 2px;")
-            layout.addWidget(sep)
-
-            # 提示内容
-            content = QLabel(
-                "如果对<b>当前段落</b>的录音效果不满意，\n"
-                "可以使用 <span style='color:#ffd700; font-weight:bold;'>🎯 选区重录</span> 功能，\n"
-                "精确选择不满意的片段进行重新录制！"
-            )
-            content.setStyleSheet("""
-                color: #c9d1d9;
-                font-size: 13px;
-                background: transparent;
-                line-height: 1.6;
-            """)
-            content.setWordWrap(True)
-            layout.addWidget(content)
-
-            layout.addStretch()
-
-            # 底部按钮行
-            btn_row = QHBoxLayout()
-            btn_row.setSpacing(12)
-
-            # "不再提醒" 复选框
-            no_remind_cb = QCheckBox("后续不再提醒")
-            no_remind_cb.setStyleSheet("""
-                QCheckBox {
-                    color: #8b949e;
-                    font-size: 12px;
-                    background: transparent;
-                }
-                QCheckBox::indicator {
-                    width: 16px;
-                    height: 16px;
-                    border: 2px solid #30363d;
-                    border-radius: 4px;
-                    background-color: #0d1117;
-                }
-                QCheckBox::indicator:checked {
-                    background-color: #f0c040;
-                    border-color: #f0c040;
-                }
-                QCheckBox::indicator:hover {
-                    border-color: #f0c040;
-                }
-            """)
-            btn_row.addWidget(no_remind_cb)
-
-            btn_row.addStretch()
-
-            # "知道了" 按钮 - 游戏风格
-            got_it_btn = QPushButton("✓ 知道了")
-            got_it_btn.setStyleSheet("""
-                QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #f0c040, stop:1 #d4a020);
-                    border: 1px solid #e6b800;
-                    border-radius: 8px;
-                    padding: 8px 24px;
-                    color: #0d1117;
-                    font-size: 13px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #f8d050, stop:1 #e0b030);
-                    border-color: #ffd700;
-                }
-                QPushButton:pressed {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #d4a020, stop:1 #b8860b);
-                }
-            """)
-            got_it_btn.clicked.connect(lambda: self._on_retake_hint_dismissed(dlg, no_remind_cb))
-            btn_row.addWidget(got_it_btn)
-
-            layout.addLayout(btn_row)
-
-            # 入场动画：从下方滑入
-            dlg.move(
-                self.geometry().center().x() - 220,
-                self.geometry().center().y() - 130,
-            )
-
-            dlg.exec()
-        except Exception as exc:
-            print(f"⚠️ 显示选区重录提示弹窗失败: {exc}")
-
-    def _on_retake_hint_dismissed(self, dlg: QDialog, no_remind_cb: QCheckBox):
-        """处理提示弹窗的关闭"""
-        try:
-            if no_remind_cb.isChecked():
-                settings = QSettings("MindEcho", "App")
-                settings.setValue("ui/retakeHintDismissed", True)
-                settings.sync()
-        except Exception:
-            pass
-        try:
-            dlg.accept()
-        except Exception:
-            pass
 
     def _is_normal_mode_active(self) -> bool:
         try:
@@ -67826,8 +67296,6 @@ class IntegratedRecordingInterface(QMainWindow):
     def stop_recording(self):
         """停止录音"""
         try:
-            # 停止选区重录按钮高亮
-            self._stop_retake_highlight()
             self.audio_processor.stop_recording()
             self.is_recording = False
             # 录音结束时同步结束分析状态，防止伴奏误判仍在分析
@@ -67917,14 +67385,9 @@ class IntegratedRecordingInterface(QMainWindow):
             panel = getattr(self, '_ai_coach_panel', None)
             if panel is None:
                 return
-            # 查找最近的分析 JSON（优先当前存档目录，回退全局目录）
+            # 查找最近的分析 JSON
             from pathlib import Path as _Path
-            try:
-                recordings_dir = self._get_profile_save_dir()
-            except Exception:
-                recordings_dir = _Path(getattr(self, 'save_base_dir', 'recordings'))
-            if not recordings_dir or not recordings_dir.exists():
-                recordings_dir = _Path(getattr(self, 'save_base_dir', 'recordings'))
+            recordings_dir = _Path(getattr(self, 'save_base_dir', 'recordings'))
             if not recordings_dir.exists():
                 recordings_dir = _Path("recordings")
             if not recordings_dir.exists():
@@ -68067,9 +67530,6 @@ class IntegratedRecordingInterface(QMainWindow):
                     self.pause_button.setText("继续")
                     if hasattr(self, 'status_label'):
                         self.status_label.setText("已暂停，点击继续")
-                    # 选区重录按钮高亮 + 游戏风格提示（延迟弹出，让高亮动画先跑起来）
-                    self._start_retake_highlight()
-                    QTimer.singleShot(350, self._show_retake_hint_popup)
                 else:
                     QMessageBox.warning(self, "暂停失败", "当前未在录音，或暂停操作不可用。")
             else:
@@ -68116,8 +67576,6 @@ class IntegratedRecordingInterface(QMainWindow):
                     self.pause_button.setText("暂停")
                     if hasattr(self, 'status_label'):
                         self.status_label.setText("录音继续")
-                    # 停止选区重录按钮高亮
-                    self._stop_retake_highlight()
                     try:
                         if getattr(self, '_retake_active_range', None):
                             self._retake_stop_latched = False
@@ -68128,454 +67586,13 @@ class IntegratedRecordingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "暂停/继续错误", str(e))
     
-    def _show_monitor_device_dialog(self):
-        """显示监听设备选择对话框 —— 展示真实理论延迟，让用户选择设备"""
-        import sounddevice as sd
-        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                                     QPushButton, QListWidget, QListWidgetItem,
-                                     QCheckBox, QFrame, QMessageBox, QSizePolicy)
-        from PyQt6.QtCore import Qt
-        from PyQt6.QtGui import QFont, QColor, QPalette
-
-        # ── 1. 枚举所有输入设备 ──
-        try:
-            all_devices = sd.query_devices()
-            hostapis = sd.query_hostapis()
-        except Exception as e:
-            QMessageBox.warning(self, "设备错误", f"无法查询音频设备: {e}")
-            return None
-
-        input_devices = []
-        for idx, dev in enumerate(all_devices):
-            try:
-                if int(dev.get('max_input_channels', 0) or 0) <= 0:
-                    continue
-                input_devices.append((idx, dev))
-            except Exception:
-                continue
-
-        if not input_devices:
-            QMessageBox.warning(self, "无设备", "未检测到任何输入设备。")
-            return None
-
-        # ── 2. 设备分类与延迟估算 ──
-        # 预扫描：找出所有设备的"基础名称"及其采样率，用于蓝牙双Profile检测
-        # 蓝牙耳机通常暴露两个设备：一个高采样率A2DP + 一个低采样率HFP
-        _all_device_names_sr = []  # [(name_stripped, sr)]
-        for _i, _d in enumerate(all_devices):
-            try:
-                _n = str(_d.get('name', '') or '')
-                _sr = int(_d.get('default_samplerate', 0) or 0)
-                # 提取基础名称（去掉 host API 后缀）
-                _base = _n.strip().lower()
-                _all_device_names_sr.append((_base, _sr))
-            except Exception:
-                pass
-
-        def _has_bt_counterpart(dev_name: str, dev_sr: int) -> bool:
-            """检查是否存在同名但低采样率(≤22050)的配对设备（蓝牙HFP通道）"""
-            if dev_sr > 22050:
-                base = dev_name.strip().lower()
-                for _bn, _bsr in _all_device_names_sr:
-                    # 名称高度相似 且 对方是低采样率 → 蓝牙双Profile
-                    if _bsr > 0 and _bsr <= 22050:
-                        # 模糊匹配：提取设备名的"核心部分"比较
-                        # 如 "耳机 (2- SENGIRNY G02)" 匹配 "耳机 (2- SENGIRNY G02)"
-                        if base == _bn:
-                            return True
-                        # 也尝试去掉括号内容后比较
-                        import re
-                        _base_core = re.sub(r'\([^)]*\)', '', base).strip()
-                        _bn_core = re.sub(r'\([^)]*\)', '', _bn).strip()
-                        if _base_core and _bn_core and _base_core == _bn_core:
-                            return True
-                return False
-            return False
-
-        device_entries = []  # [(idx, dev, label, latency_ms, conn_type, note)]
-
-        for idx, dev in input_devices:
-            name = str(dev.get('name', '') or f'设备{idx}')
-            name_lower = name.lower()
-            sr = int(dev.get('default_samplerate', 0) or 0)
-            hostapi_idx = int(dev.get('hostapi', -1) or -1)
-            hostapi_name = ''
-            if hostapis and 0 <= hostapi_idx < len(hostapis):
-                hostapi_name = str(hostapis[hostapi_idx].get('name', '') or '').lower()
-            channels = int(dev.get('max_input_channels', 1) or 1)
-
-            # ── 设备类型判断（增强蓝牙双Profile检测）──
-            _name_has_bt_kw = any(kw in name_lower for kw in
-                ('bluetooth', '蓝牙', 'hands-free', 'handsfree', 'hfp', 'hsp', 'earbud', 'bthhfenum'))
-            _is_low_sr = (sr > 0 and sr <= 22050)
-            _has_bt_pair = _has_bt_counterpart(name, sr)
-
-            is_bluetooth = _name_has_bt_kw or _is_low_sr or _has_bt_pair
-            is_bt_hfp = is_bluetooth and (_is_low_sr or 'hands-free' in name_lower or 'hfp' in name_lower)
-            is_bt_a2dp = is_bluetooth and not is_bt_hfp and sr > 22050
-            is_virtual = any(kw in name_lower for kw in
-                           ('virtual', 'cable', 'vb-audio', 'voicemeeter', 'scream', 'loopback'))
-            is_asio = 'asio' in hostapi_name
-            is_wasapi = 'wasapi' in hostapi_name
-            is_directsound = 'directsound' in hostapi_name or 'direct sound' in hostapi_name
-            is_mme = 'mme' in hostapi_name
-            is_usb = 'usb' in name_lower
-
-            # ── 真实延迟估算（软件缓冲 + 硬件路径）──
-            typical_bs = 128  # 典型缓冲区大小
-            if sr <= 0:
-                sr = 44100
-            software_latency_ms = (typical_bs / max(1, sr)) * 1000.0
-
-            if is_bt_a2dp:
-                # 蓝牙 A2DP: SBC/AAC 编解码 + RF + 缓冲 = 150-300ms
-                hardware_latency_ms = 200.0
-                conn_type = '蓝牙A2DP'
-                conn_icon = '🔵'
-                note = '高音质，高延迟'
-            elif is_bt_hfp:
-                # 蓝牙 HFP: CVSD/mSBC + RF = 30-80ms
-                hardware_latency_ms = 55.0
-                conn_type = '蓝牙HFP'
-                conn_icon = '📞'
-                note = '低音质(8-16kHz单声道)，中等延迟'
-            elif is_asio:
-                hardware_latency_ms = 5.0
-                conn_type = 'ASIO'
-                conn_icon = '⚡'
-                note = '专业级超低延迟'
-            elif is_wasapi:
-                hardware_latency_ms = 12.0
-                conn_type = 'WASAPI'
-                conn_icon = '🎵'
-                note = '低延迟，Windows原生'
-            elif is_directsound:
-                hardware_latency_ms = 30.0
-                conn_type = 'DirectSound'
-                conn_icon = '🔊'
-                note = '中等延迟'
-            elif is_mme:
-                hardware_latency_ms = 50.0
-                conn_type = 'MME'
-                conn_icon = '🔉'
-                note = '较高延迟，兼容性好'
-            elif is_virtual:
-                hardware_latency_ms = 15.0
-                conn_type = '虚拟设备'
-                conn_icon = '🔗'
-                note = '虚拟音频路由'
-            else:
-                hardware_latency_ms = 20.0
-                conn_type = '有线/USB'
-                conn_icon = '🔌'
-                note = '低延迟'
-
-            total_latency_ms = software_latency_ms + hardware_latency_ms
-
-            # latency 等级标签
-            if total_latency_ms <= 20:
-                latency_label = '🟢 优秀'
-            elif total_latency_ms <= 60:
-                latency_label = '🟡 一般'
-            elif total_latency_ms <= 150:
-                latency_label = '🟠 偏高'
-            else:
-                latency_label = '🔴 高延迟'
-
-            display_text = (
-                f"{conn_icon} {name}\n"
-                f"   {conn_type} | {channels}声道 | {sr}Hz | "
-                f"估算延迟 ≈{total_latency_ms:.0f}ms {latency_label}\n"
-                f"   {note}"
-            )
-
-            device_entries.append({
-                'idx': idx, 'dev': dev, 'name': name,
-                'latency_ms': total_latency_ms, 'conn_type': conn_type,
-                'conn_icon': conn_icon, 'note': note,
-                'latency_label': latency_label,
-                'is_bluetooth': is_bluetooth, 'is_bt_a2dp': is_bt_a2dp,
-                'display': display_text,
-                'sr': sr, 'hostapi_name': hostapi_name,
-            })
-
-        # 按延迟排序（低延迟在前）
-        device_entries.sort(key=lambda x: x['latency_ms'])
-
-        # ── 3. 构建对话框 ──
-        dlg = QDialog(self)
-        dlg.setWindowTitle("选择监听设备")
-        dlg.setMinimumWidth(620)
-        dlg.setMinimumHeight(420)
-
-        layout = QVBoxLayout(dlg)
-        layout.setSpacing(10)
-
-        # 标题
-        title = QLabel("🎧 选择声音监听设备")
-        title_font = QFont()
-        title_font.setPointSize(13)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        layout.addWidget(title)
-
-        desc = QLabel("选择一个输入设备用于实时声音监听。延迟越低，耳返体验越好。")
-        desc.setWordWrap(True)
-        desc.setStyleSheet("color: #aaa;")
-        layout.addWidget(desc)
-
-        # 设备列表
-        list_widget = QListWidget()
-        list_widget.setStyleSheet("""
-            QListWidget {
-                background-color: #1e1e1e;
-                border: 1px solid #444;
-                border-radius: 4px;
-                font-size: 12px;
-            }
-            QListWidget::item {
-                padding: 8px 10px;
-                border-bottom: 1px solid #333;
-            }
-            QListWidget::item:selected {
-                background-color: #2a5a8a;
-                color: #fff;
-            }
-            QListWidget::item:hover:!selected {
-                background-color: #2a2a2a;
-            }
-        """)
-
-        bluetooth_warning_added = False
-        for i, entry in enumerate(device_entries):
-            item = QListWidgetItem(entry['display'])
-            item.setData(Qt.ItemDataRole.UserRole, entry)
-            list_widget.addItem(item)
-
-            # 蓝牙 A2DP 用橙红色高亮
-            if entry.get('is_bt_a2dp'):
-                item.setForeground(QColor('#ff9944'))
-                if not bluetooth_warning_added:
-                    bluetooth_warning_added = True
-
-        # 默认选中延迟最低的设备
-        if list_widget.count() > 0:
-            list_widget.setCurrentRow(0)
-
-        layout.addWidget(list_widget)
-
-        # ── 推荐与提示区域 ──
-        hint_frame = QFrame()
-        hint_frame.setStyleSheet("""
-            QFrame {
-                background-color: #252530;
-                border: 1px solid #444;
-                border-radius: 4px;
-                padding: 8px;
-            }
-        """)
-        hint_layout = QVBoxLayout(hint_frame)
-        hint_layout.setSpacing(4)
-
-        # ── 检测系统输出设备（耳返的"回传"端） ──
-        try:
-            default_out_id = sd.default.device[1]
-            out_dev = sd.query_devices(default_out_id)
-            out_name = str(out_dev.get('name', '') or f'设备{default_out_id}')
-            out_name_lower = out_name.lower()
-            out_sr = int(out_dev.get('default_samplerate', 44100) or 44100)
-            out_hostapi = int(out_dev.get('hostapi', -1) or -1)
-            out_hostapi_name = ''
-            if hostapis and 0 <= out_hostapi < len(hostapis):
-                out_hostapi_name = str(hostapis[out_hostapi].get('name', '') or '').lower()
-
-            # 输出设备类型和延迟估算（使用同样的蓝牙双Profile检测）
-            _out_name_bt_kw = any(kw in out_name_lower for kw in
-                ('bluetooth', '蓝牙', 'hands-free', 'handsfree', 'bthhfenum'))
-            is_out_bt = _out_name_bt_kw or (out_sr > 0 and out_sr <= 22050) or _has_bt_counterpart(out_name, out_sr)
-            if is_out_bt and out_sr <= 22050:
-                out_latency_ms = 55.0
-                out_type = '蓝牙HFP'
-                out_icon = '📞'
-            elif is_out_bt:
-                out_latency_ms = 200.0
-                out_type = '蓝牙A2DP'
-                out_icon = '🔵'
-            elif 'wasapi' in out_hostapi_name:
-                out_latency_ms = 12.0
-                out_type = 'WASAPI'
-                out_icon = '🎵'
-            elif 'directsound' in out_hostapi_name:
-                out_latency_ms = 30.0
-                out_type = 'DirectSound'
-                out_icon = '🔊'
-            elif 'mme' in out_hostapi_name:
-                out_latency_ms = 50.0
-                out_type = 'MME'
-                out_icon = '🔉'
-            elif 'virtual' in out_name_lower or 'cable' in out_name_lower:
-                out_latency_ms = 15.0
-                out_type = '虚拟'
-                out_icon = '🔗'
-            else:
-                out_latency_ms = 15.0
-                out_type = '有线/USB'
-                out_icon = '🔌'
-
-            # 显示输出设备信息
-            out_label = QLabel(
-                f"🔊 系统输出设备（耳返回传）: {out_icon} {out_name}\n"
-                f"   类型: {out_type} | {out_sr}Hz | 输出端延迟 ≈{out_latency_ms:.0f}ms"
-            )
-            out_label.setStyleSheet("color: #ccc; font-size: 11px;")
-            hint_layout.addWidget(out_label)
-
-            # 计算最佳输入+输出的总延迟
-            best_in_lat = device_entries[0]['latency_ms'] if device_entries else 23.0
-            total_lat = best_in_lat + out_latency_ms
-            total_label = QLabel(
-                f"📊 预估总延迟: 输入 ≈{best_in_lat:.0f}ms + 输出 ≈{out_latency_ms:.0f}ms "
-                f"= 总计 ≈{total_lat:.0f}ms"
-            )
-            total_label.setStyleSheet("color: #aac; font-size: 11px;")
-            hint_layout.addWidget(total_label)
-
-            if is_out_bt and total_lat > 100:
-                out_warn = QLabel(
-                    f"⚠️ 关键问题: 即便输入设备延迟很低，蓝牙耳机作为输出端仍会造成 "
-                    f"≈{out_latency_ms:.0f}ms 的回传延迟。\n"
-                    f"   要获得低延迟耳返，输入和输出都必须是非蓝牙设备。"
-                )
-                out_warn.setWordWrap(True)
-                out_warn.setStyleSheet("color: #ff6644; font-size: 11px; font-weight: bold;")
-                hint_layout.addWidget(out_warn)
-        except Exception:
-            pass
-
-        # 检测是否有蓝牙设备是唯一选择
-        has_non_bt = any(not e['is_bluetooth'] for e in device_entries)
-        has_bt = any(e['is_bluetooth'] for e in device_entries)
-
-        best_entry = device_entries[0] if device_entries else None
-        if best_entry:
-            best_label = QLabel(
-                f"🏆 推荐: {best_entry['conn_icon']} {best_entry['name']} "
-                f"— 延迟 ≈{best_entry['latency_ms']:.0f}ms"
-            )
-            best_label.setStyleSheet("color: #4caf50; font-weight: bold;")
-            hint_layout.addWidget(best_label)
-
-        if has_bt:
-            bt_devices = [e for e in device_entries if e['is_bluetooth']]
-            bt_names = [e['name'][:25] for e in bt_devices[:2]]
-            bt_warn = QLabel(
-                f"⚠️ 检测到蓝牙设备({', '.join(bt_names)}...)：蓝牙A2DP模式监听会有 "
-                f"150~300ms 明显延迟，不建议用于实时耳返。"
-            )
-            bt_warn.setWordWrap(True)
-            bt_warn.setStyleSheet("color: #ff9944; font-size: 11px;")
-            hint_layout.addWidget(bt_warn)
-
-            if not has_non_bt:
-                no_alt = QLabel(
-                    "💡 当前仅有蓝牙设备可用。建议连接有线耳机或 2.4GHz USB 无线耳机，"
-                    "可获得接近零延迟的监听体验。"
-                )
-                no_alt.setWordWrap(True)
-                no_alt.setStyleSheet("color: #88ccff; font-size: 11px;")
-                hint_layout.addWidget(no_alt)
-            else:
-                alt = QLabel(
-                    "💡 建议选择上方的有线/USB/WASAPI 设备以避免蓝牙延迟。"
-                )
-                alt.setWordWrap(True)
-                alt.setStyleSheet("color: #88ccff; font-size: 11px;")
-                hint_layout.addWidget(alt)
-
-        layout.addWidget(hint_frame)
-
-        # ── 记住选择 ──
-        remember_cb = QCheckBox("记住选择，下次不再弹出")
-        remember_cb.setStyleSheet("color: #aaa; font-size: 11px;")
-        layout.addWidget(remember_cb)
-
-        # ── 按钮 ──
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-
-        cancel_btn = QPushButton("取消")
-        cancel_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #444;
-                color: #ccc;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 6px 20px;
-            }
-            QPushButton:hover { background-color: #555; }
-        """)
-        cancel_btn.clicked.connect(dlg.reject)
-        btn_layout.addWidget(cancel_btn)
-
-        confirm_btn = QPushButton("开始监听")
-        confirm_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2a7a3a;
-                color: #fff;
-                border: 1px solid #3a8a4a;
-                border-radius: 4px;
-                padding: 6px 24px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #3a8a4a; }
-        """)
-        confirm_btn.clicked.connect(dlg.accept)
-        btn_layout.addWidget(confirm_btn)
-
-        layout.addLayout(btn_layout)
-
-        # ── 4. 显示对话框 ──
-        self._monitor_device_dlg = dlg  # 保存引用防 GC
-        result = dlg.exec()
-
-        if result != QDialog.DialogCode.Accepted:
-            return None
-
-        # 获取选中设备
-        selected_items = list_widget.selectedItems()
-        if not selected_items:
-            return None
-        entry = selected_items[0].data(Qt.ItemDataRole.UserRole)
-
-        # 记住选择
-        if remember_cb.isChecked():
-            self._monitor_device_cached = entry['idx']
-            print(f"💾 记住监听设备: {entry['name']} (设备{entry['idx']})")
-        else:
-            self._monitor_device_cached = None
-
-        print(f"🎧 用户选择监听设备: {entry['name']} (设备{entry['idx']}, "
-              f"延迟≈{entry['latency_ms']:.0f}ms)")
-        return entry
-
     def toggle_monitoring(self):
         """切换监听功能（优化版：只音频回放，不分析）"""
         try:
             if not hasattr(self, 'is_monitoring'):
                 self.is_monitoring = False
-
+                
             if not self.is_monitoring:
-                # 🎧 设备选择对话框：除非已记住选择，否则每次开启监听前弹出
-                cached_dev = getattr(self, '_monitor_device_cached', None)
-                if cached_dev is not None:
-                    self._selected_monitor_device_id = cached_dev
-                    print(f"🎧 使用记住的监听设备: 设备{cached_dev}")
-                else:
-                    selected = self._show_monitor_device_dialog()
-                    if selected is None:
-                        return  # 用户取消
-                    self._selected_monitor_device_id = selected['idx']
-
                 # 启动优化监听功能
                 success = self.start_monitoring()
                 if success:
@@ -68585,20 +67602,16 @@ class IntegratedRecordingInterface(QMainWindow):
                         self.visualizer.monitor_button.setText("关闭监听")
                         self.visualizer.monitor_button.setChecked(True)
                     print("🎧 优化监听功能已启动")
-                else:
-                    # 启动失败，清除本次选择
-                    self._selected_monitor_device_id = None
             else:
                 # 关闭监听功能
                 self.stop_monitoring()
                 self.is_monitoring = False
-                self._selected_monitor_device_id = None
                 # 通过可视化器访问监听按钮
                 if hasattr(self.visualizer, 'monitor_button'):
                     self.visualizer.monitor_button.setText("开启监听")
                     self.visualizer.monitor_button.setChecked(False)
                 print("🎧 监听功能已关闭")
-
+                
         except Exception as e:
             print(f"❌ 切换监听功能失败: {e}")
             
@@ -72102,8 +71115,6 @@ class _RetakeControlWindow(QDialog):
                 "QPushButton:disabled { background-color:#0c111c; color:#4f5f7d; border-color:rgba(255,255,255,0.04); }\n"
                 "QPushButton#RetakeStartButton { background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2563eb, stop:1 #1d9bf0); border:1px solid rgba(37,99,235,0.65); color:#f6fbff; }\n"
                 "QPushButton#RetakeStartButton:hover { background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #1f5edd, stop:1 #1a8fe0); }\n"
-                "QPushButton#MainRetakeButton { background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #1a1a2e, stop:1 #16213e); border:2px solid rgba(240,192,64,0.35); border-radius:8px; padding:8px 16px; color:#c9a84c; font-size:12px; font-weight:bold; }\n"
-                "QPushButton#MainRetakeButton:hover { border-color:rgba(240,192,64,0.75); color:#f0c040; }\n"
                 "QPushButton#RetakeClearButton { background-color:rgba(15,118,255,0.10); color:#8ecfff; border:1px solid rgba(143,188,255,0.35); }\n"
                 "QPushButton#RetakeClearButton:hover { background-color:rgba(15,118,255,0.20); }\n"
                 "QPushButton#RetakePauseButton { background-color:rgba(255,255,255,0.02); border:1px dashed rgba(168,184,227,0.65); color:#b4c1df; }\n"
