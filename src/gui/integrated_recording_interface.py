@@ -3722,14 +3722,32 @@ class IntegratedAudioProcessor(QThread):
         return time.time()
 
     # ========= 音高后处理（Phase1: 提取独立逻辑） ========= #
-    def _post_process_pitch(self, raw_frequency: float, preview_only: bool = False) -> float:
+    def _post_process_pitch(self, raw_frequency: float, preview_only: bool = False, confidence: float = 1.0) -> float:
         """对原始检测频率执行跳变抑制与平滑，返回平滑后的频率。
         - 保留 raw_frequency 以供 vibrato 与调试
         - 根据 preview_only 选择写入录音态或监听态的内部状态：
           录音态使用 _last_stable_frequency/_freq_smooth；监听态使用 _mon_last_stable_frequency/_mon_freq_smooth
+        - confidence: YIN CMNDF 谷深置信度 (0.0-1.0)，用于自适应加权平滑
         """
         if raw_frequency <= 0:
             return 0.0
+
+        # ── Tier 2: 短窗口中值预滤波 ──
+        # 维护最近 N 个 raw 频率，取中值剔除孤立离群点（气声尖峰）
+        # 中值滤波是 Praat / WORLD / STRAIGHT 等专业 pitch tracker 的标配
+        _median_buf_name = '_mon_raw_f0_median_buf' if preview_only else '_raw_f0_median_buf'
+        if not hasattr(self, _median_buf_name):
+            setattr(self, _median_buf_name, [])
+        _median_buf = getattr(self, _median_buf_name)
+        _median_buf.append(float(raw_frequency))
+        _median_window = int(getattr(self, '_pitch_median_window', 5))
+        while len(_median_buf) > _median_window:
+            _median_buf.pop(0)
+        # 至少积累 3 帧后才启用中值滤波
+        if len(_median_buf) >= 3:
+            _sorted = sorted(_median_buf)
+            raw_frequency = float(_sorted[len(_sorted) // 2])
+        setattr(self, _median_buf_name, _median_buf)
 
         # 选择命名空间（录音/监听）
         ls_name = '_mon_last_stable_frequency' if preview_only else '_last_stable_frequency'
@@ -3867,9 +3885,22 @@ class IntegratedAudioProcessor(QThread):
                 alpha = 0.84
             if pro_mode:
                 alpha = min(0.99, alpha + 0.05)
-            # 颤音/花腔振荡：需要极高跟随性以保留调制细节
+            # ── Tier 3: 置信度门控振荡检测 ──
+            # 气声/呼吸造成的快速微小抖动（0.2-1Hz）容易被误判为颤音，
+            # 但气声的置信度通常 < 0.55，真正颤音的置信度 > 0.75。
+            # 当检测到”振荡”但置信度低时，反转逻辑：增加平滑而非跟随。
+            _breathy_oscillation = False
             if is_oscillating:
+                _conf_for_gate = float(confidence)
+                # 真正颤音：高周期性 → 高置信；气声伪颤音：弱周期性 → 低置信
+                if _conf_for_gate < 0.55:
+                    _breathy_oscillation = True
+            if is_oscillating and not _breathy_oscillation:
+                # 真正颤音/花腔振荡：需要极高跟随性以保留调制细节
                 alpha = min(0.97, alpha + 0.12)
+            elif _breathy_oscillation:
+                # 气声伪颤音：增加平滑，减少对噪声的跟随
+                alpha = max(0.80, alpha - 0.10)
             if fast_change:
                 boost = float(getattr(self, '_fast_change_alpha_boost', 0.18))
                 alpha = min(0.98, alpha + boost)
@@ -3879,6 +3910,13 @@ class IntegratedAudioProcessor(QThread):
             # 上行加速一点点
             if raw_frequency > prev * 1.04:
                 alpha = min(0.97, alpha + 0.04)
+            # ── Tier 1: 置信度加权 ──
+            # 核心思想：低置信度的帧对平滑值的贡献应大幅降低。
+            # cf = 0.35 + 0.65*confidence: conf=0.90→cf=0.935; conf=0.45→cf=0.643
+            # 干净声音不受影响，气声帧对平滑值的拉动大幅减弱。
+            _base_alpha = alpha
+            _cf = float(np.clip(0.35 + 0.65 * float(confidence), 0.30, 1.0))
+            alpha = float(np.clip(_base_alpha * _cf, 0.35, 0.995))
             # 指数平滑
             _freq_smooth = alpha * raw_frequency + (1 - alpha) * prev
             smooth = _freq_smooth
@@ -3886,8 +3924,12 @@ class IntegratedAudioProcessor(QThread):
             if delta_hz < 3.0:
                 smooth = 0.92 * smooth + 0.08 * raw_frequency
             # 颤音区域：大幅注入原始值保留振荡细节
-            if is_oscillating:
+            # Tier 3: 气声伪颤音不注入 raw —— 否则会把呼吸抖动当作颤音放大
+            if is_oscillating and not _breathy_oscillation:
                 smooth = 0.22 * smooth + 0.78 * raw_frequency
+            elif _breathy_oscillation:
+                # 气声伪颤音：反向操作，进一步偏向平滑值以压制噪声抖动弹跳
+                smooth = 0.82 * smooth + 0.18 * raw_frequency
             if fast_change:
                 smooth = 0.10 * smooth + 0.90 * raw_frequency
             elif pro_mode and delta_hz > 4.0:
@@ -10721,7 +10763,12 @@ class IntegratedAudioProcessor(QThread):
                         except Exception:
                             pass
 
-            smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only) if raw_frequency > 0 else 0.0
+            # Tier 1-3: 将 YIN CMNDF 置信度传入后处理，用于自适应加权平滑
+            try:
+                _pp_conf = float(conf)
+            except (NameError, Exception):
+                _pp_conf = 1.0
+            smooth_frequency = self._post_process_pitch(raw_frequency, preview_only=preview_only, confidence=_pp_conf) if raw_frequency > 0 else 0.0
             display_frequency = smooth_frequency
             if smooth_frequency > 0:
                 try:
