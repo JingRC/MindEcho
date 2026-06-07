@@ -7,10 +7,10 @@
   "gender_manual": "male",
   "gender_inferred": "",
   "passaggio": {
-    "t4_hz": 384.0083780941447,
+    "t4_hz": 396.0181863705482,
     "source": "calibrated",
-    "confidence": 0.30103146156683114,
-    "last_calibrated": "2026-06-04",
+    "confidence": 0.6900000000000001,
+    "last_calibrated": "2026-06-07",
     "auto_estimated_t4": 0.0,
     "calibration_scan_file": ""
   },
@@ -21,18 +21,21 @@
     "p75_hz": 0.0,
     "p85_hz": 0.0,
     "p95_hz": 0.0,
-    "min_hz": 91.1238859272442,
-    "max_hz": 648.6247253260607,
+    "min_hz": 82.82473500119933,
+    "max_hz": 656.4544209517318,
     "total_voiced_frames": 100,
     "session_count": 0
   },
   "timbre": {
-    "avg_spectral_tilt": -1.2974706286156086,
-    "avg_hm_over_hh": 0.0,
-    "avg_mid_high_ratio": 0.0,
-    "avg_zcr": 0.0,
-    "avg_rms": 0.0,
-    "sample_count": 1,
+    "avg_spectral_tilt": -1.2987685417643153,
+    "avg_hm_over_hh": 0.58808,
+    "avg_mid_high_ratio": 0.58808,
+    "avg_zcr": 0.0024676149856746195,
+    "avg_rms": 0.026318530609369277,
+    "fhe_hz": 2810.0830078125,
+    "spectral_centroid_hz": 2810.3902084292363,
+    "timbre_quality": 0.4446072343230759,
+    "sample_count": 4,
     "_ema_alpha": 0.02
   },
   "usage": {
@@ -42,5 +45,5 @@
     "technique_distribution": {}
   },
   "created_at": "2026-06-04T12:07:00",
-  "updated_at": "2026-06-04T18:31:35"
+  "updated_at": "2026-06-07T10:54:06"
 }

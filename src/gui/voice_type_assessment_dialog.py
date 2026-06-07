@@ -329,10 +329,12 @@ class VoiceTypeAssessmentDialog(QDialog):
         profile: SingerProfile,
         profile_manager: ProfileManager,
         parent: Optional[QWidget] = None,
+        start_page: int = PAGE_ENTRY,  # 支持从指定阶段启动
     ):
         super().__init__(parent)
         self._profile = profile
         self._mgr = profile_manager
+        self._start_page = start_page
 
         # ── 测评数据 ──
         self._known_voice_type: str = ""      # 手动填写的声部
@@ -381,10 +383,14 @@ class VoiceTypeAssessmentDialog(QDialog):
         self._pitch_track: List[Tuple[float, float]] = []
         self._current_freq: float = 0.0
         self._current_voiced: bool = False
-        self._feature_track: List[Tuple[float, float, float, float]] = []
+        self._feature_track: List[Tuple[float, float, float, float, float, float, float, float]] = []  # (t, tilt, hnr, rms, l1l2, h2h3, f1, f2)
         self._current_tilt: float = 0.0
         self._current_hnr: float = 0.0
         self._current_rms: float = 0.0
+        self._current_l1l2: float = 0.0
+        self._current_h2h3: float = 1.0
+        self._current_f1: float = 0.0
+        self._current_f2: float = 0.0
 
         # 自适应噪声门限 (VAD) — 通过环境噪声校准步骤采集
         self._noise_floor: float = 0.0
@@ -415,7 +421,24 @@ class VoiceTypeAssessmentDialog(QDialog):
         self.setStyleSheet("VoiceTypeAssessmentDialog { background-color: #0D1117; }")
 
         self._build_ui()
-        self._switch_page(self.PAGE_ENTRY)
+        # 根据 start_page 跳转到指定阶段
+        if self._start_page == self.PAGE_PHASE1_LOW:
+            self._switch_page(self.PAGE_PHASE1_LOW)
+            self._set_progress(1)
+            self._back_btn.setVisible(True)
+            self._next_btn.setText("▶ 开始低音区录音")
+        elif self._start_page == self.PAGE_PHASE3:
+            self._switch_page(self.PAGE_PHASE3)
+            self._set_progress(3)
+            self._back_btn.setVisible(True)
+            self._next_btn.setText("▶ 开始录音（元音）")
+        elif self._start_page == self.PAGE_PHASE2:
+            self._switch_page(self.PAGE_PHASE2)
+            self._set_progress(2)
+            self._back_btn.setVisible(True)
+            self._next_btn.setText("▶ 开始滑音录音")
+        else:
+            self._switch_page(self.PAGE_ENTRY)
 
         if not HAS_SOUNDDEVICE:
             self._show_warning("sounddevice 未安装，录音功能不可用。\n请运行: pip install sounddevice")
@@ -1830,6 +1853,8 @@ class VoiceTypeAssessmentDialog(QDialog):
             'rms': feat.get('rms', 0.0),
             'l1l2': feat.get('l1l2', 0.0),
             'h2h3': feat.get('h2h3', 0.0),
+            'f1h2': feat.get('f1h2', 0.0),
+            'spec_smooth': feat.get('spec_smooth', 0.0),
             'prior': feat.get('prior', 0.0),
         })
         return True
@@ -1837,7 +1862,7 @@ class VoiceTypeAssessmentDialog(QDialog):
     def _lookup_feature_scores_at_hz(self, target_hz: float) -> dict:
         """在音高轨迹中查找最接近 target_hz 的频点 — 估算融合评分"""
         zero = {'tilt': 0.0, 'pitch_jump': 0.0, 'hnr': 0.0, 'rms': 0.0,
-                'l1l2': 0.0, 'h2h3': 0.0, 'prior': 0.0, 'fusion': 0.0}
+                'l1l2': 0.0, 'h2h3': 0.0, 'f1h2': 0.0, 'spec_smooth': 0.0, 'prior': 0.0, 'fusion': 0.0}
         if not self._pitch_track:
             return zero
         pitch_freqs = np.array([f for _, f in self._pitch_track])
@@ -1904,6 +1929,8 @@ class VoiceTypeAssessmentDialog(QDialog):
             top_feats = [
                 ('tilt', c.get('tilt', 0)), ('pitch_jump', c.get('pitch_jump', 0)),
                 ('hnr', c.get('hnr', 0)), ('rms', c.get('rms', 0)),
+                ('L1L2', c.get('l1l2', 0)), ('H2H3', c.get('h2h3', 0)),
+                ('F1H2', c.get('f1h2', 0)), ('平滑度', c.get('spec_smooth', 0)),
             ]
             top_feats.sort(key=lambda x: x[1], reverse=True)
             feat_str = " | ".join([f"{n}:{v:.2f}" for n, v in top_feats[:2]])
@@ -1995,13 +2022,21 @@ class VoiceTypeAssessmentDialog(QDialog):
 
     def _preview_audio_at_hz(self, target_hz: float) -> None:
         """在换声点目标频率附近截取 0.5 秒录音片段并播放"""
+        if not HAS_SOUNDDEVICE:
+            return
         audio = self._full_audio
         pitch_track = self._pitch_track
+
+        # 重试: 如果 _full_audio 为空，尝试从 _recorded_chunks 重建
+        if (audio is None or len(audio) == 0) and hasattr(self, '_recorded_chunks') and self._recorded_chunks:
+            audio = np.concatenate(self._recorded_chunks)
+            self._full_audio = audio
+
         if audio is None or len(audio) == 0:
-            QMessageBox.information(self, "试听不可用", "没有找到录音数据，请重新录制。")
+            self._show_preview_error("没有找到录音数据。\n请重新录制后再试。")
             return
         if not pitch_track:
-            QMessageBox.information(self, "试听不可用", "没有音高轨迹数据。")
+            self._show_preview_error("没有音高轨迹数据。")
             return
 
         # 找到 pitch_track 中最接近目标频率的时间点
@@ -2015,43 +2050,84 @@ class VoiceTypeAssessmentDialog(QDialog):
                 best_dist = dist
                 best_time = t
 
-        if best_dist > target_hz * 0.5:  # 偏离超过半个八度，说明数据不匹配
+        if best_dist > target_hz * 0.5:
             note = _hz_to_note_name(target_hz)
-            QMessageBox.information(
-                self, "试听不可用",
-                f"录音中未找到接近 {note} ({target_hz:.0f}Hz) 的片段。\n"
-                f"最近匹配偏差 {best_dist:.0f} Hz，可能是录音音域未覆盖到该换声点。"
+            self._show_preview_error(
+                f"录音中未找到接近 {note} ({target_hz:.0f} Hz) 的片段。\n"
+                f"最近匹配偏差 {best_dist:.0f} Hz。\n请确保录音时唱到了该音高范围。"
             )
             return
 
-        # 截取 ±0.25 秒 (共 0.5 秒)
-        half_window = 0.25
+        # 截取 ±0.25 秒 (共 0.5 秒) — 鲁棒边界处理
         sr = SAMPLE_RATE
-        center_sample = int(best_time * sr)
-        start_sample = max(0, center_sample - int(half_window * sr))
-        end_sample = min(len(audio), center_sample + int(half_window * sr))
-        segment = audio[start_sample:end_sample]
+        half_samples = int(0.25 * sr)
 
-        if len(segment) < int(0.1 * sr):
-            return
+        # 基于样本数计算实际录音时长，修正 wall-clock 漂移
+        audio_duration_s = len(audio) / sr
+        if best_time > audio_duration_s * 1.05:
+            best_time = audio_duration_s * 0.5
+
+        center_sample = int(best_time * sr)
+        start_sample = center_sample - half_samples
+        end_sample = center_sample + half_samples
+
+        # 如果窗口超出音频边界，向内偏移
+        if start_sample < 0:
+            shift = -start_sample
+            start_sample = 0
+            end_sample = min(len(audio), end_sample + shift)
+        if end_sample > len(audio):
+            shift = end_sample - len(audio)
+            end_sample = len(audio)
+            start_sample = max(0, start_sample - shift)
+
+        start_sample = max(0, min(start_sample, len(audio) - 1))
+        end_sample = max(start_sample + int(0.05 * sr), min(end_sample, len(audio)))
+
+        segment = audio[start_sample:end_sample].copy()
+
+        if len(segment) < int(0.05 * sr):
+            fallback_start = max(0, center_sample - int(0.5 * sr))
+            fallback_end = min(len(audio), center_sample + int(0.5 * sr))
+            if fallback_end - fallback_start >= int(0.05 * sr):
+                segment = audio[fallback_start:fallback_end].copy()
+            else:
+                self._show_preview_error("截取的音频片段太短。")
+                return
 
         # 应用短淡入淡出避免咔嗒声
         fade_len = min(int(0.01 * sr), len(segment) // 4)
         if fade_len > 1:
             fade_in = np.linspace(0, 1, fade_len)
             fade_out = np.linspace(1, 0, fade_len)
-            segment[:fade_len] = (segment[:fade_len].T * fade_in).T if segment.ndim > 1 else segment[:fade_len] * fade_in
-            segment[-fade_len:] = (segment[-fade_len:].T * fade_out).T if segment.ndim > 1 else segment[-fade_len:] * fade_out
+            segment[:fade_len] *= fade_in
+            segment[-fade_len:] *= fade_out
 
-        # 归一化音量
-        peak = np.max(np.abs(segment))
-        if peak > 0:
-            segment = segment / peak * 0.7
+        # 温和归一化 (-6dBFS)
+        peak = max(np.max(np.abs(segment)), 0.001)
+        segment = (segment / peak * 0.5).astype(np.float32)
 
         try:
-            sd.play(segment.astype(np.float32) if segment.ndim == 1 else segment.astype(np.float32), sr)
+            sd.stop()  # 停止之前在播的音频
+            sd.play(segment, sr)
         except Exception as exc:
-            print(f"⚠️ 试听播放失败: {exc}")
+            self._show_preview_error(f"播放失败:\n{exc}")
+
+    def _show_preview_error(self, message: str) -> None:
+        """显示深色主题的试听错误提示"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("试听不可用")
+        msg.setText(message)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.setStyleSheet("""
+            QMessageBox { background-color: #161B22; color: #E6EDF3; }
+            QMessageBox QLabel { color: #E6EDF3; font-size: 12px; background: transparent; }
+            QPushButton { background: #21262D; color: #E6EDF3; border: 1px solid #30363D;
+                border-radius: 6px; padding: 6px 20px; font-size: 12px; min-width: 60px; }
+            QPushButton:hover { background: #30363D; border-color: #58A6FF; }
+        """)
+        msg.exec()
 
     def _on_piano_passaggio_selected(self, hz: float) -> None:
         """钢琴/画布右键选择换声点的回调 → 加入候选列表并设为当前"""
@@ -2200,7 +2276,7 @@ class VoiceTypeAssessmentDialog(QDialog):
         # 使用已校准的环境噪声门限 (如果存在)
         if self._env_noise_floor > 0:
             self._noise_floor = self._env_noise_floor
-            sensitivity = 1.8 if self._current_phase in ("p1_low",) else 2.4
+            sensitivity = 1.8 if self._current_phase in ("p1_low",) else (1.5 if self._current_phase == "p3" else 2.4)
             self._voice_threshold = self._env_noise_floor * sensitivity
         else:
             self._noise_floor = 0.0
@@ -2453,7 +2529,7 @@ class VoiceTypeAssessmentDialog(QDialog):
         if voiced:
             freq, pitch_conf = self._pitch_service.detect(chunk)
             # 低音区放宽置信度要求 (低音周期性强但 CMNDF 谷不如高音深)
-            min_conf = 0.12 if self._current_phase in ("p1_low",) else 0.20
+            min_conf = 0.12 if self._current_phase in ("p1_low", "p3") else 0.20
             if pitch_conf < min_conf:
                 freq = 0.0
                 voiced = False
@@ -2462,18 +2538,24 @@ class VoiceTypeAssessmentDialog(QDialog):
         self._current_voiced = voiced
         self._pitch_track.append((elapsed, freq if voiced else 0.0))
 
-        # 频谱特征 (仅有声帧)
+        # 频谱特征 (仅有声帧) — 8 维: tilt, hnr, rms, l1l2, h2h3, f1, f2
         if hasattr(self, '_feature_track') and self._feature_track is not None:
             if voiced:
                 tilt = self._compute_spectral_tilt(chunk, SAMPLE_RATE)
                 hnr = self._compute_hnr(chunk, SAMPLE_RATE)
+                l1l2 = self._compute_l1l2(chunk, SAMPLE_RATE, freq)
+                h2h3 = self._compute_h2h3_ratio(chunk, SAMPLE_RATE, freq)
+                f1, f2 = self._estimate_formants(chunk * np.hanning(len(chunk)), SAMPLE_RATE, freq)
             else:
-                tilt = 0.0
-                hnr = 0.0
+                tilt, hnr, l1l2, h2h3, f1, f2 = 0.0, 0.0, 0.0, 1.0, 0.0, 0.0
             self._current_tilt = tilt
             self._current_hnr = hnr
             self._current_rms = rms
-            self._feature_track.append((elapsed, tilt, hnr, rms))
+            self._current_l1l2 = l1l2
+            self._current_h2h3 = h2h3
+            self._current_f1 = f1
+            self._current_f2 = f2
+            self._feature_track.append((elapsed, tilt, hnr, rms, l1l2, h2h3, f1, f2))
 
         # 实时 UI 更新
         self._update_live_display(freq, elapsed, voiced)
@@ -2615,8 +2697,95 @@ class VoiceTypeAssessmentDialog(QDialog):
         ratio = max(h_power / n_power, 1e-10)
         return float(10.0 * math.log10(ratio))
 
+    @staticmethod
+    def _compute_l1l2(signal: np.ndarray, sr: int, f0: float) -> float:
+        """计算 L1-L2 谐波比 (dB) — 换声点关键指标
+        L1=基频能量, L2=第二谐波能量。换声时 L1-L2 从负变正 (尤其女声)。
+        """
+        if f0 <= 0:
+            return 0.0
+        n = len(signal)
+        spec = np.abs(np.fft.rfft(signal * np.hanning(n)))
+        freq = np.fft.rfftfreq(n, 1.0 / sr)
+
+        def _harmonic_energy(h: int) -> float:
+            hf = f0 * h
+            if hf > sr / 2:
+                return 0.0
+            idx = np.argmin(np.abs(freq - hf))
+            lo, hi = max(0, idx - 2), min(len(spec) - 1, idx + 3)
+            return float(np.sum(spec[lo:hi + 1] ** 2))
+
+        e1 = _harmonic_energy(1)
+        e2 = _harmonic_energy(2)
+        if e1 < 1e-12 or e2 < 1e-12:
+            return 0.0
+        l1l2 = 10 * math.log10(e1 / e2 + 1e-12)
+        return float(np.clip(l1l2, -20, 20))
+
+    @staticmethod
+    def _compute_h2h3_ratio(signal: np.ndarray, sr: int, f0: float) -> float:
+        """计算 H2/H3 主导度 — 男声换声关键
+        胸声区 H2 由 F1 共振主导 → H2/H3 > 1.5
+        换声点附近 F2 共振转移到 H3 → H2/H3 < 1.0
+        """
+        if f0 <= 0:
+            return 1.0
+        n = len(signal)
+        spec = np.abs(np.fft.rfft(signal * np.hanning(n)))
+        freq = np.fft.rfftfreq(n, 1.0 / sr)
+
+        def _harmonic_energy(h: int) -> float:
+            hf = f0 * h
+            if hf > sr / 2:
+                return 0.0
+            idx = np.argmin(np.abs(freq - hf))
+            lo, hi = max(0, idx - 2), min(len(spec) - 1, idx + 3)
+            return float(np.sum(spec[lo:hi + 1] ** 2))
+
+        e2 = _harmonic_energy(2)
+        e3 = _harmonic_energy(3)
+        if e3 < 1e-12:
+            return 5.0
+        return float(np.clip(e2 / e3, 0.1, 10.0))
+
+    @staticmethod
+    def _estimate_formants(signal: np.ndarray, sr: int, f0: float, order: int = 14) -> Tuple[float, float]:
+        """LPC 共振峰估计 → (F1, F2) in Hz (P3)"""
+        if len(signal) < order * 2 or f0 <= 0:
+            return 0.0, 0.0
+        n = len(signal)
+        r = np.zeros(order + 1)
+        for lag in range(order + 1):
+            r[lag] = np.dot(signal[:n - lag], signal[lag:])
+        a = np.zeros(order + 1); a[0] = 1.0
+        e = r[0] if r[0] > 1e-10 else 1e-10
+        for i in range(1, order + 1):
+            k = -np.dot(a[:i], r[i:0:-1]) / e if e > 1e-10 else 0.0
+            k = np.clip(k, -0.999, 0.999)
+            a[1:i + 1] += k * a[i:0:-1]; a[i] = k
+            e *= (1.0 - k * k)
+            if e < 1e-12: e = 1e-12
+        n_fft = max(1024, 2 ** int(np.ceil(np.log2(n))))
+        A = np.fft.rfft(a, n=n_fft)
+        H = 1.0 / (np.abs(A) + 1e-10)
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+        lo = int(np.searchsorted(freqs, max(f0 * 1.1, 200.0)))
+        hi_f1, hi_f2 = int(np.searchsorted(freqs, 1200.0)), int(np.searchsorted(freqs, 3000.0))
+        f1_hz, f2_hz = 0.0, 0.0
+        if lo < hi_f1:
+            seg = H[lo:hi_f1 + 1]
+            peaks = [(j + lo, seg[j]) for j in range(1, len(seg) - 1) if seg[j] > seg[j - 1] and seg[j] >= seg[j + 1]]
+            if peaks: peaks.sort(key=lambda x: x[1], reverse=True); f1_hz = freqs[peaks[0][0]]
+        f1_idx = int(np.searchsorted(freqs, f1_hz + 100.0)) if f1_hz > 0 else lo
+        if f1_idx < hi_f2:
+            seg = H[f1_idx:hi_f2 + 1]
+            peaks = [(j + f1_idx, seg[j]) for j in range(1, len(seg) - 1) if seg[j] > seg[j - 1] and seg[j] >= seg[j + 1]]
+            if peaks: peaks.sort(key=lambda x: x[1], reverse=True); f2_hz = freqs[peaks[0][0]]
+        return max(0.0, f1_hz), max(0.0, f2_hz)
+
     # ═══════════════════════════════════════════════════════════
-    # 换声点检测 (复用 PassaggioCalibrationDialog 算法)
+    # 换声点检测
     # ═══════════════════════════════════════════════════════════
 
     def _detect_passaggio(self) -> None:
@@ -2632,10 +2801,14 @@ class VoiceTypeAssessmentDialog(QDialog):
         if len(self._feature_track) < 5 or len(self._pitch_track) < 5:
             return
 
-        ft_times = np.array([t for t, _, _, _ in self._feature_track])
-        ft_tilts = np.array([tilt for _, tilt, _, _ in self._feature_track])
-        ft_hnrs = np.array([hnr for _, _, hnr, _ in self._feature_track])
-        ft_rmss = np.array([rms for _, _, _, rms in self._feature_track])
+        ft_times = np.array([t for t, _, _, _, _, _, _, _ in self._feature_track])
+        ft_tilts = np.array([tilt for _, tilt, _, _, _, _, _, _ in self._feature_track])
+        ft_hnrs = np.array([hnr for _, _, hnr, _, _, _, _, _ in self._feature_track])
+        ft_rmss = np.array([rms for _, _, _, rms, _, _, _, _ in self._feature_track])
+        ft_l1l2s = np.array([l1l2 for _, _, _, _, l1l2, _, _, _ in self._feature_track])
+        ft_h2h3s = np.array([h2h3 for _, _, _, _, _, h2h3, _, _ in self._feature_track])
+        ft_f1s = np.array([f1 for _, _, _, _, _, _, f1, _ in self._feature_track])
+        ft_f2s = np.array([f2 for _, _, _, _, _, _, _, f2 in self._feature_track])
 
         pitch_times = np.array([t for t, _ in self._pitch_track])
         pitch_freqs = np.array([f for _, f in self._pitch_track])
@@ -2647,6 +2820,8 @@ class VoiceTypeAssessmentDialog(QDialog):
         tilts_raw = np.interp(pitch_times, ft_times, ft_tilts)
         hnrs_raw = np.interp(pitch_times, ft_times, ft_hnrs)
         rmss_raw = np.interp(pitch_times, ft_times, ft_rmss)
+        l1l2s_raw = np.interp(pitch_times, ft_times, ft_l1l2s)
+        h2h3s_raw = np.interp(pitch_times, ft_times, ft_h2h3s)
 
         n = len(pitch_times)
 
@@ -2662,39 +2837,90 @@ class VoiceTypeAssessmentDialog(QDialog):
         tilts = _smooth3(tilts_raw)
         hnrs = _smooth3(hnrs_raw)
         rmss = _smooth3(rmss_raw)
+        l1l2s = _smooth3(l1l2s_raw)
+        h2h3s = _smooth3(h2h3s_raw)
 
-        # 1. 频谱倾斜突变
-        tilt_drop = np.zeros(n)
-        tilt_drop[1:] = np.clip(-np.diff(tilts), 0, None)
-        tilt_quality = self._feature_snr(tilt_drop)
-        tilt_score = self._normalize_feature(tilt_drop)
+        # ── 滑动窗口变化量 (P1): 替代逐帧差分，捕获 200-500ms 过渡 ──
+        # hop ~46ms, 窗口 8 帧 ≈ 370ms
+        def _windowed_drop(x: np.ndarray, win: int = 8) -> np.ndarray:
+            result = np.zeros_like(x)
+            half = max(1, win // 2)
+            for i in range(win, len(x)):
+                start_mean = np.mean(x[i - win : i - half])
+                end_mean = np.mean(x[i - half : i])
+                result[i] = start_mean - end_mean  # 正值 = 下降 (换声信号)
+            return np.clip(result, 0, None)
 
-        # 2. 音高断连
+        def _windowed_rise(x: np.ndarray, win: int = 8) -> np.ndarray:
+            result = np.zeros_like(x)
+            half = max(1, win // 2)
+            for i in range(win, len(x)):
+                start_mean = np.mean(x[i - win : i - half])
+                end_mean = np.mean(x[i - half : i])
+                result[i] = end_mean - start_mean  # 正值 = 上升 (换声信号)
+            return np.clip(result, 0, None)
+
+        # 1. 频谱倾斜 — 换声时下降 (变得更负)
+        tilt_change = _windowed_drop(tilts)
+        tilt_quality = self._feature_snr(tilt_change)
+        tilt_score = self._normalize_feature(tilt_change)
+
+        # 2. 音高断连 — 换声时半音跳跃增大
         semitone_diff = np.zeros(n)
         for i in range(1, n):
             if pitch_freqs[i] > 0 and pitch_freqs[i - 1] > 0:
                 semitone_diff[i] = abs(12 * math.log2(pitch_freqs[i] / max(pitch_freqs[i - 1], 1e-6)))
-        semitone_diff = _smooth3(semitone_diff)
-        pitch_quality = self._feature_snr(semitone_diff)
-        pitch_score = self._normalize_feature(semitone_diff)
+        semitone_smooth = _smooth3(semitone_diff)
+        pitch_change = _windowed_rise(semitone_smooth)  # 跳跃增大 = 上升
+        pitch_quality = self._feature_snr(pitch_change)
+        pitch_score = self._normalize_feature(pitch_change)
 
-        # 3. HNR 骤降
-        hnr_drop = np.zeros(n)
-        hnr_drop[1:] = np.clip(-np.diff(hnrs), 0, None)
-        hnr_quality = self._feature_snr(hnr_drop)
-        hnr_score = self._normalize_feature(hnr_drop)
+        # 3. HNR — 换声时下降
+        hnr_change = _windowed_drop(hnrs)
+        hnr_quality = self._feature_snr(hnr_change)
+        hnr_score = self._normalize_feature(hnr_change)
 
-        # 4. 振幅骤降
-        rms_drop = np.zeros(n)
-        rms_drop[1:] = np.clip(-np.diff(rmss), 0, None)
-        rms_quality = self._feature_snr(rms_drop)
-        rms_score = self._normalize_feature(rms_drop)
+        # 4. 振幅 — 换声时下降
+        rms_change = _windowed_drop(rmss)
+        rms_quality = self._feature_snr(rms_change)
+        rms_score = self._normalize_feature(rms_change)
 
-        # 5. 声部先验 —— 手动设置 vs 自动推断 区分对待
+        # 5. L1-L2 谐波比 — 换声时上升 (从负变正)  [P0 新增]
+        l1l2_change = _windowed_rise(l1l2s)
+        l1l2_quality = self._feature_snr(l1l2_change)
+        l1l2_score = self._normalize_feature(l1l2_change)
+
+        # 6. H2/H3 主导度 — 换声时下降 (H2 主导 → H3 主导)  [P0 新增]
+        h2h3_change = _windowed_drop(h2h3s)
+        h2h3_quality = self._feature_snr(h2h3_change)
+        h2h3_score = self._normalize_feature(h2h3_change)
+
+        # ── 7. F1/H2 穿越 (P3) — 换声点物理机制 ──
+        f1s = _smooth3(np.interp(pitch_times, ft_times, ft_f1s))
+        f2s = _smooth3(np.interp(pitch_times, ft_times, ft_f2s))
+        f1_h2_gap = np.zeros(n)
+        for i in range(n):
+            if pitch_freqs[i] > 0 and f1s[i] > 0:
+                h2 = 2.0 * pitch_freqs[i]
+                gap = abs(f1s[i] - h2) / max(h2, 1e-6)
+                f1_h2_gap[i] = max(0.0, 1.0 - gap / 0.15)
+        f1h2_quality = self._feature_snr(f1_h2_gap)
+        f1h2_score = self._normalize_feature(f1_h2_gap)
+
+        # ── 8. 频谱平滑度 (P4) ──
+        spec_smooth = np.ones(n) * 0.5
+        if n >= 2:
+            for i in range(1, n):
+                if f1s[i] > 0 and f1s[i - 1] > 0:
+                    f1_rel_change = abs(f1s[i] - f1s[i - 1]) / max(f1s[i - 1], 1e-6)
+                    spec_smooth[i] = max(0.0, 1.0 - f1_rel_change / 0.30)
+        spec_smooth_quality = self._feature_snr(spec_smooth)
+        spec_smooth_score = self._normalize_feature(spec_smooth)
+
+        # 9. 声部先验 —— 手动设置 vs 自动推断 区分对待
         vt = self._profile.effective_voice_type
         is_manual_vt = bool(getattr(self._profile, 'voice_type_manual', ''))
         expected_t4 = _VOICE_TYPE_PASSAGGIO.get(vt, None)
-        # 自动推断的声部用更宽的 σ (5→6 半音)，降低错误引导风险
         prior_sigma = 4.0 if is_manual_vt else 6.0
         prior_score = np.ones(n) * 0.5
         if expected_t4 is not None:
@@ -2703,34 +2929,41 @@ class VoiceTypeAssessmentDialog(QDialog):
                     st_dist = abs(12 * math.log2(f / expected_t4))
                     prior_score[i] = math.exp(-0.5 * (st_dist / prior_sigma) ** 2)
 
-        # ── 自适应权重: 信号质量高的特征权重更大 ──
+        # ── 8 特征自适应权重 ──
         qualities = {
             'tilt': max(tilt_quality, 0.1),
             'pitch': max(pitch_quality, 0.1),
             'hnr': max(hnr_quality, 0.1),
             'rms': max(rms_quality, 0.1),
+            'l1l2': max(l1l2_quality, 0.1),
+            'h2h3': max(h2h3_quality, 0.1),
+            'f1h2': max(f1h2_quality, 0.1),
+            'spec_smooth': max(spec_smooth_quality, 0.1),
         }
-        # 手动设置 → 强先验 (15%)；自动推断 → 弱先验 (10%)；未知 → 弱先验
         prior_base = 1.5 if (expected_t4 is not None and is_manual_vt) else 1.0
         q_sum = sum(qualities.values()) + prior_base
-        w_tilt = 0.35 * qualities['tilt'] / max(q_sum * 0.35, 0.01)
-        w_pitch = 0.25 * qualities['pitch'] / max(q_sum * 0.25, 0.01)
-        w_hnr = 0.20 * qualities['hnr'] / max(q_sum * 0.20, 0.01)
-        w_rms = 0.10 * qualities['rms'] / max(q_sum * 0.10, 0.01)
-        # 手动设置声部 → 15% 强先验；自动推断 → 10% 弱先验
-        w_prior = 0.15 if (expected_t4 is not None and is_manual_vt) else 0.10
 
-        # 归一化总权重
-        w_total = w_tilt + w_pitch + w_hnr + w_rms + w_prior
-        w_tilt /= w_total
-        w_pitch /= w_total
-        w_hnr /= w_total
-        w_rms /= w_total
-        w_prior /= w_total
+        base_w = {'tilt': 0.22, 'pitch': 0.15, 'hnr': 0.10, 'rms': 0.06,
+                  'l1l2': 0.10, 'h2h3': 0.08, 'f1h2': 0.12, 'spec_smooth': 0.07}
+        w_tilt = base_w['tilt'] * qualities['tilt'] / max(q_sum * base_w['tilt'], 0.01)
+        w_pitch = base_w['pitch'] * qualities['pitch'] / max(q_sum * base_w['pitch'], 0.01)
+        w_hnr = base_w['hnr'] * qualities['hnr'] / max(q_sum * base_w['hnr'], 0.01)
+        w_rms = base_w['rms'] * qualities['rms'] / max(q_sum * base_w['rms'], 0.01)
+        w_l1l2 = base_w['l1l2'] * qualities['l1l2'] / max(q_sum * base_w['l1l2'], 0.01)
+        w_h2h3 = base_w['h2h3'] * qualities['h2h3'] / max(q_sum * base_w['h2h3'], 0.01)
+        w_f1h2 = base_w['f1h2'] * qualities['f1h2'] / max(q_sum * base_w['f1h2'], 0.01)
+        w_spec_smooth = base_w['spec_smooth'] * qualities['spec_smooth'] / max(q_sum * base_w['spec_smooth'], 0.01)
+        w_prior = 0.10 if (expected_t4 is not None and is_manual_vt) else 0.06
 
-        # ── 融合打分 ──
+        w_total = w_tilt + w_pitch + w_hnr + w_rms + w_l1l2 + w_h2h3 + w_f1h2 + w_spec_smooth + w_prior
+        w_tilt /= w_total; w_pitch /= w_total; w_hnr /= w_total; w_rms /= w_total
+        w_l1l2 /= w_total; w_h2h3 /= w_total; w_f1h2 /= w_total; w_spec_smooth /= w_total; w_prior /= w_total
+
+        # ── 融合打分 (9 特征) ──
         fusion = (w_tilt * tilt_score + w_pitch * pitch_score +
                   w_hnr * hnr_score + w_rms * rms_score +
+                  w_l1l2 * l1l2_score + w_h2h3 * h2h3_score +
+                  w_f1h2 * f1h2_score + w_spec_smooth * spec_smooth_score +
                   w_prior * prior_score)
 
         # 高斯平滑
@@ -2741,10 +2974,20 @@ class VoiceTypeAssessmentDialog(QDialog):
         kernel /= kernel.sum()
         fusion_smooth = np.convolve(fusion, kernel, mode='same')
 
-        # 找局部极大值
-        # 换声点生理上限: 女声最高 F#5(740Hz)，男声最高 G4(392Hz)，给安全余量
+        # ── P2: 基于 Phase 1 实测音域缩小搜索窗口 ──
+        # 换声点不可能在最低舒适音的 1.3 倍以下，也不可能超过最高舒适音的 85%
         min_freq = 250.0 if self._profile.is_female else 150.0
         max_freq = 880.0 if self._profile.is_female else 550.0
+
+        if hasattr(self, '_low_range_hz') and self._low_range_hz > 60:
+            min_freq = max(min_freq, self._low_range_hz * 1.30)
+        if hasattr(self, '_high_range_hz') and self._high_range_hz > 60:
+            max_freq = min(max_freq, self._high_range_hz * 0.85)
+
+        # 确保 min < max，且在合理范围内
+        min_freq = max(120.0, min(min_freq, max_freq - 30.0))
+        max_freq = min(1000.0, max(max_freq, min_freq + 30.0))
+
         valid = (pitch_freqs > min_freq) & (pitch_freqs < max_freq)
 
         peaks = []
@@ -2766,40 +3009,41 @@ class VoiceTypeAssessmentDialog(QDialog):
                 'pitch_jump': float(pitch_score[idx]),
                 'hnr': float(hnr_score[idx]),
                 'rms': float(rms_score[idx]),
+                'l1l2': float(l1l2_score[idx]),
+                'h2h3': float(h2h3_score[idx]),
+                'f1h2': float(f1h2_score[idx]),
+                'spec_smooth': float(spec_smooth_score[idx]),
                 'prior': float(prior_score[idx]),
             })
+
+        # ── 融合分重标定: 增强可读性 ──
+        if self._passaggio_candidates:
+            top_score = self._passaggio_candidates[0]['fusion_score']
+            if top_score > 0.01:
+                for c in self._passaggio_candidates:
+                    ratio = c['fusion_score'] / top_score
+                    c['fusion_score'] = float(np.clip(0.20 + ratio * 0.72, 0.15, 0.92))
 
         if not self._passaggio_candidates:
             return
 
         best = self._passaggio_candidates[0]
         self._passaggio_hz = best['freq']
-        self._selected_candidate_index = 0  # 重置用户选择
+        self._selected_candidate_index = 0
 
-        # ── 置信度: 基于峰显著度 + 特征一致性 ──
-        background = max(float(np.median(fusion_smooth[valid])), 0.010)
-        prominence = best['fusion_score'] / background
-        # 更宽松的 sigmoid: 中点 3.0 (原 6.0), 斜率 0.55 (原 0.45)
-        raw_conf = float(np.clip(1.0 / (1.0 + math.exp(-(prominence - 3.0) * 0.55)), 0.15, 0.95))
+        # ── 置信度: 基于重标定后的融合分 + 一致性 ──
+        rescaled_fusion = best['fusion_score']
+        mapped_conf = float(np.clip(rescaled_fusion * 1.1, 0.15, 0.92))
 
-        # 峰间一致性
         if len(self._passaggio_candidates) >= 2:
-            peak_ratio = self._passaggio_candidates[1]['fusion_score'] / max(best['fusion_score'], 0.001)
+            peak_ratio = self._passaggio_candidates[1]['fusion_score'] / max(rescaled_fusion, 0.001)
+            consistency = 0.75 if peak_ratio > 0.85 else (0.88 if peak_ratio > 0.60 else 1.0)
         else:
-            peak_ratio = 0.0
-
-        if peak_ratio < 0.3:
             consistency = 1.0
-        elif peak_ratio < 0.6:
-            consistency = 1.0 - 0.25 * (peak_ratio - 0.3) / 0.3
-        else:
-            consistency = max(0.25, 1.0 - 0.75 * (peak_ratio - 0.3) / 0.7)
 
-        # 特征一致性 (各特征是否指向同一点)
         feat_agreement = self._compute_feature_agreement(best, self._passaggio_candidates)
-        consistency = 0.7 * consistency + 0.3 * feat_agreement
-
-        self._passaggio_confidence = float(np.clip(raw_conf * consistency, 0.10, 0.95))
+        self._passaggio_confidence = float(np.clip(
+            mapped_conf * consistency * (0.88 + 0.12 * feat_agreement), 0.15, 0.95))
 
     @staticmethod
     def _feature_snr(x: np.ndarray) -> float:
@@ -3105,23 +3349,69 @@ class VoiceTypeAssessmentDialog(QDialog):
         用于雷达图的「音准稳定性」维度。
         高稳定 = 元音保持在同一音高上，F0 标准差小。
         """
-        if not self._pitch_track:
-            self._pitch_stability = 0.0
-            return
-        freqs = [f for t, f in self._pitch_track if f > 60.0]
-        if len(freqs) < 8:
-            self._pitch_stability = 0.0
-            return
+        # 获取有声频率: 优先实时 _pitch_track，不足时回退到离线检测
+        freqs = [f for t, f in (self._pitch_track or []) if f > 60.0]
+        total_frames = len(self._pitch_track) if self._pitch_track else 0
+        print(f"[音准稳定性] 总帧数={total_frames}, 有声帧={len(freqs)}, 需要≥5")
+
+        if len(freqs) < 5:
+            # 回退: 对 _full_audio 做一次离线音高检测
+            if self._full_audio is not None and len(self._full_audio) > SAMPLE_RATE * 0.5:
+                print(f"[音准稳定性] 实时帧不足 — 尝试离线回退")
+                try:
+                    freqs = self._offline_pitch_track(self._full_audio)
+                except Exception as exc:
+                    print(f"[音准稳定性] 离线回退异常: {exc}")
+                    freqs = []
+
+            if len(freqs) < 5:
+                print(f"[音准稳定性] 所有来源有声帧不足 (需要 5, 实际 {len(freqs)}) — 设为 0%")
+                self._pitch_stability = 0.0
+                return
+
         median_f = float(np.median(freqs))
         if median_f < 1.0:
+            print(f"[音准稳定性] 中位频率异常 ({median_f:.1f}Hz) — 设为 0%")
             self._pitch_stability = 0.0
             return
         # 半音域标准差
         semitones = [12 * math.log2(f / median_f) for f in freqs]
         stdev_st = float(np.std(semitones))
-        # 标准差 < 0.1 半音 → 几乎完美稳定 (1.0)
-        # 标准差 > 1.5 半音 → 极不稳定 (0.0)
-        self._pitch_stability = float(np.clip(1.0 - stdev_st / 1.5, 0.0, 1.0))
+        stability = float(np.clip(1.0 - stdev_st / 1.5, 0.0, 1.0))
+        print(f"[音准稳定性] 中位={median_f:.0f}Hz, std={stdev_st:.2f}半音, "
+              f"有声帧={len(freqs)}/{total_frames}, stability={stability:.1%}")
+        self._pitch_stability = stability
+
+    def _offline_pitch_track(self, audio: np.ndarray) -> List[float]:
+        """对完整音频做离线音高检测，返回频率列表
+
+        用于当实时 _pitch_track 不足时的回退方案。
+        复用 _pitch_service + 低 VAD/低置信度阈值。
+        """
+        sr = SAMPLE_RATE
+        hop = HOP_SIZE
+        frame = FRAME_SIZE
+        pitch_svc = getattr(self, '_pitch_service', None)
+        if pitch_svc is None:
+            from src.audio_processing.pitch_service import PitchDetectionService
+            pitch_svc = PitchDetectionService(sr, frame, hop)
+
+        freqs = []
+        for start in range(0, len(audio) - frame, hop):
+            chunk = audio[start:start + frame].astype(np.float64)
+            if len(chunk) < frame:
+                break
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
+            if rms < 0.0002:  # 极低阈值
+                continue
+            try:
+                freq, conf = pitch_svc.detect(chunk)
+                if conf > 0.06 and 60.0 < freq < 2000.0:
+                    freqs.append(freq)
+            except Exception:
+                continue
+        print(f"[音准稳定性] 离线检测: 扫描 {len(audio)//hop} 帧, 检测到 {len(freqs)} 帧")
+        return freqs
 
     # ═══════════════════════════════════════════════════════════
     # 分类决策
@@ -3295,8 +3585,8 @@ class VoiceTypeAssessmentDialog(QDialog):
         if self._dynamic_range_db > 0:
             lines.append(f"📢 动态范围: {self._dynamic_range_db:.0f} dB")
 
-        if self._pitch_stability > 0:
-            lines.append(f"🎯 音准稳定性: {self._pitch_stability:.0%}")
+        lines.append(f"🎯 音准稳定性: {self._pitch_stability:.0%}"
+                     + ("  ⚠️ 数据不足" if self._pitch_stability < 0.01 else ""))
 
         # FHE 异常检测：偏差 > 2.5σ 时发出警告
         if self._fhe_hz > 0 and best_vt in _TIMBRE_FHE:
@@ -3588,8 +3878,8 @@ class VoiceTypeAssessmentDialog(QDialog):
             rows.append(('🔢 α比值 (高低频能量比)', f'{self._alpha_ratio:.2f}'))
         if self._dynamic_range_db > 0:
             rows.append(('📢 动态范围', f'{self._dynamic_range_db:.0f} dB'))
-        if self._pitch_stability > 0:
-            rows.append(('🎯 音准稳定性', f'{self._pitch_stability:.0%}'))
+        rows.append(('🎯 音准稳定性', f'{self._pitch_stability:.0%}'
+                     + (' ⚠️ 数据不足' if self._pitch_stability < 0.01 else '')))
 
         for label, value in rows:
             lines.append(f'<tr><td class="metric-label">{label}</td><td class="metric-value">{value}</td></tr>')

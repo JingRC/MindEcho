@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MindEcho 声乐评估报告 — jingrc</title>
+<style>
+
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #0D1117; color: #C9D1D9;
+                max-width: 800px; margin: 0 auto; padding: 24px 20px 40px;
+                line-height: 1.6;
+            }
+            .report-header {
+                text-align: center; padding-bottom: 20px;
+                border-bottom: 2px solid #21262D; margin-bottom: 24px;
+            }
+            .report-header h1 { font-size: 26px; color: #E6EDF3; }
+            .subtitle { color: #8B949E; font-size: 13px; margin-top: 6px; }
+            .summary { text-align: center; margin-bottom: 28px; }
+            .voice-type-badge {
+                display: inline-block; font-size: 28px; font-weight: bold;
+                color: #FFFFFF;
+                background: linear-gradient(135deg, #238636, #1F6FEB);
+                border-radius: 12px; padding: 14px 40px; margin-bottom: 10px;
+            }
+            .confidence { color: #8B949E; font-size: 13px; }
+            .charts-row {
+                display: flex; gap: 20px; margin-bottom: 28px;
+                justify-content: center; flex-wrap: wrap;
+            }
+            .chart-box {
+                background: #161B22; border: 1px solid #21262D;
+                border-radius: 10px; padding: 16px; min-width: 280px;
+            }
+            .chart-box h3 { color: #8B949E; font-size: 14px; margin-bottom: 12px; text-align: center; }
+            .bar-row { display: flex; align-items: center; margin-bottom: 8px; gap: 10px; }
+            .bar-label { width: 80px; text-align: right; font-size: 12px; color: #C9D1D9; }
+            .bar-track {
+                flex: 1; height: 20px; background: #21262D;
+                border-radius: 4px; overflow: hidden; min-width: 100px;
+            }
+            .bar-fill {
+                height: 100%; border-radius: 4px;
+                transition: width 0.3s;
+            }
+            .bar-pct { width: 40px; font-size: 12px; color: #8B949E; }
+            .details {
+                background: #161B22; border: 1px solid #21262D;
+                border-radius: 10px; padding: 20px; margin-bottom: 24px;
+            }
+            .details h3 { color: #E6EDF3; font-size: 16px; margin-bottom: 14px; }
+            table { width: 100%; border-collapse: collapse; }
+            .metric-label {
+                padding: 8px 12px; border-bottom: 1px solid #21262D;
+                color: #8B949E; font-size: 13px; width: 40%;
+            }
+            .metric-value {
+                padding: 8px 12px; border-bottom: 1px solid #21262D;
+                color: #E6EDF3; font-size: 13px; font-weight: 500;
+            }
+            .warning-row td {
+                background: rgba(210, 153, 34, 0.1); color: #D29922;
+                padding: 8px 12px; border-bottom: 1px solid #21262D;
+                font-size: 12px;
+            }
+            .comparison {
+                background: #161B22; border: 1px solid #21262D;
+                border-radius: 10px; padding: 20px; margin-bottom: 24px;
+            }
+            .comparison h3 { color: #E6EDF3; font-size: 16px; margin-bottom: 10px; }
+            .comparison p { color: #C9D1D9; font-size: 13px; margin-bottom: 4px; }
+            .recommendations {
+                background: #161B22; border: 1px solid #21262D;
+                border-radius: 10px; padding: 20px; margin-bottom: 24px;
+            }
+            .recommendations h3 { color: #E6EDF3; font-size: 16px; margin-bottom: 10px; }
+            .coach-notes p { color: #C9D1D9; font-size: 13px; margin-bottom: 8px; }
+            .coach-notes ul { margin-left: 20px; color: #8B949E; font-size: 13px; }
+            .coach-notes li { margin-bottom: 5px; }
+            footer {
+                text-align: center; padding-top: 20px;
+                border-top: 1px solid #21262D; color: #484F58; font-size: 11px;
+            }
+            footer p { margin-bottom: 2px; }
+            @media (max-width: 640px) {
+                .charts-row { flex-direction: column; }
+                .chart-box { min-width: auto; }
+            }
+        
+</style>
+</head>
+<body>
+<header class="report-header">
+<h1>🎤 MindEcho 声乐评估报告</h1>
+<p class="subtitle">歌手: jingrc　｜　评估时间: 2026-06-07 10:54</p>
+</header>
+<section class="summary">
+<div class="voice-type-badge">男高音 (Tenor)</div>
+<p class="confidence">置信度: 高 (85%)　｜　与次选差距: 62.2%</p>
+</section>
+<section class="charts-row">
+<div class="chart-box">
+<h3>🎯 声乐画像 (6维雷达)</h3>
+<svg viewBox="0 0 300 320" width="300" height="320" xmlns="http://www.w3.org/2000/svg">
+<polygon points="150.0,113.7 181.4,131.8 181.4,168.2 150.0,186.3 118.6,168.2 118.6,131.8" fill="none" stroke="#30363D" stroke-width="1"/>
+<polygon points="150.0,77.4 212.9,113.7 212.9,186.3 150.0,222.6 87.1,186.3 87.1,113.7" fill="none" stroke="#30363D" stroke-width="1"/>
+<polygon points="150.0,40.0 245.3,95.0 245.3,205.0 150.0,260.0 54.7,205.0 54.7,95.0" fill="none" stroke="#484F58" stroke-width="1"/>
+<line x1="150" y1="150" x2="150.0" y2="40.0" stroke="#3B82F6" stroke-opacity="0.3" stroke-width="0.7"/>
+<line x1="150" y1="150" x2="245.3" y2="95.0" stroke="#8B5CF6" stroke-opacity="0.3" stroke-width="0.7"/>
+<line x1="150" y1="150" x2="245.3" y2="205.0" stroke="#F59E0B" stroke-opacity="0.3" stroke-width="0.7"/>
+<line x1="150" y1="150" x2="150.0" y2="260.0" stroke="#EF4444" stroke-opacity="0.3" stroke-width="0.7"/>
+<line x1="150" y1="150" x2="54.7" y2="205.0" stroke="#06B6D4" stroke-opacity="0.3" stroke-width="0.7"/>
+<line x1="150" y1="150" x2="54.7" y2="95.0" stroke="#10B981" stroke-opacity="0.3" stroke-width="0.7"/>
+<polygon points="150.0,150.0 150.0,150.0 203.3,180.8 150.0,198.9 69.6,196.4 150.0,150.0" fill="#1F6FEB" fill-opacity="0.25" stroke="#58A6FF" stroke-width="2"/>
+<circle cx="150.0" cy="150.0" r="3.5" fill="#58A6FF"/>
+<circle cx="150.0" cy="150.0" r="3.5" fill="#58A6FF"/>
+<circle cx="203.3" cy="180.8" r="3.5" fill="#58A6FF"/>
+<circle cx="150.0" cy="198.9" r="3.5" fill="#58A6FF"/>
+<circle cx="69.6" cy="196.4" r="3.5" fill="#58A6FF"/>
+<circle cx="150.0" cy="150.0" r="3.5" fill="#58A6FF"/>
+<text x="150.0" y="8.0" text-anchor="middle" fill="#3B82F6" font-size="10" font-weight="bold" font-family="sans-serif">音域</text>
+<text x="273.0" y="73.0" text-anchor="middle" fill="#8B5CF6" font-size="10" font-weight="bold" font-family="sans-serif">换声点</text>
+<text x="273.0" y="85.0" text-anchor="middle" fill="#8B5CF6" font-size="10" font-weight="bold" font-family="sans-serif">确定度</text>
+<text x="273.0" y="215.0" text-anchor="middle" fill="#F59E0B" font-size="10" font-weight="bold" font-family="sans-serif">音色</text>
+<text x="273.0" y="227.0" text-anchor="middle" fill="#F59E0B" font-size="10" font-weight="bold" font-family="sans-serif">亮度</text>
+<text x="150.0" y="286.0" text-anchor="middle" fill="#EF4444" font-size="10" font-weight="bold" font-family="sans-serif">音色</text>
+<text x="150.0" y="298.0" text-anchor="middle" fill="#EF4444" font-size="10" font-weight="bold" font-family="sans-serif">质量</text>
+<text x="27.0" y="215.0" text-anchor="middle" fill="#06B6D4" font-size="10" font-weight="bold" font-family="sans-serif">音准</text>
+<text x="27.0" y="227.0" text-anchor="middle" fill="#06B6D4" font-size="10" font-weight="bold" font-family="sans-serif">稳定性</text>
+<text x="27.0" y="73.0" text-anchor="middle" fill="#10B981" font-size="10" font-weight="bold" font-family="sans-serif">动态</text>
+<text x="27.0" y="85.0" text-anchor="middle" fill="#10B981" font-size="10" font-weight="bold" font-family="sans-serif">范围</text>
+</svg>
+</div>
+<div class="chart-box">
+<h3>📈 声部分数</h3>
+<div class="bar-row">
+<span class="bar-label">男高音 ★</span>
+<div class="bar-track"><div class="bar-fill" style="width:89%;background:#06B6D4;"></div></div>
+<span class="bar-pct">89%</span>
+</div>
+<div class="bar-row">
+<span class="bar-label">男中音</span>
+<div class="bar-track"><div class="bar-fill" style="width:26%;background:#3B82F6;"></div></div>
+<span class="bar-pct">27%</span>
+</div>
+<div class="bar-row">
+<span class="bar-label">男低音</span>
+<div class="bar-track"><div class="bar-fill" style="width:15%;background:#8B5CF6;"></div></div>
+<span class="bar-pct">15%</span>
+</div>
+</div>
+</section>
+<section class="details">
+<h3>📊 详细检测指标</h3>
+<table>
+<tr><td class="metric-label">🎨 FHE (半能量频率)</td><td class="metric-value">2810 Hz (2000-3600 Hz)</td></tr>
+<tr><td class="metric-label">📍 PHE (半能量位置)</td><td class="metric-value">51%</td></tr>
+<tr><td class="metric-label">📐 频谱重心</td><td class="metric-value">2810 Hz</td></tr>
+<tr><td class="metric-label">💎 音色质量</td><td class="metric-value">44%</td></tr>
+<tr><td class="metric-label">〰️ Vibrato 速率</td><td class="metric-value">4.3 Hz</td></tr>
+<tr><td class="metric-label">〰️ Vibrato 幅度</td><td class="metric-value">23 cents</td></tr>
+<tr><td class="metric-label">📐 SPR (歌唱功率比)</td><td class="metric-value">-15.1 dB</td></tr>
+<tr><td class="metric-label">🔢 α比值 (高低频能量比)</td><td class="metric-value">0.33</td></tr>
+<tr><td class="metric-label">🎯 音准稳定性</td><td class="metric-value">84%</td></tr>
+</table>
+</section>
+<section class="recommendations">
+<h3>🤖 AI 教练建议</h3>
+<div class="coach-notes">
+<p>你的声部被鉴定为 <strong>男高音 (Tenor)</strong>。建议重点练习以下内容:</p>
+<ul>
+<li>关注换声区过渡技巧 (passaggio technique)，练习在换声点附近保持音色统一</li>
+<li>加强高音区头声共鸣训练</li>
+</ul>
+</div>
+</section>
+<footer>
+<p>MindEcho v1.0 — 智能声乐教练　｜　报告生成: 2026-06-07 10:54</p>
+<p>参考数据来源: Müller et al. (2022) Scientific Reports; Richard Miller 声乐教学文献</p>
+</footer>
+</body>
+</html>

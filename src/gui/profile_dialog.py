@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
@@ -97,108 +97,205 @@ class ProfileSelectionDialog(QDialog):
         self.result_is_guest: bool = False
 
         self.setWindowTitle("选择歌手存档")
-        self.setMinimumSize(480, 420)
+        self.setMinimumSize(520, 500)
         self.setModal(True)
+        self.setStyleSheet("""
+            ProfileSelectionDialog { background-color: #0D1117; }
+        """)
 
         self._build_ui()
         self._refresh_list()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
 
-        # ── 标题 ──
-        title = QLabel("🎤 选择或创建歌手存档")
+        # ── 标题区 ──
+        title_row = QHBoxLayout()
+        title_icon = QLabel("🎤")
+        title_icon.setStyleSheet("font-size: 24px; background: transparent;")
+        title_row.addWidget(title_icon)
+
+        title = QLabel("选择歌手存档")
         title_font = QFont()
-        title_font.setPointSize(14)
+        title_font.setPointSize(16)
         title_font.setBold(True)
         title.setFont(title_font)
-        layout.addWidget(title)
+        title.setStyleSheet("color: #E6EDF3; background: transparent;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+        layout.addLayout(title_row)
 
         desc = QLabel(
-            "存档用于记录你的音域、换声点和音色特征，\n"
-            "让音高识别和技巧标注更精准。"
+            "存档用于记录你的音域、换声点和音色特征，让识别更精准。"
         )
-        desc.setStyleSheet("color: #888;")
+        desc.setStyleSheet("color: #8B949E; font-size: 12px; background: transparent; padding: 2px 0;")
+        desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        # ── 存档列表 ──
-        list_label = QLabel("已有存档：")
-        list_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(list_label)
+        # ── 存档卡片列表 ──
+        list_header = QHBoxLayout()
+        list_label = QLabel("已有存档")
+        list_label.setStyleSheet(
+            "color: #8B949E; font-size: 11px; font-weight: bold;"
+            "letter-spacing: 0.5px; background: transparent;"
+        )
+        list_header.addWidget(list_label)
+        list_header.addStretch()
+        count_lbl = QLabel("")
+        count_lbl.setStyleSheet(
+            "color: #58A6FF; font-size: 10px; background: #1A2540;"
+            "border-radius: 8px; padding: 2px 8px;"
+        )
+        count_lbl.setObjectName("profileCount")
+        list_header.addWidget(count_lbl)
+        layout.addLayout(list_header)
 
         self._list_widget = QListWidget()
-        self._list_widget.setMinimumHeight(150)
+        self._list_widget.setMinimumHeight(180)
+        self._list_widget.setSpacing(6)
+        self._list_widget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self._list_widget.setStyleSheet("""
+            QListWidget {
+                background: transparent; border: none; outline: none;
+            }
             QListWidget::item {
-                padding: 8px 10px;
-                border-bottom: 1px solid #eee;
+                background: #161B22;
+                border: 1px solid #21262D;
+                border-radius: 10px;
+                margin-bottom: 4px;
+                padding: 0px;
+            }
+            QListWidget::item:hover {
+                border: 1px solid #30363D;
+                background: #1C2129;
             }
             QListWidget::item:selected {
-                background-color: #e3f2fd;
+                border: 1.5px solid #58A6FF;
+                background: #161B22;
             }
+        """)
+        self._list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._list_widget.verticalScrollBar().setStyleSheet("""
+            QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
+            QScrollBar::handle:vertical { background: #30363D; border-radius: 3px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: #484F58; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
         self._list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self._list_widget.itemDoubleClicked.connect(self._accept_selection)
         layout.addWidget(self._list_widget)
 
-        # 无存档时的提示
+        # 空状态提示
         self._empty_label = QLabel(
-            "还没有存档。创建存档后，系统会学习你的声音特征，\n"
-            "让识别越来越精准。"
+            "还没有存档\n创建存档后，系统会学习你的声音特征，让识别越来越精准。"
         )
-        self._empty_label.setStyleSheet("color: #999; padding: 20px;")
+        self._empty_label.setStyleSheet(
+            "color: #484F58; font-size: 12px; background: transparent; padding: 32px 20px;"
+        )
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setWordWrap(True)
         layout.addWidget(self._empty_label)
 
-        # ── 选中存档的信息 ──
+        # ── 选中存档详情卡片 ──
         self._info_frame = QFrame()
-        self._info_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self._info_frame.setStyleSheet("QFrame { background: #f5f5f5; border-radius: 6px; padding: 8px; }")
+        self._info_frame.setObjectName("infoCard")
+        self._info_frame.setMinimumHeight(60)
+        self._info_frame.setStyleSheet("""
+            QFrame#infoCard {
+                background: #161B22;
+                border: 1px solid #30363D;
+                border-radius: 10px;
+            }
+        """)
         info_layout = QVBoxLayout(self._info_frame)
+        info_layout.setContentsMargins(14, 10, 14, 10)
+        info_layout.setSpacing(6)
         self._info_label = QLabel("")
         self._info_label.setWordWrap(True)
+        self._info_label.setStyleSheet("color: #C9D1D9; font-size: 12px; background: transparent;")
         info_layout.addWidget(self._info_label)
         self._info_frame.setVisible(False)
         layout.addWidget(self._info_frame)
 
         # ── 按钮行 ──
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
+        btn_layout.setSpacing(10)
 
         self._select_btn = QPushButton("✓ 使用此存档")
         self._select_btn.setEnabled(False)
-        self._select_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "padding: 8px 20px; border-radius: 4px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #388E3C; }"
-            "QPushButton:disabled { background-color: #ccc; }"
-        )
+        self._select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_btn.setMinimumHeight(38)
+        self._select_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #238636, stop:1 #1F6F30);
+                color: white; padding: 8px 22px; border-radius: 8px;
+                font-weight: bold; font-size: 12px; border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2EA043, stop:1 #238636);
+            }
+            QPushButton:disabled {
+                background: #21262D; color: #484F58; border: 1px solid #30363D;
+            }
+        """)
         self._select_btn.clicked.connect(self._accept_selection)
         btn_layout.addWidget(self._select_btn)
 
-        self._new_btn = QPushButton("＋ 新建存档")
-        self._new_btn.setStyleSheet(
-            "QPushButton { padding: 8px 16px; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #e0e0e0; }"
-        )
+        self._new_btn = QPushButton("＋ 新建")
+        self._new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._new_btn.setMinimumHeight(38)
+        self._new_btn.setStyleSheet("""
+            QPushButton {
+                background: #21262D; color: #C9D1D9;
+                padding: 8px 16px; border-radius: 8px;
+                font-size: 12px; border: 1px solid #30363D;
+            }
+            QPushButton:hover { background: #30363D; border-color: #58A6FF; color: #E6EDF3; }
+        """)
         self._new_btn.clicked.connect(self._on_create_new)
         btn_layout.addWidget(self._new_btn)
 
         self._guest_btn = QPushButton("访客模式")
+        self._guest_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._guest_btn.setToolTip("不建立存档，使用默认参数（不保存任何数据）")
-        self._guest_btn.setStyleSheet(
-            "QPushButton { padding: 8px 16px; border-radius: 4px; color: #666; }"
-            "QPushButton:hover { background-color: #e0e0e0; }"
-        )
+        self._guest_btn.setMinimumHeight(38)
+        self._guest_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent; color: #8B949E;
+                padding: 8px 16px; border-radius: 8px;
+                font-size: 12px; border: 1px solid #30363D;
+            }
+            QPushButton:hover { background: #21262D; color: #C9D1D9; }
+        """)
         self._guest_btn.clicked.connect(self._on_guest_mode)
         btn_layout.addWidget(self._guest_btn)
 
+        btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
         # ── 记住选择 ──
         self._remember_cb = QCheckBox("本次会话记住选择（关闭窗口前不再询问）")
         self._remember_cb.setChecked(self._session_remembered)
+        self._remember_cb.setStyleSheet("""
+            QCheckBox {
+                color: #8B949E; font-size: 11px; background: transparent;
+                spacing: 8px; padding: 4px 0;
+            }
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 2px solid #30363D; border-radius: 4px;
+                background: #0D1117;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #58A6FF;
+                background: #58A6FF;
+            }
+            QCheckBox::indicator:hover { border-color: #58A6FF; }
+        """)
         layout.addWidget(self._remember_cb)
 
     def _refresh_list(self) -> None:
@@ -206,37 +303,89 @@ class ProfileSelectionDialog(QDialog):
         profiles = self._mgr.list_profiles()
         self._empty_label.setVisible(len(profiles) == 0)
 
+        # 更新计数标签
+        count_lbl = self.findChild(QLabel, "profileCount")
+        if count_lbl is not None:
+            count_lbl.setText(f"{len(profiles)} 人" if profiles else "")
+
         for profile in profiles:
             vt = _voice_type_display(profile.effective_voice_type)
             gender = _gender_display(profile.effective_gender)
             minutes = profile.usage.total_minutes
-            item_text = f"{profile.name}"
-            sub_text = f"声部: {vt}  |  性别: {gender}  |  累计 {minutes:.0f} 分钟"
+            sessions = profile.usage.total_sessions
+            t4 = profile.passaggio.t4_hz
+            conf = profile.passaggio.confidence
+
+            # 构建副标题
+            parts = [f"声部: {vt}", f"性别: {gender}"]
+            if t4 > 0:
+                parts.append(f"T4: {t4:.0f} Hz")
+            parts.append(f"练习: {minutes:.0f} 分钟")
+            sub_text = "  |  ".join(parts)
 
             item = QListWidgetItem()
-            item.setText(item_text)
             item.setData(Qt.ItemDataRole.UserRole, profile.id)
-            item.setToolTip(sub_text)
+            item.setToolTip(f"{profile.name} — {sub_text}")
 
-            # 创建自定义 widget 显示两行
+            # 自定义 widget
             widget = QWidget()
+            widget.setStyleSheet("background: transparent;")
             w_layout = QVBoxLayout(widget)
-            w_layout.setContentsMargins(0, 2, 0, 2)
-            w_layout.setSpacing(2)
+            w_layout.setContentsMargins(14, 10, 14, 10)
+            w_layout.setSpacing(3)
 
-            name_label = QLabel(item_text)
+            # 第一行: 名称 + 右侧箭头
+            name_row = QHBoxLayout()
+            name_label = QLabel(profile.name)
             name_font = QFont()
-            name_font.setPointSize(11)
+            name_font.setPointSize(12)
             name_font.setBold(True)
             name_label.setFont(name_font)
-            w_layout.addWidget(name_label)
+            name_label.setStyleSheet("color: #E6EDF3; background: transparent;")
+            name_row.addWidget(name_label)
 
+            if sessions > 0:
+                session_badge = QLabel(f"{sessions} 次")
+                session_badge.setStyleSheet(
+                    "color: #8B949E; font-size: 10px; background: #21262D;"
+                    "border-radius: 6px; padding: 1px 8px;"
+                )
+                name_row.addWidget(session_badge)
+
+            name_row.addStretch()
+            w_layout.addLayout(name_row)
+
+            # 第二行: 详细信息
             sub_label = QLabel(sub_text)
-            sub_label.setStyleSheet("color: #888; font-size: 10pt;")
+            sub_label.setStyleSheet("color: #8B949E; font-size: 10px; background: transparent;")
             w_layout.addWidget(sub_label)
 
+            # 第三行: 进度条式的置信度指示 (如果有换声点)
+            if t4 > 0 and conf > 0:
+                conf_row = QHBoxLayout()
+                conf_row.setSpacing(6)
+                conf_label = QLabel(f"换声点置信度")
+                conf_label.setStyleSheet("color: #6E7681; font-size: 9px; background: transparent;")
+                conf_row.addWidget(conf_label)
+
+                conf_bar = QFrame()
+                conf_bar.setFixedHeight(4)
+                conf_bar.setFixedWidth(100)
+                conf_color = "#3FB950" if conf > 0.6 else ("#D29922" if conf > 0.3 else "#F85149")
+                conf_bar.setStyleSheet(f"""
+                    QFrame {{
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                            stop:0 {conf_color}, stop:{conf:.2f} {conf_color},
+                            stop:{conf:.2f} #21262D, stop:1 #21262D);
+                        border-radius: 2px;
+                    }}
+                """)
+                conf_row.addWidget(conf_bar)
+                conf_row.addStretch()
+                w_layout.addLayout(conf_row)
+
             widget.setLayout(w_layout)
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(QSize(0, 72 if (t4 > 0 and conf > 0) else 56))
             self._list_widget.addItem(item)
             self._list_widget.setItemWidget(item, widget)
 
@@ -1601,6 +1750,10 @@ class ProfileDetailDialog(QDialog):
         # ── 练习统计 ──
         content_layout.addWidget(self._build_practice_stats())
 
+        # ── 声乐维度概览 ──
+        if self._has_any_metric_data():
+            content_layout.addWidget(self._build_vocal_overview())
+
         # ── 音域分析 ──
         content_layout.addWidget(self._build_pitch_range())
 
@@ -1728,13 +1881,154 @@ class ProfileDetailDialog(QDialog):
 
         return hero
 
+    def _has_any_metric_data(self) -> bool:
+        """检查是否有任何可展示的声乐指标数据"""
+        p = self._profile
+        ps = p.pitch_stats
+        pp = p.passaggio
+        t = p.timbre
+        return (ps.total_voiced_frames > 0 or pp.t4_hz > 0 or t.sample_count > 0)
+
+    def _build_vocal_overview(self) -> QWidget:
+        """声乐维度概览 — 横向进度条展示关键指标"""
+        p = self._profile
+        ps = p.pitch_stats
+        pp = p.passaggio
+        t = p.timbre
+
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        metrics = []
+
+        # 音域跨度 (半音) → 0-36 → 0-1
+        if ps.p5_hz > 60 and ps.p95_hz > 60:
+            span_st = 12 * math.log2(ps.p95_hz / ps.p5_hz)
+            span_norm = min(span_st / 36.0, 1.0)
+            note_low = _hz_to_note_name(ps.p5_hz)
+            note_high = _hz_to_note_name(ps.p95_hz)
+            metrics.append(("🎵 音域", span_norm,
+                          f"{note_low} → {note_high} ({span_st:.1f} 半音)",
+                          ["#58A6FF", "#3FB950"]))
+
+        # 换声点确定度
+        if pp.t4_hz > 0:
+            conf_norm = pp.confidence
+            t4_note = _hz_to_note_name(pp.t4_hz)
+            color = "#3FB950" if conf_norm > 0.6 else ("#D29922" if conf_norm > 0.3 else "#F85149")
+            metrics.append(("🔄 换声点", conf_norm,
+                          f"T4={t4_note} ({pp.t4_hz:.0f}Hz) · {conf_norm:.0%}",
+                          [color, color]))
+
+        # 音色质量
+        if t.sample_count > 0 and t.timbre_quality > 0:
+            tq = t.timbre_quality
+            metrics.append(("💎 音色质量", tq,
+                          f"{tq:.0%} · {t.sample_count} 样本",
+                          ["#A78BFA", "#E040FB"]))
+
+        # 动态范围 (6-42 dB → 0-1)
+        dr = getattr(p, '_dynamic_range_db', None)
+        if dr is None:
+            # 尝试从音域数据估算
+            if ps.min_hz > 0 and ps.max_hz > 0:
+                dr = max(6, min(42, 20 * math.log10(ps.max_hz / max(ps.min_hz, 1))))
+        if dr and dr > 0:
+            dr_norm = min((dr - 6) / 36.0, 1.0)
+            metrics.append(("📢 动态范围", dr_norm,
+                          f"{dr:.0f} dB",
+                          ["#F0883E", "#FF8C00"]))
+
+        # 音准稳定性
+        stability = getattr(p, '_pitch_stability', 0.0)
+        if stability > 0:
+            metrics.append(("🎯 音准", stability,
+                          f"{stability:.0%}",
+                          ["#58A6FF", "#1E90FF"]))
+
+        for icon_label, value, detail, colors in metrics:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+
+            lbl = QLabel(icon_label)
+            lbl.setFixedWidth(72)
+            lbl.setStyleSheet("color: #C9D1D9; font-size: 11px; font-weight: bold; background: transparent;")
+            row.addWidget(lbl)
+
+            # 进度条背景
+            bar_bg = QFrame()
+            bar_bg.setFixedHeight(12)
+            bar_bg.setMinimumWidth(80)
+            bar_bg.setStyleSheet("background: #21262D; border-radius: 6px; border: none;")
+
+            # 填充条
+            bar_fill = QFrame(bar_bg)
+            bar_fill.setFixedHeight(12)
+            bar_fill_width = max(4, int(180 * value))
+            bar_fill.setFixedWidth(bar_fill_width)
+            bar_fill.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 {colors[0]}, stop:1 {colors[1]});
+                    border-radius: 6px; border: none;
+                }}
+            """)
+            row.addWidget(bar_bg)
+            # overlay the fill
+            bar_fill.setParent(bar_bg)
+            bar_fill.move(0, 0)
+            bar_fill.show()
+
+            row.addWidget(bar_bg, 1)
+
+            detail_lbl = QLabel(detail)
+            detail_lbl.setStyleSheet("color: #8B949E; font-size: 10px; background: transparent;")
+            detail_lbl.setMinimumWidth(140)
+            row.addWidget(detail_lbl)
+
+            layout.addLayout(row)
+
+        if not metrics:
+            layout.addWidget(QLabel("暂无数据"))
+
+        return self._build_section("📊 声乐维度", widget)
+
     # ── 练习统计 ────────────────────────────────────────────
 
     def _build_practice_stats(self) -> QWidget:
-        return self._build_section(
-            "📊 练习统计",
-            self._build_stats_cards()
-        )
+        stats_widget = self._build_stats_cards()
+
+        # 声部鉴定测评按钮
+        assess_btn = QPushButton("🔍 声部鉴定测评（音域 + 换声点 + 音色）")
+        assess_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        assess_btn.setMinimumHeight(36)
+        assess_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #58A6FF, stop:1 #3FB950);
+                color: #FFFFFF; font-weight: bold;
+                padding: 8px 16px; border-radius: 8px;
+                font-size: 12px; border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #79B8FF, stop:1 #56D364);
+            }
+        """)
+        assess_btn.clicked.connect(self._on_voice_type_assessment)
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(stats_widget)
+        layout.addWidget(assess_btn)
+
+        return self._build_section("📊 练习统计", container)
 
     def _build_stats_cards(self) -> QWidget:
         p = self._profile
@@ -1802,10 +2096,38 @@ class ProfileDetailDialog(QDialog):
         stats = self._profile.pitch_stats
 
         if stats.total_voiced_frames <= 0:
+            container = QWidget()
+            container.setStyleSheet("background: transparent;")
+            cl = QVBoxLayout(container)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(10)
+
             empty = QLabel("还没有足够的练习数据。开始录音后，系统会自动分析你的音域。")
             empty.setStyleSheet("color: #484F58; font-size: 12px; background: transparent; padding: 8px 0;")
             empty.setWordWrap(True)
-            return self._build_section("🎵 音域分析", empty)
+            cl.addWidget(empty)
+
+            test_range_btn = QPushButton("🎤 单独测试音域")
+            test_range_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            test_range_btn.setMinimumHeight(32)
+            test_range_btn.setStyleSheet("""
+                QPushButton {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(88,166,255,0.15), stop:1 rgba(63,185,80,0.10));
+                    color: #58A6FF; font-size: 11px;
+                    padding: 6px 14px; border-radius: 6px;
+                    border: 1px solid rgba(88,166,255,0.3);
+                }
+                QPushButton:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(88,166,255,0.25), stop:1 rgba(63,185,80,0.18));
+                    border-color: #58A6FF; color: #79B8FF;
+                }
+            """)
+            test_range_btn.clicked.connect(self._on_test_range)
+            cl.addWidget(test_range_btn)
+
+            return self._build_section("🎵 音域分析", container)
 
         p50_hz = stats.p50_hz
         p5_hz = stats.p5_hz
@@ -1849,6 +2171,27 @@ class ProfileDetailDialog(QDialog):
         frames_label = QLabel(f"基于 {stats.total_voiced_frames} 帧发声数据 · {stats.session_count} 次录音")
         frames_label.setStyleSheet("color: #484F58; font-size: 10px; background: transparent;")
         layout.addWidget(frames_label)
+
+        # 单独测试音域按钮
+        test_range_btn = QPushButton("🎤 单独测试音域")
+        test_range_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_range_btn.setMinimumHeight(32)
+        test_range_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(88,166,255,0.15), stop:1 rgba(63,185,80,0.10));
+                color: #58A6FF; font-size: 11px;
+                padding: 6px 14px; border-radius: 6px;
+                border: 1px solid rgba(88,166,255,0.3);
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(88,166,255,0.25), stop:1 rgba(63,185,80,0.18));
+                border-color: #58A6FF; color: #79B8FF;
+            }
+        """)
+        test_range_btn.clicked.connect(self._on_test_range)
+        layout.addWidget(test_range_btn)
 
         return self._build_section("🎵 音域分析", widget)
 
@@ -2019,26 +2362,6 @@ class ProfileDetailDialog(QDialog):
         cal_btn.clicked.connect(self._on_calibrate_passaggio)
         layout.addWidget(cal_btn)
 
-        # ── 声部鉴定测评按钮 ──
-        assess_btn = QPushButton("🔍 声部鉴定测评（音域 + 换声点 + 音色）")
-        assess_btn.setMinimumHeight(34)
-        assess_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        assess_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #A78BFA; font-size: 11px;
-                padding: 8px 16px; border-radius: 8px;
-                border: 1px dashed #A78BFA;
-            }
-            QPushButton:hover {
-                background: rgba(167, 139, 250, 0.1);
-                border-color: #B794F4;
-                color: #B794F4;
-            }
-        """)
-        assess_btn.clicked.connect(self._on_voice_type_assessment)
-        layout.addWidget(assess_btn)
-
         return self._build_section("🔄 换声点", widget)
 
     # ── 音色指纹 ────────────────────────────────────────────
@@ -2052,11 +2375,32 @@ class ProfileDetailDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        # 单独测试音色按钮 (数据有无都显示)
+        test_timbre_btn = QPushButton("🎤 单独测试音色")
+        test_timbre_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_timbre_btn.setMinimumHeight(32)
+        test_timbre_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(167,139,250,0.15), stop:1 rgba(224,64,251,0.10));
+                color: #A78BFA; font-size: 11px;
+                padding: 6px 14px; border-radius: 6px;
+                border: 1px solid rgba(167,139,250,0.3);
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(167,139,250,0.25), stop:1 rgba(224,64,251,0.18));
+                border-color: #A78BFA; color: #C4B5FD;
+            }
+        """)
+        test_timbre_btn.clicked.connect(self._on_test_timbre)
+
         if t.sample_count <= 0:
             hint = QLabel("还没有音色数据。开始录音后，系统会自动收集音色特征。")
             hint.setStyleSheet("color: #484F58; font-size: 12px; background: transparent;")
             hint.setWordWrap(True)
             layout.addWidget(hint)
+            layout.addWidget(test_timbre_btn)
         else:
             # 两行三列的网格
             grid = QHBoxLayout()
@@ -2110,6 +2454,8 @@ class ProfileDetailDialog(QDialog):
                     grid.addWidget(spacer)
                 grid.addStretch()
                 layout.addLayout(grid)
+
+            layout.addWidget(test_timbre_btn)
 
         return self._build_section("🎨 音色指纹", widget)
 
@@ -2551,18 +2897,34 @@ class ProfileDetailDialog(QDialog):
             # 通知父窗口数据已更新
             self.accept()
 
-    def _on_voice_type_assessment(self) -> None:
-        """打开声部鉴定测评对话框"""
-        dlg = VoiceTypeAssessmentDialog(self._profile, self._mgr, self)
+    def _on_voice_type_assessment(self,
+                                   start_page: Optional[int] = None) -> None:
+        """打开声部鉴定测评对话框
+
+        Args:
+            start_page: None=完整测评, PAGE_PHASE1_LOW=仅音域, PAGE_PHASE3=仅音色
+        """
+        if start_page is None:
+            start_page = VoiceTypeAssessmentDialog.PAGE_ENTRY
+        dlg = VoiceTypeAssessmentDialog(
+            self._profile, self._mgr, self, start_page=start_page)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            # 重新加载更新后的存档
             updated = self._mgr.get_profile(self._profile.id)
             if updated is not None:
                 self._profile = updated
                 self.setWindowTitle(f"存档详情 — {updated.name}")
                 self._rebuild_content()
-            # 通知父窗口 (ProfileSelectionDialog) 数据已更新
             self.accept()
+
+    def _on_test_range(self) -> None:
+        """单独测试音域"""
+        from src.gui.voice_type_assessment_dialog import VoiceTypeAssessmentDialog as VT
+        self._on_voice_type_assessment(start_page=VT.PAGE_PHASE1_LOW)
+
+    def _on_test_timbre(self) -> None:
+        """单独测试音色"""
+        from src.gui.voice_type_assessment_dialog import VoiceTypeAssessmentDialog as VT
+        self._on_voice_type_assessment(start_page=VT.PAGE_PHASE3)
 
     def _on_edit(self) -> None:
         dlg = ProfileEditDialog(self._profile, self._mgr, self)

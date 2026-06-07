@@ -36,8 +36,8 @@ class ProfileManager:
         if profiles_root is None:
             # 默认路径：项目根目录下的 profiles/
             try:
-                from src.gui.integrated_recording_interface import PROJECT_ROOT
-                profiles_root = PROJECT_ROOT / "profiles"
+                from src.gui.integrated_recording_interface import project_root
+                profiles_root = project_root / "profiles"
             except Exception:
                 profiles_root = Path(__file__).resolve().parent.parent.parent / "profiles"
         self._root = Path(profiles_root)

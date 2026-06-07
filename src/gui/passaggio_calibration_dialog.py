@@ -135,11 +135,13 @@ class PassaggioCalibrationDialog(QDialog):
         # 录音数据
         self._recorded_audio: List[np.ndarray] = []       # 音频块列表
         self._pitch_track: List[Tuple[float, float]] = []  # [(time_sec, freq_hz), ...]
-        self._feature_track: List[Tuple[float, float, float, float, float, float]] = []  # [(time, tilt, hnr, rms, l1l2, h2h3), ...]
+        self._feature_track: List[Tuple[float, float, float, float, float, float, float, float]] = []  # (t, tilt, hnr, rms, l1l2, h2h3, f1, f2)
         self._current_freq: float = 0.0
         self._current_tilt: float = 0.0
         self._current_hnr: float = 0.0
         self._current_rms: float = 0.0
+        self._current_f1: float = 0.0
+        self._current_f2: float = 0.0
         self._current_l1l2: float = 0.0
         self._current_h2h3: float = 1.0
 
@@ -150,6 +152,7 @@ class PassaggioCalibrationDialog(QDialog):
         self._feature_scores: List[Tuple[float, float, float]] = []  # [(time, freq, score), ...]
         self._candidates: List[dict] = []    # 自动检测候选人 [{freq, fusion_score, tilt, pitch_jump, hnr, rms, prior}, ...]
         self._manual_candidates: List[dict] = []  # 用户手动选取的候选点 [{freq, time, note, source: 'manual'}, ...]
+        self._selected_candidate_index: int = 0   # 当前选中的候选点 flat_index
 
         # 原始特征分数 (用于诊断)
         self._raw_tilt_score = np.array([])
@@ -158,6 +161,8 @@ class PassaggioCalibrationDialog(QDialog):
         self._raw_rms_score = np.array([])
         self._raw_l1l2_score = np.array([])
         self._raw_h2h3_score = np.array([])
+        self._raw_f1h2_score = np.array([])
+        self._raw_spec_smooth_score = np.array([])
         self._raw_prior_score = np.array([])
 
         # 录音状态
@@ -966,6 +971,7 @@ class PassaggioCalibrationDialog(QDialog):
         self._feature_scores.clear()
         self._candidates.clear()
         self._manual_candidates.clear()
+        self._selected_candidate_index = 0
         self._detected_t4 = 0.0
         self._detection_confidence = 0.0
         self._full_audio = None
@@ -1024,20 +1030,22 @@ class PassaggioCalibrationDialog(QDialog):
         chunk = indata[:, 0].copy()
         self._recorded_audio.append(chunk)
 
-        # 检测当前帧的音高和频谱特征 (6维)
-        freq, tilt, hnr, rms, l1l2, h2h3 = self._process_frame(chunk)
+        # 检测当前帧的音高和频谱特征 (8维，含共振峰)
+        freq, tilt, hnr, rms, l1l2, h2h3, f1, f2 = self._process_frame(chunk)
         elapsed = time.time() - self._record_start_time
 
         if freq > 0:
             self._pitch_track.append((elapsed, freq))
             self._current_freq = freq
 
-        self._feature_track.append((elapsed, tilt, hnr, rms, l1l2, h2h3))
+        self._feature_track.append((elapsed, tilt, hnr, rms, l1l2, h2h3, f1, f2))
         self._current_tilt = tilt
         self._current_hnr = hnr
         self._current_rms = rms
         self._current_l1l2 = l1l2
         self._current_h2h3 = h2h3
+        self._current_f1 = f1
+        self._current_f2 = f2
 
         # 自动停止 (超时)
         if elapsed > MAX_RECORD_SECONDS:
@@ -1091,11 +1099,12 @@ class PassaggioCalibrationDialog(QDialog):
         l1l2 = self._compute_l1l2(mag, freqs, freq)
 
         # ── H2/H3 主导度 (男声换声关键) ──
-        # 胸声时 H2 主导; 换声后 H3 获得 F2 共振而增强
-        # H2/H3 比值下降是即将换声的信号
         h2h3 = self._compute_h2h3_ratio(mag, freqs, freq)
 
-        return freq, tilt, hnr, rms, l1l2, h2h3
+        # ── P3: 共振峰估计 F1, F2 (LPC 法) ──
+        f1, f2 = self._estimate_formants(windowed, SAMPLE_RATE, freq)
+
+        return freq, tilt, hnr, rms, l1l2, h2h3, f1, f2
 
     def _yin_pitch(self, audio_frame: np.ndarray) -> float:
         """简化 YIN 音高检测，返回频率 Hz 或 0.0"""
@@ -1239,6 +1248,104 @@ class PassaggioCalibrationDialog(QDialog):
 
         ratio = e2 / e3
         return float(np.clip(ratio, 0.1, 10.0))
+
+    @staticmethod
+    def _estimate_formants(signal: np.ndarray, sr: int, f0: float, order: int = 14) -> Tuple[float, float]:
+        """LPC 共振峰估计 → (F1, F2) in Hz
+
+        用线性预测编码 (LPC) + 频谱峰值检测 估计第一、第二共振峰。
+        在 F0 < 500Hz 范围内稳定，覆盖绝大多数换声点。
+
+        Args:
+            signal: 单帧音频 (已窗化)
+            sr: 采样率
+            f0: 基频 Hz (用于设置搜索下限)
+            order: LPC 阶数 (sr=44100 推荐 12-16)
+        Returns:
+            (F1_hz, F2_hz), 找不到则返回 (0.0, 0.0)
+        """
+        if len(signal) < order * 2 or f0 <= 0:
+            return 0.0, 0.0
+
+        # ── 自相关法 LPC ──
+        n = len(signal)
+        r = np.zeros(order + 1)
+        for lag in range(order + 1):
+            r[lag] = np.dot(signal[:n - lag], signal[lag:])
+
+        # Levinson-Durbin 递推
+        a = np.zeros(order + 1)
+        a[0] = 1.0
+        e = r[0] if r[0] > 1e-10 else 1e-10
+
+        for i in range(1, order + 1):
+            k = -np.dot(a[:i], r[i:0:-1]) / e if e > 1e-10 else 0.0
+            k = np.clip(k, -0.999, 0.999)
+            a[1:i + 1] += k * a[i:0:-1]
+            a[i] = k
+            e *= (1.0 - k * k)
+            if e < 1e-12:
+                e = 1e-12
+
+        # ── 计算 LPC 频谱: 1/|A(z)|² ──
+        n_fft = max(1024, 2 ** int(np.ceil(np.log2(n))))
+        A = np.fft.rfft(a, n=n_fft)
+        H = 1.0 / (np.abs(A) + 1e-10)
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+
+        # 搜索范围: F1 在 f0*1.1 ~ 1200Hz, F2 在 F1+100 ~ 3000Hz
+        lo = int(np.searchsorted(freqs, max(f0 * 1.1, 200.0)))
+        hi_f1 = int(np.searchsorted(freqs, 1200.0))
+        hi_f2 = int(np.searchsorted(freqs, 3000.0))
+
+        # ── 找 F1 (第一个显著峰) ──
+        f1_hz = 0.0
+        if lo < hi_f1:
+            segment = H[lo:hi_f1 + 1]
+            # 找局部最大值
+            peaks = []
+            for j in range(1, len(segment) - 1):
+                if segment[j] > segment[j - 1] and segment[j] >= segment[j + 1]:
+                    peaks.append((j + lo, segment[j]))
+            if peaks:
+                peaks.sort(key=lambda x: x[1], reverse=True)
+                f1_hz = freqs[peaks[0][0]]
+
+        # ── 找 F2 (F1 之上的第一个显著峰) ──
+        f2_hz = 0.0
+        f1_idx = int(np.searchsorted(freqs, f1_hz + 100.0)) if f1_hz > 0 else lo
+        if f1_idx < hi_f2:
+            segment = H[f1_idx:hi_f2 + 1]
+            peaks = []
+            for j in range(1, len(segment) - 1):
+                if segment[j] > segment[j - 1] and segment[j] >= segment[j + 1]:
+                    peaks.append((j + f1_idx, segment[j]))
+            if peaks:
+                peaks.sort(key=lambda x: x[1], reverse=True)
+                f2_hz = freqs[peaks[0][0]]
+
+        return max(0.0, f1_hz), max(0.0, f2_hz)
+
+    @staticmethod
+    def _compute_spectral_smoothness(spec_prev: np.ndarray, spec_curr: np.ndarray) -> float:
+        """计算两帧归一化频谱之间的 RMS 偏差 → 频谱平滑度指标
+
+        文献 (J-STAGE, 2023): 连续音之间的频谱 RMS 偏差是换声技巧的最佳预测指标。
+        - 低偏差 → 频谱变化平滑 → 真实换声过渡
+        - 高偏差 → 频谱突变 → 噪声/伪迹/技术不稳定
+
+        Returns:
+            0.0 ~ 1.0，越高 = 越平滑 (好的换声过渡)
+        """
+        if len(spec_prev) < 3 or len(spec_curr) < 3:
+            return 0.5
+        # 只比较 200-3000 Hz 人声关键频段
+        min_len = min(len(spec_prev), len(spec_curr))
+        s1 = spec_prev[:min_len] / (np.max(np.abs(spec_prev[:min_len])) + 1e-10)
+        s2 = spec_curr[:min_len] / (np.max(np.abs(spec_curr[:min_len])) + 1e-10)
+        rms_dev = np.sqrt(np.mean((s2 - s1) ** 2))
+        # 映射: rms_dev=0.05 → 0.95 (非常平滑), rms_dev=0.5 → 0.1 (剧烈变化)
+        return float(np.clip(1.0 - rms_dev * 1.8, 0.0, 1.0))
 
     def _update_detect_display(self) -> None:
         """定时器回调: 更新实时显示（主线程）"""
@@ -1519,12 +1626,14 @@ class PassaggioCalibrationDialog(QDialog):
             return
 
         # ── 对齐时间轴 ──
-        ft_times = np.array([t for t, _, _, _, _, _ in self._feature_track])
-        ft_tilts = np.array([tilt for _, tilt, _, _, _, _ in self._feature_track])
-        ft_hnrs = np.array([hnr for _, _, hnr, _, _, _ in self._feature_track])
-        ft_rmss = np.array([rms for _, _, _, rms, _, _ in self._feature_track])
-        ft_l1l2s = np.array([l1l2 for _, _, _, _, l1l2, _ in self._feature_track])
-        ft_h2h3s = np.array([h2h3 for _, _, _, _, _, h2h3 in self._feature_track])
+        ft_times = np.array([t for t, _, _, _, _, _, _, _ in self._feature_track])
+        ft_tilts = np.array([tilt for _, tilt, _, _, _, _, _, _ in self._feature_track])
+        ft_hnrs = np.array([hnr for _, _, hnr, _, _, _, _, _ in self._feature_track])
+        ft_rmss = np.array([rms for _, _, _, rms, _, _, _, _ in self._feature_track])
+        ft_l1l2s = np.array([l1l2 for _, _, _, _, l1l2, _, _, _ in self._feature_track])
+        ft_h2h3s = np.array([h2h3 for _, _, _, _, _, h2h3, _, _ in self._feature_track])
+        ft_f1s = np.array([f1 for _, _, _, _, _, _, f1, _ in self._feature_track])
+        ft_f2s = np.array([f2 for _, _, _, _, _, _, _, f2 in self._feature_track])
 
         pitch_times = np.array([t for t, _ in self._pitch_track])
         pitch_freqs = np.array([f for _, f in self._pitch_track])
@@ -1554,53 +1663,96 @@ class PassaggioCalibrationDialog(QDialog):
         tilts = _smooth3(tilts_raw)
         hnrs = _smooth3(hnrs_raw)
         rmss = _smooth3(rmss_raw)
+        l1l2s = _smooth3(np.interp(pitch_times, ft_times, ft_l1l2s))
+        h2h3s = _smooth3(np.interp(pitch_times, ft_times, ft_h2h3s))
+
+        # ── P1: 滑动窗口变化量 (替代逐帧差分，捕获 200-500ms 过渡过程) ──
+        def _windowed_drop(x: np.ndarray, win: int = 8) -> np.ndarray:
+            result = np.zeros_like(x)
+            half = max(1, win // 2)
+            for i in range(win, len(x)):
+                start_mean = np.mean(x[i - win : i - half])
+                end_mean = np.mean(x[i - half : i])
+                result[i] = start_mean - end_mean  # 正值 = 下降
+            return np.clip(result, 0, None)
+
+        def _windowed_rise(x: np.ndarray, win: int = 8) -> np.ndarray:
+            result = np.zeros_like(x)
+            half = max(1, win // 2)
+            for i in range(win, len(x)):
+                start_mean = np.mean(x[i - win : i - half])
+                end_mean = np.mean(x[i - half : i])
+                result[i] = end_mean - start_mean  # 正值 = 上升
+            return np.clip(result, 0, None)
 
         # ── 1. 频谱倾斜突变分数 ──
-        # 胸→头时 tilt 变得更负
-        tilt_drop = np.zeros(n)
-        tilt_drop[1:] = np.clip(-np.diff(tilts), 0, None)
-        tilt_quality = self._feature_snr(tilt_drop)
-        tilt_score = self._normalize_score(tilt_drop)
+        tilt_change = _windowed_drop(tilts)
+        tilt_quality = self._feature_snr(tilt_change)
+        tilt_score = self._normalize_score(tilt_change)
 
         # ── 2. 音高断连分数 ──
         semitone_diff = np.zeros(n)
         for i in range(1, n):
             if pitch_freqs[i] > 0 and pitch_freqs[i - 1] > 0:
                 semitone_diff[i] = abs(12 * math.log2(pitch_freqs[i] / max(pitch_freqs[i - 1], 1e-6)))
-        semitone_diff = _smooth3(semitone_diff)
-        pitch_quality = self._feature_snr(semitone_diff)
-        pitch_jump_score = self._normalize_score(semitone_diff)
+        semitone_smooth = _smooth3(semitone_diff)
+        pitch_change = _windowed_rise(semitone_smooth)
+        pitch_quality = self._feature_snr(pitch_change)
+        pitch_jump_score = self._normalize_score(pitch_change)
 
         # ── 3. HNR 骤降分数 ──
-        hnr_drop = np.zeros(n)
-        hnr_drop[1:] = np.clip(-np.diff(hnrs), 0, None)
-        hnr_quality = self._feature_snr(hnr_drop)
-        hnr_score = self._normalize_score(hnr_drop)
+        hnr_change = _windowed_drop(hnrs)
+        hnr_quality = self._feature_snr(hnr_change)
+        hnr_score = self._normalize_score(hnr_change)
 
         # ── 4. 振幅骤降分数 ──
-        rms_drop = np.zeros(n)
-        rms_drop[1:] = np.clip(-np.diff(rmss), 0, None)
-        rms_quality = self._feature_snr(rms_drop)
-        rms_score = self._normalize_score(rms_drop)
+        rms_change = _windowed_drop(rmss)
+        rms_quality = self._feature_snr(rms_change)
+        rms_score = self._normalize_score(rms_change)
 
-        # ── 5. L1-L2 谐波比逆转 (研究文献关键特征) ──
-        # L1-L2 从负变正 → 换声标志 (特别是女声)
-        # L1-L2 负→正发生在第二换声点，是文献中最稳定的声学指标之一
-        l1l2s = _smooth3(np.interp(pitch_times, ft_times, ft_l1l2s))
-        l1l2_rise = np.zeros(n)
-        l1l2_rise[1:] = np.clip(np.diff(l1l2s), 0, None)  # L1-L2 上升
-        l1l2_quality = self._feature_snr(l1l2_rise)
-        l1l2_score = self._normalize_score(l1l2_rise)
+        # ── 5. L1-L2 谐波比逆转 ──
+        l1l2_change = _windowed_rise(l1l2s)
+        l1l2_quality = self._feature_snr(l1l2_change)
+        l1l2_score = self._normalize_score(l1l2_change)
 
-        # ── 6. H2/H3 主导度转换 (男声换声关键) ──
-        # H2/H3 从 > 1.5 逐步降至 < 1.0 → 换声标志
-        h2h3s = _smooth3(np.interp(pitch_times, ft_times, ft_h2h3s))
-        h2h3_drop = np.zeros(n)
-        h2h3_drop[1:] = np.clip(-np.diff(h2h3s), 0, None)  # H2/H3 下降
-        h2h3_quality = self._feature_snr(h2h3_drop)
-        h2h3_score = self._normalize_score(h2h3_drop)
+        # ── 6. H2/H3 主导度转换 ──
+        h2h3_change = _windowed_drop(h2h3s)
+        h2h3_quality = self._feature_snr(h2h3_change)
+        h2h3_score = self._normalize_score(h2h3_change)
 
-        # ── 7. 声部先验 —— 手动 vs 自动推断区分 ──
+        # ── 7. F1/H2 穿越 (P3) — 换声点的物理机制 ──
+        # Titze, Miller, Bozeman: 当 H2(2*F0) 接近 F1 时，声音"翻"了
+        f1s = _smooth3(np.interp(pitch_times, ft_times, ft_f1s))
+        f2s = _smooth3(np.interp(pitch_times, ft_times, ft_f2s))
+        f1_h2_gap = np.zeros(n)
+        for i in range(n):
+            if pitch_freqs[i] > 0 and f1s[i] > 0:
+                h2 = 2.0 * pitch_freqs[i]
+                gap = abs(f1s[i] - h2) / max(h2, 1e-6)  # 相对距离
+                # 距离 < 15% → 接近穿越点
+                proximity = max(0.0, 1.0 - gap / 0.15)
+                f1_h2_gap[i] = proximity
+        f1h2_quality = self._feature_snr(f1_h2_gap)
+        f1h2_score = self._normalize_score(f1_h2_gap)
+
+        # ── 8. 频谱平滑度 (P4) — 连续帧频谱 RMS 偏差 ──
+        # 计算每帧的 LPC 频谱与前一帧的 RMS 偏差
+        spec_smooth = np.ones(n) * 0.5
+        if n >= 2 and len(ft_times) >= 2:
+            # 复用 LPC 频谱: 从 LPC 系数重建归一化频谱
+            prev_spec = None
+            for i in range(1, n):
+                # 找到 feature_track 中最接近 pitch_times[i] 的帧
+                ft_idx = np.argmin(np.abs(ft_times - pitch_times[i]))
+                if ft_idx < len(ft_f1s) and ft_f1s[ft_idx] > 0:
+                    # 用已插值的 f1s/f2s 作为代理: f1 变化大 → 频谱变化大
+                    if i > 0 and f1s[i] > 0 and f1s[i - 1] > 0:
+                        f1_rel_change = abs(f1s[i] - f1s[i - 1]) / max(f1s[i - 1], 1e-6)
+                        spec_smooth[i] = max(0.0, 1.0 - f1_rel_change / 0.30)
+        spec_smooth_quality = self._feature_snr(spec_smooth)
+        spec_smooth_score = self._normalize_score(spec_smooth)
+
+        # ── 9. 声部先验 —— 手动 vs 自动推断区分 ──
         vt = self._profile.effective_voice_type
         is_manual_vt = bool(getattr(self._profile, 'voice_type_manual', ''))
         expected_t4 = _VOICE_TYPE_PASSAGGIO_HZ.get(vt, None)
@@ -1620,31 +1772,31 @@ class PassaggioCalibrationDialog(QDialog):
             'rms': max(rms_quality, 0.1),
             'l1l2': max(l1l2_quality, 0.1),
             'h2h3': max(h2h3_quality, 0.1),
+            'f1h2': max(f1h2_quality, 0.1),
+            'spec_smooth': max(spec_smooth_quality, 0.1),
         }
         prior_contrib = 1.0 if (expected_t4 is not None and is_manual_vt) else 0.6
-        q_sum = sum(qualities.values()) + prior_contrib  # 自动推断时降低先验权重
-        # 基础权重: tilt 28%, pitch 18%, hnr 15%, rms 8%, l1l2 11%, h2h3 10%, prior 10%
-        base_w = {'tilt': 0.28, 'pitch': 0.18, 'hnr': 0.15, 'rms': 0.08, 'l1l2': 0.11, 'h2h3': 0.10}
+        q_sum = sum(qualities.values()) + prior_contrib
+        # 基础权重: tilt 22%, pitch 15%, hnr 10%, rms 6%, l1l2 10%, h2h3 8%, f1h2 12%, spec_smooth 7%, prior 10%
+        base_w = {'tilt': 0.22, 'pitch': 0.15, 'hnr': 0.10, 'rms': 0.06,
+                  'l1l2': 0.10, 'h2h3': 0.08, 'f1h2': 0.12, 'spec_smooth': 0.07}
         w_tilt = base_w['tilt'] * qualities['tilt'] / max(q_sum * base_w['tilt'], 0.01)
         w_pitch = base_w['pitch'] * qualities['pitch'] / max(q_sum * base_w['pitch'], 0.01)
         w_hnr = base_w['hnr'] * qualities['hnr'] / max(q_sum * base_w['hnr'], 0.01)
         w_rms = base_w['rms'] * qualities['rms'] / max(q_sum * base_w['rms'], 0.01)
         w_l1l2 = base_w['l1l2'] * qualities['l1l2'] / max(q_sum * base_w['l1l2'], 0.01)
         w_h2h3 = base_w['h2h3'] * qualities['h2h3'] / max(q_sum * base_w['h2h3'], 0.01)
-        # 声部手动设置 → 10% prior；自动推断 → 约 6% prior
+        w_f1h2 = base_w['f1h2'] * qualities['f1h2'] / max(q_sum * base_w['f1h2'], 0.01)
+        w_spec_smooth = base_w['spec_smooth'] * qualities['spec_smooth'] / max(q_sum * base_w['spec_smooth'], 0.01)
         w_prior = 0.10 if (expected_t4 is not None and is_manual_vt) else 0.06
 
         # 归一化总权重
-        w_total = w_tilt + w_pitch + w_hnr + w_rms + w_l1l2 + w_h2h3 + w_prior
-        w_tilt /= w_total
-        w_pitch /= w_total
-        w_hnr /= w_total
-        w_rms /= w_total
-        w_l1l2 /= w_total
-        w_h2h3 /= w_total
+        w_total = w_tilt + w_pitch + w_hnr + w_rms + w_l1l2 + w_h2h3 + w_f1h2 + w_spec_smooth + w_prior
+        w_tilt /= w_total; w_pitch /= w_total; w_hnr /= w_total; w_rms /= w_total
+        w_l1l2 /= w_total; w_h2h3 /= w_total; w_f1h2 /= w_total; w_spec_smooth /= w_total
         w_prior /= w_total
 
-        # ── 融合打分 ──
+        # ── 融合打分 (9 特征) ──
         fusion_score = (
             w_tilt * tilt_score +
             w_pitch * pitch_jump_score +
@@ -1652,6 +1804,8 @@ class PassaggioCalibrationDialog(QDialog):
             w_rms * rms_score +
             w_l1l2 * l1l2_score +
             w_h2h3 * h2h3_score +
+            w_f1h2 * f1h2_score +
+            w_spec_smooth * spec_smooth_score +
             w_prior * prior_score
         )
 
@@ -1662,6 +1816,8 @@ class PassaggioCalibrationDialog(QDialog):
         self._raw_rms_score = rms_score.copy()
         self._raw_l1l2_score = l1l2_score.copy()
         self._raw_h2h3_score = h2h3_score.copy()
+        self._raw_f1h2_score = f1h2_score.copy()
+        self._raw_spec_smooth_score = spec_smooth_score.copy()
         self._raw_prior_score = prior_score.copy()
 
         # ── 时间平滑 (高斯核, 自适应宽度) ──
@@ -1673,10 +1829,23 @@ class PassaggioCalibrationDialog(QDialog):
         fusion_smooth = np.convolve(fusion_score, kernel, mode='same')
 
         # ── 找 top-3 局部极大值 ──
-        # 换声点生理上限: 最高声部(女高音)约 F#5(740Hz)，给安全余量到 A5(880Hz)
-        # 男声换声点最高约 G4(392Hz)，给余量到 C5(523Hz)
+        # ── P2: 搜索窗口 — 基于生理极限 + 历史音域数据 ──
         min_freq = 250.0 if self._profile.is_female else 150.0
         max_freq = 880.0 if self._profile.is_female else 550.0
+
+        # 如果 profile 有历史 pitch_stats，用 p5/p95 进一步缩小窗口
+        ps = getattr(self._profile, 'pitch_stats', None)
+        if ps is not None:
+            p5 = getattr(ps, 'p5_hz', 0.0) or 0.0
+            p95 = getattr(ps, 'p95_hz', 0.0) or 0.0
+            if p5 > 60:
+                min_freq = max(min_freq, p5 * 1.30)
+            if p95 > 60:
+                max_freq = min(max_freq, p95 * 0.85)
+
+        min_freq = max(120.0, min(min_freq, max_freq - 30.0))
+        max_freq = min(1000.0, max(max_freq, min_freq + 30.0))
+
         valid_mask = (pitch_freqs > min_freq) & (pitch_freqs < max_freq)
         valid_idx = np.where(valid_mask)[0]
 
@@ -1711,13 +1880,13 @@ class PassaggioCalibrationDialog(QDialog):
                 'rms': float(rms_score[idx]),
                 'l1l2': float(l1l2_score[idx]),
                 'h2h3': float(h2h3_score[idx]),
+                'f1h2': float(f1h2_score[idx]),
+                'spec_smooth': float(spec_smooth_score[idx]),
                 'prior': float(prior_score[idx]),
             }
             self._candidates.append(candidate)
 
         # ── 融合分重标定: 增强可读性 ──
-        # 原始融合分经过 baseline 减法后通常偏低 (0.05~0.5)，
-        # 重标定到 0.20~0.92 区间，保持排序但让数值更直观。
         if self._candidates:
             top_score = self._candidates[0]['fusion_score']
             if top_score > 0.01:
@@ -1734,39 +1903,29 @@ class PassaggioCalibrationDialog(QDialog):
         self._detected_t4 = best['freq']
         self._adjusted_t4 = self._detected_t4
 
-        # ── 置信度: 基于峰显著度 + 特征一致性 ──
+        # ── 置信度: 基于重标定后的首选融合分 + 峰间一致性 ──
+        # 使用与 _on_select_candidate 一致的公式: fusion → confidence 映射
+        rescaled_fusion = best['fusion_score']  # 已重标定 (0.20~0.92)
+        mapped_conf = float(np.clip(rescaled_fusion * 1.1, 0.15, 0.92))
+
+        # 一致性惩罚: 次高峰越接近首选，越不确定
         if len(self._candidates) >= 2:
-            peak_ratio = self._candidates[1]['fusion_score'] / max(best['fusion_score'], 0.001)
+            peak_ratio = self._candidates[1]['fusion_score'] / max(rescaled_fusion, 0.001)
+            if peak_ratio > 0.85:
+                consistency = 0.75  # 两个峰几乎一样高 → 不确定
+            elif peak_ratio > 0.60:
+                consistency = 0.88  # 次高峰较近
+            else:
+                consistency = 1.0   # 首选明显高于其他
         else:
-            peak_ratio = 0.0
-
-        # 背景水平 (加下限防止除零和过度放大)
-        background = max(float(np.median(fusion_smooth[valid_idx])), 0.015)
-        peak_prominence = best['fusion_score'] / background
-
-        # 峰显著度 → 基础置信度 (sigmoid)
-        # 新归一化下 prominence 通常在 3~25 范围
-        # center=6.0, slope=0.45: prominence=3→21%, 6→50%, 12→84%, 20→95%
-        raw_conf = float(np.clip(1.0 / (1.0 + math.exp(-(peak_prominence - 6.0) * 0.45)), 0.10, 0.92))
-
-        # 一致性惩罚: 次高峰越接近，越不确定
-        # 用平滑的 sigmoid 替代硬截断
-        if peak_ratio < 0.3:
-            # 次高峰远低于主峰 → 几乎无惩罚
             consistency = 1.0
-        elif peak_ratio < 0.6:
-            # 次高峰中度接近 → 轻度惩罚
-            consistency = 1.0 - 0.25 * (peak_ratio - 0.3) / 0.3
-        else:
-            # 次高峰很近 → 线性加重惩罚, 最低 0.25
-            consistency = max(0.25, 1.0 - 0.75 * (peak_ratio - 0.3) / 0.7)
 
-        # 特征一致性加分: 如果多个特征同时指向相近频率，提升置信度
+        # 特征一致性加分
         feat_agreement = self._compute_feature_agreement(best, self._candidates)
 
         self._detection_confidence = float(np.clip(
-            raw_conf * consistency * (0.85 + 0.15 * feat_agreement),
-            0.10, 0.95
+            mapped_conf * consistency * (0.88 + 0.12 * feat_agreement),
+            0.15, 0.95
         ))
 
         # 保存融合分数用于可视化
@@ -1804,7 +1963,7 @@ class PassaggioCalibrationDialog(QDialog):
             return 0.5
 
         # 提取各特征分数向量 (来自 best candidate)
-        feat_names = ['tilt', 'pitch_jump', 'hnr', 'rms']
+        feat_names = ['tilt', 'pitch_jump', 'hnr', 'rms', 'l1l2', 'h2h3', 'f1h2', 'spec_smooth']
         best_feats = {k: best.get(k, 0.0) for k in feat_names}
 
         # 计算各特征在 best 点的值 — 高值 = 该特征也指向这里
@@ -1929,6 +2088,7 @@ class PassaggioCalibrationDialog(QDialog):
         self._on_slider_changed(100)
 
         # ── 备选候选点填充 ──
+        self._selected_candidate_index = 0  # 重置为自动首选
         self._populate_candidates()
 
         # 声部推测
@@ -1980,6 +2140,8 @@ class PassaggioCalibrationDialog(QDialog):
             'rms': feat['rms'],
             'l1l2': feat['l1l2'],
             'h2h3': feat['h2h3'],
+            'f1h2': feat['f1h2'],
+            'spec_smooth': feat['spec_smooth'],
             'prior': feat['prior'],
         })
         return True
@@ -2030,12 +2192,14 @@ class PassaggioCalibrationDialog(QDialog):
             'rms':         _safe_get(getattr(self, '_raw_rms_score', None), best_i),
             'l1l2':        _safe_get(getattr(self, '_raw_l1l2_score', None), best_i),
             'h2h3':        _safe_get(getattr(self, '_raw_h2h3_score', None), best_i),
+            'f1h2':        _safe_get(getattr(self, '_raw_f1h2_score', None), best_i),
+            'spec_smooth': _safe_get(getattr(self, '_raw_spec_smooth_score', None), best_i),
             'prior':       _safe_get(getattr(self, '_raw_prior_score', None), best_i),
         }
 
         # 融合分 = 加权平均 (使用与检测算法相同的权重比例)
-        w = {'tilt': 0.28, 'pitch_jump': 0.18, 'hnr': 0.15, 'rms': 0.08,
-             'l1l2': 0.11, 'h2h3': 0.10, 'prior': 0.10}
+        w = {'tilt': 0.22, 'pitch_jump': 0.15, 'hnr': 0.10, 'rms': 0.06,
+             'l1l2': 0.10, 'h2h3': 0.08, 'f1h2': 0.12, 'spec_smooth': 0.07, 'prior': 0.10}
         fusion = sum(w[k] * raw_scores[k] for k in w)
         raw_scores['fusion'] = float(np.clip(fusion, 0.0, 1.0))
 
@@ -2059,7 +2223,7 @@ class PassaggioCalibrationDialog(QDialog):
 
             # 来源标识
             is_auto = (c['source'] == 'auto')
-            is_selected = (abs(c['freq'] - self._adjusted_t4) < 1.0) if self._adjusted_t4 > 0 else False
+            is_selected = (flat_idx == self._selected_candidate_index)
 
             # 来源图标
             src_lbl = QLabel("🤖" if is_auto else "✋")
@@ -2080,6 +2244,8 @@ class PassaggioCalibrationDialog(QDialog):
                 ('音量突变', c.get('rms', 0)),
                 ('L1-L2逆转', c.get('l1l2', 0)),
                 ('H2/H3转换', c.get('h2h3', 0)),
+                ('F1/H2穿越', c.get('f1h2', 0)),
+                ('频谱平滑度', c.get('spec_smooth', 0)),
                 ('先验', c.get('prior', 0)),
             ]
             top_feats.sort(key=lambda x: x[1], reverse=True)
@@ -2240,7 +2406,10 @@ class PassaggioCalibrationDialog(QDialog):
         all_cands = self._all_candidates_flat()
         if flat_index < 0 or flat_index >= len(all_cands):
             return
+        if flat_index == self._selected_candidate_index:
+            return  # 已选中
         cand = all_cands[flat_index]
+        self._selected_candidate_index = flat_index
         self._detected_t4 = cand['freq']
 
         fusion = cand.get('fusion_score', 0.0)
@@ -2296,11 +2465,17 @@ class PassaggioCalibrationDialog(QDialog):
             return
         audio = self._full_audio
         pitch_track = self._pitch_track
+
+        # 重试: 如果 _full_audio 为空，尝试从 _recorded_audio 重建
+        if (audio is None or len(audio) == 0) and self._recorded_audio:
+            audio = np.concatenate(self._recorded_audio)
+            self._full_audio = audio
+
         if audio is None or len(audio) == 0:
-            QMessageBox.information(self, "试听不可用", "没有找到录音数据。")
+            self._show_info("试听不可用", "没有找到录音数据。\n请重新录制后再试。")
             return
         if not pitch_track:
-            QMessageBox.information(self, "试听不可用", "没有音高轨迹数据。")
+            self._show_info("试听不可用", "没有音高轨迹数据。")
             return
 
         # 找最接近目标频率的时间点
@@ -2316,44 +2491,92 @@ class PassaggioCalibrationDialog(QDialog):
 
         if best_dist > target_hz * 0.5:
             note = _hz_to_note_name(target_hz)
-            QMessageBox.information(
-                self, "试听不可用",
-                f"录音中未找到接近 {note} ({target_hz:.0f}Hz) 的片段。\n"
-                f"最近匹配偏差 {best_dist:.0f} Hz。"
+            self._show_info(
+                "试听不可用",
+                f"录音中未找到接近 {note} ({target_hz:.0f} Hz) 的片段。\n"
+                f"最近匹配偏差 {best_dist:.0f} Hz。\n"
+                f"请确保录音时唱到了该音高范围。"
             )
             return
 
-        # 截取 ±0.25 秒
+        # 截取 ±0.25 秒 — 鲁棒边界处理
         half_window = 0.25
         sr = SAMPLE_RATE
-        center_sample = int(best_time * sr)
-        start_sample = max(0, center_sample - int(half_window * sr))
-        end_sample = min(len(audio), center_sample + int(half_window * sr))
-        segment = audio[start_sample:end_sample]
+        half_samples = int(half_window * sr)
 
-        if len(segment) < int(0.1 * sr):
-            return
+        # 基于样本数计算实际录音时长，修正 wall-clock 漂移
+        audio_duration_s = len(audio) / sr
+        if best_time > audio_duration_s * 1.05:
+            # wall-clock 时间显著超出音频长度 → 修正
+            best_time = audio_duration_s * 0.5
+
+        center_sample = int(best_time * sr)
+        start_sample = center_sample - half_samples
+        end_sample = center_sample + half_samples
+
+        # 如果窗口超出音频边界，向内偏移
+        if start_sample < 0:
+            shift = -start_sample
+            start_sample = 0
+            end_sample = min(len(audio), end_sample + shift)
+        if end_sample > len(audio):
+            shift = end_sample - len(audio)
+            end_sample = len(audio)
+            start_sample = max(0, start_sample - shift)
+
+        # 确保有效范围
+        start_sample = max(0, min(start_sample, len(audio) - 1))
+        end_sample = max(start_sample + int(0.05 * sr), min(end_sample, len(audio)))
+
+        segment = audio[start_sample:end_sample].copy()
+
+        # 降低最低门槛: 0.05s (仍可辨识) 替代 0.1s
+        if len(segment) < int(0.05 * sr):
+            # 最后兜底: 从 best_time 附近取尽可能多的音频
+            fallback_start = max(0, center_sample - int(0.5 * sr))
+            fallback_end = min(len(audio), center_sample + int(0.5 * sr))
+            if fallback_end - fallback_start >= int(0.05 * sr):
+                segment = audio[fallback_start:fallback_end].copy()
+            else:
+                self._show_info("试听不可用",
+                    f"录音中匹配到 {_hz_to_note_name(target_hz)} 的位置\n"
+                    f"可用音频不足 (仅 {len(audio)/sr:.1f}s)。\n"
+                    f"请确保录音时长 > 1 秒并覆盖了换声点音高。")
+                return
 
         # 淡入淡出
         fade_len = min(int(0.01 * sr), len(segment) // 4)
         if fade_len > 1:
             fade_in = np.linspace(0, 1, fade_len)
             fade_out = np.linspace(1, 0, fade_len)
-            if segment.ndim > 1:
-                segment[:fade_len] = (segment[:fade_len].T * fade_in).T
-                segment[-fade_len:] = (segment[-fade_len:].T * fade_out).T
-            else:
-                segment[:fade_len] = segment[:fade_len] * fade_in
-                segment[-fade_len:] = segment[-fade_len:] * fade_out
+            segment[:fade_len] = segment[:fade_len] * fade_in
+            segment[-fade_len:] = segment[-fade_len:] * fade_out
 
-        # 归一化
+        # 温和归一化 (-6dBFS)
         peak = max(np.max(np.abs(segment)), 0.001)
-        segment = segment / peak * 0.7
+        segment = (segment / peak * 0.5).astype(np.float32)
 
         try:
-            sd.play(segment.astype(np.float32) if segment.ndim == 1 else segment.astype(np.float32), sr)
+            sd.stop()  # 停止之前可能正在播放的音频
+            sd.play(segment, sr)
         except Exception as exc:
-            print(f"⚠️ 试听播放失败: {exc}")
+            self._show_info("播放失败", f"无法播放音频:\n{exc}")
+
+    def _show_info(self, title: str, message: str) -> None:
+        """显示深色主题的信息对话框"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.setStyleSheet("""
+            QMessageBox { background-color: #161B22; color: #E6EDF3; }
+            QMessageBox QLabel { color: #E6EDF3; font-size: 12px; background: transparent; }
+            QPushButton { background: #21262D; color: #E6EDF3; border: 1px solid #30363D;
+                border-radius: 6px; padding: 6px 20px; font-size: 12px; min-width: 60px; }
+            QPushButton:hover { background: #30363D; border-color: #58A6FF; }
+        """)
+        msg.exec()
 
     def _on_piano_passaggio_selected(self, hz: float) -> None:
         """钢琴/画布选取换声点回调 → 加入候选列表并设为当前 T4"""
@@ -2370,6 +2593,9 @@ class PassaggioCalibrationDialog(QDialog):
                 self._detection_confidence = float(np.clip(fusion * 1.35 + 0.18, 0.20, 0.95))
             else:
                 self._detection_confidence = 0.88
+            # 选中新添加的手动候选
+            all_cands = self._all_candidates_flat()
+            self._selected_candidate_index = len(all_cands) - 1
         note = _hz_to_note_name(hz)
         self._detected_t4_label.setText(f"{note} ({hz:.0f} Hz) — 手动选取")
         self._update_validate_page()
