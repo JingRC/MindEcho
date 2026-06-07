@@ -1686,9 +1686,14 @@ class IntegratedAudioProcessor(QThread):
         self.dedicated_audio_thread = None
         self.audio_queue = queue.Queue(maxsize=10)  # 小队列，减少延迟
         # 音频数据处理队列（回调 -> 处理线程）
-        # 较大的缓冲上限以容忍瞬时抖动，但结合循环中的自适应清空避免积压
+        # 队列容量按采样率动态缩放：48kHz→256, 96kHz→512, 192kHz→1024
+        # 防止高采样率下回调过密导致丢包（192kHz@32样本=6000回调/秒）
         try:
-            self.audio_buffer_queue = queue.Queue(maxsize=256)
+            _q_sr = int(getattr(self, 'sample_rate', 48000) or 48000)
+            _q_cap = max(256, min(4096, int(_q_sr / 180)))
+            self.audio_buffer_queue = queue.Queue(maxsize=_q_cap)
+            if getattr(self, 'debug_flags', {}).get('audio_verbose'):
+                print(f"📦 音频队列容量: {_q_cap} (采样率 {_q_sr}Hz)")
         except Exception:
             # 兜底：无上限队列（不推荐，但保证不崩）
             from queue import Queue as _Q
@@ -1714,7 +1719,7 @@ class IntegratedAudioProcessor(QThread):
         self._lb_state = 'stopped'  # 'playing'|'paused'|'stopped'
         self._lb_data_abs_start = 0.0
         self._lb_data_abs_end = 0.0
-        self.listenback_vocal_gain = 1.25  # 默认让回听人声稍微更响亮
+        self.listenback_vocal_gain = 1.05  # 默认微增回听人声响度，tanh软限幅下避免过度饱和
 
         # ====== 其余核心初始化（之前因缩进错误而跑到方法定义后）======
         # 颤音检测相关参数
@@ -1782,10 +1787,26 @@ class IntegratedAudioProcessor(QThread):
     # ---- 回听缓冲维护 ----
     def _append_listenback_packets(self, packets):
         try:
-            sr = float(getattr(self, 'sample_rate', 48000))
-            # 🔥 显式存储回听采样率，防止后续 self.sample_rate 变化导致时间计算漂移
-            if not hasattr(self, '_listenback_sample_rate') or self._listenback_sample_rate is None:
-                self._listenback_sample_rate = sr
+            # 🔥 五级回退获取设备真实采样率（按可靠性排序）：
+            #   ① active_input_samplerate（流创建时显式设定）
+            #   ② audio_stream.samplerate（sounddevice 返回的实际参数，最权威）
+            #   ③ active_audio_stream.samplerate（全局监听流参数）
+            #   ④ sample_rate（用户选择或 MainWindow 设定）
+            #   ⑤ 48000（系统默认，最后防线）
+            _sr1 = float(getattr(self, 'active_input_samplerate', 0) or 0)
+            _sr2 = float(getattr(getattr(self, 'audio_stream', None), 'samplerate', 0) or 0)
+            _sr2b = float(getattr(getattr(self, 'active_audio_stream', None), 'samplerate', 0) or 0)
+            _sr3 = float(getattr(self, 'sample_rate', 0) or 0)
+            sr = _sr1 or _sr2 or _sr2b or _sr3 or 48000.0
+            self._listenback_sample_rate = sr  # 始终同步，备用
+            # 一次性诊断：确认回听采样率来源
+            if not getattr(self, '_lb_sr_diag_done', False):
+                self._lb_sr_diag_done = True
+                src = "active_input_samplerate" if _sr1 else ("audio_stream" if _sr2 else ("active_audio_stream" if _sr2b else ("sample_rate" if _sr3 else "fallback_48000")))
+                try:
+                    print(f"🔊 回听采样率: {sr:.0f}Hz (来源: {src}, active_input={_sr1:.0f}, audio_stream={_sr2:.0f}, active_audio={_sr2b:.0f}, sample_rate={_sr3:.0f})")
+                except Exception:
+                    pass
             now = time.time()
             for pkt in packets:
 
@@ -1799,12 +1820,13 @@ class IntegratedAudioProcessor(QThread):
                     continue
                 dur = float(len(dat)) / max(1.0, sr)
                 ts_start = ts_end - dur
-                self._listenback_chunks.append((ts_start, ts_end, dat))
+                # 🔥 每块存储格式: (ts_start, ts_end, data, sample_rate)
+                self._listenback_chunks.append((ts_start, ts_end, dat, sr))
                 self._listenback_total_sec += dur
             # 时间裁剪：移除超出窗口的数据
             cutoff = now - float(self.listenback_window_sec)
             while self._listenback_chunks:
-                s, e, d = self._listenback_chunks[0]
+                s, e, d, *_ = self._listenback_chunks[0]
                 if e < cutoff:
                     self._listenback_total_sec -= (e - s)
                     try:
@@ -1824,18 +1846,29 @@ class IntegratedAudioProcessor(QThread):
         try:
             if abs_end <= abs_start:
                 return np.zeros(0, dtype=np.float32)
-            # 🔥 使用存储的回听采样率，避免 self.sample_rate 变化后索引计算偏移
-            sr = float(getattr(self, '_listenback_sample_rate', None) or getattr(self, 'sample_rate', 48000))
             segs = []
-            for (s, e, dat) in list(self._listenback_chunks):
+            global_sr = float(getattr(self, '_listenback_sample_rate', 0) or getattr(self, 'active_input_samplerate', 0) or getattr(self, 'sample_rate', 48000) or 48000)
+            chunk_sr = global_sr  # 默认用全局速率，有块级速率则优先
+            for item in list(self._listenback_chunks):
+                # 兼容旧格式 (3元组) 和新格式 (4元组含采样率)
+                if len(item) >= 4:
+                    s, e, dat, block_sr = item[0], item[1], item[2], item[3]
+                    # 用该块自身的采样率计算索引，消除全局速率漂移
+                    block_sr = float(block_sr)
+                    if block_sr > 0:
+                        chunk_sr = block_sr
+                else:
+                    s, e, dat = item[0], item[1], item[2]
                 if e <= abs_start or s >= abs_end:
                     continue
                 ov_s = max(abs_start, s)
                 ov_e = min(abs_end, e)
                 if ov_e <= ov_s:
                     continue
-                start_idx = max(0, int(round((ov_s - s) * sr)))
-                end_idx = min(len(dat), int(round((ov_e - s) * sr)))
+                # 🔥 关键：用该块自身的采样率转换时间→样本索引
+                _use_sr = float(chunk_sr) if chunk_sr > 0 else global_sr
+                start_idx = max(0, int(round((ov_s - s) * _use_sr)))
+                end_idx = min(len(dat), int(round((ov_e - s) * _use_sr)))
                 if end_idx > start_idx:
                     segs.append(dat[start_idx:end_idx])
             if not segs:
@@ -1849,6 +1882,9 @@ class IntegratedAudioProcessor(QThread):
                 np.clip(out, -1.0, 1.0, out=out)
             except Exception:
                 out = np.clip(out, -1.0, 1.0)
+            # 🔥 回写块级采样率供 OutputStream 使用（用最后碰到的有效速率）
+            if chunk_sr > 0:
+                self._listenback_sample_rate = int(chunk_sr)
             return out
         except Exception:
             return np.zeros(0, dtype=np.float32)
@@ -1875,12 +1911,23 @@ class IntegratedAudioProcessor(QThread):
             self._lb_data = data
             self._lb_pos = 0
             self._lb_state = 'playing'
-            try:
+            # 🔥 校验实际数据时长 vs 请求时长，修正 _lb_data_abs_end 防止播放头超限
+            _requested_dur = float(abs_end - abs_start)
+            _lb_sr_check = float(getattr(self, '_listenback_sample_rate', 0) or getattr(self, 'active_input_samplerate', 0) or getattr(self, 'sample_rate', 48000) or 48000)
+            _actual_dur = float(len(data)) / max(_lb_sr_check, 1.0)
+            if _requested_dur > 0 and _actual_dur < _requested_dur * 0.95:
+                # 数据不足：将 abs_end 修正为实际可用范围，避免播放头与音频脱节
+                _corrected_end = float(abs_start) + _actual_dur
+                try:
+                    print(f"⚠️ 回听数据不足：请求 {_requested_dur:.3f}s，实际 {_actual_dur:.3f}s "
+                          f"({_actual_dur/_requested_dur*100:.0f}%)，已修正播放终点")
+                except Exception:
+                    pass
+                self._lb_data_abs_start = float(abs_start)
+                self._lb_data_abs_end = float(_corrected_end)
+            else:
                 self._lb_data_abs_start = float(abs_start)
                 self._lb_data_abs_end = float(abs_end)
-            except Exception:
-                self._lb_data_abs_start = 0.0
-                self._lb_data_abs_end = 0.0
 
             def _cb(outdata, frames, time_info, status):
                 try:
@@ -1893,8 +1940,10 @@ class IntegratedAudioProcessor(QThread):
                     gain = float(getattr(self, 'listenback_vocal_gain', 1.0) or 1.0)
                     if gain != 1.0 and n > 0:
                         try:
-                            # 软限幅(tanh)避免硬削波产生的噼啪声，同时保持响度增益
-                            chunk = np.clip(chunk * gain, -0.99, 0.99)
+                            # tanh 软限幅：knee=0.55 确保正常电平（含假声）保持线性通透，
+                            # 仅极高峰值（>0.95）进入渐进饱和，避免硬削波谐波失真
+                            boosted = chunk * gain
+                            chunk = np.tanh(boosted * 0.55) / 0.55
                         except Exception:
                             pass
                     if n < frames:
@@ -1929,24 +1978,37 @@ class IntegratedAudioProcessor(QThread):
 
             def _on_finished():
                 state = getattr(self, '_lb_state', 'stopped')
-                self._lb_stream = None
                 if state != 'playing':
-                    return
+                    return  # 程序化暂停/停止：不发射完成信号
                 self._lb_state = 'stopped'
+                self._lb_stream = None
                 try:
                     self.listenback_playback_finished.emit()
                 except Exception:
                     pass
 
-            # 关闭旧流
+            # 关闭旧流（先设停止态防止 _on_finished 回调误发完成信号）
             try:
                 if self._lb_stream is not None:
+                    self._lb_state = 'stopped'
                     self._lb_stream.stop()
                     self._lb_stream.close()
             except Exception:
                 pass
-            # 回听播放流：使用存储的采样率，与录音时一致
-            _lb_sr = int(getattr(self, '_listenback_sample_rate', None) or self.sample_rate)
+            self._lb_stream = None
+            # 回听播放流：优先 _listenback_sample_rate → active_input_samplerate → sample_rate
+            _lb_sr = int(getattr(self, '_listenback_sample_rate', 0) or getattr(self, 'active_input_samplerate', 0) or self.sample_rate)
+            # 速率一致性诊断（只打印警告，不自动修正以免数据不完整时误判）
+            _expected_dur = float(abs_end - abs_start)
+            if _expected_dur > 0 and len(data) > 0:
+                _data_dur = float(len(data)) / max(float(_lb_sr), 1.0)
+                _drift = _data_dur / _expected_dur
+                if _drift < 0.85 or _drift > 1.15:
+                    try:
+                        print(f"⚠️ 回听速率漂移: 请求 {_expected_dur:.2f}s, 实际数据 {len(data)}样@ {_lb_sr}Hz={_data_dur:.2f}s "
+                              f"(偏差 {abs(1-_drift)*100:.0f}%), 请检查采样率配置")
+                    except Exception:
+                        pass
             self._lb_stream = sd.OutputStream(
                 samplerate=_lb_sr,
                 channels=1,
@@ -2005,8 +2067,9 @@ class IntegratedAudioProcessor(QThread):
                     gain = float(getattr(self, 'listenback_vocal_gain', 1.0) or 1.0)
                     if gain != 1.0 and n > 0:
                         try:
-                            # 软限幅(tanh)避免硬削波产生的噼啪声，同时保持响度增益
-                            chunk = np.clip(chunk * gain, -0.99, 0.99)
+                            # tanh 软限幅：knee=0.55 确保正常电平保持线性通透
+                            boosted = chunk * gain
+                            chunk = np.tanh(boosted * 0.55) / 0.55
                         except Exception:
                             pass
                     if n < frames:
@@ -2031,10 +2094,10 @@ class IntegratedAudioProcessor(QThread):
 
             def _on_finished():
                 state = getattr(self, '_lb_state', 'stopped')
-                self._lb_stream = None
                 if state != 'playing':
-                    return
+                    return  # 程序化暂停/停止：不发射完成信号
                 self._lb_state = 'stopped'
+                self._lb_stream = None
                 try:
                     self.listenback_playback_finished.emit()
                 except Exception:
@@ -2042,7 +2105,7 @@ class IntegratedAudioProcessor(QThread):
 
             # 启动新流，从 _lb_pos 继续
             self._lb_state = 'playing'
-            _lb_sr2 = int(getattr(self, '_listenback_sample_rate', None) or self.sample_rate)
+            _lb_sr2 = int(getattr(self, '_listenback_sample_rate', 0) or getattr(self, 'active_input_samplerate', 0) or self.sample_rate)
             self._lb_stream = sd.OutputStream(
                 samplerate=_lb_sr2,
                 channels=1,
@@ -5357,6 +5420,13 @@ class IntegratedAudioProcessor(QThread):
                 self._pause_started_at = None
                 self._total_paused_time = 0.0
                 self.audio_buffer = []
+                # 🔥 新录音会话：清空旧回听块
+                try:
+                    if hasattr(self, '_listenback_chunks') and self._listenback_chunks:
+                        self._listenback_chunks.clear()
+                        self._listenback_total_sec = 0.0
+                except Exception:
+                    pass
                 # 进入录音时重置录音计时，确保时长准确
                 self.recording_start_time = time.time()
                 
@@ -5425,6 +5495,13 @@ class IntegratedAudioProcessor(QThread):
             self.should_save = should_save
             self.audio_buffer = []
             self.pitch_history.clear()
+            # 🔥 新录音会话：清空旧回听块，防止上轮残留采样率干扰
+            try:
+                if hasattr(self, '_listenback_chunks') and self._listenback_chunks:
+                    self._listenback_chunks.clear()
+                    self._listenback_total_sec = 0.0
+            except Exception:
+                pass
             self.recording_start_time = time.time()
             self.current_duration = 0.0
             self.recording_duration = 0.0
@@ -5571,6 +5648,14 @@ class IntegratedAudioProcessor(QThread):
 
                     # 批量吐出满足阈值的包
                     min_samples = int(self._callback_min_enqueue_samples)
+                    # 🔥 高采样率自适应：确保每批至少 4ms 音频，防止 192kHz 下回调过密丢包
+                    try:
+                        _cb_sr = int(getattr(self, 'sample_rate', 48000) or 48000)
+                        _min_for_sr = max(96, int(_cb_sr * 0.004))
+                        if _min_for_sr > min_samples:
+                            min_samples = _min_for_sr
+                    except Exception:
+                        pass
                     while self._enqueue_accum_len >= min_samples:
                         packet = buf[:min_samples].copy()
 
@@ -6625,6 +6710,13 @@ class IntegratedAudioProcessor(QThread):
 
                         # 批量吐出满足阈值的包
                         min_samples = int(self._callback_min_enqueue_samples)
+                        try:
+                            _cb_sr = int(getattr(self, 'sample_rate', 48000) or 48000)
+                            _min_for_sr = max(96, int(_cb_sr * 0.004))
+                            if _min_for_sr > min_samples:
+                                min_samples = _min_for_sr
+                        except Exception:
+                            pass
                         while self._enqueue_accum.size >= min_samples:
                             packet = self._enqueue_accum[:min_samples]
                             self._enqueue_accum = self._enqueue_accum[min_samples:]
@@ -7881,6 +7973,13 @@ class IntegratedAudioProcessor(QThread):
                             else:
                                 self._enqueue_accum = np.concatenate((self._enqueue_accum, raw_audio))
                             min_samples = int(self._callback_min_enqueue_samples)
+                            try:
+                                _cb_sr = int(getattr(self, 'sample_rate', 48000) or 48000)
+                                _min_for_sr = max(96, int(_cb_sr * 0.004))
+                                if _min_for_sr > min_samples:
+                                    min_samples = _min_for_sr
+                            except Exception:
+                                pass
                             while self._enqueue_accum.size >= min_samples:
                                 packet = self._enqueue_accum[:min_samples]
                                 self._enqueue_accum = self._enqueue_accum[min_samples:]
@@ -9581,6 +9680,21 @@ class IntegratedAudioProcessor(QThread):
         old = getattr(self, 'sample_rate', None)
         if old != ar:
             self.sample_rate = ar
+            # 🔥 同步回听采样率，防止因冻结时机过早导致的回放速度异常
+            if hasattr(self, '_listenback_sample_rate') and self._listenback_sample_rate != ar:
+                try:
+                    if self._listenback_sample_rate is not None:
+                        print(f"🔁 回听采样率同步: {self._listenback_sample_rate} -> {ar} Hz")
+                except Exception:
+                    pass
+                # 清空旧速率下积累的回听块，避免时长计算偏移
+                try:
+                    if hasattr(self, '_listenback_chunks') and self._listenback_chunks:
+                        self._listenback_chunks.clear()
+                        self._listenback_total_sec = 0.0
+                except Exception:
+                    pass
+            self._listenback_sample_rate = ar
             try:
                 print(f"🔁 采样率同步: {old} -> {ar} Hz")
             except Exception:
@@ -31272,9 +31386,23 @@ class ECGStylePitchVisualizer(QWidget):
             # 将绝对时间映射到可视坐标（start_time参考）
             if not hasattr(self, 'start_time') or self.start_time is None:
                 return
-            now = time.time()
-            # 以启动时刻为零点推进
-            cur_abs = float(self._lb_play_abs_start) + float(now - float(self._lb_wall_start))
+            # 优先使用音频流实际采样位置（与回放硬件完美同步），
+            # 避免墙钟漂移导致播放头与音频"脱节"（音频已播完但播放头还在半路）
+            pos_from_stream = False
+            if ap is not None:
+                try:
+                    _lb_sr_ph = float(getattr(ap, '_listenback_sample_rate', 0) or getattr(ap, 'active_input_samplerate', 0) or getattr(ap, 'sample_rate', 48000) or 48000)
+                    _lb_pos_ph = int(getattr(ap, '_lb_pos', 0) or 0)
+                    if _lb_sr_ph > 0 and _lb_pos_ph > 0:
+                        pos_sec = float(_lb_pos_ph) / _lb_sr_ph
+                        cur_abs = float(self._lb_play_abs_start) + pos_sec
+                        pos_from_stream = True
+                except Exception:
+                    pass
+            if not pos_from_stream:
+                # 回退：墙钟推进（兼容旧行为）
+                now = time.time()
+                cur_abs = float(self._lb_play_abs_start) + float(now - float(self._lb_wall_start))
             # 限制在区间内
             cur_abs = min(max(cur_abs, self._lb_abs_start), self._lb_abs_end)
             x = float(cur_abs - float(self.start_time))
@@ -71455,7 +71583,15 @@ class _RetakeControlWindow(QDialog):
                 self._updating_from_visualizer = False
             self._update_length_label(end - start)
         self.status_label.setText("")
-        self._update_listenback_range_ui(start, end, range_reset=range_changed)
+        # 若回听正在播放，移动标记时不要重置滑块（避免干扰播放进度）
+        _lb_playing = False
+        try:
+            ap = getattr(self.main, 'audio_processor', None)
+            if ap is not None:
+                _lb_playing = (getattr(ap, '_lb_state', 'stopped') == 'playing')
+        except Exception:
+            pass
+        self._update_listenback_range_ui(start, end, range_reset=(range_changed and not _lb_playing))
         self._refresh_listenback_status()
         self._update_rerecord_progress()
 
@@ -72536,7 +72672,7 @@ class _RetakeControlWindow(QDialog):
         if self._listenback_abs_range is None or ap is None:
             return 0.0
         try:
-            sr = float(getattr(ap, 'sample_rate', getattr(self.main, 'sample_rate', 48000)) or 48000)
+            sr = float(getattr(ap, '_listenback_sample_rate', 0) or getattr(ap, 'active_input_samplerate', 0) or getattr(ap, 'sample_rate', getattr(self.main, 'sample_rate', 48000)) or 48000)
         except Exception:
             sr = 48000.0
         try:
