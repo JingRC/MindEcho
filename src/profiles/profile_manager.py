@@ -364,6 +364,42 @@ class ProfileManager:
         # 保存
         self.save_profile(profile)
 
+    def add_training_record(
+        self,
+        profile_id: str,
+        record: "TrainingRecord",
+    ) -> None:
+        """添加一条练声记录到存档。
+
+        Args:
+            profile_id: 存档 ID（访客模式传空字符串）
+            record: TrainingRecord 实例
+        """
+        profile = self.get_profile(profile_id)
+        if profile is None:
+            return
+        profile.training_stats.add_record(record)
+        profile.updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.save_profile(profile)
+
+    def get_training_history(
+        self,
+        profile_id: str,
+        limit: int = 20,
+    ) -> List["TrainingRecord"]:
+        """获取最近的练声历史记录。"""
+        profile = self.get_profile(profile_id)
+        if profile is None:
+            return []
+        return profile.training_stats.recent_records[-limit:]
+
+    def get_training_level(self, profile_id: str) -> str:
+        """获取当前训练等级。"""
+        profile = self.get_profile(profile_id)
+        if profile is None:
+            return "beginner"
+        return profile.training_stats.level
+
     # ── Phase 3: 自适应 T4 估计 ──────────────────────────
 
     def _auto_estimate_passaggio(self, profile: SingerProfile) -> None:

@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (
     QSlider, QLabel, QPushButton, QMainWindow, QDockWidget,
     QWidget, QComboBox, QCheckBox, QGridLayout, QScrollBar,
     QSpinBox, QFileDialog, QMessageBox, QLineEdit, QProgressBar, QProgressDialog, QFrame, QMenu, QApplication,
-    QDoubleSpinBox, QSizePolicy, QFormLayout, QAbstractSpinBox, QToolButton, QRadioButton, QButtonGroup
+    QDoubleSpinBox, QSizePolicy, QFormLayout, QAbstractSpinBox, QToolButton, QRadioButton, QButtonGroup,
+    QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, QMetaObject, pyqtSlot, QSettings
 from collections import deque
@@ -4144,14 +4145,13 @@ class IntegratedAudioProcessor(QThread):
         falsetto_confidence: float = 0.0,
         preview_only: bool = False,
     ) -> float:
-        try:
-            host = getattr(self, '_host_interface', None)
-            viz = getattr(host, 'visualizer', None) if host is not None else None
-            if viz is None or not hasattr(viz, 'display_mode'):
-                return float(smooth_frequency)
-            if viz.display_mode.currentText() != "普通模式":
-                return float(smooth_frequency)
-        except Exception:
+        # 线程安全的显示模式检查：用缓存的纯字符串属性代替 Qt GUI 调用。
+        cached_mode = getattr(self, '_cached_display_mode', '普通模式')
+        if not hasattr(self, '_dcf_logged'):
+            self._dcf_logged = True
+            print(f"[DCF] _cached_display_mode='{cached_mode}' — "
+                  f"{'完整处理' if cached_mode == '普通模式' else '简化处理'}")
+        if cached_mode != "普通模式":
             return float(smooth_frequency)
 
         try:
@@ -50978,6 +50978,11 @@ class ECGStylePitchVisualizer(QWidget):
     
     def on_display_mode_changed(self, mode):
         """显示模式改变"""
+        # 缓存到音频处理器，供 _compute_normal_mode_display_frequency 线程安全读取
+        try:
+            self.audio_processor._cached_display_mode = str(mode)
+        except Exception:
+            pass
         # 重置线条样式
         if hasattr(self, 'pitch_line') and self.pitch_line is not None:
             self.pitch_line.set_drawstyle('default')
@@ -53847,6 +53852,15 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._profile_manager = None
         else:
             print("[存档] ProfileManager 导入失败 (ProfileManager is None)")
+        # 🆕 练声模式集成层 (Phase 4)
+        self._training = None
+        try:
+            from src.vocal_training.training_integration import TrainingIntegration
+            self._training = TrainingIntegration(self)
+            self._training.attach()
+            print("[练声] TrainingIntegration 初始化成功")
+        except Exception as _e:
+            print(f"[练声] TrainingIntegration 初始化失败: {_e}")
         # ② 恢复上次存档 + 清理
         if self._profile_manager is not None:
             try:
@@ -53927,6 +53941,8 @@ class IntegratedRecordingInterface(QMainWindow):
             pass
         try:
             self.audio_processor._host_interface = self
+            # 缓存初始显示模式（线程安全，避免音频线程访问 Qt GUI）
+            self.audio_processor._cached_display_mode = "普通模式"
         except Exception:
             pass
         self._sync_audio_processor_epoch()
@@ -54372,13 +54388,50 @@ class IntegratedRecordingInterface(QMainWindow):
         self.ai_coach_btn.setToolTip("显示/隐藏 AI 声乐教练面板 (Ctrl+Shift+A)")
         self.ai_coach_btn.clicked.connect(self._toggle_ai_coach)
         header_layout.addWidget(self.ai_coach_btn)
+
+        # 🆕 练声模式按钮
+        self.training_btn = QPushButton("🎵 练声模式")
+        self.training_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #DAA520, stop:1 #B8860B);
+                border: none;
+                border-radius: 6px;
+                padding: 7px 14px;
+                color: white;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #FFD700, stop:1 #DAA520);
+            }
+            QPushButton:checked {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #238636, stop:1 #2EA043);
+            }
+            """
+        )
+        self.training_btn.setCheckable(True)
+        self.training_btn.setToolTip("切换练声模式 — 交互式音准训练")
+        self.training_btn.clicked.connect(self._toggle_training_mode)
+        header_layout.addWidget(self.training_btn)
+
         header_layout.addStretch()
         main_layout.addLayout(header_layout)
         
         # 创建控制面板
         control_panel = self.create_control_panel()
-        main_layout.addWidget(control_panel)
-        
+
+        # ── 唱歌模式页面（控制面板 + 可视化器）──
+        self._normal_page = QWidget()
+        normal_layout = QVBoxLayout(self._normal_page)
+        normal_layout.setContentsMargins(0, 0, 0, 0)
+        normal_layout.setSpacing(4)
+        # 控制面板复用（从 normal layout 中取出，不重复 addWidget）
+        self._control_panel_ref = control_panel  # 保存引用
+
         # 创建可视化区域
         self.visualizer = ECGStylePitchVisualizer()
         try:
@@ -54395,15 +54448,22 @@ class IntegratedRecordingInterface(QMainWindow):
             pass
         # 设置音频处理器引用
         self.visualizer.set_audio_processor(self.audio_processor)
-        
+
         # 连接监听按钮到主窗口的方法
         if hasattr(self.visualizer, 'monitor_button'):
             self.visualizer.monitor_button.clicked.connect(self.toggle_monitoring)
             print("🎧 监听按钮已连接到主窗口")
-        
-        main_layout.addWidget(self.visualizer)
-        
-        # 创建状态信息面板
+
+        normal_layout.addWidget(control_panel)
+        normal_layout.addWidget(self.visualizer)
+
+        # ── QStackedWidget: 唱歌模式 ↔ 练声模式 ──
+        self._mode_stack = QStackedWidget()
+        self._mode_stack.addWidget(self._normal_page)  # index 0: 唱歌模式
+
+        main_layout.addWidget(self._mode_stack)
+
+        # 创建状态信息面板（两种模式共用）
         status_panel = self.create_status_panel()
         main_layout.addWidget(status_panel)
         
@@ -54482,6 +54542,50 @@ class IntegratedRecordingInterface(QMainWindow):
                 dock.setVisible(not dock.isVisible())
         except Exception:
             pass
+
+    def _toggle_training_mode(self):
+        """切换练声模式 — QStackedWidget 翻页 + 按钮文字互换"""
+        if self._training is None:
+            return
+        active = not self._training.is_active
+
+        if active:
+            # 首次激活：将 TrainingPanel 加入 QStackedWidget
+            if self._mode_stack.count() < 2:
+                panel = self._training.panel
+                self._mode_stack.addWidget(panel)  # index 1
+            self._mode_stack.setCurrentIndex(1)
+
+            # ── 确保音高管道标志位正确（音频流由开始练声时启动）──
+            # 不在此处启动录音。音频输入由 TrainingPanel._start_exercise() 触发，
+            # 通过 TrainingIntegration.ensure_audio_input() 桥接。
+            ap = self.audio_processor
+            try:
+                ap.is_monitoring_only = False
+                ap.enable_pitch_visualization = True
+            except Exception:
+                pass
+
+            print(f"[练声] UI 已切换到练声面板 (audio_ready={getattr(ap, 'is_global_monitoring_active', False) or self.is_recording})")
+
+            # 连接存档保存
+            if self._training.panel is not None:
+                try:
+                    self._training.panel.exercise_completed.disconnect()
+                except Exception:
+                    pass
+                self._training.panel.exercise_completed.connect(
+                    lambda score: self._training.save_training_result(score)
+                )
+            self._training.activate()
+            self.training_btn.setText("🎤 唱歌模式")
+            print("[练声] 练声模式已激活")
+        else:
+            self._mode_stack.setCurrentIndex(0)
+            self._training.deactivate()
+            self.training_btn.setText("🎵 练声模式")
+            self.training_btn.setChecked(False)
+            print("[练声] 已切回唱歌模式")
 
     def open_settings_dialog(self):
         """打开设置对话框，配置录音保存位置"""
@@ -70071,6 +70175,22 @@ class IntegratedRecordingInterface(QMainWindow):
                             pitch_data['_overlay_consumed'] = False
                     except Exception:
                         pass
+            # 🆕 练声模式: 轻量管道路由 — 直接将 pitch 喂给训练引擎
+            self._in_training_mode = False
+            try:
+                if self._training is not None and self._training.is_active:
+                    freq = float(pitch_data.get('display_frequency', 0)
+                                 or pitch_data.get('f0_smooth', 0)
+                                 or pitch_data.get('f0_raw', 0)
+                                 or 0)
+                    conf = float(pitch_data.get('confidence', 0.9) or 0.9)
+                    rms = float(pitch_data.get('audio_rms', 0) or 0)
+                    if freq > 10:  # 有效音高阈值
+                        self._training.feed_pitch(freq, conf, rms)
+                    self._in_training_mode = True
+                    # 不 return — 让统计和调试代码继续运行
+            except Exception:
+                pass
             # 更新统计
             self.total_pitches_detected += 1
             
@@ -70446,7 +70566,9 @@ class IntegratedRecordingInterface(QMainWindow):
                         )
                     except Exception:
                         pass
-                    self.visualizer.add_pitch_data(base_payload)
+                    # 练声模式下跳过普通模式 ECG 渲染
+                    if not getattr(self, '_in_training_mode', False):
+                        self.visualizer.add_pitch_data(base_payload)
                     self._vis_last_draw_wall = now_wall
             else:
                 # 纯监听模式：跳过音调线绘制
@@ -70490,6 +70612,18 @@ class IntegratedRecordingInterface(QMainWindow):
 
     def on_recording_progress(self, duration):
         """录音进度更新。"""
+        # 练声模式：显示练声时长，不更新普通模式的录音时长
+        if self._training is not None and self._training.is_active:
+            try:
+                train_dur = self._training.training_duration
+                sec_int = int(train_dur)
+                if getattr(self, '_last_train_sec', -1) != sec_int:
+                    self._last_train_sec = sec_int
+                    m, s = sec_int // 60, sec_int % 60
+                    self.recording_time_label.setText(f"练声时长: {m:02d}:{s:02d}")
+            except Exception:
+                pass
+            return
         try:
             raw_duration = max(0.0, float(duration or 0.0))
         except Exception:

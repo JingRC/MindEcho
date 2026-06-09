@@ -1,0 +1,6653 @@
+{
+  "recording_info": {
+    "filename": "analysis_20260609_112423",
+    "sample_rate": 48000,
+    "channels": 1,
+    "duration": 5.536950588226318,
+    "mode": "analyze_only"
+  },
+  "pitch_analysis": {
+    "total_detections": 607,
+    "detection_rate": 109.62712964979585,
+    "pitch_data": [
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975458.630837,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975458.6769533,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 281.83424542082827,
+        "timestamp": 1780975458.717026,
+        "confidence": 0.6220191841143231,
+        "note_info": {
+          "note_name": "C#",
+          "octave": 4,
+          "cents": 28.81207892097005,
+          "midi_number": 61
+        }
+      },
+      {
+        "frequency": 280.925640002035,
+        "timestamp": 1780975458.7344398,
+        "confidence": 0.800216936538695,
+        "note_info": {
+          "note_name": "C#",
+          "octave": 4,
+          "cents": 23.221737300117397,
+          "midi_number": 61
+        }
+      },
+      {
+        "frequency": 280.7837399590034,
+        "timestamp": 1780975458.7375066,
+        "confidence": 0.845896930463666,
+        "note_info": {
+          "note_name": "C#",
+          "octave": 4,
+          "cents": 22.347042306406756,
+          "midi_number": 61
+        }
+      },
+      {
+        "frequency": 280.7660274682454,
+        "timestamp": 1780975458.747689,
+        "confidence": 0.8698386036460926,
+        "note_info": {
+          "note_name": "C#",
+          "octave": 4,
+          "cents": 22.347042306406756,
+          "midi_number": 61
+        }
+      },
+      {
+        "frequency": 275.21387428562446,
+        "timestamp": 1780975458.7523582,
+        "confidence": 0.8910817177491275,
+        "note_info": {
+          "note_name": "C#",
+          "octave": 4,
+          "cents": -12.340385999068804,
+          "midi_number": 61
+        }
+      },
+      {
+        "frequency": 264.1877128111516,
+        "timestamp": 1780975458.7619662,
+        "confidence": 0.9039542772086934,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": 16.8718147690377,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 263.45255658825255,
+        "timestamp": 1780975458.7666245,
+        "confidence": 0.9048169688860334,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": 12.047587423842167,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 262.30429115115373,
+        "timestamp": 1780975458.7692225,
+        "confidence": 0.8952522523387358,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": 4.4854628737249245,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.39417824800432,
+        "timestamp": 1780975458.7882297,
+        "confidence": 0.9016036529779567,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -48.52544219111233,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 253.12788343991764,
+        "timestamp": 1780975458.7909544,
+        "confidence": 0.9020136230741147,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.43838669703112,
+        "timestamp": 1780975458.7965343,
+        "confidence": 0.9029880368166939,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 31.241676125776902,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.81114390551764,
+        "timestamp": 1780975458.8077335,
+        "confidence": 0.9021861082054827,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 26.91751223478178,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.54537593301313,
+        "timestamp": 1780975458.8111355,
+        "confidence": 0.8983932971588982,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 25.0820654497407,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.4202965931581,
+        "timestamp": 1780975458.8277483,
+        "confidence": 0.8991017135185667,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 24.217568625439526,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.1670591151891,
+        "timestamp": 1780975458.8307846,
+        "confidence": 0.8986263171867613,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 22.46597271811473,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 249.48992101242177,
+        "timestamp": 1780975458.8374233,
+        "confidence": 0.8980756169071555,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 17.773612544146552,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 249.0700986583613,
+        "timestamp": 1780975458.8514864,
+        "confidence": 0.8984061143187654,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 14.857971911035895,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.72801112154298,
+        "timestamp": 1780975458.8558555,
+        "confidence": 0.8981594351198283,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 12.478558759026322,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.58816589115332,
+        "timestamp": 1780975458.8668795,
+        "confidence": 0.8977885398996496,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 11.504913251310157,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.57240577707273,
+        "timestamp": 1780975458.8711169,
+        "confidence": 0.8983731864592095,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 11.504913251310157,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.5706362582663,
+        "timestamp": 1780975458.8805304,
+        "confidence": 0.8976960526886884,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 11.504913251310157,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.5704367748595,
+        "timestamp": 1780975458.8882122,
+        "confidence": 0.8980607816871542,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 11.504913251310157,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.60817959571864,
+        "timestamp": 1780975458.893441,
+        "confidence": 0.8974558249682184,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 11.504913251310157,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.6666362835571,
+        "timestamp": 1780975458.9082105,
+        "confidence": 0.9011668844699035,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 12.478558759026322,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.91894003989142,
+        "timestamp": 1780975458.9115894,
+        "confidence": 0.9008308379586992,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 13.806981086715394,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 249.31181357897776,
+        "timestamp": 1780975458.917201,
+        "confidence": 0.9008991953835244,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 16.53726693870297,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 249.869987116772,
+        "timestamp": 1780975458.933249,
+        "confidence": 0.9024338648660377,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 20.408920253430686,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.29926768941863,
+        "timestamp": 1780975458.9384801,
+        "confidence": 0.9036753259594343,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 23.3806555982614,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.94149361826348,
+        "timestamp": 1780975458.949765,
+        "confidence": 0.9040505427837354,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 27.81702266758034,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.50430777121997,
+        "timestamp": 1780975458.955067,
+        "confidence": 0.9042614843000454,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 31.695504405203614,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.810187205403,
+        "timestamp": 1780975458.96496,
+        "confidence": 0.9052195595294031,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 33.79975120058111,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.96936610457038,
+        "timestamp": 1780975458.9702039,
+        "confidence": 0.904995132452785,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 34.89378503935728,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.1344117623801,
+        "timestamp": 1780975458.9739542,
+        "confidence": 0.9055628821840408,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 36.0274114282308,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.3782884131545,
+        "timestamp": 1780975458.988541,
+        "confidence": 0.9068133844249395,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.70113577384721,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.71949694499975,
+        "timestamp": 1780975458.998243,
+        "confidence": 0.9058637954001243,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.75637945591933,
+        "timestamp": 1780975459.0025036,
+        "confidence": 0.9055396176269532,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.76037093248405,
+        "timestamp": 1780975459.0098467,
+        "confidence": 0.9044164152473053,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.75020352044103,
+        "timestamp": 1780975459.0139346,
+        "confidence": 0.90523992866072,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.74909987505336,
+        "timestamp": 1780975459.0281346,
+        "confidence": 0.9064213225040402,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.7489809537239,
+        "timestamp": 1780975459.0399556,
+        "confidence": 0.9056963555299414,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.83674785113703,
+        "timestamp": 1780975459.043108,
+        "confidence": 0.9074782893587141,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.1573525704452,
+        "timestamp": 1780975459.0495648,
+        "confidence": 0.9075172292103972,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.19167776883208,
+        "timestamp": 1780975459.0506105,
+        "confidence": 0.9057021034555743,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.19539221750787,
+        "timestamp": 1780975459.0676434,
+        "confidence": 0.9058008055656388,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.06096469013815,
+        "timestamp": 1780975459.0702474,
+        "confidence": 0.9071042696699947,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.04652965642094,
+        "timestamp": 1780975459.08127,
+        "confidence": 0.9065570795371392,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.04497510430323,
+        "timestamp": 1780975459.0897722,
+        "confidence": 0.9060688779981265,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.05403465763112,
+        "timestamp": 1780975459.0927176,
+        "confidence": 0.9068149411573793,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.08972662867436,
+        "timestamp": 1780975459.1120775,
+        "confidence": 0.9076413663638107,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.29031847784626,
+        "timestamp": 1780975459.1160731,
+        "confidence": 0.9080137406603281,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.71782203294316,
+        "timestamp": 1780975459.1205368,
+        "confidence": 0.9079225764271954,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.2606648931394,
+        "timestamp": 1780975459.1317432,
+        "confidence": 0.9100625945538241,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.57007047263113,
+        "timestamp": 1780975459.1353562,
+        "confidence": 0.9091230403069726,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.60293723573315,
+        "timestamp": 1780975459.153284,
+        "confidence": 0.9082516124687844,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.60644605010359,
+        "timestamp": 1780975459.1572344,
+        "confidence": 0.9080304783012244,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.44265054970796,
+        "timestamp": 1780975459.1610994,
+        "confidence": 0.9072371744267248,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -48.52544219111233,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 253.95354434375005,
+        "timestamp": 1780975459.1674943,
+        "confidence": 0.9077052599301414,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.88275716967127,
+        "timestamp": 1780975459.17201,
+        "confidence": 0.9071630387669178,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.8067423479116,
+        "timestamp": 1780975459.1864626,
+        "confidence": 0.9076107804955622,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.78447600695995,
+        "timestamp": 1780975459.1927762,
+        "confidence": 0.9068486723521598,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.78208055831354,
+        "timestamp": 1780975459.204686,
+        "confidence": 0.9071346997883807,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.75546773404395,
+        "timestamp": 1780975459.2086399,
+        "confidence": 0.9069814754982279,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.7077819487984,
+        "timestamp": 1780975459.2139106,
+        "confidence": 0.9072295148283855,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6662353520646,
+        "timestamp": 1780975459.2280273,
+        "confidence": 0.9072968677500276,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.60611428276752,
+        "timestamp": 1780975459.2368217,
+        "confidence": 0.9067701417155929,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.59964450509145,
+        "timestamp": 1780975459.2467277,
+        "confidence": 0.9068603906111099,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.59894858178092,
+        "timestamp": 1780975459.2517853,
+        "confidence": 0.907002416628466,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.59887378644973,
+        "timestamp": 1780975459.2550814,
+        "confidence": 0.907011238105583,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.59886575300726,
+        "timestamp": 1780975459.2706585,
+        "confidence": 0.9060483303090274,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.57809326049554,
+        "timestamp": 1780975459.274807,
+        "confidence": 0.9062613735698075,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.46476125678294,
+        "timestamp": 1780975459.2780397,
+        "confidence": 0.9068533947678559,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.394953569865,
+        "timestamp": 1780975459.2941244,
+        "confidence": 0.9057499131626394,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.37337841075842,
+        "timestamp": 1780975459.2975936,
+        "confidence": 0.9059883771088311,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.27923371523207,
+        "timestamp": 1780975459.3100367,
+        "confidence": 0.9062829923514825,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.26907219392018,
+        "timestamp": 1780975459.319253,
+        "confidence": 0.907091235430478,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.26798092730746,
+        "timestamp": 1780975459.3223264,
+        "confidence": 0.9065912805528954,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.4723312051036,
+        "timestamp": 1780975459.3267317,
+        "confidence": 0.9065324834137083,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63365006083075,
+        "timestamp": 1780975459.334333,
+        "confidence": 0.9072991394681897,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6509523056336,
+        "timestamp": 1780975459.3466413,
+        "confidence": 0.9064990407273543,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65281711944274,
+        "timestamp": 1780975459.355407,
+        "confidence": 0.9067930710304389,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65301781182947,
+        "timestamp": 1780975459.3589118,
+        "confidence": 0.9071932956966592,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65303934858906,
+        "timestamp": 1780975459.3686724,
+        "confidence": 0.9063618827830333,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.61384680314566,
+        "timestamp": 1780975459.3723323,
+        "confidence": 0.906566181054811,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6096227441212,
+        "timestamp": 1780975459.38985,
+        "confidence": 0.907392635594775,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65430307627312,
+        "timestamp": 1780975459.393889,
+        "confidence": 0.9079715021001049,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65907817295846,
+        "timestamp": 1780975459.3982217,
+        "confidence": 0.907100743005624,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.7455059184135,
+        "timestamp": 1780975459.4120343,
+        "confidence": 0.9063196764208286,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.75482837712502,
+        "timestamp": 1780975459.4154663,
+        "confidence": 0.9063874511493343,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.75583344286323,
+        "timestamp": 1780975459.428409,
+        "confidence": 0.9062364767435002,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.53163944435389,
+        "timestamp": 1780975459.4376347,
+        "confidence": 0.9067145204413205,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.42509481857638,
+        "timestamp": 1780975459.441076,
+        "confidence": 0.906444478022466,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.4231760410817,
+        "timestamp": 1780975459.449021,
+        "confidence": 0.9056858382073695,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.423141289328,
+        "timestamp": 1780975459.4519408,
+        "confidence": 0.9072459893969715,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.56717520517395,
+        "timestamp": 1780975459.4698415,
+        "confidence": 0.9076538175741528,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.74450407939685,
+        "timestamp": 1780975459.4732752,
+        "confidence": 0.9079892738827392,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.7473736687733,
+        "timestamp": 1780975459.4841075,
+        "confidence": 0.906483247241915,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.74768282922662,
+        "timestamp": 1780975459.488653,
+        "confidence": 0.9060294545178423,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6470127029181,
+        "timestamp": 1780975459.4952726,
+        "confidence": 0.9065232165147291,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.60936084995907,
+        "timestamp": 1780975459.5075076,
+        "confidence": 0.9078493179951244,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6053333824901,
+        "timestamp": 1780975459.5118775,
+        "confidence": 0.9073481083438073,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63166406900044,
+        "timestamp": 1780975459.520067,
+        "confidence": 0.9058502180968775,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6549628972847,
+        "timestamp": 1780975459.5297995,
+        "confidence": 0.9085988312917661,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65744208263095,
+        "timestamp": 1780975459.5335498,
+        "confidence": 0.9060596454147113,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65771005372886,
+        "timestamp": 1780975459.5475993,
+        "confidence": 0.9072734517803948,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63578029410448,
+        "timestamp": 1780975459.556811,
+        "confidence": 0.9055767630834779,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63340530064048,
+        "timestamp": 1780975459.5605407,
+        "confidence": 0.9059112825440762,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63314865639842,
+        "timestamp": 1780975459.5685585,
+        "confidence": 0.9054985108765817,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.55800300299157,
+        "timestamp": 1780975459.5754638,
+        "confidence": 0.9048658840746395,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.52411211289834,
+        "timestamp": 1780975459.586889,
+        "confidence": 0.9045016238050003,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.3909712904269,
+        "timestamp": 1780975459.5918999,
+        "confidence": 0.9031671120476737,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.18571634138564,
+        "timestamp": 1780975459.599753,
+        "confidence": 0.9059505362865092,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.95273229612494,
+        "timestamp": 1780975459.6090555,
+        "confidence": 0.9049390107850569,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.8735968995672,
+        "timestamp": 1780975459.612595,
+        "confidence": 0.9041658675593502,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 41.09546330072332,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.86496177501203,
+        "timestamp": 1780975459.6293721,
+        "confidence": 0.9048644765437444,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 41.09546330072332,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.86402220255297,
+        "timestamp": 1780975459.6342356,
+        "confidence": 0.9067704301456804,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 41.09546330072332,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.32315520250802,
+        "timestamp": 1780975459.638345,
+        "confidence": 0.9061374153884603,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.73147845920602,
+        "timestamp": 1780975459.653534,
+        "confidence": 0.9062704813182635,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.84221081942795,
+        "timestamp": 1780975459.6576176,
+        "confidence": 0.9064525383787935,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.91066029570115,
+        "timestamp": 1780975459.6696153,
+        "confidence": 0.9065575564090292,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.99993074397605,
+        "timestamp": 1780975459.6736448,
+        "confidence": 0.907130636778575,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.11823124425874,
+        "timestamp": 1780975459.683077,
+        "confidence": 0.9079798722623085,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.14067294903484,
+        "timestamp": 1780975459.6877174,
+        "confidence": 0.9056817160462364,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.14310319723776,
+        "timestamp": 1780975459.6908975,
+        "confidence": 0.9067578958814015,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.14336479974264,
+        "timestamp": 1780975459.7078097,
+        "confidence": 0.9072167690878801,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.01787030927196,
+        "timestamp": 1780975459.712142,
+        "confidence": 0.9071247457269179,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.00438240938095,
+        "timestamp": 1780975459.7195632,
+        "confidence": 0.9081742069085842,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.0029421617797,
+        "timestamp": 1780975459.7318301,
+        "confidence": 0.9076327505210964,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.17153023736722,
+        "timestamp": 1780975459.7356226,
+        "confidence": 0.9076543141958391,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.18959022234364,
+        "timestamp": 1780975459.7470906,
+        "confidence": 0.9078851914540323,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.1915233245118,
+        "timestamp": 1780975459.7567933,
+        "confidence": 0.9087507364796839,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.24639116821018,
+        "timestamp": 1780975459.7604434,
+        "confidence": 0.9069125178968129,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.25229425031768,
+        "timestamp": 1780975459.7696137,
+        "confidence": 0.9078124137586846,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.30119713616025,
+        "timestamp": 1780975459.7771926,
+        "confidence": 0.9088084775534373,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.30639647257544,
+        "timestamp": 1780975459.787476,
+        "confidence": 0.9067038445876942,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.30695622982518,
+        "timestamp": 1780975459.7886043,
+        "confidence": 0.9069358055558345,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 253.99895220217235,
+        "timestamp": 1780975459.8018086,
+        "confidence": 0.905655175643765,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.65839094613426,
+        "timestamp": 1780975459.8072608,
+        "confidence": 0.905908190227866,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.56369462661957,
+        "timestamp": 1780975459.811027,
+        "confidence": 0.9056726819690443,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.54391346928665,
+        "timestamp": 1780975459.8279855,
+        "confidence": 0.9060979633245312,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.3929802312253,
+        "timestamp": 1780975459.831978,
+        "confidence": 0.9062347866257712,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.12694256963118,
+        "timestamp": 1780975459.8379953,
+        "confidence": 0.9065067052413703,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.09829865047004,
+        "timestamp": 1780975459.8494425,
+        "confidence": 0.9052429901897593,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.09519376494436,
+        "timestamp": 1780975459.8542848,
+        "confidence": 0.9042364376156439,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.1221028811567,
+        "timestamp": 1780975459.8665864,
+        "confidence": 0.9042835415460081,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.16434353072012,
+        "timestamp": 1780975459.8770964,
+        "confidence": 0.907374162485555,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.17453513449752,
+        "timestamp": 1780975459.881525,
+        "confidence": 0.9052691987859581,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.17993705369625,
+        "timestamp": 1780975459.889377,
+        "confidence": 0.9051519083564565,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.19403529319652,
+        "timestamp": 1780975459.8910644,
+        "confidence": 0.9047123251107642,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.3156936546999,
+        "timestamp": 1780975459.9081671,
+        "confidence": 0.9056902623503693,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.608936608845,
+        "timestamp": 1780975459.916813,
+        "confidence": 0.9067072661239624,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6560645716588,
+        "timestamp": 1780975459.9258533,
+        "confidence": 0.9062772465510783,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.70376297846514,
+        "timestamp": 1780975459.9301202,
+        "confidence": 0.9052256511243679,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.8506030032665,
+        "timestamp": 1780975459.9355755,
+        "confidence": 0.9054160387963541,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.8642014422821,
+        "timestamp": 1780975459.947602,
+        "confidence": 0.9073072164565094,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.99816916575963,
+        "timestamp": 1780975459.951207,
+        "confidence": 0.9084005313160399,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.32514492124085,
+        "timestamp": 1780975459.957281,
+        "confidence": 0.9064420381326402,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.52478333190322,
+        "timestamp": 1780975459.9697328,
+        "confidence": 0.9061699727929691,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.54630127262564,
+        "timestamp": 1780975459.9730592,
+        "confidence": 0.9038300227877302,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.5486560787582,
+        "timestamp": 1780975459.9865472,
+        "confidence": 0.9063750669892765,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 253.98993975423375,
+        "timestamp": 1780975459.9952555,
+        "confidence": 0.9076290143171372,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.77339372373663,
+        "timestamp": 1780975459.999587,
+        "confidence": 0.9054504960528851,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.59933025314723,
+        "timestamp": 1780975460.0082066,
+        "confidence": 0.9062579435203573,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5805530828868,
+        "timestamp": 1780975460.017465,
+        "confidence": 0.9059804800123659,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5785240794167,
+        "timestamp": 1780975460.0285642,
+        "confidence": 0.9060786170154956,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.78829931722365,
+        "timestamp": 1780975460.0337653,
+        "confidence": 0.9057284290385156,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.92937443051323,
+        "timestamp": 1780975460.0434635,
+        "confidence": 0.9064016416318149,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.95379738707123,
+        "timestamp": 1780975460.0480583,
+        "confidence": 0.9061931091150842,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.9542380268929,
+        "timestamp": 1780975460.052535,
+        "confidence": 0.9057823519222401,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.9323628309765,
+        "timestamp": 1780975460.0669727,
+        "confidence": 0.9068291999253998,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.86367142411783,
+        "timestamp": 1780975460.07094,
+        "confidence": 0.9064962931257073,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.75201462008556,
+        "timestamp": 1780975460.076925,
+        "confidence": 0.9072792946935292,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.61077232466195,
+        "timestamp": 1780975460.089974,
+        "confidence": 0.9064450722586078,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.48629627772002,
+        "timestamp": 1780975460.0931034,
+        "confidence": 0.9056741452020293,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.48404197105285,
+        "timestamp": 1780975460.1082058,
+        "confidence": 0.9061589406498592,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.48400128385018,
+        "timestamp": 1780975460.118464,
+        "confidence": 0.9067118713862676,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5088363699908,
+        "timestamp": 1780975460.1233325,
+        "confidence": 0.9049464309346942,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5372506119548,
+        "timestamp": 1780975460.1272526,
+        "confidence": 0.903921306466794,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6406145316499,
+        "timestamp": 1780975460.1347806,
+        "confidence": 0.9043407396172282,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.64250389974694,
+        "timestamp": 1780975460.1476784,
+        "confidence": 0.9040935277270611,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.64253849930716,
+        "timestamp": 1780975460.1519275,
+        "confidence": 0.9048650650304542,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.64253912962954,
+        "timestamp": 1780975460.1570768,
+        "confidence": 0.907048084571881,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6425391409272,
+        "timestamp": 1780975460.1730616,
+        "confidence": 0.9026309749950173,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.71915804166926,
+        "timestamp": 1780975460.1774712,
+        "confidence": 0.904978584060248,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.7204257813678,
+        "timestamp": 1780975460.187292,
+        "confidence": 0.9072756990539295,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.72056150680575,
+        "timestamp": 1780975460.200028,
+        "confidence": 0.9034104467717665,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.675703416203,
+        "timestamp": 1780975460.204831,
+        "confidence": 0.9043612181366363,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.67080529293472,
+        "timestamp": 1780975460.2098765,
+        "confidence": 0.907722525478978,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.67028142807777,
+        "timestamp": 1780975460.216043,
+        "confidence": 0.9059591915468824,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.82642829070338,
+        "timestamp": 1780975460.2285464,
+        "confidence": 0.9058230016629816,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.84332475862553,
+        "timestamp": 1780975460.2326407,
+        "confidence": 0.9068507221876307,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.84514129733031,
+        "timestamp": 1780975460.238753,
+        "confidence": 0.9060963944070818,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.728677468766,
+        "timestamp": 1780975460.2499275,
+        "confidence": 0.9035909923218732,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.51806989826903,
+        "timestamp": 1780975460.2536535,
+        "confidence": 0.9019204284530842,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.96839652215263,
+        "timestamp": 1780975460.266415,
+        "confidence": 0.8996109068211917,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.97361593351206,
+        "timestamp": 1780975460.2705798,
+        "confidence": 0.8953084106215858,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 34.89378503935728,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.85691250392614,
+        "timestamp": 1780975460.2777367,
+        "confidence": 0.8874341019852147,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 27.81702266758034,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 249.39051109419745,
+        "timestamp": 1780975460.2870815,
+        "confidence": 0.875795383156144,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 17.083660297288276,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 247.21472602390287,
+        "timestamp": 1780975460.2959912,
+        "confidence": 0.855862108232565,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 1.9133921717983569,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 235.24682871047457,
+        "timestamp": 1780975460.3071868,
+        "confidence": 0.8568825910452796,
+        "note_info": {
+          "note_name": "A#",
+          "octave": 3,
+          "cents": 16.006100972763768,
+          "midi_number": 58
+        }
+      },
+      {
+        "frequency": 221.36338169128516,
+        "timestamp": 1780975460.3157728,
+        "confidence": 0.8548762303798734,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": 10.695678034310347,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 217.15627002968577,
+        "timestamp": 1780975460.3190153,
+        "confidence": 0.8524404747609933,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": -22.523897895918505,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 214.49959901473295,
+        "timestamp": 1780975460.327691,
+        "confidence": 0.8454738599585334,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": -43.83428759375627,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 203.55548876700448,
+        "timestamp": 1780975460.3308547,
+        "confidence": 0.8398794218935625,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -34.49768027880123,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 200.67083934854753,
+        "timestamp": 1780975460.3491497,
+        "confidence": 0.8409861722088008,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": 40.79295408896595,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 197.83660032140932,
+        "timestamp": 1780975460.3522654,
+        "confidence": 0.8343430140803071,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": 16.166995561889298,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 190.04402713137773,
+        "timestamp": 1780975460.3612413,
+        "confidence": 0.8328169586732761,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 46.596191868731,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 189.33271422046752,
+        "timestamp": 1780975460.3679,
+        "confidence": 0.834626077497985,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 40.1042252312774,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.85690140042925,
+        "timestamp": 1780975460.373552,
+        "confidence": 0.8332495772707714,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 35.747977700182055,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.65219215115874,
+        "timestamp": 1780975460.3881152,
+        "confidence": 0.8364273565986846,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 33.87040885065405,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.4305847732144,
+        "timestamp": 1780975460.393727,
+        "confidence": 0.8336124596807444,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 31.835554405593143,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.25031335432487,
+        "timestamp": 1780975460.3969994,
+        "confidence": 0.831492130077314,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 30.178491125594014,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.16164230797744,
+        "timestamp": 1780975460.4081054,
+        "confidence": 0.8293702729362518,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 29.36284042622946,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.1380491238234,
+        "timestamp": 1780975460.4189737,
+        "confidence": 0.8296214584949404,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 29.145751097075472,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.09609746514272,
+        "timestamp": 1780975460.4281185,
+        "confidence": 0.8318822243632485,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 29.145751097075472,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 187.92701345983303,
+        "timestamp": 1780975460.4322097,
+        "confidence": 0.8312065595571814,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 27.202724733985555,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 187.90164906074972,
+        "timestamp": 1780975460.4373996,
+        "confidence": 0.8304859053410759,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 27.202724733985555,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 187.8978273281476,
+        "timestamp": 1780975460.4497724,
+        "confidence": 0.8323521566042399,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 27.202724733985555,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.10550222344898,
+        "timestamp": 1780975460.4538236,
+        "confidence": 0.8353510547132964,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 29.145751097075472,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.25737650341284,
+        "timestamp": 1780975460.4717827,
+        "confidence": 0.8354605372127002,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 30.178491125594014,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 188.72849812253486,
+        "timestamp": 1780975460.4750373,
+        "confidence": 0.8364082074063135,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 33.87040885065405,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 189.28272725317726,
+        "timestamp": 1780975460.4795597,
+        "confidence": 0.8398959446269062,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 40.1042252312774,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 189.77539131294736,
+        "timestamp": 1780975460.4874065,
+        "confidence": 0.838885015394984,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 44.14728309456326,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 190.17323411472358,
+        "timestamp": 1780975460.4905524,
+        "confidence": 0.8398830450922263,
+        "note_info": {
+          "note_name": "F#",
+          "octave": 3,
+          "cents": 47.77282197133564,
+          "midi_number": 54
+        }
+      },
+      {
+        "frequency": 190.4688234470424,
+        "timestamp": 1780975460.5098825,
+        "confidence": 0.8369028182460008,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -49.53838203594507,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 190.6311569938531,
+        "timestamp": 1780975460.5180154,
+        "confidence": 0.8390968451992717,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -48.063507226365324,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 190.79404329298112,
+        "timestamp": 1780975460.5213296,
+        "confidence": 0.8385245391147615,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -46.58487223262531,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 190.92966364700936,
+        "timestamp": 1780975460.5277092,
+        "confidence": 0.8407529474091426,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -45.35471240628746,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 190.95485590428902,
+        "timestamp": 1780975460.5332959,
+        "confidence": 0.8394910162879761,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -45.12629941018129,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 190.9660329091331,
+        "timestamp": 1780975460.5467706,
+        "confidence": 0.8401874008213135,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -45.12629941018129,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.02338037625142,
+        "timestamp": 1780975460.5501604,
+        "confidence": 0.8427741629197627,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -45.12629941018129,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.2028082968938,
+        "timestamp": 1780975460.5609899,
+        "confidence": 0.8412268747840248,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -42.879772779566636,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.3075633013777,
+        "timestamp": 1780975460.5669076,
+        "confidence": 0.8413222115452437,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -41.93153477833896,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.33654640047988,
+        "timestamp": 1780975460.5715168,
+        "confidence": 0.8431982310118686,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -41.93153477833896,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.44829218303957,
+        "timestamp": 1780975460.58773,
+        "confidence": 0.8423120915802087,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.46249353946695,
+        "timestamp": 1780975460.5984268,
+        "confidence": 0.8394564368727379,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.4340146206276,
+        "timestamp": 1780975460.6018083,
+        "confidence": 0.8404857734047875,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.42988476810066,
+        "timestamp": 1780975460.6110253,
+        "confidence": 0.8420424141621987,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.46023652008466,
+        "timestamp": 1780975460.614997,
+        "confidence": 0.8453223146281088,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.70931799613723,
+        "timestamp": 1780975460.632981,
+        "confidence": 0.845791497545707,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.74058368910735,
+        "timestamp": 1780975460.6370828,
+        "confidence": 0.8434750562876966,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.749413244802,
+        "timestamp": 1780975460.6397877,
+        "confidence": 0.8428579450813118,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.77990961728085,
+        "timestamp": 1780975460.6508143,
+        "confidence": 0.8417868574091217,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.78430740212195,
+        "timestamp": 1780975460.6552901,
+        "confidence": 0.8425479197771394,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.78493939039174,
+        "timestamp": 1780975460.6680248,
+        "confidence": 0.842538193715326,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.54981626840078,
+        "timestamp": 1780975460.670874,
+        "confidence": 0.8414920838233768,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.46433370628728,
+        "timestamp": 1780975460.6801438,
+        "confidence": 0.8428903573167421,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.45207450005836,
+        "timestamp": 1780975460.6887622,
+        "confidence": 0.8418000688529215,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.45030744731903,
+        "timestamp": 1780975460.6919048,
+        "confidence": 0.8419430214016781,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.4895477500051,
+        "timestamp": 1780975460.7085543,
+        "confidence": 0.8473269247964932,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.52269032239678,
+        "timestamp": 1780975460.7118192,
+        "confidence": 0.8427379848619179,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.72483193119575,
+        "timestamp": 1780975460.7206578,
+        "confidence": 0.8421085998158431,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.96445683330523,
+        "timestamp": 1780975460.7302265,
+        "confidence": 0.8460502033323914,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.15337934577437,
+        "timestamp": 1780975460.7355144,
+        "confidence": 0.8457606731278035,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.294209840021225,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.40096379645112,
+        "timestamp": 1780975460.748831,
+        "confidence": 0.8459168747944797,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.06499725720859,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.4361184379379,
+        "timestamp": 1780975460.755514,
+        "confidence": 0.8478256051620974,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.06499725720859,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.44105685392734,
+        "timestamp": 1780975460.7639644,
+        "confidence": 0.8449653752187847,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.06499725720859,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.29775144306842,
+        "timestamp": 1780975460.7676427,
+        "confidence": 0.8436803839750396,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.993956661902956,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.0339620697117,
+        "timestamp": 1780975460.7713168,
+        "confidence": 0.8433930230209945,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.02708786918564,
+        "timestamp": 1780975460.7899513,
+        "confidence": 0.8440701455101882,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.02690934999458,
+        "timestamp": 1780975460.7938318,
+        "confidence": 0.8436998356823169,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.86233092229583,
+        "timestamp": 1780975460.798176,
+        "confidence": 0.8435187967205376,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.85804521948353,
+        "timestamp": 1780975460.8074143,
+        "confidence": 0.8433495056051326,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.7339934033915,
+        "timestamp": 1780975460.8102539,
+        "confidence": 0.8414739442308826,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.48420446751692,
+        "timestamp": 1780975460.8264413,
+        "confidence": 0.8408691051647805,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.41806246294496,
+        "timestamp": 1780975460.8317568,
+        "confidence": 0.8405770734332852,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.2924352468949,
+        "timestamp": 1780975460.8404236,
+        "confidence": 0.8419810231112713,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -41.93153477833896,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.41301544608848,
+        "timestamp": 1780975460.8491502,
+        "confidence": 0.8417698446857542,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.4161828162753,
+        "timestamp": 1780975460.8527288,
+        "confidence": 0.8427839787904511,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.4374233079509,
+        "timestamp": 1780975460.8675914,
+        "confidence": 0.8403281591916225,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.63699256949843,
+        "timestamp": 1780975460.8733766,
+        "confidence": 0.8434436114308101,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.952934886152185,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.65304304454253,
+        "timestamp": 1780975460.8826227,
+        "confidence": 0.8390983066441844,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.65349914675332,
+        "timestamp": 1780975460.8863218,
+        "confidence": 0.8388937738745563,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.65351212150594,
+        "timestamp": 1780975460.89003,
+        "confidence": 0.839894149346374,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.50493954078067,
+        "timestamp": 1780975460.9066262,
+        "confidence": 0.8419219121186802,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.50077018795028,
+        "timestamp": 1780975460.9129121,
+        "confidence": 0.8424295463484637,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.50065347357852,
+        "timestamp": 1780975460.9217367,
+        "confidence": 0.8415037933906652,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.63116596651483,
+        "timestamp": 1780975460.928343,
+        "confidence": 0.8444359609050123,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.952934886152185,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.65479731571952,
+        "timestamp": 1780975460.9309206,
+        "confidence": 0.841371007407198,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.6791388626273,
+        "timestamp": 1780975460.9478333,
+        "confidence": 0.8388331097814516,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.67983149903586,
+        "timestamp": 1780975460.9507926,
+        "confidence": 0.83989129560427,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.73788466713518,
+        "timestamp": 1780975460.9577503,
+        "confidence": 0.8388094359523406,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.85133507526743,
+        "timestamp": 1780975460.969725,
+        "confidence": 0.8382511209589913,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.85949426309926,
+        "timestamp": 1780975460.9739237,
+        "confidence": 0.8401648857307298,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.85972510801057,
+        "timestamp": 1780975460.99239,
+        "confidence": 0.8428422981581776,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.85973155488037,
+        "timestamp": 1780975460.9954941,
+        "confidence": 0.8380600147291835,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.85973173901004,
+        "timestamp": 1780975461.0011322,
+        "confidence": 0.8414189060287496,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.88151824619482,
+        "timestamp": 1780975461.0071929,
+        "confidence": 0.8430234632486355,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.975673353984,
+        "timestamp": 1780975461.0161262,
+        "confidence": 0.8456823954712471,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.49034237503287,
+        "timestamp": 1780975461.0274568,
+        "confidence": 0.8451016491844283,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.57738948078722,
+        "timestamp": 1780975461.036851,
+        "confidence": 0.8424001735691344,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.58847416410808,
+        "timestamp": 1780975461.040195,
+        "confidence": 0.8431920409606217,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.58988021470512,
+        "timestamp": 1780975461.0469806,
+        "confidence": 0.8435032046736683,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.57586041888172,
+        "timestamp": 1780975461.0522254,
+        "confidence": 0.8421969759982824,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.34800595504623,
+        "timestamp": 1780975461.0692456,
+        "confidence": 0.842760621951756,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.993956661902956,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.3146884062386,
+        "timestamp": 1780975461.0709145,
+        "confidence": 0.8427487351964021,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.993956661902956,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.12563518737568,
+        "timestamp": 1780975461.0784457,
+        "confidence": 0.8438270968120267,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.54419295098719,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.11613890412178,
+        "timestamp": 1780975461.0871673,
+        "confidence": 0.8454259525137229,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.54419295098719,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.10681818583453,
+        "timestamp": 1780975461.0911086,
+        "confidence": 0.8416605812706693,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.54419295098719,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.10562556674157,
+        "timestamp": 1780975461.1081924,
+        "confidence": 0.844683685308472,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.54419295098719,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.11362713637925,
+        "timestamp": 1780975461.1128423,
+        "confidence": 0.8454635310829646,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.54419295098719,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.3396718690524,
+        "timestamp": 1780975461.120435,
+        "confidence": 0.8431209574073255,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.993956661902956,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.73671623765435,
+        "timestamp": 1780975461.132173,
+        "confidence": 0.8458983513668634,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -29.046511995166686,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.804396606518,
+        "timestamp": 1780975461.1359754,
+        "confidence": 0.8430106361046654,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -28.43868804939157,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.80629093968392,
+        "timestamp": 1780975461.149585,
+        "confidence": 0.8467796393655851,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -28.43868804939157,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.84298235925777,
+        "timestamp": 1780975461.153515,
+        "confidence": 0.8455746974455576,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -28.43868804939157,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.90020547420033,
+        "timestamp": 1780975461.1577623,
+        "confidence": 0.8469998556699133,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -27.578612351819366,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.06097155616598,
+        "timestamp": 1780975461.1661968,
+        "confidence": 0.8474127995106129,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -26.136375423888474,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.0805436395881,
+        "timestamp": 1780975461.1763642,
+        "confidence": 0.8436585306690668,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -26.136375423888474,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.08334253300168,
+        "timestamp": 1780975461.1880145,
+        "confidence": 0.8428243127552512,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -26.136375423888474,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.6146315795399,
+        "timestamp": 1780975461.197189,
+        "confidence": 0.8452698740905459,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5544249894088,
+        "timestamp": 1780975461.2008107,
+        "confidence": 0.8464572376284535,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5528794524142,
+        "timestamp": 1780975461.2085848,
+        "confidence": 0.8477895121398888,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5528400524078,
+        "timestamp": 1780975461.2159846,
+        "confidence": 0.84679942695656,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.65987152544184,
+        "timestamp": 1780975461.2263055,
+        "confidence": 0.8467773401845973,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -29.046511995166686,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.66261416912272,
+        "timestamp": 1780975461.2303393,
+        "confidence": 0.8466023628481256,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -29.046511995166686,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.66268435197838,
+        "timestamp": 1780975461.2365692,
+        "confidence": 0.8435620572859469,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -29.046511995166686,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5796703108667,
+        "timestamp": 1780975461.2477202,
+        "confidence": 0.8435422603614527,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.32569930674543,
+        "timestamp": 1780975461.2517104,
+        "confidence": 0.8439373604219339,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.993956661902956,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.00498067574497,
+        "timestamp": 1780975461.2677143,
+        "confidence": 0.842123195144854,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.92516012913816,
+        "timestamp": 1780975461.2720075,
+        "confidence": 0.8425095272091246,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.9229268458518,
+        "timestamp": 1780975461.2790596,
+        "confidence": 0.8403462681986463,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.86705584007606,
+        "timestamp": 1780975461.2896638,
+        "confidence": 0.8410938407751344,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.86548263800418,
+        "timestamp": 1780975461.2930658,
+        "confidence": 0.8389869517940354,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.9212381341358,
+        "timestamp": 1780975461.3069055,
+        "confidence": 0.84003816392306,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.8670012941764,
+        "timestamp": 1780975461.3099625,
+        "confidence": 0.8420846101959364,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.86548064799007,
+        "timestamp": 1780975461.320053,
+        "confidence": 0.8412093764179496,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.82581824213088,
+        "timestamp": 1780975461.3291616,
+        "confidence": 0.8441599442000497,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.82471692645152,
+        "timestamp": 1780975461.3357153,
+        "confidence": 0.8411167436637721,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.82468592231572,
+        "timestamp": 1780975461.3524008,
+        "confidence": 0.8382020270664414,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.8450619046477,
+        "timestamp": 1780975461.3556678,
+        "confidence": 0.8378560207405719,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.82526249990553,
+        "timestamp": 1780975461.3587232,
+        "confidence": 0.8397092009870551,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.79631143314896,
+        "timestamp": 1780975461.368795,
+        "confidence": 0.8401860637290871,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -37.66231431433689,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.61106353679938,
+        "timestamp": 1780975461.3748403,
+        "confidence": 0.8448572420990577,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.952934886152185,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.57233978483282,
+        "timestamp": 1780975461.3875246,
+        "confidence": 0.8392908186965176,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.952934886152185,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.4361312609664,
+        "timestamp": 1780975461.390684,
+        "confidence": 0.8365308612061736,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.39636220711242,
+        "timestamp": 1780975461.39831,
+        "confidence": 0.8403224047106825,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.39127884583132,
+        "timestamp": 1780975461.4107602,
+        "confidence": 0.8326922109238277,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.33423694810637,
+        "timestamp": 1780975461.4159048,
+        "confidence": 0.8377780040348567,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -41.93153477833896,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.32681087788592,
+        "timestamp": 1780975461.4266496,
+        "confidence": 0.8407856308122936,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -41.93153477833896,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.4486599903244,
+        "timestamp": 1780975461.4339402,
+        "confidence": 0.84293878246314,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.65847970102251,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.49018923406405,
+        "timestamp": 1780975461.4451396,
+        "confidence": 0.8396168114175792,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -40.53006403493001,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.71593919628054,
+        "timestamp": 1780975461.4500809,
+        "confidence": 0.8426787504154952,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.88324839140168,
+        "timestamp": 1780975461.4532747,
+        "confidence": 0.8409476813199894,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.9046736114135,
+        "timestamp": 1780975461.4712791,
+        "confidence": 0.8403416512487596,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.9074249230623,
+        "timestamp": 1780975461.474273,
+        "confidence": 0.8398448366359463,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -36.918441212120115,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.7274374222099,
+        "timestamp": 1780975461.4778647,
+        "confidence": 0.8421787367622198,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.6820707914371,
+        "timestamp": 1780975461.486408,
+        "confidence": 0.8413030647441104,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.67627194031854,
+        "timestamp": 1780975461.4893963,
+        "confidence": 0.8403197886094316,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.67552543477316,
+        "timestamp": 1780975461.5069604,
+        "confidence": 0.8434411218527355,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -38.29967573511812,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 191.98444100543662,
+        "timestamp": 1780975461.5105696,
+        "confidence": 0.8410491658783101,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.2848490397182,
+        "timestamp": 1780975461.5194263,
+        "confidence": 0.8430436209751938,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.993956661902956,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.45589644284206,
+        "timestamp": 1780975461.5274963,
+        "confidence": 0.8426596617533614,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.46068077835235,
+        "timestamp": 1780975461.5330274,
+        "confidence": 0.8435153042155079,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.46081405489014,
+        "timestamp": 1780975461.5500646,
+        "confidence": 0.8427452676701315,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.15447518258006,
+        "timestamp": 1780975461.5528157,
+        "confidence": 0.8410839465637664,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -34.294209840021225,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.03671049157714,
+        "timestamp": 1780975461.5620253,
+        "confidence": 0.837912446865232,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.03334369894634,
+        "timestamp": 1780975461.5685399,
+        "confidence": 0.8438043186187629,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.03325001896496,
+        "timestamp": 1780975461.5749364,
+        "confidence": 0.8442348800330558,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -35.99717222181559,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.3857262676781,
+        "timestamp": 1780975461.5864632,
+        "confidence": 0.8451415405502468,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -32.06499725720859,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.51793696534372,
+        "timestamp": 1780975461.5939324,
+        "confidence": 0.8452073229946967,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.54573810986167,
+        "timestamp": 1780975461.5978687,
+        "confidence": 0.8474034591271316,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.6371421110954,
+        "timestamp": 1780975461.6076188,
+        "confidence": 0.8437778562004921,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.63968529757568,
+        "timestamp": 1780975461.6109128,
+        "confidence": 0.8429749571232827,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5490700902346,
+        "timestamp": 1780975461.6310003,
+        "confidence": 0.8474118063679266,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5465911363564,
+        "timestamp": 1780975461.6342254,
+        "confidence": 0.8444310583868933,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.53937923361678,
+        "timestamp": 1780975461.6393225,
+        "confidence": 0.8444902088668897,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.53917891998026,
+        "timestamp": 1780975461.652124,
+        "confidence": 0.8409204146575578,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.57876558607927,
+        "timestamp": 1780975461.662532,
+        "confidence": 0.8447392047128772,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.58272185766836,
+        "timestamp": 1780975461.6715784,
+        "confidence": 0.8449289466086537,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.57989741095486,
+        "timestamp": 1780975461.6753814,
+        "confidence": 0.846329729981957,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.579819749409,
+        "timestamp": 1780975461.6787922,
+        "confidence": 0.8440933141445918,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5443746201951,
+        "timestamp": 1780975461.6925402,
+        "confidence": 0.8460411405370685,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.54339687650048,
+        "timestamp": 1780975461.6957593,
+        "confidence": 0.8439640772607091,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.5433714580501,
+        "timestamp": 1780975461.711642,
+        "confidence": 0.8477254517705679,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -31.26095082228957,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.63899725811444,
+        "timestamp": 1780975461.7147453,
+        "confidence": 0.8475682893529155,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -30.47823701142121,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.70446773071552,
+        "timestamp": 1780975461.718336,
+        "confidence": 0.8478150824586638,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -29.046511995166686,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.94536725090137,
+        "timestamp": 1780975461.7328787,
+        "confidence": 0.847388217492655,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -27.578612351819366,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.95197340674076,
+        "timestamp": 1780975461.736379,
+        "confidence": 0.8476833024402077,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -27.11406964398015,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.95214183370177,
+        "timestamp": 1780975461.748063,
+        "confidence": 0.8434432136624694,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -27.11406964398015,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.95214622368644,
+        "timestamp": 1780975461.7544067,
+        "confidence": 0.8475175725347824,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -27.11406964398015,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 192.95214633582881,
+        "timestamp": 1780975461.7636688,
+        "confidence": 0.8517886267958235,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -27.11406964398015,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.12977388651478,
+        "timestamp": 1780975461.768328,
+        "confidence": 0.8492972805767596,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -26.136375423888474,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.16363663000615,
+        "timestamp": 1780975461.772004,
+        "confidence": 0.8487085858168111,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -25.215992455527182,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.32273280310162,
+        "timestamp": 1780975461.7863567,
+        "confidence": 0.8512460901314555,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -23.790675811626883,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.32814471185415,
+        "timestamp": 1780975461.78961,
+        "confidence": 0.8514397392458652,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -23.790675811626883,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 193.59420888700572,
+        "timestamp": 1780975461.797001,
+        "confidence": 0.8534329427016947,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -21.361272151844584,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 194.1779697192949,
+        "timestamp": 1780975461.8071995,
+        "confidence": 0.8559126135404939,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -16.1487919968031,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 194.5211055133797,
+        "timestamp": 1780975461.8114817,
+        "confidence": 0.8525633861848675,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -13.092193397325106,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 194.5293807485594,
+        "timestamp": 1780975461.8302617,
+        "confidence": 0.8525506120346651,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -13.092193397325106,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 194.58717151821062,
+        "timestamp": 1780975461.8338575,
+        "confidence": 0.8531915357463212,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -12.504307069022005,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 194.71672339644778,
+        "timestamp": 1780975461.8382642,
+        "confidence": 0.8528639268742014,
+        "note_info": {
+          "note_name": "G",
+          "octave": 3,
+          "cents": -11.352072868780752,
+          "midi_number": 55
+        }
+      },
+      {
+        "frequency": 203.7042649195949,
+        "timestamp": 1780975461.8522358,
+        "confidence": 0.8536793471217404,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -33.23280521967895,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 204.44965310067093,
+        "timestamp": 1780975461.8556716,
+        "confidence": 0.8522850816897547,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -26.909490526419518,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 204.68171403390315,
+        "timestamp": 1780975461.866723,
+        "confidence": 0.8532157832205469,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -24.94556468535058,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 204.7152297167651,
+        "timestamp": 1780975461.8697956,
+        "confidence": 0.8551717390561757,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -24.94556468535058,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 204.7815945259575,
+        "timestamp": 1780975461.8793235,
+        "confidence": 0.8550511705886981,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -24.100963918948157,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 204.83790366850897,
+        "timestamp": 1780975461.8885417,
+        "confidence": 0.8552822895834439,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -24.100963918948157,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 205.27736408149622,
+        "timestamp": 1780975461.8934555,
+        "confidence": 0.856043618907899,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -19.91476807944272,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 206.20444105678823,
+        "timestamp": 1780975461.9064207,
+        "confidence": 0.859283397414253,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": -12.113742996970071,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 207.9496777625079,
+        "timestamp": 1780975461.9136508,
+        "confidence": 0.8606561647297227,
+        "note_info": {
+          "note_name": "G#",
+          "octave": 3,
+          "cents": 2.4771107740579787,
+          "midi_number": 56
+        }
+      },
+      {
+        "frequency": 214.78840628961524,
+        "timestamp": 1780975461.9163418,
+        "confidence": 0.8606699037174043,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": -41.50488142750214,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 215.8516762410536,
+        "timestamp": 1780975461.9278674,
+        "confidence": 0.8648796781842253,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": -32.9558728306582,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 216.95388484721866,
+        "timestamp": 1780975461.931367,
+        "confidence": 0.8707784192059852,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": -24.138124793686483,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 218.69807126255992,
+        "timestamp": 1780975461.9471407,
+        "confidence": 0.8766858516272551,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": -10.27563203237961,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 221.7371514416652,
+        "timestamp": 1780975461.9498978,
+        "confidence": 0.8799514652341501,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": 13.616383488084548,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 223.90832250240663,
+        "timestamp": 1780975461.9565194,
+        "confidence": 0.8838742154964567,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": 30.4855551802563,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 225.4047800234375,
+        "timestamp": 1780975461.9676137,
+        "confidence": 0.8917979227881448,
+        "note_info": {
+          "note_name": "A",
+          "octave": 3,
+          "cents": 42.017503739500135,
+          "midi_number": 57
+        }
+      },
+      {
+        "frequency": 238.52998012435398,
+        "timestamp": 1780975461.9709764,
+        "confidence": 0.8931511958226888,
+        "note_info": {
+          "note_name": "A#",
+          "octave": 3,
+          "cents": 40.000498315377236,
+          "midi_number": 58
+        }
+      },
+      {
+        "frequency": 247.22526335911988,
+        "timestamp": 1780975461.9934676,
+        "confidence": 0.8966659357435827,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 1.9133921717983569,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 248.98084538963155,
+        "timestamp": 1780975461.9986968,
+        "confidence": 0.9010142171558364,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 14.237479966120713,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.43734904801116,
+        "timestamp": 1780975462.0059006,
+        "confidence": 0.904469553500224,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 24.217568625439526,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.49278152368817,
+        "timestamp": 1780975462.0085094,
+        "confidence": 0.9010680893445937,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 31.695504405203614,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.41764209889286,
+        "timestamp": 1780975462.0183566,
+        "confidence": 0.905373446447412,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.70113577384721,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.23813311849523,
+        "timestamp": 1780975462.026796,
+        "confidence": 0.9059092812591616,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.0438903574328,
+        "timestamp": 1780975462.0297415,
+        "confidence": 0.9062339292780941,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.21012496755503,
+        "timestamp": 1780975462.0394917,
+        "confidence": 0.9058920699849441,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.22808440019338,
+        "timestamp": 1780975462.0489311,
+        "confidence": 0.9049631677095896,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.23003317886577,
+        "timestamp": 1780975462.0522945,
+        "confidence": 0.9033271086529209,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.02418933961985,
+        "timestamp": 1780975462.0676792,
+        "confidence": 0.9048294875553504,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.74435600823364,
+        "timestamp": 1780975462.0712512,
+        "confidence": 0.902516022148876,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6071506140968,
+        "timestamp": 1780975462.0807717,
+        "confidence": 0.9031601082267093,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.16053149118983,
+        "timestamp": 1780975462.0881217,
+        "confidence": 0.9034903448392186,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.7457821129219,
+        "timestamp": 1780975462.0891182,
+        "confidence": 0.9012393756935844,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.69980498941763,
+        "timestamp": 1780975462.1061997,
+        "confidence": 0.9032380395643209,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.6479180425363,
+        "timestamp": 1780975462.1108818,
+        "confidence": 0.9036999320466814,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 39.54972118746602,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.6144285117596,
+        "timestamp": 1780975462.117642,
+        "confidence": 0.9025249451591767,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 39.54972118746602,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.68536422583702,
+        "timestamp": 1780975462.128448,
+        "confidence": 0.902223070456211,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.74551543243427,
+        "timestamp": 1780975462.1333299,
+        "confidence": 0.9033121462007137,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.93517808154542,
+        "timestamp": 1780975462.1486046,
+        "confidence": 0.9052497152803158,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 41.09546330072332,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.514626572341,
+        "timestamp": 1780975462.1521769,
+        "confidence": 0.9018780102556654,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63191962385974,
+        "timestamp": 1780975462.158317,
+        "confidence": 0.9038885536909972,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.64473808194793,
+        "timestamp": 1780975462.1701398,
+        "confidence": 0.9047528780109766,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.64613097795169,
+        "timestamp": 1780975462.1742074,
+        "confidence": 0.9036300232778238,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63587013054803,
+        "timestamp": 1780975462.1905372,
+        "confidence": 0.9034129520786369,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.60128448026322,
+        "timestamp": 1780975462.1937945,
+        "confidence": 0.9031675981603856,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5974910733635,
+        "timestamp": 1780975462.2003474,
+        "confidence": 0.90389138529875,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63056095529316,
+        "timestamp": 1780975462.2093499,
+        "confidence": 0.9042075426998308,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6688559115845,
+        "timestamp": 1780975462.2135131,
+        "confidence": 0.9046891935639569,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.75068145449626,
+        "timestamp": 1780975462.2317276,
+        "confidence": 0.9054306981650763,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.98917229885828,
+        "timestamp": 1780975462.2363596,
+        "confidence": 0.9057976860282229,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.19644781064838,
+        "timestamp": 1780975462.2409499,
+        "confidence": 0.9055228969492529,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.21891511655144,
+        "timestamp": 1780975462.2471902,
+        "confidence": 0.906782061628056,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.22132969806646,
+        "timestamp": 1780975462.253735,
+        "confidence": 0.9048821354050346,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.10615495020164,
+        "timestamp": 1780975462.268075,
+        "confidence": 0.9039764300224336,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.70918046727678,
+        "timestamp": 1780975462.2730184,
+        "confidence": 0.9044023951786765,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.4982291191734,
+        "timestamp": 1780975462.2822056,
+        "confidence": 0.9020836896566286,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.41363191923156,
+        "timestamp": 1780975462.2875702,
+        "confidence": 0.9055558351163145,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.36007319717936,
+        "timestamp": 1780975462.2999876,
+        "confidence": 0.9022424721041722,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.21257067690624,
+        "timestamp": 1780975462.3101568,
+        "confidence": 0.90324030190524,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.05824288792294,
+        "timestamp": 1780975462.3138776,
+        "confidence": 0.9021514996150914,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.71469032260507,
+        "timestamp": 1780975462.3235466,
+        "confidence": 0.9028035562938407,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.68122586619873,
+        "timestamp": 1780975462.333287,
+        "confidence": 0.9020083995752919,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.43745922009322,
+        "timestamp": 1780975462.337526,
+        "confidence": 0.902622322018905,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.70113577384721,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.30782355284381,
+        "timestamp": 1780975462.3472397,
+        "confidence": 0.9023396085696084,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.21770195891591,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.00407293103095,
+        "timestamp": 1780975462.3570669,
+        "confidence": 0.9031764369617901,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 34.89378503935728,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.9984748595147,
+        "timestamp": 1780975462.3612776,
+        "confidence": 0.903953893472248,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 34.89378503935728,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 251.9983722340475,
+        "timestamp": 1780975462.3681076,
+        "confidence": 0.9054389589884827,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 34.89378503935728,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.23083560567275,
+        "timestamp": 1780975462.3720472,
+        "confidence": 0.9053772377589303,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 36.68936124953565,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.47126997816005,
+        "timestamp": 1780975462.3869352,
+        "confidence": 0.9042785786510316,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 38.33884199906889,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.01651252770318,
+        "timestamp": 1780975462.3884108,
+        "confidence": 0.9049005636766091,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.2390338124786,
+        "timestamp": 1780975462.3968172,
+        "confidence": 0.9055474854212635,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.2971524758566,
+        "timestamp": 1780975462.406406,
+        "confidence": 0.9057346723472326,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.3698897263922,
+        "timestamp": 1780975462.4140606,
+        "confidence": 0.9046824174230065,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.37121637675563,
+        "timestamp": 1780975462.4265409,
+        "confidence": 0.9060149115679845,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.37124033550498,
+        "timestamp": 1780975462.4295678,
+        "confidence": 0.9033924385711409,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.09120013263615,
+        "timestamp": 1780975462.4387467,
+        "confidence": 0.9040512593732072,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.08607040387545,
+        "timestamp": 1780975462.447072,
+        "confidence": 0.90468289196907,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.08597686854145,
+        "timestamp": 1780975462.4531329,
+        "confidence": 0.9039452333207336,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.1325912322468,
+        "timestamp": 1780975462.4671435,
+        "confidence": 0.9061610042054421,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.83549597271618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.78057172118872,
+        "timestamp": 1780975462.4710479,
+        "confidence": 0.9049284525047258,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.18876289564292,
+        "timestamp": 1780975462.4781845,
+        "confidence": 0.9070123905831228,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.2611822089833,
+        "timestamp": 1780975462.4878085,
+        "confidence": 0.9067833710883769,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.47516137965175,
+        "timestamp": 1780975462.4917326,
+        "confidence": 0.9077319381438472,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.56901858130408,
+        "timestamp": 1780975462.5064147,
+        "confidence": 0.9052598261315388,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.7182236674555,
+        "timestamp": 1780975462.5107787,
+        "confidence": 0.9031560399555008,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -46.32161239932285,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.9069964023823,
+        "timestamp": 1780975462.5180202,
+        "confidence": 0.9060539800517611,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.9104056234625,
+        "timestamp": 1780975462.5319028,
+        "confidence": 0.905700743100145,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.8934007755782,
+        "timestamp": 1780975462.535857,
+        "confidence": 0.9056226613824375,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.8930926598781,
+        "timestamp": 1780975462.5514803,
+        "confidence": 0.9071056667058437,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.89308713648268,
+        "timestamp": 1780975462.556214,
+        "confidence": 0.9070304906123942,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.6063557150234,
+        "timestamp": 1780975462.5602689,
+        "confidence": 0.9049552123062192,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.57028874682422,
+        "timestamp": 1780975462.5692785,
+        "confidence": 0.9064660810484241,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.39849349479226,
+        "timestamp": 1780975462.5797606,
+        "confidence": 0.9035542042367857,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -48.52544219111233,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.24240306466112,
+        "timestamp": 1780975462.588702,
+        "confidence": 0.9061674521921177,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.76625947872228,
+        "timestamp": 1780975462.5985668,
+        "confidence": 0.9053381064965756,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.73755532228284,
+        "timestamp": 1780975462.609064,
+        "confidence": 0.9049448847672457,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.59349835085214,
+        "timestamp": 1780975462.6134377,
+        "confidence": 0.9018868949501638,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.43902746108262,
+        "timestamp": 1780975462.6171794,
+        "confidence": 0.9062537995381763,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.43624199545042,
+        "timestamp": 1780975462.6268692,
+        "confidence": 0.9049946128078032,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.43619130874455,
+        "timestamp": 1780975462.6383774,
+        "confidence": 0.9053795999545071,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 44.66112321601805,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.4546993382897,
+        "timestamp": 1780975462.6421776,
+        "confidence": 0.9070795425345431,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.79140223718042,
+        "timestamp": 1780975462.647178,
+        "confidence": 0.9066717897559067,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.82855430671302,
+        "timestamp": 1780975462.6523223,
+        "confidence": 0.906095263410331,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.84561314276937,
+        "timestamp": 1780975462.6681807,
+        "confidence": 0.9077795484886344,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.0037336162776,
+        "timestamp": 1780975462.6717114,
+        "confidence": 0.9073770544078192,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.00656191012865,
+        "timestamp": 1780975462.6768715,
+        "confidence": 0.9052456727159075,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.00661329263704,
+        "timestamp": 1780975462.6878533,
+        "confidence": 0.9066914183218782,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.87422907674636,
+        "timestamp": 1780975462.6924038,
+        "confidence": 0.9054011430127671,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.70833693277646,
+        "timestamp": 1780975462.7100997,
+        "confidence": 0.9052832922579549,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.64053464741002,
+        "timestamp": 1780975462.7146537,
+        "confidence": 0.9065183888742273,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6385361614848,
+        "timestamp": 1780975462.7242925,
+        "confidence": 0.9050919623521212,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63849981977185,
+        "timestamp": 1780975462.7285879,
+        "confidence": 0.9055593009429685,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.7040675929135,
+        "timestamp": 1780975462.737749,
+        "confidence": 0.9066085275854351,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.9528395604401,
+        "timestamp": 1780975462.7467494,
+        "confidence": 0.9066341143234826,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.26565112888608,
+        "timestamp": 1780975462.7493963,
+        "confidence": 0.9072579999373708,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.27125283779807,
+        "timestamp": 1780975462.759587,
+        "confidence": 0.907477560228375,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.27135294007277,
+        "timestamp": 1780975462.768638,
+        "confidence": 0.9035468253591593,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 253.8407211439599,
+        "timestamp": 1780975462.7764766,
+        "confidence": 0.9043196393000389,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.1638416337657,
+        "timestamp": 1780975462.7884502,
+        "confidence": 0.9042030870416071,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.6720172674377,
+        "timestamp": 1780975462.7968516,
+        "confidence": 0.9057061760186333,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.04013600366974,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.63655487665767,
+        "timestamp": 1780975462.8063996,
+        "confidence": 0.904015595066244,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 39.54972118746602,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.60601742531117,
+        "timestamp": 1780975462.810646,
+        "confidence": 0.9022887114563366,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 39.54972118746602,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.44374045162158,
+        "timestamp": 1780975462.8140876,
+        "confidence": 0.9050516720401119,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.70113577384721,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.44078920390123,
+        "timestamp": 1780975462.8325477,
+        "confidence": 0.9041316081428388,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.70113577384721,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.44073518327957,
+        "timestamp": 1780975462.8375444,
+        "confidence": 0.9034008096666006,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 37.70113577384721,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.5204487557419,
+        "timestamp": 1780975462.8447711,
+        "confidence": 0.902462239322596,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 38.33884199906889,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.54414116913603,
+        "timestamp": 1780975462.853647,
+        "confidence": 0.9023128147147136,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 38.33884199906889,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.62826398229512,
+        "timestamp": 1780975462.8571742,
+        "confidence": 0.9033517088071249,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 39.54972118746602,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.78914560540122,
+        "timestamp": 1780975462.8739848,
+        "confidence": 0.9056217239432754,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.50905894524263,
+        "timestamp": 1780975462.8785288,
+        "confidence": 0.9034109789746194,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.88440214560944,
+        "timestamp": 1780975462.8824534,
+        "confidence": 0.9051903044778035,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.02297212236735,
+        "timestamp": 1780975462.8903644,
+        "confidence": 0.9058215762671388,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.31885809474312,
+        "timestamp": 1780975462.8994048,
+        "confidence": 0.9066084031126981,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.3247422165161,
+        "timestamp": 1780975462.9127152,
+        "confidence": 0.9047810116246457,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.32486060390835,
+        "timestamp": 1780975462.916739,
+        "confidence": 0.9039624072234818,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.0791643601736,
+        "timestamp": 1780975462.9279327,
+        "confidence": 0.9026721974066909,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.7756235394135,
+        "timestamp": 1780975462.9317553,
+        "confidence": 0.9032216774336703,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.74675714891333,
+        "timestamp": 1780975462.9394739,
+        "confidence": 0.9044868966402315,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.68102678752183,
+        "timestamp": 1780975462.9509065,
+        "confidence": 0.9041169768618328,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6630042926344,
+        "timestamp": 1780975462.9546177,
+        "confidence": 0.900212888796596,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.67933423902795,
+        "timestamp": 1780975462.96309,
+        "confidence": 0.903995651183258,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.74480641656558,
+        "timestamp": 1780975462.971954,
+        "confidence": 0.9033460605184939,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.86058004477954,
+        "timestamp": 1780975462.9756255,
+        "confidence": 0.9024079101760847,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.89863474166862,
+        "timestamp": 1780975462.9931407,
+        "confidence": 0.9026396252680201,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.98058383660074,
+        "timestamp": 1780975462.9980583,
+        "confidence": 0.903850662429877,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.0569786583737,
+        "timestamp": 1780975463.0013762,
+        "confidence": 0.9022196896854078,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.15346738598026,
+        "timestamp": 1780975463.0102868,
+        "confidence": 0.9006646056361932,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.1746681158392,
+        "timestamp": 1780975463.013069,
+        "confidence": 0.9037892870928251,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.95870318020618,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.30547855166503,
+        "timestamp": 1780975463.0276918,
+        "confidence": 0.9037199432741573,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -49.43428194511247,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.45816993562002,
+        "timestamp": 1780975463.0343316,
+        "confidence": 0.9046656643554483,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.60454668101153,
+        "timestamp": 1780975463.0442042,
+        "confidence": 0.9063946488696693,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.60746110101138,
+        "timestamp": 1780975463.0484877,
+        "confidence": 0.9033837707634295,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.607520372992,
+        "timestamp": 1780975463.057635,
+        "confidence": 0.9033036336358198,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.11365688614433,
+        "timestamp": 1780975463.0686343,
+        "confidence": 0.902829636663991,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.47935428304072,
+        "timestamp": 1780975463.0722115,
+        "confidence": 0.9007843277506097,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.46746872697392,
+        "timestamp": 1780975463.0795224,
+        "confidence": 0.9027385396961416,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.46724939803238,
+        "timestamp": 1780975463.090119,
+        "confidence": 0.904950820118372,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.4796733971309,
+        "timestamp": 1780975463.0951133,
+        "confidence": 0.9006730582921227,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.502355357635,
+        "timestamp": 1780975463.1066196,
+        "confidence": 0.9033926842377467,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.57164960631118,
+        "timestamp": 1780975463.1154983,
+        "confidence": 0.9061466919728964,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.63360168534146,
+        "timestamp": 1780975463.119648,
+        "confidence": 0.9045105537279333,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.9450447798177,
+        "timestamp": 1780975463.1285777,
+        "confidence": 0.9054871182567481,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.95128323652568,
+        "timestamp": 1780975463.1377902,
+        "confidence": 0.9047347311368812,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.95139947704567,
+        "timestamp": 1780975463.1478019,
+        "confidence": 0.9022744039856363,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 48.47330266259185,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.89511489235556,
+        "timestamp": 1780975463.1543376,
+        "confidence": 0.9041453567099978,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.82244507441257,
+        "timestamp": 1780975463.1640222,
+        "confidence": 0.9037254735472059,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.81575338070866,
+        "timestamp": 1780975463.1678066,
+        "confidence": 0.9039703347057584,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.8090838190555,
+        "timestamp": 1780975463.1710489,
+        "confidence": 0.9018204895852034,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.8084617171031,
+        "timestamp": 1780975463.1887143,
+        "confidence": 0.9037177418661588,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.6845163891117,
+        "timestamp": 1780975463.200089,
+        "confidence": 0.9024656283553548,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.86560702738829,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.2632644150774,
+        "timestamp": 1780975463.2038834,
+        "confidence": 0.9018618829519853,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.98355946898937,
+        "timestamp": 1780975463.2142372,
+        "confidence": 0.9022267526044951,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.92949575034612,
+        "timestamp": 1780975463.2169778,
+        "confidence": 0.9003498430568069,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 41.09546330072332,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.84658016265354,
+        "timestamp": 1780975463.2277343,
+        "confidence": 0.9008860872111097,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.8448719122432,
+        "timestamp": 1780975463.2371995,
+        "confidence": 0.8965350657572054,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 252.84483855931174,
+        "timestamp": 1780975463.2411368,
+        "confidence": 0.8952092045091131,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 40.29277816450639,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.00940384870268,
+        "timestamp": 1780975463.2474988,
+        "confidence": 0.9009504662082054,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 42.27899830085216,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.3319942628286,
+        "timestamp": 1780975463.2488234,
+        "confidence": 0.8986047585924808,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.94609222301876,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.45319108295718,
+        "timestamp": 1780975463.266848,
+        "confidence": 0.9004128251481226,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 45.137994593670776,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5864768030459,
+        "timestamp": 1780975463.2744393,
+        "confidence": 0.8983005422844608,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.79996216668022,
+        "timestamp": 1780975463.284149,
+        "confidence": 0.8987804417248154,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.84783530490515,
+        "timestamp": 1780975463.2890172,
+        "confidence": 0.9014619338869847,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.84881788164742,
+        "timestamp": 1780975463.2922897,
+        "confidence": 0.8952223070364744,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.8596894804115,
+        "timestamp": 1780975463.3071141,
+        "confidence": 0.8948215207359989,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.07033168500158,
+        "timestamp": 1780975463.3106992,
+        "confidence": 0.8959230992631098,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 49.59563062206664,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.86433159640302,
+        "timestamp": 1780975463.3202627,
+        "confidence": 0.8983514326878514,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.85247434476378,
+        "timestamp": 1780975463.3303587,
+        "confidence": 0.8958406475496343,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.85222240445944,
+        "timestamp": 1780975463.3345158,
+        "confidence": 0.8946395493436032,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.99067010390782,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.61466877501405,
+        "timestamp": 1780975463.3462942,
+        "confidence": 0.8950801987775756,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.5874600533586,
+        "timestamp": 1780975463.3561893,
+        "confidence": 0.8960384698401291,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.58688249993068,
+        "timestamp": 1780975463.3596234,
+        "confidence": 0.8962881321605444,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.58687025364074,
+        "timestamp": 1780975463.3664727,
+        "confidence": 0.8996431222971989,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 46.10320553228582,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 254.75387509291244,
+        "timestamp": 1780975463.3699493,
+        "confidence": 0.8932931503850747,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -46.07931861365828,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 255.3258762822874,
+        "timestamp": 1780975463.3919396,
+        "confidence": 0.8997904899430824,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -42.19652049207165,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 255.33774325910338,
+        "timestamp": 1780975463.400861,
+        "confidence": 0.8976231844253261,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -42.19652049207165,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 255.3379926233642,
+        "timestamp": 1780975463.404854,
+        "confidence": 0.8929585491456165,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -42.19652049207165,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 255.19300043684316,
+        "timestamp": 1780975463.412662,
+        "confidence": 0.8879414084830796,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -43.09771809167669,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.9423757634616,
+        "timestamp": 1780975463.422193,
+        "confidence": 0.87520810129439,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.83423057577573,
+        "timestamp": 1780975463.4286168,
+        "confidence": 0.8598761314899268,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -46.07931861365828,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.69461146922666,
+        "timestamp": 1780975463.435148,
+        "confidence": 0.852422732252981,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -46.32161239932285,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.82779369741135,
+        "timestamp": 1780975463.4393091,
+        "confidence": 0.857200256247187,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -46.07931861365828,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.64620285481192,
+        "timestamp": 1780975463.4488156,
+        "confidence": 0.820187343914303,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.32885276021148,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.4604798731341,
+        "timestamp": 1780975463.45232,
+        "confidence": 0.7997041724430471,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.4543478942275,
+        "timestamp": 1780975463.469912,
+        "confidence": 0.7135092625511601,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -47.6368607458902,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 254.89630184883276,
+        "timestamp": 1780975463.473539,
+        "confidence": 0.6609262614514846,
+        "note_info": {
+          "note_name": "C",
+          "octave": 4,
+          "cents": -45.039062838126355,
+          "midi_number": 60
+        }
+      },
+      {
+        "frequency": 253.84182407614267,
+        "timestamp": 1780975463.4799173,
+        "confidence": 0.5645028145491524,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 47.47224516593862,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 253.234803055961,
+        "timestamp": 1780975463.4863393,
+        "confidence": 0.4939083104631822,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 43.03703438859165,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 250.0011820553654,
+        "timestamp": 1780975463.4953518,
+        "confidence": 0.5346584693765175,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 21.317671003546952,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975463.5077925,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975463.5595694,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975463.6125865,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975463.666271,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975463.7134984,
+        "confidence": 0.0,
+        "note_info": null
+      },
+      {
+        "frequency": 249.95563088241846,
+        "timestamp": 1780975463.7504137,
+        "confidence": 0.2034203533681347,
+        "note_info": {
+          "note_name": "B",
+          "octave": 3,
+          "cents": 21.317671003546952,
+          "midi_number": 59
+        }
+      },
+      {
+        "frequency": 0.0,
+        "timestamp": 1780975463.8786793,
+        "confidence": 0.0,
+        "note_info": null
+      }
+    ]
+  },
+  "technique_events": []
+}

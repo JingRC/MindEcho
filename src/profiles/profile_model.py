@@ -227,6 +227,167 @@ class UsageStats:
         )
 
 
+# ── 练声训练统计 ──────────────────────────────────────────
+
+@dataclass
+class TrainingRecord:
+    """一次练声的记录"""
+    exercise_id: str = ""           # 练习 ID
+    exercise_name: str = ""         # 练习名称
+    total_score: float = 0.0        # 总分 0-100
+    level: str = "D"               # S/A/B/C/D
+    pitch_accuracy: float = 0.0     # 音准分
+    stability: float = 0.0          # 稳定分
+    timing: float = 0.0             # 节奏分
+    hold: float = 0.0               # 持续力
+    perfect_count: int = 0
+    great_count: int = 0
+    good_count: int = 0
+    ok_count: int = 0
+    miss_count: int = 0
+    max_streak: int = 0             # 最大连击
+    tolerance_level: str = "intermediate"  # 容差等级
+    duration_seconds: float = 0.0   # 本次练习用时（秒）
+    date: str = ""                  # ISO 日期
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TrainingRecord":
+        return cls(
+            exercise_id=str(d.get("exercise_id", "") or ""),
+            exercise_name=str(d.get("exercise_name", "") or ""),
+            total_score=float(d.get("total_score", 0.0) or 0.0),
+            level=str(d.get("level", "D") or "D"),
+            pitch_accuracy=float(d.get("pitch_accuracy", 0.0) or 0.0),
+            stability=float(d.get("stability", 0.0) or 0.0),
+            timing=float(d.get("timing", 0.0) or 0.0),
+            hold=float(d.get("hold", 0.0) or 0.0),
+            perfect_count=int(d.get("perfect_count", 0) or 0),
+            great_count=int(d.get("great_count", 0) or 0),
+            good_count=int(d.get("good_count", 0) or 0),
+            ok_count=int(d.get("ok_count", 0) or 0),
+            miss_count=int(d.get("miss_count", 0) or 0),
+            max_streak=int(d.get("max_streak", 0) or 0),
+            tolerance_level=str(d.get("tolerance_level", "intermediate") or "intermediate"),
+            duration_seconds=float(d.get("duration_seconds", 0.0) or 0.0),
+            date=str(d.get("date", "") or ""),
+        )
+
+
+@dataclass
+class TrainingStats:
+    """练声训练聚合统计"""
+    total_sessions: int = 0
+    total_minutes: float = 0.0
+    average_score: float = 0.0       # EMA 平均
+    best_score: float = 0.0
+    best_exercise: str = ""
+    level: str = "beginner"          # beginner / intermediate / advanced / expert
+    level_progress: float = 0.0      # 0-1 当前等级进度
+    recent_records: List[TrainingRecord] = field(default_factory=list)  # 最近 50 条
+    vocal_range_low_midi: int = 0    # 练声中测得的低音
+    vocal_range_high_midi: int = 0   # 练声中测得的高音
+    _ema_alpha: float = field(default=0.15, repr=False)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "total_sessions": self.total_sessions,
+            "total_minutes": round(self.total_minutes, 1),
+            "average_score": round(self.average_score, 1),
+            "best_score": round(self.best_score, 1),
+            "best_exercise": self.best_exercise,
+            "level": self.level,
+            "level_progress": round(self.level_progress, 3),
+            "recent_records": [r.to_dict() for r in self.recent_records[-50:]],
+            "vocal_range_low_midi": self.vocal_range_low_midi,
+            "vocal_range_high_midi": self.vocal_range_high_midi,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TrainingStats":
+        records = []
+        for rd in (d.get("recent_records", []) or []):
+            try:
+                records.append(TrainingRecord.from_dict(rd))
+            except Exception:
+                pass
+        return cls(
+            total_sessions=int(d.get("total_sessions", 0) or 0),
+            total_minutes=float(d.get("total_minutes", 0.0) or 0.0),
+            average_score=float(d.get("average_score", 0.0) or 0.0),
+            best_score=float(d.get("best_score", 0.0) or 0.0),
+            best_exercise=str(d.get("best_exercise", "") or ""),
+            level=str(d.get("level", "beginner") or "beginner"),
+            level_progress=float(d.get("level_progress", 0.0) or 0.0),
+            recent_records=records,
+            vocal_range_low_midi=int(d.get("vocal_range_low_midi", 0) or 0),
+            vocal_range_high_midi=int(d.get("vocal_range_high_midi", 0) or 0),
+        )
+
+    def add_record(self, record: TrainingRecord) -> None:
+        """添加一条训练记录并更新聚合统计。"""
+        self.total_sessions += 1
+        # 累加练声时长（秒 → 分钟）
+        self.total_minutes += record.duration_seconds / 60.0
+        self.recent_records.append(record)
+        if len(self.recent_records) > 50:
+            self.recent_records = self.recent_records[-50:]
+
+        # EMA 更新平均分
+        if self.average_score == 0:
+            self.average_score = record.total_score
+        else:
+            self.average_score = (
+                self._ema_alpha * record.total_score
+                + (1 - self._ema_alpha) * self.average_score
+            )
+
+        # 最佳分
+        if record.total_score > self.best_score:
+            self.best_score = record.total_score
+            self.best_exercise = record.exercise_name
+
+        # 等级晋升检查
+        self._update_level()
+
+    # ── 等级晋升 ──────────────────────────────────────
+
+    _LEVEL_THRESHOLDS = [
+        ("expert",       93.0, 200),   # 天籁之音: >93分 + ≥200次
+        ("advanced",     88.0, 100),   # 实力唱将: >88分 + ≥100次
+        ("intermediate", 80.0, 50),    # 渐入佳境: >80分 + ≥50次
+        ("beginner",      0.0, 0),     # 初出茅庐: 默认
+    ]
+
+    def _update_level(self) -> None:
+        """根据平均分和练习次数判断等级。"""
+        for lvl_name, score_thr, session_thr in self._LEVEL_THRESHOLDS:
+            if (self.average_score >= score_thr
+                    and self.total_sessions >= session_thr):
+                if self.level != lvl_name:
+                    self.level = lvl_name
+                break
+
+        # 计算当前等级进度 (到下一级的百分比)
+        levels = ["beginner", "intermediate", "advanced", "expert"]
+        try:
+            cur_idx = levels.index(self.level)
+            if cur_idx < len(levels) - 1:
+                next_name = levels[cur_idx + 1]
+                for lvl_name, score_thr, session_thr in self._LEVEL_THRESHOLDS:
+                    if lvl_name == next_name:
+                        score_progress = min(1.0, self.average_score / max(score_thr, 1))
+                        session_progress = min(1.0, self.total_sessions / max(session_thr, 1))
+                        self.level_progress = (score_progress + session_progress) / 2.0
+                        break
+            else:
+                self.level_progress = 1.0
+        except (ValueError, IndexError):
+            self.level_progress = 0.0
+
+
 # ── 主存档数据类 ─────────────────────────────────────────────
 
 @dataclass
@@ -246,6 +407,7 @@ class SingerProfile:
     pitch_stats: PitchStats = field(default_factory=PitchStats)
     timbre: TimbreFingerprint = field(default_factory=TimbreFingerprint)
     usage: UsageStats = field(default_factory=UsageStats)
+    training_stats: TrainingStats = field(default_factory=TrainingStats)
     created_at: str = ""
     updated_at: str = ""
 
@@ -312,6 +474,7 @@ class SingerProfile:
             "pitch_stats": self.pitch_stats.to_dict(),
             "timbre": self.timbre.to_dict(),
             "usage": self.usage.to_dict(),
+            "training_stats": self.training_stats.to_dict(),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -329,6 +492,7 @@ class SingerProfile:
             pitch_stats=PitchStats.from_dict(d.get("pitch_stats", {}) or {}),
             timbre=TimbreFingerprint.from_dict(d.get("timbre", {}) or {}),
             usage=UsageStats.from_dict(d.get("usage", {}) or {}),
+            training_stats=TrainingStats.from_dict(d.get("training_stats", {}) or {}),
             created_at=str(d.get("created_at", "") or ""),
             updated_at=str(d.get("updated_at", "") or ""),
         )
