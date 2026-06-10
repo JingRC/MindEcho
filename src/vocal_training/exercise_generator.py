@@ -117,10 +117,16 @@ class ExerciseGenerator:
 
 # ── 便捷函数 ──────────────────────────────────────────
 
-def generate_exercise_for_key(exercise_id: str, key: str = "C") -> Optional[VocalExercise]:
-    """快捷生成单个调性练习。"""
+def generate_exercise_for_key(exercise_id: str, key: str = "C", octave_shift: int = 0) -> Optional[VocalExercise]:
+    """快捷生成单个调性练习。
+
+    Args:
+        exercise_id: C 大调模板 ID
+        key: 目标调性名 (如 "D", "F#")
+        octave_shift: 额外八度偏移, -1=低八度, 0=原音域, +1=高八度
+    """
     gen = ExerciseGenerator()
-    exs = gen.generate_for_keys(exercise_id, [key])
+    exs = gen.generate_for_keys(exercise_id, [key], octave_shift=octave_shift)
     return exs[0] if exs else None
 
 

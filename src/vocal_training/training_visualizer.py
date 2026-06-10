@@ -110,10 +110,10 @@ class TrainingVisualizer(QWidget):
         self._note_results: List[NoteResult] = []
         self._current_grade: PitchGrade = PitchGrade.MISS
 
-        # 音高线数据（约 24 秒历史，防止多次练习累积卡顿）
-        self._pitch_history: deque = deque(maxlen=1200)
-        self._time_history: deque = deque(maxlen=1200)
-        self._grade_history: deque = deque(maxlen=1200)  # per-sample grade
+        # 音高线数据（保留完整练习历史，切练习时清空）
+        self._pitch_history: deque = deque(maxlen=3000)
+        self._time_history: deque = deque(maxlen=3000)
+        self._grade_history: deque = deque(maxlen=3000)  # per-sample grade
 
         # 浮动标签
         self._floating_labels: List[_FloatingLabel] = []
@@ -131,6 +131,13 @@ class TrainingVisualizer(QWidget):
         self._anim_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._anim_timer.timeout.connect(self._tick)
         self._anim_timer.start(33)  # ~30fps
+
+        # 时间线平滑收尾
+        self._last_elapsed_update = 0.0  # _elapsed 最后被更新的时间戳
+        self._coast_start_time = 0.0      # 收尾动画开始时间
+
+        # 镜头跟随控制：练习结束后冻结自动滚动
+        self._follow_enabled = True
 
         self._init_ui()
 
@@ -324,7 +331,7 @@ class TrainingVisualizer(QWidget):
             keep_history: True=保留音高历史（预览切换时），False=完全重置（开始练习时）
         """
         self._exercise = exercise
-        self._total_duration = PREPARATION_OFFSET + exercise.duration_seconds + 1.0
+        self._total_duration = PREPARATION_OFFSET + exercise.duration_seconds + self._compute_gap_total() + 2.0
         self._elapsed = 0.0
         self._note_index = 0
         self._note_results.clear()
@@ -339,6 +346,9 @@ class TrainingVisualizer(QWidget):
         self._bar_states.clear()
         self._streak = 0
         self._show_streak = False
+        self._coast_start_time = 0.0
+        self._last_elapsed_update = 0.0
+        self._follow_enabled = True
 
         # 初始化目标音符条状态
         for i in range(len(exercise.notes)):
@@ -413,13 +423,18 @@ class TrainingVisualizer(QWidget):
         self._note_results.append(result)
         self._bar_states[note_index] = "hit" if result.grade != PitchGrade.MISS else "miss"
 
-        # 添加浮动标签
+        # 添加浮动标签（含帧命中率辅助信息）
         if result.label:
             note = self._exercise.notes[note_index] if self._exercise else None
             note_midi = note.midi_note if note else 60
             note_time = self._get_note_time(note_index)
+            label_text = result.label
+            # 附加帧命中率（低于85%时提示）
+            if result.frame_hit_rate < 0.85 and result.grade != PitchGrade.MISS:
+                hit_pct = int(result.frame_hit_rate * 100)
+                label_text = f"{result.label} ({hit_pct}%)"
             self._add_floating_label(
-                text=result.label,
+                text=label_text,
                 x=note_time,
                 y=float(note_midi),
                 color=self._grade_color(result.grade),
@@ -455,8 +470,8 @@ class TrainingVisualizer(QWidget):
         self._time_history.append(timestamp)
         self._grade_history.append(grade or self._current_grade)
 
-        # 自动清理旧数据
-        cutoff = timestamp - self._total_duration
+        # 自动清理旧数据：只清理超出 2 倍总时长的数据（确保所有历史可见）
+        cutoff = timestamp - max(self._total_duration * 2, 120.0)
         while self._time_history and self._time_history[0] < cutoff:
             self._time_history.popleft()
             self._pitch_history.popleft()
@@ -478,9 +493,14 @@ class TrainingVisualizer(QWidget):
         self._total_duration = max(self._total_duration, total_sec)
         self._update_scrollbar_range()
 
+    def disable_follow(self) -> None:
+        """冻结镜头自动跟随，允许用户自由拖动滚动条。"""
+        self._follow_enabled = False
+
     def update_elapsed(self, elapsed: float) -> None:
         """更新练习已用时间。"""
         self._elapsed = elapsed
+        self._last_elapsed_update = time.time()
         self._update_progress(elapsed / max(self._total_duration, 1.0))
 
     def reset(self) -> None:
@@ -497,6 +517,9 @@ class TrainingVisualizer(QWidget):
         self._bar_items.clear()
         self._streak = 0
         self._show_streak = False
+        self._coast_start_time = 0.0
+        self._last_elapsed_update = 0.0
+        self._follow_enabled = True
         self._playhead_line.setVisible(False)
         self._guide_line.setVisible(False)
         self._pitch_line.setData([], [])
@@ -530,6 +553,9 @@ class TrainingVisualizer(QWidget):
 
         note_times = self._compute_note_times()
 
+        gap_beats = getattr(self._exercise, 'transition_gap_beats', 0.0)
+        gap_sec = gap_beats * self._beat_duration()
+
         for i, note in enumerate(self._exercise.notes):
             t_start = note_times[i]
             t_end = note_times[i] + note.duration_beats * self._beat_duration()
@@ -555,25 +581,53 @@ class TrainingVisualizer(QWidget):
 
             self._bar_items.append((rect_item, label))
 
+            # ── 音符间过渡间隙可视化（半透明暗色条）──
+            if gap_sec > 0 and i < len(self._exercise.notes) - 1:
+                next_midi = self._exercise.notes[i + 1].midi_note
+                gap_mid = (note.midi_note + next_midi) / 2.0
+                gap_rect = pg.QtWidgets.QGraphicsRectItem(
+                    QRectF(t_end, gap_mid - 0.25, gap_sec, 0.5)
+                )
+                gap_rect.setPen(pg.mkPen("#1A1D24", width=1))
+                gap_rect.setBrush(pg.mkBrush("#1A1D24" + "66"))
+                gap_rect.setZValue(-1)
+                self._plot.addItem(gap_rect)
+                self._bar_items.append((gap_rect, None))  # 存储以便清理
+
     def _beat_duration(self) -> float:
         if not self._exercise:
             return 0.6
         return 60.0 / max(self._exercise.tempo, 1)
 
     def _compute_note_times(self) -> List[float]:
-        """计算每个音符的开始时间 (秒)，含准备时间偏移。
+        """计算每个音符的开始时间 (秒)，含准备时间偏移和音符间过渡间隙。
 
         所有标注从 PREPARATION_OFFSET (3.0s) 开始，
         前3秒为准备/倒计时阶段。
+        音符间按 transition_gap_beats 插入静默间隙。
         """
         if not self._exercise:
             return []
         times = []
         t = PREPARATION_OFFSET  # 所有标注从第3秒开始
-        for note in self._exercise.notes:
+        gap_beats = getattr(self._exercise, 'transition_gap_beats', 0.0)
+        gap_sec = gap_beats * self._beat_duration()
+        for i, note in enumerate(self._exercise.notes):
             times.append(t)
             t += note.duration_beats * self._beat_duration()
+            if i < len(self._exercise.notes) - 1:
+                t += gap_sec  # 音符间过渡间隙
         return times
+
+    def _compute_gap_total(self) -> float:
+        """计算所有音符间间隙的总时长（秒）。"""
+        if not self._exercise:
+            return 0.0
+        n = len(self._exercise.notes)
+        if n <= 1:
+            return 0.0
+        gap_beats = getattr(self._exercise, 'transition_gap_beats', 0.0)
+        return (n - 1) * gap_beats * self._beat_duration()
 
     def _get_note_time(self, note_index: int) -> float:
         times = self._compute_note_times()
@@ -680,24 +734,21 @@ class TrainingVisualizer(QWidget):
 
         滚动逻辑（与普通模式完全一致）：
           - 活跃时间 = _elapsed（如果练习进行中）否则 = 最新音高时间
-          - 练习结束后活跃时间冻结在最终位置，视图不再移动
+          - 练习结束前 1s 冻结自动滚动，播放头继续平滑推进到终点
           - 活跃时间超过视图 25% 位置 → 左移视图保持活跃点在 25% 处
         """
         now = time.time()
 
-        # ── 练习结束检测（3秒缓冲，与 _update_ui_tick 自动结束一致）──
-        exercise_ended = (
+        # ── 练习临近结束：仅冻结自动滚动，播放头不跳 ──
+        near_end = (
             self._total_duration > 1.0
             and self._elapsed > 0.5
-            and self._elapsed >= self._total_duration - 3.0
+            and self._elapsed >= self._total_duration - 1.0
         )
 
         # ── 确定活跃时间 ──
-        if exercise_ended:
-            # 练习结束：冻结在最终位置，不使用环境噪声继续推进
-            active_time = self._total_duration - 0.5
-        elif self._elapsed > 0.05:
-            # 练习进行中：使用伴奏位置
+        if self._elapsed > 0.05:
+            # 练习进行中：使用伴奏位置（不跳跃，平滑推进）
             active_time = self._elapsed
         elif len(self._time_history) > 0:
             # 预览/等待中：使用最新音高时间
@@ -705,13 +756,48 @@ class TrainingVisualizer(QWidget):
         else:
             active_time = 0.0
 
+        # ── 时间线平滑收尾：练习停止后播放头继续推进到 _total_duration ──
+        if near_end and self._last_elapsed_update > 0:
+            stale_duration = now - self._last_elapsed_update
+            if stale_duration > 0.2:
+                # _elapsed 已停止更新（_stop_exercise 已调用），启动收尾动画
+                if self._coast_start_time == 0.0:
+                    self._coast_start_time = now
+                coast_elapsed = now - self._coast_start_time
+                coast_duration = 1.2  # 收尾动画持续 1.2 秒
+                if coast_elapsed < coast_duration:
+                    # 平滑插值：从当前 active_time 到 _total_duration
+                    t = min(1.0, coast_elapsed / coast_duration)
+                    # ease-out 缓动
+                    t_smooth = 1.0 - (1.0 - t) ** 2
+                    active_time = active_time + (self._total_duration - active_time) * t_smooth * 0.1
+                    if active_time >= self._total_duration - 0.05:
+                        active_time = self._total_duration
+                else:
+                    active_time = self._total_duration
+
+        # ── 活跃音符追踪（独立于播放头，预览/等待时也能显示辅助线）──
+        highlight_t = self._elapsed if self._elapsed > 0.05 else active_time
+        if self._exercise and len(self._bar_items) > 0:
+            note_times = self._compute_note_times()
+            # 根据当前时间确定活跃音符索引
+            current_note_idx = 0
+            for i, nt in enumerate(note_times):
+                if highlight_t >= nt:
+                    current_note_idx = i
+            if current_note_idx < len(self._exercise.notes):
+                self._note_index = current_note_idx
+                active_note_midi = float(self._exercise.notes[current_note_idx].midi_note)
+                self._guide_line.setPos(active_note_midi)
+                self._guide_line.setVisible(True)
+
         # ── 播放头 ──
         if active_time > 0 and self._exercise and len(self._bar_items) > 0:
             self._playhead_line.setPos(active_time)
             self._playhead_line.setVisible(True)
 
             # ── 自动滚动（与普通模式一致：保持活跃点在视图左侧 25% 处）──
-            if not exercise_ended:
+            if not near_end and self._follow_enabled:
                 x_left, x_right = self._plot.getViewBox().viewRange()[0]
                 view_w = x_right - x_left
                 target_left = active_time - view_w * 0.25
@@ -727,11 +813,9 @@ class TrainingVisualizer(QWidget):
                     if self._scroll_log_cnt % 30 == 1:
                         print(f"[Viz] scroll #{self._scroll_log_cnt} | "
                               f"active_t={active_time:.1f}s xRange=[{new_left:.1f}..{new_right:.1f}] "
-                              f"ended={exercise_ended}")
+                              f"near_end={near_end}")
 
             # ── 音符条高亮（使用伴奏位置或活跃时间）──
-            highlight_t = self._elapsed if self._elapsed > 0.05 else active_time
-            note_times = self._compute_note_times()
             for i, (rect, _) in enumerate(self._bar_items):
                 if i >= len(note_times):
                     continue
@@ -760,23 +844,10 @@ class TrainingVisualizer(QWidget):
 
                 rect.setPen(pg.mkPen(color, width=1))
                 rect.setBrush(pg.mkBrush(color + "44"))
-
-            # ── 动态横向辅助线：跟随当前活跃音符 ──
-            if self._exercise:
-                # 从播放头位置确定当前活跃音符索引
-                note_times = self._compute_note_times()
-                current_note_idx = 0
-                for i, nt in enumerate(note_times):
-                    if highlight_t >= nt:
-                        current_note_idx = i
-                if current_note_idx < len(self._exercise.notes):
-                    self._note_index = current_note_idx
-                    active_note_midi = float(self._exercise.notes[current_note_idx].midi_note)
-                    self._guide_line.setPos(active_note_midi)
-                    self._guide_line.setVisible(True)
         else:
             self._playhead_line.setVisible(False)
-            self._guide_line.setVisible(False)
+            if not self._exercise:
+                self._guide_line.setVisible(False)
 
         # ── 绘制音高线（裁剪：只显示播放头左侧的已发生数据，参考普通模式 ECG）──
         if len(self._time_history) > 1:
@@ -794,12 +865,12 @@ class TrainingVisualizer(QWidget):
                 else:
                     color = COLORS["pitch_silver"]
 
-                # 音高线：最多渲染 800 点（~16s），散点：最多 200 点（~4s）
-                line_n = min(800, len(times))
+                # 音高线：最多渲染 2000 点（~40s），散点：最多 600 点（~12s）
+                line_n = min(2000, len(times))
                 self._pitch_line.setData(times[-line_n:], pitches[-line_n:])
                 self._pitch_line.setPen(pg.mkPen(color, width=2.5))
 
-                dot_n = min(200, len(times))
+                dot_n = min(600, len(times))
                 self._pitch_dots.setData(
                     times[-dot_n:], pitches[-dot_n:],
                     brush=pg.mkBrush(color), size=5,

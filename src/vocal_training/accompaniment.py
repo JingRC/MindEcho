@@ -320,7 +320,7 @@ class AccompanimentEngine:
             t_end = evt.time_sec + evt.duration_sec
             if t_end > max_t:
                 max_t = t_end
-        total_dur = max_t + 1.0  # +1s tail
+        total_dur = max_t + 2.0  # +2s tail（1s 自然衰减 + 1s 时间线余量）
 
         # 合成音频
         if mode == AccompanimentMode.SILENT or not events:
@@ -422,6 +422,8 @@ class AccompanimentEngine:
         sing_sections: List[Tuple[float, float]] = []
 
         current_time = 0.0  # 音符相对偏移（不含准备时间）
+        gap_beats = getattr(exercise, 'transition_gap_beats', 0.0)
+        gap_sec = gap_beats * beat_dur  # 音符间过渡间隙（秒）
         prep_beats = 0  # 预备拍 (listen_repeat 模式下每个音前弹参考)
 
         for i, note in enumerate(exercise.notes):
@@ -467,6 +469,10 @@ class AccompanimentEngine:
                 ref_sections.append((vocal_start, vocal_end))
                 sing_sections.append((vocal_start, vocal_end))
                 current_time += note_dur
+
+            # ── 音符间过渡间隙（最后一个音后不加）──
+            if i < len(exercise.notes) - 1:
+                current_time += gap_sec
 
         return events, ref_sections, sing_sections
 

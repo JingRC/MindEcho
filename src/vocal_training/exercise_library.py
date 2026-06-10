@@ -47,6 +47,7 @@ class VocalExercise:
     key: str                       # 调性 (如 "C")
     notes: List[TargetNote]        # 目标音符序列
     tempo: int = 100               # 默认 BPM
+    transition_gap_beats: float = 0.0  # 音符间过渡间隙（拍数），0=无缝连续
     tags: List[str] = field(default_factory=list)
     unlock_level: int = 0          # 课程模式解锁所需等级 (0=默认解锁)
     accompaniment_type: str = "scale"  # 伴奏模式提示
@@ -95,6 +96,7 @@ class VocalExercise:
             "note_count": self.note_count,
             "duration_seconds": round(self.duration_seconds, 1),
             "tempo": self.tempo,
+            "transition_gap_beats": self.transition_gap_beats,
             "tags": self.tags,
             "tip": self.tip,
             "midi_range": list(self.midi_range),
@@ -131,6 +133,7 @@ class VocalExercise:
             key=new_key,
             notes=new_notes,
             tempo=self.tempo,
+            transition_gap_beats=self.transition_gap_beats,
             tags=self.tags + ["transposed"],
             unlock_level=self.unlock_level,
             tip=self.tip,
@@ -196,7 +199,8 @@ def _n(midi: int, beats: float = 1.0, lyric: str = "") -> TargetNote:
 def _make_exercise(
     id_: str, name: str, desc: str, difficulty: int,
     category: str, key: str, notes: List[TargetNote],
-    tempo: int = 100, tags: List[str] | None = None,
+    tempo: int = 100, gap: float = 0.0,
+    tags: List[str] | None = None,
     tip: str = "", unlock_level: int = 0,
 ) -> VocalExercise:
     """快捷构造 VocalExercise，自动填充 stars / category_name。"""
@@ -206,6 +210,7 @@ def _make_exercise(
         difficulty=difficulty, stars=_stars(difficulty),
         category=category, category_name=cat_info["name"],
         key=key, notes=notes, tempo=tempo,
+        transition_gap_beats=gap,
         tags=tags or [], tip=tip, unlock_level=unlock_level,
     )
 
@@ -268,7 +273,7 @@ EXERCISES["warmup_humming_c"] = _make_exercise(
     notes=[
         _n(C4, 2, "mm"), _n(G3, 2, "mm"), _n(C4, 4, "mm"),
     ],
-    tempo=80,
+    tempo=80, gap=0.25,
     tags=["入门", "暖声", "哼鸣", "SOVT"],
     tip="嘴唇像含着一口水，牙齿不咬合，感受面部的嗡嗡振动。",
 )
@@ -310,7 +315,7 @@ EXERCISES["warmup_five_tone_desc"] = _make_exercise(
         _n(G4, 1, "gee"), _n(F4, 1, "gee"), _n(E4, 1, "gee"),
         _n(D4, 1, "gee"), _n(C4, 4, "gee"),
     ],
-    tempo=100,
+    tempo=100, gap=0.25,
     tags=["入门", "暖声", "五音", "经典"],
     tip="'Gee' 像在微笑，嘴角上扬，声音自然放前面。",
 )
@@ -328,7 +333,7 @@ EXERCISES["single_note_c4_c5"] = _make_exercise(
         _n(F4, 2, "ah"), _n(G4, 2, "ah"), _n(A4, 2, "ah"),
         _n(B4, 2, "ah"), _n(C5, 2, "ah"),
     ],
-    tempo=80,
+    tempo=80, gap=0.5,
     tags=["入门", "单音", "自然音阶"],
     tip="唱每个音前先在脑海里'预听'这个音高，再张口。",
 )
@@ -342,7 +347,7 @@ EXERCISES["pentatonic_ascending_c"] = _make_exercise(
         _n(C4, 1, "la"), _n(D4, 1, "la"), _n(E4, 1, "la"),
         _n(G4, 1, "la"), _n(A4, 1, "la"), _n(C5, 2, "la"),
     ],
-    tempo=100,
+    tempo=100, gap=0.3,
     tags=["入门", "五声音阶", "上行"],
     tip="五声音阶天生'好听'——每个音都和谐，适合建立自信。",
 )
@@ -356,7 +361,7 @@ EXERCISES["pentatonic_descending_c"] = _make_exercise(
         _n(C5, 1, "la"), _n(A4, 1, "la"), _n(G4, 1, "la"),
         _n(E4, 1, "la"), _n(D4, 1, "la"), _n(C4, 2, "la"),
     ],
-    tempo=100,
+    tempo=100, gap=0.3,
     tags=["入门", "五声音阶", "下行"],
     tip="下行时想象音的走向'往上'，防止音偏低。",
 )
@@ -371,7 +376,7 @@ EXERCISES["major_scale_ascending_c"] = _make_exercise(
         _n(F4, 1, "ah"), _n(G4, 1, "ah"), _n(A4, 1, "ah"),
         _n(B4, 1, "ah"), _n(C5, 2, "ah"),
     ],
-    tempo=100,
+    tempo=100, gap=0.2,
     tags=["初级", "大调音阶", "上行"],
     tip="唱上行音阶时，想象楼梯——每一步稳稳踏上去。",
 )
@@ -386,7 +391,7 @@ EXERCISES["major_scale_descending_c"] = _make_exercise(
         _n(G4, 1, "ah"), _n(F4, 1, "ah"), _n(E4, 1, "ah"),
         _n(D4, 1, "ah"), _n(C4, 2, "ah"),
     ],
-    tempo=100,
+    tempo=100, gap=0.2,
     tags=["初级", "大调音阶", "下行"],
     tip="下行时保持'吸气的感觉'，腹部不要突然松掉。",
 )
@@ -404,7 +409,7 @@ EXERCISES["major_scale_full_c"] = _make_exercise(
         _n(F4, 1, "ah"), _n(E4, 1, "ah"), _n(D4, 1, "ah"),
         _n(C4, 2, "ah"),
     ],
-    tempo=100,
+    tempo=100, gap=0.2,
     tags=["初级", "大调音阶", "完整"],
     tip="像爬山：上坡渐强，山顶最亮；下坡渐弱，回到山脚依然稳健。",
 )
@@ -437,7 +442,7 @@ EXERCISES["minor_scale_ascending_c"] = _make_exercise(
         _n(F4, 1, "oo"), _n(G4, 1, "oo"), _n(68, 1, "oo"),  # Ab
         _n(70, 1, "oo"), _n(C5, 2, "oo"),                    # Bb
     ],
-    tempo=90,
+    tempo=90, gap=0.2,
     tags=["进阶", "小调音阶", "上行"],
     tip="小调的色彩靠降三级和降六级——这两个音要特别小心。",
 )
@@ -454,7 +459,7 @@ EXERCISES["major_arpeggio_ascending_c"] = _make_exercise(
         _n(C4, 1.5, "ma"), _n(E4, 1.5, "ma"),
         _n(G4, 1.5, "ma"), _n(C5, 2.5, "ma"),
     ],
-    tempo=90,
+    tempo=90, gap=0.4,
     tags=["初级", "琶音", "大三和弦", "上行"],
     tip="想象在键盘上弹 C-E-G-C——每个音都稳稳落在和弦里。",
 )
@@ -469,7 +474,7 @@ EXERCISES["major_arpeggio_full_c"] = _make_exercise(
         _n(C5, 1, "ma"),
         _n(G4, 1, "ma"), _n(E4, 1, "ma"), _n(C4, 2, "ma"),
     ],
-    tempo=90,
+    tempo=90, gap=0.4,
     tags=["初级", "琶音", "大三和弦", "完整"],
     tip="下行 G→E→C 最容易偏低——想象还站在高处。",
 )
@@ -483,7 +488,7 @@ EXERCISES["minor_arpeggio_c"] = _make_exercise(
         _n(C4, 1.5, "ma"), _n(63, 1.5, "ma"),  # Eb
         _n(G4, 1.5, "ma"), _n(C5, 2.5, "ma"),
     ],
-    tempo=90,
+    tempo=90, gap=0.4,
     tags=["进阶", "琶音", "小三和弦"],
     tip="先唱一遍大三和弦，再唱小三和弦——感受只有第 3 音差半音。",
 )
@@ -498,7 +503,7 @@ EXERCISES["dominant_seventh_arpeggio_c"] = _make_exercise(
         _n(F5, 1, "la"),
         _n(D5, 1, "la"), _n(B4, 1, "la"), _n(G4, 2, "la"),
     ],
-    tempo=85,
+    tempo=85, gap=0.4,
     tags=["进阶", "琶音", "属七和弦", "爵士"],
     tip="七音 F5 有种'想往下走'的张力——这就是属七的魔力。",
 )
@@ -513,7 +518,7 @@ EXERCISES["octave_jump_arpeggio_c"] = _make_exercise(
         _n(C5, 1, "ah"), _n(E5, 1, "ah"), _n(C5, 1, "ah"),
         _n(G4, 1, "ah"), _n(C4, 2, "ah"),
     ],
-    tempo=80,
+    tempo=80, gap=0.5,
     tags=["中级", "琶音", "八度跳进"],
     tip="跳大音程前先在脑内'预听'目标音，让声带提前准备。",
 )
@@ -534,7 +539,7 @@ EXERCISES["thirds_ascending_c"] = _make_exercise(
         _n(G4, 0.75, "ee"), _n(B4, 0.75, "ee"),
         _n(A4, 0.75, "ee"), _n(C5, 1.5, "ee"),
     ],
-    tempo=100,
+    tempo=100, gap=0.2,
     tags=["进阶", "音程", "三度", "模进"],
     tip="C-E, D-F, E-G——像走楼梯每步跨两级，保持节奏均匀。",
 )
@@ -550,7 +555,7 @@ EXERCISES["fourths_ascending_c"] = _make_exercise(
         _n(E4, 1, "ah"), _n(A4, 1, "ah"),
         _n(F4, 1, "ah"), _n(B4, 1.5, "ah"),
     ],
-    tempo=90,
+    tempo=90, gap=0.3,
     tags=["进阶", "音程", "四度"],
     tip="四度 = 往上跨 3 个半音——想象'祝你生日快乐'第一句。",
 )
@@ -565,7 +570,7 @@ EXERCISES["fifths_ascending_c"] = _make_exercise(
         _n(D4, 1, "ah"), _n(A4, 1, "ah"),
         _n(E4, 1, "ah"), _n(B4, 1.5, "ah"),
     ],
-    tempo=80,
+    tempo=80, gap=0.35,
     tags=["中级", "音程", "五度"],
     tip="五度 = 往上跨 4 个半音——比四度再多一步，气息要给足。",
 )
@@ -582,7 +587,7 @@ EXERCISES["octave_leap_c"] = _make_exercise(
         _n(F4, 1, "yah"), _n(F5, 1, "yah"),
         _n(G4, 1, "yah"), _n(G5, 2, "yah"),
     ],
-    tempo=75,
+    tempo=75, gap=0.5,
     tags=["中级", "音程", "八度"],
     tip="八度大跳像跳水——起跳稳，落点准，中间不散。",
 )
@@ -654,7 +659,7 @@ EXERCISES["resonance_humming_buzz"] = _make_exercise(
         _n(C4, 2, "mm"), _n(E4, 2, "mm"), _n(G4, 2, "mm"),
         _n(C5, 4, "mm"),
     ],
-    tempo=70,
+    tempo=70, gap=0.3,
     tags=["入门", "共鸣", "哼鸣", "面罩"],
     tip="闭眼感受：哪里在振动？嘴唇？鼻子？额头？——那是你的'面罩'。",
 )
@@ -670,7 +675,7 @@ EXERCISES["resonance_nasal_oral"] = _make_exercise(
         _n(B4, 4, "Mmm→Ahh"),
         _n(C5, 6, "Mmm→Ahh"),
     ],
-    tempo=70,
+    tempo=70, gap=0.3,
     tags=["初级", "共鸣", "过渡"],
     tip="从 M 到 Ah 时，想象振动从鼻子'滑'到口腔顶部——别让它掉进喉咙。",
 )
@@ -684,7 +689,7 @@ EXERCISES["resonance_vowel_migration"] = _make_exercise(
         _n(G4, 2, "ee"), _n(G4, 2, "eh"), _n(G4, 2, "ah"),
         _n(G4, 2, "oh"), _n(G4, 2, "oo"),
     ],
-    tempo=70,
+    tempo=70, gap=0.3,
     tags=["初级", "共鸣", "元音"],
     tip="五个元音，一个位置。用手轻触鼻梁——每个元音都感受到相同振动就对了。",
 )
@@ -716,7 +721,7 @@ EXERCISES["register_chest_head_switch"] = _make_exercise(
         _n(B4, 2, "yah(胸)"), _n(B4, 2, "yee(头)"),
         _n(C5, 2, "yah(胸)"), _n(C5, 2, "yee(头)"),
     ],
-    tempo=80,
+    tempo=80, gap=0.4,
     tags=["进阶", "声区", "切换", "胸声", "头声"],
     tip="胸声→头声时，想象声音'飘'到头腔而不是'冲'上去。",
 )
@@ -733,7 +738,7 @@ EXERCISES["register_mix_voice"] = _make_exercise(
         _n(E5, 1.5, "nay"), _n(C5, 1.5, "nay"),
         _n(G4, 1.5, "nay"), _n(E4, 2, "nay"),
     ],
-    tempo=85,
+    tempo=85, gap=0.3,
     tags=["中级", "声区", "混声", "流行"],
     tip="混声像胸声和头声的'鸡尾酒'——各取一半，调出最舒服的比例。",
 )
@@ -838,7 +843,7 @@ EXERCISES["range_low_extension"] = _make_exercise(
         _n(F3, 2, "oh"), _n(E3, 2, "oh"),
         _n(D3, 2, "oh"), _n(C3, 4, "oh"),
     ],
-    tempo=70,
+    tempo=70, gap=0.3,
     tags=["进阶", "音域", "低音"],
     tip="低音不要压——像叹一口很深的气，声音自然到底。",
 )
@@ -855,7 +860,7 @@ EXERCISES["range_high_extension"] = _make_exercise(
         _n(D5, 1, "yah"), _n(C5, 1, "yah"),
         _n(B4, 1, "yah"), _n(G4, 2, "yah"),
     ],
-    tempo=85,
+    tempo=85, gap=0.3,
     tags=["中级", "音域", "高音"],
     tip="上高音前先深吸+提软腭（打哈欠的感觉）——空间越大，高音越轻松。",
 )

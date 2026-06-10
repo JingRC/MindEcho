@@ -248,6 +248,8 @@ class TrainingRecord:
     max_streak: int = 0             # 最大连击
     tolerance_level: str = "intermediate"  # 容差等级
     duration_seconds: float = 0.0   # 本次练习用时（秒）
+    avg_frame_hit_rate: float = 0.0  # 平均帧命中率 (0-1)
+    avg_transition_time: float = 0.0  # 平均过渡耗时（秒）
     date: str = ""                  # ISO 日期
 
     def to_dict(self) -> Dict[str, Any]:
@@ -272,6 +274,8 @@ class TrainingRecord:
             max_streak=int(d.get("max_streak", 0) or 0),
             tolerance_level=str(d.get("tolerance_level", "intermediate") or "intermediate"),
             duration_seconds=float(d.get("duration_seconds", 0.0) or 0.0),
+            avg_frame_hit_rate=float(d.get("avg_frame_hit_rate", 0.0) or 0.0),
+            avg_transition_time=float(d.get("avg_transition_time", 0.0) or 0.0),
             date=str(d.get("date", "") or ""),
         )
 

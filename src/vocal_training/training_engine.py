@@ -50,8 +50,10 @@ class _ActiveNote:
     start_time: float          # 该音开始时的时间戳
     expected_duration: float   # 该音应持续的秒数
     freq_samples: List[float] = field(default_factory=list)  # 该音期间采集的频率
+    cents_samples: List[float] = field(default_factory=list)  # 逐帧 cents 偏差
     onset_detected: bool = False
     onset_time: float = 0.0
+    first_stable_time: float = 0.0  # 首次进入 GREAT 阈值的时间戳
 
 
 class TrainingEngine:
@@ -93,6 +95,10 @@ class TrainingEngine:
         # 连击
         self._current_streak: int = 0
         self._max_streak: int = 0
+
+        # 音符间过渡间隙（避免换音时的偏音被采集进评分）
+        self._in_gap: bool = False
+        self._gap_end_time: float = 0.0
 
         # 伴奏模式
         self._accompaniment_mode: str = "smart"  # smart / listen_repeat / continuous / silent
@@ -182,6 +188,8 @@ class TrainingEngine:
         self._max_streak = 0
         self._beat_duration = 60.0 / max(exercise.tempo, 1.0)
         self._active_note = None
+        self._in_gap = False
+        self._gap_end_time = 0.0
         self._set_state(TrainingState.IDLE)
 
     def start(self, countdown_beats: int = 4) -> None:
@@ -238,14 +246,34 @@ class TrainingEngine:
         """
         if self._state != TrainingState.SINGING:
             return None
+
+        ts = timestamp or time.time()
+
+        # ── 音符间过渡间隙处理 ──
+        if self._in_gap:
+            if ts >= self._gap_end_time:
+                # 间隙结束，开始下一个音
+                self._in_gap = False
+                self._begin_current_note()
+            else:
+                return None  # 间隙期间不采集
+
         if not self._active_note:
             return None
 
-        ts = timestamp or time.time()
         self._freq_history.append((ts, freq_hz))
 
         an = self._active_note
         an.freq_samples.append(freq_hz)
+
+        # 逐帧 cents 偏差追踪（用于帧命中率 + 过渡时间计算）
+        if freq_hz > 0:
+            from src.vocal_training.scoring import cents_deviation
+            dev = cents_deviation(an.target.midi_note, freq_hz)
+            an.cents_samples.append(dev)
+            # 检测首次稳定音高（进入 GREAT 阈值 = 25 cents 内）
+            if an.first_stable_time == 0.0 and dev < 25.0:
+                an.first_stable_time = ts
 
         elapsed = ts - an.start_time
 
@@ -340,6 +368,33 @@ class TrainingEngine:
             tolerance_override=self._tolerance_override,
         )
 
+        # 🎯 诊断日志：每次音符完成时打印实际频率 vs 目标
+        if detected_freq > 0:
+            detected_midi = 69.0 + 12.0 * np.log2(max(detected_freq, 1e-9) / 440.0)
+            cents = (detected_midi - target.midi_note) * 100.0
+            print(f"[Engine] note#{an.index} '{target.label}' | "
+                  f"target={target.midi_note} ({target.midi_note:.1f}MIDI) | "
+                  f"detected={detected_freq:.1f}Hz ({detected_midi:.1f}MIDI) | "
+                  f"cents={cents:+.0f} | grade={result.grade.name} | "
+                  f"samples={len(valid_freqs)} | hit_rate={result.frame_hit_rate:.2f}")
+        else:
+            print(f"[Engine] note#{an.index} '{target.label}' | NO_FREQ | grade={result.grade.name}")
+
+        # ── 帧级命中率 + 过渡时间 ──
+        HEAD_EXEMPTION_RATIO = 0.15  # 每个音前15%帧免评（换音过渡区）
+        if an.cents_samples and an.expected_duration > 0:
+            total_frames = len(an.cents_samples)
+            exempt_frames = max(0, int(total_frames * HEAD_EXEMPTION_RATIO))
+            scorable_frames = an.cents_samples[exempt_frames:]
+            if scorable_frames:
+                ok_threshold = self._tolerance_override.get("OK", 50)
+                hit_count = sum(1 for c in scorable_frames if c <= ok_threshold)
+                result.frame_hit_rate = hit_count / len(scorable_frames)
+            # 过渡时间：首个稳定音高距音符开始的时间
+            if an.first_stable_time > 0:
+                result.transition_time_s = max(0.0, an.first_stable_time - an.start_time)
+        # else: frame_hit_rate stays default 1.0, transition_time_s stays 0.0
+
         # 计时
         if an.onset_detected and an.onset_time > 0:
             expected_onset = an.start_time + self._beat_duration * 0.15  # 15% 容差
@@ -373,7 +428,14 @@ class TrainingEngine:
             # 练习完成
             self.finish_exercise()
         elif not force:
-            self._begin_current_note()
+            # 检查是否需要插入音符间过渡间隙
+            gap_beats = getattr(self._exercise, 'transition_gap_beats', 0.0) if self._exercise else 0.0
+            if gap_beats > 0:
+                gap_sec = gap_beats * self._beat_duration
+                self._in_gap = True
+                self._gap_end_time = ts + gap_sec
+            else:
+                self._begin_current_note()
 
         return result
 

@@ -45,13 +45,13 @@
     "technique_distribution": {}
   },
   "training_stats": {
-    "total_sessions": 12,
-    "total_minutes": 0.7,
-    "average_score": 46.3,
-    "best_score": 70.1,
-    "best_exercise": "C大调哼鸣暖声",
+    "total_sessions": 18,
+    "total_minutes": 1.5,
+    "average_score": 52.6,
+    "best_score": 72.9,
+    "best_exercise": "single_note45_c",
     "level": "beginner",
-    "level_progress": 0.409,
+    "level_progress": 0.509,
     "recent_records": [
       {
         "exercise_id": "warmup_humming_c",
@@ -70,6 +70,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 5.4,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T11:24:39"
       },
       {
@@ -89,6 +91,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 5.4,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T11:25:27"
       },
       {
@@ -108,6 +112,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 5.5,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T12:17:49"
       },
       {
@@ -127,6 +133,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T12:18:32"
       },
       {
@@ -146,6 +154,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T12:18:32"
       },
       {
@@ -165,6 +175,8 @@
         "max_streak": 1,
         "tolerance_level": "beginner",
         "duration_seconds": 5.4,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T14:05:36"
       },
       {
@@ -184,6 +196,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 5.4,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T14:05:47"
       },
       {
@@ -203,6 +217,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T15:03:29"
       },
       {
@@ -222,6 +238,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T15:03:29"
       },
       {
@@ -241,6 +259,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 5.6,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T15:03:58"
       },
       {
@@ -260,6 +280,8 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T15:04:00"
       },
       {
@@ -279,12 +301,140 @@
         "max_streak": 0,
         "tolerance_level": "beginner",
         "duration_seconds": 5.4,
+        "avg_frame_hit_rate": 0.0,
+        "avg_transition_time": 0.0,
         "date": "2026-06-09T15:43:53"
+      },
+      {
+        "exercise_id": "single_note_c4_c5",
+        "exercise_name": "C大调单音匹配 (C4→C5)",
+        "total_score": 52.238449320175626,
+        "level": "C",
+        "pitch_accuracy": 22.687500000000004,
+        "stability": 69.47349660087812,
+        "timing": 80.0,
+        "hold": 100.0,
+        "perfect_count": 0,
+        "great_count": 1,
+        "good_count": 0,
+        "ok_count": 2,
+        "miss_count": 5,
+        "max_streak": 1,
+        "tolerance_level": "beginner",
+        "duration_seconds": 13.7,
+        "avg_frame_hit_rate": 1.0,
+        "avg_transition_time": 0.0,
+        "date": "2026-06-10T09:25:02"
+      },
+      {
+        "exercise_id": "single_note_c4_c5",
+        "exercise_name": "C大调单音匹配 (C4→C5)",
+        "total_score": 50.14719793241102,
+        "level": "C",
+        "pitch_accuracy": 9.625,
+        "stability": 91.6734896620551,
+        "timing": 80.0,
+        "hold": 100.0,
+        "perfect_count": 0,
+        "great_count": 0,
+        "good_count": 1,
+        "ok_count": 0,
+        "miss_count": 7,
+        "max_streak": 0,
+        "tolerance_level": "beginner",
+        "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 1.0,
+        "avg_transition_time": 0.0,
+        "date": "2026-06-10T09:25:30"
+      },
+      {
+        "exercise_id": "single_note45_c",
+        "exercise_name": "single_note45_c",
+        "total_score": 72.8649798355254,
+        "level": "B",
+        "pitch_accuracy": 58.43750000000001,
+        "stability": 83.231149177627,
+        "timing": 80.0,
+        "hold": 100.0,
+        "perfect_count": 2,
+        "great_count": 1,
+        "good_count": 2,
+        "ok_count": 0,
+        "miss_count": 3,
+        "max_streak": 1,
+        "tolerance_level": "beginner",
+        "duration_seconds": 13.7,
+        "avg_frame_hit_rate": 1.0,
+        "avg_transition_time": 0.0,
+        "date": "2026-06-10T09:25:51"
+      },
+      {
+        "exercise_id": "single_note_c4_c5",
+        "exercise_name": "C大调单音匹配 (C4→C5)",
+        "total_score": 57.493250415370994,
+        "level": "C",
+        "pitch_accuracy": 28.875000000000004,
+        "stability": 80.27875207685497,
+        "timing": 80.0,
+        "hold": 100.0,
+        "perfect_count": 0,
+        "great_count": 2,
+        "good_count": 0,
+        "ok_count": 1,
+        "miss_count": 5,
+        "max_streak": 1,
+        "tolerance_level": "beginner",
+        "duration_seconds": 14.3,
+        "avg_frame_hit_rate": 1.0,
+        "avg_transition_time": 0.0,
+        "date": "2026-06-10T14:55:02"
+      },
+      {
+        "exercise_id": "single_note_c4_c5",
+        "exercise_name": "C大调单音匹配 (C4→C5)",
+        "total_score": 53.55468763261719,
+        "level": "C",
+        "pitch_accuracy": 21.312499999999996,
+        "stability": 79.49218816308594,
+        "timing": 80.0,
+        "hold": 100.0,
+        "perfect_count": 0,
+        "great_count": 1,
+        "good_count": 1,
+        "ok_count": 0,
+        "miss_count": 6,
+        "max_streak": 1,
+        "tolerance_level": "beginner",
+        "duration_seconds": 14.4,
+        "avg_frame_hit_rate": 1.0,
+        "avg_transition_time": 0.0,
+        "date": "2026-06-10T14:55:25"
+      },
+      {
+        "exercise_id": "single_note_c4_c5",
+        "exercise_name": "C大调单音匹配 (C4→C5)",
+        "total_score": 53.16559295128545,
+        "level": "C",
+        "pitch_accuracy": 13.750000000000002,
+        "stability": 96.45296475642724,
+        "timing": 80.0,
+        "hold": 100.0,
+        "perfect_count": 1,
+        "great_count": 0,
+        "good_count": 0,
+        "ok_count": 0,
+        "miss_count": 7,
+        "max_streak": 1,
+        "tolerance_level": "beginner",
+        "duration_seconds": 0.0,
+        "avg_frame_hit_rate": 1.0,
+        "avg_transition_time": 0.0,
+        "date": "2026-06-10T14:55:43"
       }
     ],
     "vocal_range_low_midi": 0,
     "vocal_range_high_midi": 0
   },
   "created_at": "2026-06-04T12:07:00",
-  "updated_at": "2026-06-09T15:43:53"
+  "updated_at": "2026-06-10T14:55:43"
 }

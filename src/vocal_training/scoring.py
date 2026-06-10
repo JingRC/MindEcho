@@ -112,6 +112,8 @@ class NoteResult:
     label: str                     # 评价标签 ("PERFECT!", "GREAT", etc.)
     timing_offset_ms: float = 0.0  # 起音偏差 (ms), 正=延后, 负=提前
     hold_ratio: float = 1.0        # 持续力 (实际/目标), 0-1
+    frame_hit_rate: float = 1.0    # 帧级命中率 (0-1)，该音期间在OK阈值内的帧占比
+    transition_time_s: float = 0.0 # 过渡耗时 (秒)，首次进入GREAT阈值的时间
 
     def to_dict(self) -> dict:
         return {
@@ -123,6 +125,8 @@ class NoteResult:
             "label": self.label,
             "timing_offset_ms": round(self.timing_offset_ms, 1),
             "hold_ratio": round(self.hold_ratio, 3),
+            "frame_hit_rate": round(self.frame_hit_rate, 3),
+            "transition_time_s": round(self.transition_time_s, 3),
         }
 
 
@@ -141,6 +145,9 @@ class ExerciseScore:
 
     total_score: float = 0.0       # 加权总分 (0-100)
     overall_level: OverallLevel = OverallLevel.D
+
+    avg_frame_hit_rate: float = 0.0    # 平均帧命中率 (0-1)
+    avg_transition_time: float = 0.0   # 平均过渡耗时 (秒)
 
     perfect_count: int = 0
     great_count: int = 0
@@ -168,6 +175,8 @@ class ExerciseScore:
             "ok_count": self.ok_count,
             "miss_count": self.miss_count,
             "max_streak": self.max_streak,
+            "avg_frame_hit_rate": round(self.avg_frame_hit_rate, 3),
+            "avg_transition_time": round(self.avg_transition_time, 3),
             "notes": [n.to_dict() for n in self.notes],
         }
 
@@ -315,9 +324,23 @@ def compute_exercise_score(
         ]
         score.notes = note_results
 
+    # ── 0. 帧级统计（先计算，供音准调整用）──
+    hit_rates = [nr.frame_hit_rate for nr in note_results if nr.grade != PitchGrade.MISS]
+    trans_times = [nr.transition_time_s for nr in note_results
+                   if nr.transition_time_s > 0 and nr.grade != PitchGrade.MISS]
+    if hit_rates:
+        score.avg_frame_hit_rate = sum(hit_rates) / len(hit_rates)
+    if trans_times:
+        score.avg_transition_time = sum(trans_times) / len(trans_times)
+
     # ── 1. 音准 (50%) ──
     score_sum = sum(GRADE_CONFIG[nr.grade]["score"] for nr in note_results)
     score.pitch_accuracy = (score_sum / n) * 100.0
+
+    # 帧命中率调节：±10%（命中率 100%→+10%, 50%→0%, 0%→-10%）
+    if hit_rates:
+        hit_mod = (score.avg_frame_hit_rate - 0.5) * 0.20  # range: [-0.10, +0.10]
+        score.pitch_accuracy = max(0.0, min(100.0, score.pitch_accuracy * (1.0 + hit_mod)))
 
     # ── 2. 稳定性 (20%) ──
     # 基于命中音的 cents 偏差标准差

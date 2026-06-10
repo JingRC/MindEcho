@@ -167,6 +167,7 @@ class TrainingPanel(QWidget):
         self._is_running = False
         self._is_auditioning = False     # 试听播放中
         self._accomp_enabled = True      # 练声时伴奏开关
+        self._viz_frozen = False         # 可视化器冻结（仅在 _stop_exercise 时置 True）
         self._exercise_start_time: float = 0.0
         self._last_pitch_time: float = 0.0
         self._auto_level = "beginner"  # 默认入门，由 Profile 覆盖
@@ -237,6 +238,16 @@ class TrainingPanel(QWidget):
         self._key_combo.setFixedWidth(55)
         self._key_combo.currentTextChanged.connect(self._on_key_changed)
         ctrl_row.addWidget(self._key_combo)
+
+        # 八度偏移选择器
+        ctrl_row.addWidget(QLabel("8°:"))
+        self._octave_combo = QComboBox()
+        self._octave_combo.addItems(["-1", "0", "+1"])
+        self._octave_combo.setCurrentText("0")
+        self._octave_combo.setFixedWidth(45)
+        self._octave_combo.setToolTip("八度偏移: -1=低八度(更低沉), 0=原调, +1=高八度(更明亮)")
+        self._octave_combo.currentTextChanged.connect(self._on_key_changed)
+        ctrl_row.addWidget(self._octave_combo)
 
         # 等级 (自动从 Profile 读取，只读显示)
         self._level_label = QLabel("🐣 小白")
@@ -345,10 +356,55 @@ class TrainingPanel(QWidget):
     def feed_pitch(self, freq_hz: float, confidence: float = 0.9, rms: float = 0.0) -> None:
         """输入实时音高检测结果（display_frequency — 已经过普通模式完整后处理）。
 
-        无任何二次过滤。freq_hz 直接透传给可视化器和引擎。
-        上游 _compute_normal_mode_display_frequency 已处理了噪音/尖峰/谐波纠错。
+        练声模式轻量八度纠错：YIN 在高音区容易将 2nd 谐波误判为基频，
+        导致检测频率偏高一个八度。这里利用已知目标音做保守校验：
+        若频率远超目标且除以 2 后更接近，则自动修正。
         """
         ts = time.time()
+
+        # ── 轻量八度/谐波过冲校验（利用引擎当前目标音）──
+        # YIN 在高音区 (E4+) 容易将谐波误判为基频：
+        #   - 2nd 谐波 → 频率 ×2 (八度过冲)
+        #   - 3rd 谐波 → 频率 ×3 (八度+五度过冲)
+        #   - 3:2 比锁定 → 频率 ×1.5 (纯五度过冲，假声/头声过渡常见)
+        if freq_hz > 0 and self._is_running:
+            target_note = self._engine.current_note
+            if target_note is not None:
+                target_midi = float(target_note.midi_note)
+                target_hz = 440.0 * (2.0 ** ((target_midi - 69.0) / 12.0))
+                detected_midi = 69.0 + 12.0 * np.log2(max(freq_hz, 1e-9) / 440.0)
+                target_deviation = detected_midi - target_midi  # 正=偏高，负=偏低
+
+                # 偏高超过 5 个半音 → 可能是 YIN 谐波误锁
+                if target_deviation > 5.0:
+                    # 尝试多种频率回退：八度(/2)、双八度(/4)、三倍谐波(/3)、五度(×2/3)
+                    candidates = [
+                        (freq_hz / 2, '/2 (八度)'),
+                        (freq_hz / 3, '/3 (三倍谐波)'),
+                        (freq_hz * 2.0 / 3.0, '×2/3 (五度下修)'),
+                        (freq_hz / 4, '/4 (双八度)'),
+                        (freq_hz * 3.0 / 4.0, '×3/4 (四度下修)'),
+                    ]
+                    best_freq = freq_hz
+                    best_dev = abs(target_deviation)
+                    best_label = ''
+                    for candidate_hz, label in candidates:
+                        if candidate_hz < 40.0:  # 低于低音下限
+                            continue
+                        candidate_midi = 69.0 + 12.0 * np.log2(candidate_hz / 440.0)
+                        candidate_dev = abs(candidate_midi - target_midi)
+                        # 回退后偏差在 6 半音内且比当前最佳更接近 → 采用
+                        if candidate_dev < 6.0 and candidate_dev < best_dev:
+                            best_freq = candidate_hz
+                            best_dev = candidate_dev
+                            best_label = label
+                    if best_freq != freq_hz:
+                        orig_midi_str = f"{detected_midi:.1f}"
+                        new_midi_str = f"{69.0 + 12.0 * np.log2(best_freq / 440.0):.1f}"
+                        print(f"[Panel] 谐波过冲修正: {freq_hz:.0f}Hz({orig_midi_str}MIDI) "
+                              f"→ {best_freq:.0f}Hz({new_midi_str}MIDI) "
+                              f"| target={target_midi:.0f}MIDI {best_label}")
+                        freq_hz = best_freq
 
         # ── 时间轴管理 ──
         if self._exercise_start_time == 0.0:
@@ -356,11 +412,8 @@ class TrainingPanel(QWidget):
 
         relative_t = ts - self._exercise_start_time
 
-        # ── 练习结束后停止喂入可视化器 ──
-        feed_viz = True
-        if not self._is_running and getattr(self, '_exercise_ever_started', False):
-            feed_viz = False
-        if feed_viz:
+        # ── 可视化器冻结检查（仅在 _stop_exercise 完全停止后才冻结）──
+        if not self._viz_frozen:
             self._viz.feed_pitch_point(relative_t, freq_hz)
 
         # ── 评分及引擎处理仅在练声进行中 ──
@@ -430,12 +483,16 @@ class TrainingPanel(QWidget):
         # 重置自动结束日志计数器
         self._auto_end_dbg = 0
 
-        # Phase 6: 根据选择的调性生成移调练习
+        # Phase 6: 根据选择的调性和八度偏移生成移调练习
         selected_key = self._key_combo.currentText()
-        if selected_key != "C":
-            exercise = generate_exercise_for_key(exercise_id, selected_key)
+        octave_shift = self._get_octave_shift()
+        if selected_key != "C" or octave_shift != 0:
+            exercise = generate_exercise_for_key(exercise_id, selected_key, octave_shift=octave_shift)
             if exercise is None:
                 exercise = get_exercise(exercise_id)
+
+        # ── tempo 统一：将 UI 旋钮值写入练习对象，确保引擎/伴奏/可视化器三端一致 ──
+        exercise = self._apply_tempo(exercise)
 
         # 等级自动映射: TrainingStats.level → 容差
         _level_map = {"beginner": "beginner", "intermediate": "intermediate",
@@ -445,20 +502,19 @@ class TrainingPanel(QWidget):
         # 伴奏：开关控制 → 开=全程伴奏，关=静默
         accomp_mode = AccompanimentMode.CONTINUOUS if self._accomp_enabled else AccompanimentMode.SILENT
 
-        tempo = self._tempo_spin.value()
-
-        # 加载并启动
+        # 加载并启动（三端共用同一份 exercise 对象，tempo 已统一）
         self._engine.load_exercise(exercise, tolerance_level=tolerance)
         self._accompaniment.load_exercise(
             exercise, mode=accomp_mode,
-            is_first_attempt=True, tempo_override=tempo,
+            is_first_attempt=True, tempo_override=exercise.tempo,
         )
         self._viz.load_exercise(exercise)
-        # 同步伴奏实际总时长 (listen_repeat 模式可能 2x 练习时长)
+        # 同步伴奏实际总时长 (二者 tempo 一致后应相等)
         self._viz.set_total_duration(self._accompaniment.total_duration_sec)
 
         # ── 先设时间基准再启动伴奏，确保音高时间戳与伴奏位置对齐 ──
         self._exercise_ever_started = True
+        self._viz_frozen = False
         self._exercise_start_time = time.time()
         self._last_pitch_time = 0.0
         self._current_exercise_duration = 0.0
@@ -477,6 +533,8 @@ class TrainingPanel(QWidget):
 
     def _stop_exercise(self):
         self._is_running = False
+        self._viz_frozen = True  # 完全停止后才冻结可视化器
+        self._viz.disable_follow()  # 冻结镜头跟随，允许用户自由拖动滚动条
         self._stop_accomp_output()
         # 停止由练声模式启动的录音（练习结束 = 不再需要音频输入）
         if self._audio_input_stopper is not None:
@@ -540,6 +598,12 @@ class TrainingPanel(QWidget):
         self._level_label.setText(_names.get(profile_level, "🐣 小白"))
 
     def _on_exercise_completed(self, score: ExerciseScore):
+        """引擎评分完成回调 — 仅更新 UI 评分展示和发信号保存结果。
+
+        不停止伴奏输出、不设 _is_running=False、不冻结可视化器。
+        伴奏尾巴和音高线的最后一段由 _update_ui_tick 检测伴奏结束后
+        统一调用 _stop_exercise 来完全停止。
+        """
         self._viz.on_exercise_completed(score)
         # 练习结束 — 展示完整评语
         self._state_label.setText(
@@ -552,10 +616,8 @@ class TrainingPanel(QWidget):
                 f"{score.overall_level.encouragement}"
             )
         self._progress_bar.setValue(100)
-        self._stop_accomp_output()
         self._start_btn.setText("开始练声")
         self._start_btn.setStyleSheet(START_BTN_STYLE)
-        self._is_running = False
         self.exercise_completed.emit(score)
 
     def _on_browse_exercises(self):
@@ -591,8 +653,8 @@ class TrainingPanel(QWidget):
     def _preview_current_exercise(self):
         """将当前选中的练习 + 调性加载到可视化器预览（不启动引擎）。
 
-        只更新目标音符条，不清除音高历史 — 保持时间线连续性。
-        音高起点由 _start_exercise 中的 _exercise_start_time 重置控制。
+        只更新目标音符条，调性/八度变化时保留音高历史。
+        切换到不同练习时清除音高历史并同步 tempo。
         """
         if self._is_running:
             return  # 练习中不打断
@@ -600,21 +662,64 @@ class TrainingPanel(QWidget):
         if not exercise_id:
             return
         selected_key = self._key_combo.currentText()
+        octave_shift = self._get_octave_shift()
         from src.vocal_training.exercise_library import get_exercise
         ex_base = get_exercise(exercise_id)
         if not ex_base:
             return
-        ex = generate_exercise_for_key(exercise_id, selected_key) if selected_key != "C" else ex_base
+        ex = generate_exercise_for_key(exercise_id, selected_key, octave_shift=octave_shift) if (selected_key != "C" or octave_shift != 0) else ex_base
         if ex:
-            # 只更新目标音符条，不清除音高历史，保持时间线连续
-            self._viz.load_exercise(ex, keep_history=True)
+            # 同练习调性/八度切换保留历史，切换练习则清除
+            prev_ex_id = getattr(self, '_previewed_exercise_id', None)
+            same_exercise = (prev_ex_id == exercise_id)
+            self._previewed_exercise_id = exercise_id
+
+            # 新练习 → 同步 tempo 旋钮到练习默认值
+            if not same_exercise:
+                self._sync_tempo_to_exercise(ex)
+
+            # 应用 UI tempo 到练习对象，确保标注条与即将播放的钢琴对齐
+            ex = self._apply_tempo(ex)
+
+            self._viz.load_exercise(ex, keep_history=same_exercise)
             # 不重置 _exercise_start_time — 由 _start_exercise 统一管理
             # 预览模式下隐藏 playhead
             self._viz.update_phase("silence")
             self._viz._playhead_line.setVisible(False)
 
+    def _get_octave_shift(self) -> int:
+        """读取八度偏移选择器的当前值。"""
+        try:
+            return int(self._octave_combo.currentText())
+        except Exception:
+            return 0
+
+    def _apply_tempo(self, exercise: VocalExercise) -> VocalExercise:
+        """确保练习对象的 tempo 与 UI 旋钮一致。
+
+        伴奏引擎、可视化器和评分引擎共用同一份练习对象，
+        tempo 必须统一才能保证标注条、钢琴音、音符时长对齐。
+        """
+        spin_tempo = self._tempo_spin.value()
+        if exercise.tempo != spin_tempo:
+            import copy
+            ex = copy.copy(exercise)
+            ex.tempo = spin_tempo
+            print(f"[Panel] tempo 覆盖: {exercise.tempo} → {spin_tempo} BPM")
+            return ex
+        return exercise
+
+    def _sync_tempo_to_exercise(self, exercise: VocalExercise) -> None:
+        """切换练习时将 UI 旋钮同步到练习的默认 tempo。"""
+        if self._tempo_spin.value() != exercise.tempo:
+            self._tempo_spin.blockSignals(True)
+            try:
+                self._tempo_spin.setValue(exercise.tempo)
+            finally:
+                self._tempo_spin.blockSignals(False)
+
     def _on_key_changed(self, key: str):
-        """调性变化时刷新练习预览。"""
+        """调性或八度变化时刷新练习预览。"""
         self._preview_current_exercise()
 
     def _on_volume_changed(self, value: int):
@@ -642,18 +747,20 @@ class TrainingPanel(QWidget):
         if not ex_base:
             return
 
-        # 生成当前调性的练习
+        # 生成当前调性和八度的练习
         selected_key = self._key_combo.currentText()
-        ex = generate_exercise_for_key(exercise_id, selected_key) if selected_key != "C" else ex_base
+        octave_shift = self._get_octave_shift()
+        ex = generate_exercise_for_key(exercise_id, selected_key, octave_shift=octave_shift) if (selected_key != "C" or octave_shift != 0) else ex_base
         if not ex:
             return
 
-        tempo = self._tempo_spin.value()
+        # 应用 UI tempo 确保试听速度与标注条预览一致
+        ex = self._apply_tempo(ex)
 
         # 加载到试听引擎（全程伴奏模式）
         self._audition_engine.load_exercise(
             ex, mode=AccompanimentMode.CONTINUOUS,
-            is_first_attempt=True, tempo_override=tempo,
+            is_first_attempt=True, tempo_override=ex.tempo,
         )
         self._audition_engine.start()
 
@@ -839,16 +946,23 @@ class TrainingPanel(QWidget):
                 else:
                     self._viz.update_phase("silence")
 
-            # ── 自动结束检测（基于引擎状态，非固定时间缓冲）──
+            # ── 自动结束检测（伴奏播完后给引擎宽限期完成最后的音）──
             accomp_done = not self._accompaniment.is_playing
             engine_done = self._engine.current_state in (
                 TrainingState.FINISHED, TrainingState.IDLE
             )
-            engine_near_done = (
-                not engine_done
-                and pos >= total - 0.5
-                and self._engine.current_note_index >= self._engine.total_notes - 1
-            )
+
+            # 宽限期管理：伴奏停播后不立即强退，等引擎自然完成或超时再收尾
+            if not hasattr(self, '_accomp_done_time'):
+                self._accomp_done_time: Optional[float] = None
+            if accomp_done and self._accomp_done_time is None:
+                self._accomp_done_time = time.time()
+                print(f"[AutoEnd] 伴奏已停播，等待引擎完成最后音符 (当前 note={self._engine.current_note_index}/{self._engine.total_notes})")
+            elif not accomp_done:
+                self._accomp_done_time = None
+
+            grace_timeout = 3.0  # 伴奏停播后最多等3秒让最后音符自然完成
+            grace_elapsed = (time.time() - self._accomp_done_time) if self._accomp_done_time else 0.0
 
             # 定期日志（每 60 帧 ~3 秒一次）
             if not hasattr(self, '_auto_end_dbg'):
@@ -858,14 +972,19 @@ class TrainingPanel(QWidget):
                 print(f"[AutoEnd] tick#{self._auto_end_dbg} | "
                       f"pos={pos:.1f}s total={total:.1f}s "
                       f"accomp_done={accomp_done} engine_state={self._engine.current_state.name} "
-                      f"note={self._engine.current_note_index}/{self._engine.total_notes}")
+                      f"note={self._engine.current_note_index}/{self._engine.total_notes}"
+                      + (f" grace={grace_elapsed:.1f}s" if self._accomp_done_time else ""))
 
-            if accomp_done and (engine_done or engine_near_done):
-                print(f"[AutoEnd] 触发自动结束 | pos={pos:.1f}s total={total:.1f}s "
-                      f"engine_done={engine_done} engine_near_done={engine_near_done}")
-                if not engine_done:
+            if accomp_done and self._accomp_done_time is not None:
+                if engine_done:
+                    print(f"[AutoEnd] 引擎已自然完成 → 触发自动结束")
+                    if self._is_running:
+                        self._stop_exercise()
+                        self._viz.update_phase("finished")
+                elif grace_elapsed >= grace_timeout:
+                    print(f"[AutoEnd] 宽限期超时 ({grace_timeout:.0f}s)，强制结束引擎")
                     self._engine.finish_exercise()
-                if self._is_running:
-                    self._stop_exercise()
-                    self._viz.update_phase("finished")
+                    if self._is_running:
+                        self._stop_exercise()
+                        self._viz.update_phase("finished")
 

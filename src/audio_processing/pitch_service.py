@@ -153,15 +153,257 @@ class PitchDetectionService:
             elif mode.endswith("BALANCED"):
                 yin_thr = max(0.10, yin_thr - 0.01)
 
+            # ── 多候选搜集：低于阈值区段 + 最佳超阈值局部谷点 ──
+            # 假声/头声时基频很弱，真基频周期 τ=T 的 CMNDF 可能永不跌破
+            # 阈值，导致 τ=T 不在候选池中。把超阈值但形态良好的局部谷点
+            # 也纳入候选，再靠自相关 + 谐波乘积谱（HPS）综合评分甄别。
+            candidates = []  # [(tau, cmndf_val), ...]
+            seen_tau: set = set()
+
+            # 阶段 A：低于阈值区段（同前）
             search = cmndf[tau_min:tau_max + 1]
             below = np.where(search < yin_thr)[0]
             if below.size > 0:
-                start = int(below[0])
-                s0 = tau_min + start
-                s1 = min(tau_max, s0 + 8)
+                region_start = int(below[0])
+                for i in range(1, len(below)):
+                    if below[i] > below[i-1] + 6:
+                        region_end = int(below[i-1])
+                        s0 = tau_min + region_start
+                        s1 = min(tau_max, tau_min + region_end + 8)
+                        loc = int(np.argmin(cmndf[s0:s1 + 1]))
+                        cand = s0 + loc
+                        if tau_min <= cand <= tau_max:
+                            candidates.append((cand, float(cmndf[cand])))
+                            seen_tau.add(cand)
+                        region_start = int(below[i])
+                region_end = int(below[-1])
+                s0 = tau_min + region_start
+                s1 = min(tau_max, tau_min + region_end + 8)
                 loc = int(np.argmin(cmndf[s0:s1 + 1]))
-                cand_tau = s0 + loc
+                cand = s0 + loc
+                if tau_min <= cand <= tau_max:
+                    candidates.append((cand, float(cmndf[cand])))
+                    seen_tau.add(cand)
+
+            # 阶段 B：超阈值局部谷点（补齐假声/头声时缺失的真基频候选）
+            # 在 tau_min..tau_max 范围内扫一遍 CMNDF，记录所有局部
+            # 最小值点，取 CMNDF 最浅的前 20 个（与已存在的去重）。
+            local_minima = []
+            prev_val = cmndf[tau_min]
+            prev_tau = tau_min
+            rising = False
+            for tau_i in range(tau_min + 1, tau_max):
+                cur = cmndf[tau_i]
+                if cur < prev_val:
+                    rising = False
+                elif cur > prev_val and not rising:
+                    # 刚经过一个局部最小值
+                    if prev_tau not in seen_tau:
+                        local_minima.append((prev_tau, float(prev_val)))
+                    rising = True
+                prev_val = cur
+                prev_tau = tau_i
+            # 按 CMNDF 值排序（越低越好），取前 20 个
+            local_minima.sort(key=lambda x: x[1])
+            for tau_i, cmndf_val_i in local_minima[:20]:
+                if tau_min <= tau_i <= tau_max and tau_i not in seen_tau:
+                    candidates.append((tau_i, cmndf_val_i))
+                    seen_tau.add(tau_i)
+
+            # ── 阶段 C：时序连续邻域先验 ──
+            # 假声换音时 τ_prev 单点可能已失效，注入 τ_prev 周围 ±10%
+            # 范围内的局部谷点作为候选，确保换音后的真基频也在池中。
+            _prev_tau = float(getattr(self, '_yin_prev_tau_hat', 0.0) or 0.0)
+            if tau_min <= int(_prev_tau) <= tau_max:
+                # 注入 τ_prev 本身
+                if int(_prev_tau) not in seen_tau:
+                    candidates.append((int(_prev_tau), float(cmndf[int(_prev_tau)])))
+                    seen_tau.add(int(_prev_tau))
+                # 注入 τ_prev 邻域内的局部谷点（覆盖换音 ±10%）
+                _neighbor_lo = max(tau_min, int(_prev_tau * 0.90))
+                _neighbor_hi = min(tau_max, int(_prev_tau * 1.10))
+                for tau_i, cmndf_val_i in local_minima:
+                    if _neighbor_lo <= tau_i <= _neighbor_hi and tau_i not in seen_tau:
+                        candidates.append((tau_i, cmndf_val_i))
+                        seen_tau.add(tau_i)
+
+            # ── 阶段 D：频谱峰候选（假声高音区关键补充）──
+            # G4 及以上假声基频极弱，CMNDF 在真 τ 处可能既不低于阈值、
+            # 也不形成局部谷点（仅为上升曲线上的拐点），导致真 τ 永不
+            # 进入候选池。但基频在 FFT 量谱中始终存在（虽弱），通过
+            # 量谱峰提取可将其作为候选纳入，再靠 HPS 综合评分甄别。
+            #
+            # v9.3 简化：不设严苛的峰值阈值（原中位数×1.30 对弱基频太严），
+            # 改为极宽松阈值（均值×0.35），重点扫描低频区（≤880Hz，基频
+            # 不会超过此范围）。取量值前 6 峰 + 最低频峰，确保弱基频不漏。
+            # 预计算量谱（后续 HPS 评分也会复用）
+            mag_spec = np.abs(spec)
+            mean_mag = float(np.mean(mag_spec[1:]))  # 排除DC
+            n_bins = len(mag_spec)
+            # 只扫描低频区（基频 ≤880Hz，更高频的峰必然是谐波）
+            _spec_bin_lo = max(1, int(ui_min_f * float(nfft) / sr))
+            _spec_scan_hi = min(n_bins - 1, int(880.0 * float(nfft) / sr))
+            _spec_peaks = []  # [(freq_hz, magnitude), ...]
+            if _spec_scan_hi > _spec_bin_lo + 3:
+                # 极宽松阈值：均值×0.35，假声弱基频也能通过
+                _spec_threshold = mean_mag * 0.35
+                for _bi in range(_spec_bin_lo + 1, _spec_scan_hi):
+                    _mv = mag_spec[_bi]
+                    if _mv <= _spec_threshold:
+                        continue
+                    if _mv > mag_spec[_bi - 1] and _mv > mag_spec[_bi + 1]:
+                        _freq_hz = float(_bi) * sr / float(nfft)
+                        _spec_peaks.append((_freq_hz, float(_mv)))
+                # 按量值降序排列，取前 6 个峰
+                _spec_peaks.sort(key=lambda x: x[1], reverse=True)
+                _top_peaks = _spec_peaks[:6]
+                # 确保最低频峰也被纳入（假声基频量值低但频率最低）
+                if _spec_peaks:
+                    _lowest_peak = min(_spec_peaks, key=lambda x: x[0])
+                    _already_in = any(abs(_pf - _lowest_peak[0]) < 1.0 for _pf, _ in _top_peaks)
+                    if not _already_in:
+                        _top_peaks.append(_lowest_peak)
+                # 将频谱峰转为 τ 候选
+                for _pf, _ in _top_peaks:
+                    _tau_from_spec = int(sr / _pf)
+                    if tau_min <= _tau_from_spec <= tau_max and _tau_from_spec not in seen_tau:
+                        candidates.append((_tau_from_spec, float(cmndf[_tau_from_spec])))
+                        seen_tau.add(_tau_from_spec)
+
+            # ── 谐波一致性验证 + 综合评分 ──
+            # mag_spec 已在阶段 D 预计算，此处直接复用。
+            if len(candidates) > 1:
+
+                scored = []
+                for cand_tau_i, cmndf_val_i in candidates:
+                    idx = int(cand_tau_i)
+                    # 自相关验证
+                    if 0 < idx < len(ac):
+                        ac_norm = float(ac[idx]) / max(float(ac[0]), 1e-12)
+                    else:
+                        ac_norm = 0.0
+
+                    # 谐波乘积谱（HPS）：真基频的 f,2f,3f,4f 都对应
+                    # 频谱峰，而误锁候选（如 τ=3T/4）仅个别谐波对齐。
+                    f0_cand = float(sr) / max(float(cand_tau_i), 1e-9)
+                    hps_energy = 0.0
+                    n_harm = 0
+                    _f0_peak_energy = 0.0  # 候选基频处的谱能量（用于次谐波惩罚）
+                    # 自适应搜索窗：FFT 分辨率粗（>20Hz/bin）时用 ±1 窗，
+                    # 避免跨谐波污染；分辨率高时用 ±2 窗捕获频率微移。
+                    bin_width = float(sr) / float(nfft)
+                    half_win = 1 if bin_width > 20.0 else 2
+                    for k in range(1, 5):
+                        hf = f0_cand * float(k)
+                        if hf >= sr * 0.48:
+                            break
+                        bin_idx = int(hf * float(nfft) / sr)
+                        lo = max(0, bin_idx - half_win)
+                        hi = min(n_bins - 1, bin_idx + half_win)
+                        if lo < hi:
+                            _peak = float(np.max(mag_spec[lo:hi + 1]))
+                            hps_energy += _peak
+                            n_harm += 1
+                            if k == 1:
+                                _f0_peak_energy = _peak
+                    hps_norm = (hps_energy / max(n_harm, 1)) / max(mean_mag, 1e-12)
+
+                    # 综合评分 = CMNDF + 自相关奖励 + HPS 奖励 + 长周期偏好 + 时序先验
+                    cmndf_term = cmndf_val_i                    # 越低越好
+                    ac_term = -ac_norm * 0.30                   # 越高越好→取负
+                    # ── 高音区自适应 HPS 权重 ──
+                    # 假声/头声 (>280Hz) 基频弱，CMNDF 谷浅不可靠；
+                    # HPS 直接度量频谱谐波对齐度，对假声更稳健。
+                    # 权重从 0.45 (低音) 平滑升至 0.65 (高音)。
+                    _f0_for_weight = float(sr) / max(float(cand_tau_i), 1e-9)
+                    if _f0_for_weight < 220.0:
+                        _hps_weight = 0.45
+                    elif _f0_for_weight < 280.0:
+                        _hps_weight = 0.45 + 0.10 * (_f0_for_weight - 220.0) / 60.0
+                    elif _f0_for_weight < 420.0:
+                        _hps_weight = 0.55 + 0.10 * (_f0_for_weight - 280.0) / 140.0
+                    else:
+                        _hps_weight = 0.65  # >420Hz 强假声/头声，CMNDF 最不可靠
+                    hps_term = -hps_norm * _hps_weight          # HPS越高越像真基频
+                    tau_term = -(float(cand_tau_i) / float(tau_max)) * 0.12
+                    # ── 低频谱峰惩罚：防止所有谐波误锁（3/2、4/3、2/1 等）──
+                    # 原次谐波检查仅覆盖 f0/2（八度误锁），漏掉了：
+                    #   τ=2T/3 → f0=1.5×真基频（D4→A4, 完全五度）
+                    #   τ=3T/4 → f0=1.33×真基频（D4→G4, 完全四度）
+                    # 通用方案：扫描 [f0×0.50, f0×0.90] 区间，若存在显著谱峰，
+                    # 说明候选频率下方有更低的基频 → 候选是谐波 → 惩罚。
+                    # 真基频下方无显著能量（最低检测频率以下）→ 不受惩罚。
+                    _lower_peak_penalty = 0.0
+                    _lower_lo_hz = f0_cand * 0.50
+                    _lower_hi_hz = f0_cand * 0.90
+                    _lower_lo_bin = int(_lower_lo_hz * float(nfft) / sr)
+                    _lower_hi_bin = int(_lower_hi_hz * float(nfft) / sr)
+                    _lower_lo_bin = max(2, _lower_lo_bin)
+                    _lower_hi_bin = min(n_bins - 2, _lower_hi_bin)
+                    if _lower_hi_bin > _lower_lo_bin + 2 and _f0_peak_energy > 0:
+                        _lower_max_mag = float(np.max(mag_spec[_lower_lo_bin:_lower_hi_bin + 1]))
+                        _lower_ratio = _lower_max_mag / max(_f0_peak_energy, 1e-12)
+                        if _lower_ratio > 0.25:
+                            # 下方有显著谱峰 → 此候选极可能是谐波
+                            _lower_peak_penalty = min(_lower_ratio * 0.55, 0.60)
+                    # 时序先验：接近前帧胜出者获得奖励（变化越小越可信）
+                    # ═══════════════════════════════════════════════════════
+                    # 关键：根据前帧质量调节先验权重，防止假声"错误锁定"正反馈。
+                    # 假声基频弱 → CMNDF 高 → 前帧选择可能错误。
+                    # 若前一帧是低质量选择，沿用强先验会把错误放大到当前帧，
+                    # 形成 τ=3T/4 持续锁定的恶性循环。
+                    #
+                    # 质量门限:
+                    #   prev_cmndf < 0.20 → full_prior (强周期性，可信)
+                    #   prev_cmndf < 0.35 → half_prior (中等，减半防止错误传播)
+                    #   prev_cmndf >=0.35 → zero_prior (假声弱基频，时序不可信)
+                    # ═══════════════════════════════════════════════════════
+                    _prev_quality = float(getattr(self, '_yin_prev_cmndf_quality', 0.0) or 0.0)
+                    if _prev_quality < 0.20:
+                        _prior_full, _prior_half = -0.40, -0.25
+                    elif _prev_quality < 0.35:
+                        _prior_full, _prior_half = -0.20, -0.12  # 减半
+                    else:
+                        _prior_full, _prior_half = 0.0, 0.0       # 零先验，全靠频谱
+                    temporal_term = 0.0
+                    if _prev_tau > 0:
+                        tau_diff = abs(float(cand_tau_i) - _prev_tau) / max(_prev_tau, 1e-9)
+                        if tau_diff < 0.04:
+                            temporal_term = _prior_full  # ±4% 内
+                        elif tau_diff < 0.08:
+                            temporal_term = _prior_half  # ±8% 内
+                    total = (cmndf_term + ac_term + hps_term + tau_term
+                             + temporal_term + _lower_peak_penalty)
+                    scored.append((total, cand_tau_i))
+
+                scored.sort(key=lambda x: x[0])
+                cand_tau = scored[0][1]
+                # ── 后选谐波子倍频验证 ──
+                # HPS 综合评分后，验证胜出者是否可能是谐波（3/2、4/3、2/1）。
+                # 若胜出者 f0 的 2/3、3/4、1/2 倍频处存在候选且得分接近，
+                # 优先选择低频候选（真基频）。这对于 D4→A4 (3/2 误锁) 关键。
+                _f0_winner = float(sr) / max(float(cand_tau), 1e-9)
+                _best_score = scored[0][0]
+                for _sub_ratio in (2.0 / 3.0, 3.0 / 4.0, 1.0 / 2.0):
+                    _target_f0 = _f0_winner * _sub_ratio
+                    if _target_f0 < ui_min_f:
+                        continue
+                    _target_tau = float(sr) / _target_f0
+                    # 在前 6 名中寻找接近目标频率的候选
+                    for _score_i, _tau_i in scored[:6]:
+                        _cand_f0 = float(sr) / max(float(_tau_i), 1e-9)
+                        if abs(_cand_f0 - _target_f0) / max(_target_f0, 1e-9) < 0.06:
+                            # 子倍频候选得分与胜出者差距在 0.35 以内 → 优先低频
+                            if _score_i - _best_score < 0.35:
+                                cand_tau = int(_tau_i)
+                            break
+                    else:
+                        continue
+                    break
+            elif len(candidates) == 1:
+                cand_tau = candidates[0][0]
             else:
+                # 没有任何候选：回退到全局 CMNDF 最小点
                 cand_tau = int(np.argmin(cmndf[tau_min:tau_max + 1]) + tau_min)
 
             if not (tau_min <= cand_tau <= tau_max):
@@ -180,6 +422,22 @@ class PitchDetectionService:
             f0 = float(sr / tau_hat)
             if not (ui_min_f <= f0 <= ui_max_f * 1.02):
                 return 0.0, 0.0
+            # ── 存储本帧胜出周期 + 质量标记，供下一帧时序先验使用 ──
+            self._yin_prev_tau_hat = float(tau_hat)
+            # 记录本帧胜出者的 CMNDF 值，用于下一帧调节时序先验权重：
+            #   cmndf < 0.20 → 高置信 → 全量时序先验
+            #   cmndf < 0.35 → 中置信 → 减半时序先验（防止错误锁定）
+            #   cmndf >=0.35 → 低置信 → 零时序先验（假声弱基频常见）
+            self._yin_prev_cmndf_quality = float(cmndf[cand_tau])
+            # ── 诊断：每 40 帧输出（含候选质量信息）──
+            if not hasattr(self, '_yin_diag_counter'):
+                self._yin_diag_counter = 0
+            self._yin_diag_counter += 1
+            if self._yin_diag_counter % 40 == 0:
+                n_cand = len(candidates)
+                quality_tag = "HI" if cmndf[cand_tau] < 0.20 else ("MID" if cmndf[cand_tau] < 0.35 else "LO")
+                print(f"[YIN-Diag] #{self._yin_diag_counter} nCand={n_cand} "
+                      f"out={f0:.0f}Hz τ={tau_hat:.1f} cmndf={cmndf[cand_tau]:.3f}[{quality_tag}]")
             # 置信度：来自 CMNDF 谷深
             # cmndf 值近 0 → 强周期性 → 高置信；近 1 → 弱/无周期 → 低置信
             cmndf_val = float(cmndf[cand_tau])

@@ -3776,6 +3776,50 @@ class IntegratedAudioProcessor(QThread):
             pass
         print(f"🔄 重置音高分析状态完成: {reason}")
 
+    def _bridge_monitoring_to_recording_state(self):
+        """将监听态（_mon_*）的音高状态机历史桥接到录音态（非前缀）属性。
+
+        练声模式调用 start_recording() 后 preview_only 从 True→False，
+        音高状态机从 _mon_display_pitch_prev 切换到 _display_pitch_prev。
+        若不桥接，录音态可能使用冷启动（0.0）或过期历史，导致前几帧谐波/八度误判。
+        """
+        _bridge_map = {
+            # 核心音高历史
+            '_mon_display_pitch_prev': '_display_pitch_prev',
+            '_mon_display_pitch_prev_t': '_display_pitch_prev_t',
+            '_mon_display_pitch_jump_candidate': '_display_pitch_jump_candidate',
+            '_mon_display_pitch_jump_count': '_display_pitch_jump_count',
+            '_mon_display_register_transition_until': '_display_register_transition_until',
+            '_mon_display_head_voice_anchor_hz': '_display_head_voice_anchor_hz',
+            '_mon_display_head_voice_anchor_until': '_display_head_voice_anchor_until',
+            '_mon_display_head_voice_entry_until': '_display_head_voice_entry_until',
+            # 换气/边界检测
+            '_mon_bj_streak': '_bj_streak',
+            '_mon_bj_last_f0': '_bj_last_f0',
+            '_mon_bj_last_t': '_bj_last_t',
+            '_mon_breath_suppress_until': '_breath_suppress_until',
+            '_mon_prevoice_wait_frames': '_prevoice_wait_frames',
+            '_mon_last_drawn_t': '_last_drawn_t',
+            '_mon_last_drawn_f0': '_last_drawn_f0',
+            # 假声置信度 EMA
+            '_mon_falsetto_confidence': '_falsetto_confidence',
+            # 平滑/稳定参考
+            '_mon_last_stable_frequency': '_last_stable_frequency',
+            '_mon_freq_smooth': '_freq_smooth',
+            '_mon_last_frame_rms': '_last_frame_rms',
+        }
+        bridged = 0
+        for mon_attr, rec_attr in _bridge_map.items():
+            try:
+                val = getattr(self, mon_attr, None)
+                if val is not None:
+                    setattr(self, rec_attr, val)
+                    bridged += 1
+            except Exception:
+                pass
+        if bridged > 0:
+            print(f"[Bridge] 监听→录音状态桥接完成: {bridged}/{len(_bridge_map)} 属性")
+
     def _current_pitch_analysis_time(self) -> float:
         try:
             override = getattr(self, '_analysis_time_override', None)
@@ -3796,9 +3840,120 @@ class IntegratedAudioProcessor(QThread):
         if raw_frequency <= 0:
             return 0.0
 
-        # ── Tier 2: 短窗口中值预滤波 ──
-        # 维护最近 N 个 raw 频率，取中值剔除孤立离群点（气声尖峰）
-        # 中值滤波是 Praat / WORLD / STRAIGHT 等专业 pitch tracker 的标配
+        # ── Tier 2: 速度门限保持（必须在滤波之前）──
+        # 中值滤波会将 YIN 的 286→445Hz 突变平滑为渐进爬升(286→308→350→380→445)，
+        # 每帧变化<25%→门限永不触发。必须先对原始 YIN 输出做门限检测，
+        # 拦截物理不可能的跳变，再对门限后信号做中值滤波清除残余噪声。
+        #
+        # v9.2 强化：高音区 (>280Hz, 假声/头声域) YIN 可靠性下降，CMNDF 谷浅、
+        # 谐波误锁频繁。采用三层加固：
+        #   1) 确认帧数 3→8（放行前需更长时间的一致性验证）
+        #   2) 追踪速率 0.30→0.12（减慢对 raw 的跟随，防止渐进爬升越过门限）
+        #   3) 低置信度冻结（YIN conf<0.45 时不追踪，保持当前值）
+        _vg_freq_name = ('_mon_vg_confirmed_freq' if preview_only else '_vg_confirmed_freq')
+        _vg_cnt_name = ('_mon_vg_jump_confirm_cnt' if preview_only else '_vg_jump_confirm_cnt')
+        _vg_pend_name = ('_mon_vg_pending_freq' if preview_only else '_vg_pending_freq')
+        if not hasattr(self, _vg_freq_name):
+            setattr(self, _vg_freq_name, raw_frequency)
+            setattr(self, _vg_cnt_name, 0)
+            setattr(self, _vg_pend_name, 0.0)
+            setattr(self, '_vg_down_cnt', 0)
+        _vg_confirmed = float(getattr(self, _vg_freq_name))
+        _vg_confirm_cnt = int(getattr(self, _vg_cnt_name))
+        _vg_pending = float(getattr(self, _vg_pend_name))
+
+        # 高音区判定：>280Hz 进入假声/头声域，YIN 可靠性下降
+        _vg_highest_freq = max(_vg_confirmed, raw_frequency)
+        _vg_high_register = bool(_vg_highest_freq > 280.0)
+        _vg_very_high_register = bool(_vg_highest_freq > 420.0)
+        # 高音区需更多确认帧（8 vs 3），防止 3 帧谐波误锁即放行
+        _vg_required_confirm = 10 if _vg_very_high_register else (8 if _vg_high_register else 3)
+        # 高音区追踪速率更慢（0.12 vs 0.30），人声在高音区变化更小
+        _vg_track_rate = 0.08 if _vg_very_high_register else (0.12 if _vg_high_register else 0.30)
+        # 每帧最大变化百分比（人声物理极限 ~0.5%/帧，越高音区越保守）
+        if _vg_very_high_register:
+            _vg_max_per_frame_ratio = 1.004   # >420Hz: 0.4%/帧
+        elif _vg_high_register:
+            _vg_max_per_frame_ratio = 1.007   # 280-420Hz: 0.7%/帧
+        else:
+            _vg_max_per_frame_ratio = 1.025   # <280Hz: 2.5%/帧
+
+        if _vg_confirmed > 100 and raw_frequency > 100:
+            ratio = raw_frequency / _vg_confirmed
+            if ratio > 1.25:
+                # ── 检测到物理不可能的向上跳变 → 阻挡 ──
+                # 收紧 pending 容忍窗：高音区用 4% (原 6%)
+                _pending_tol = 0.04 if _vg_high_register else 0.06
+                if abs(raw_frequency - _vg_pending) < raw_frequency * _pending_tol:
+                    _vg_confirm_cnt += 1
+                    if _vg_confirm_cnt >= _vg_required_confirm:
+                        # 长时间一致性验证通过，接受新的频率
+                        _vg_confirmed = raw_frequency
+                        _vg_confirm_cnt = 0
+                        _vg_pending = 0.0
+                        # 清除下行计数器
+                        _vg_down_cnt = 0
+                else:
+                    _vg_pending = raw_frequency
+                    _vg_confirm_cnt = 1
+                raw_frequency = _vg_confirmed  # 保持门限值
+            elif ratio < 0.82:
+                # ── 向下跳跃 ≥3.5 半音 → 立即跟随 ──
+                # YIN 谐波误锁几乎总是向上（τ=3T/4、τ=2T/3 等），
+                # 向下大跳极大概率是真换音，不需要确认。
+                _vg_confirmed = raw_frequency
+                _vg_confirm_cnt = 0
+                _vg_pending = 0.0
+                _vg_down_cnt = 0
+            else:
+                # ── 正常追踪区（变化 <25% 向上 或 <18% 向下）──
+                # 核心不对称性：YIN 谐波误锁总是向上，因此：
+                #   - 向上变化 → 保守追踪（慢速+封顶，防止误锁渐进爬升）
+                #   - 向下变化 → 快速追踪（×3 速率，真换音向下不该被拖慢）
+                _is_downward = bool(raw_frequency < _vg_confirmed)
+                # 基础追踪速率
+                _vg_eff_track_rate = _vg_track_rate
+                if _is_downward:
+                    # 向下追踪加速 3×（YIN 误锁极少向下，安全加速）
+                    _vg_eff_track_rate = min(_vg_track_rate * 3.0, 0.55)
+                # 置信度门控：YIN 低置信时冻结（无论是向上还是向下）
+                if float(confidence) < 0.45:
+                    _vg_eff_track_rate = 0.0  # 冻结，不追踪
+                elif float(confidence) < 0.60:
+                    _vg_eff_track_rate = _vg_eff_track_rate * 0.4  # 半信半疑，减速
+                if _vg_eff_track_rate > 0.0:
+                    _vg_new = _vg_confirmed + (raw_frequency - _vg_confirmed) * _vg_eff_track_rate
+                    # 每帧变化幅度封顶：仅对向上追踪封顶
+                    # 向下追踪不加封顶（换音下行不应被限制速度）
+                    if not _is_downward:
+                        _vg_max_change = _vg_confirmed * (_vg_max_per_frame_ratio - 1.0)
+                        if _vg_new > _vg_confirmed + _vg_max_change:
+                            _vg_new = _vg_confirmed + _vg_max_change
+                    _vg_confirmed = _vg_new
+                _vg_confirm_cnt = 0
+                _vg_pending = 0.0
+                # ── 持续下行检测：中等幅度的下行若持续多帧 → 加速跳转 ──
+                # 例如 G4→E4 (392→330, ratio=0.84)，不满足 0.82 阈值，
+                # 但若 raw 持续低于 confirmed 6+ 帧，说明是真换音而非噪声。
+                if _is_downward:
+                    _vg_down_cnt = getattr(self, '_vg_down_cnt', 0) + 1
+                else:
+                    _vg_down_cnt = 0
+                setattr(self, '_vg_down_cnt', _vg_down_cnt)
+                if _vg_down_cnt >= 6:
+                    # 持续 6 帧 (48ms@125fps) 下行 → 直接跳到 raw
+                    _vg_confirmed = raw_frequency
+                    _vg_down_cnt = 0
+                    setattr(self, '_vg_down_cnt', 0)
+        elif _vg_confirmed <= 100:
+            _vg_confirmed = float(raw_frequency)
+            setattr(self, '_vg_down_cnt', 0)
+        setattr(self, _vg_freq_name, _vg_confirmed)
+        setattr(self, _vg_cnt_name, _vg_confirm_cnt)
+        setattr(self, _vg_pend_name, _vg_pending)
+
+        # ── Tier 2.5: 中值预滤波（在门限后运行）──
+        # 门限已拦截 YIN 谐波误锁尖峰，中值滤波清理残余的孤立离群点。
         _median_buf_name = '_mon_raw_f0_median_buf' if preview_only else '_raw_f0_median_buf'
         if not hasattr(self, _median_buf_name):
             setattr(self, _median_buf_name, [])
@@ -3807,7 +3962,6 @@ class IntegratedAudioProcessor(QThread):
         _median_window = int(getattr(self, '_pitch_median_window', 5))
         while len(_median_buf) > _median_window:
             _median_buf.pop(0)
-        # 至少积累 3 帧后才启用中值滤波
         if len(_median_buf) >= 3:
             _sorted = sorted(_median_buf)
             raw_frequency = float(_sorted[len(_sorted) // 2])
@@ -3910,28 +4064,27 @@ class IntegratedAudioProcessor(QThread):
                 setattr(self, fs_name, raw_frequency)
                 setattr(self, ls_name, raw_frequency)
                 return raw_frequency
-            # 音符跳跃断裂检测：快速大幅跳变（非滑音/转音）直接复位，避免"山峰斜坡"
+            # ── YIN 谐波误锁已在 pitch_service.py 通过 HPS+时序先验处理 ──
+            # 此处的后处理谐波修正已移除（v6 结论：频率比无法可靠区分
+            # YIN 误锁与合法音高变化，ref 卡死后反而误修所有高音）。
+            # 低百分位滤波器（33rd percentile）替代中值滤波作为最后防线。
+            _yin_glitch_upward = False
+
+            # 大幅下跳直接复位（防止高位残留拖慢回落）
+            # 上跳由速度门限处理，此处仅处理下行断裂
             is_note_jump = False
             try:
-                if (not is_oscillating) and last_raw > 0 and _last_stable_frequency > 0:
+                if (not is_oscillating and last_raw > 0 and _last_stable_frequency > 0
+                    and raw_frequency < _last_stable_frequency * 0.45):
                     dt_jump = float(now_t) - float(last_rt)
-                    if 0.005 < dt_jump <= 0.18:
-                        semi_jump = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
-                        rate_jump = semi_jump / max(dt_jump, 1e-6)
-                        # 极高变化率 → 音符跳跃；滑音/转音通常 ≤15 半音/s
-                        if rate_jump >= 22.0 and semi_jump >= 1.2:
-                            is_note_jump = True
-                        elif rate_jump >= 18.0 and semi_jump >= 1.8:
-                            is_note_jump = True
-                        # 跨越无音高间隙的跳跃：间距较宽但变化量巨大
-                        if dt_jump >= 0.03 and semi_jump >= 3.5 and rate_jump >= 14.0:
-                            is_note_jump = True
+                    semi_jump = abs(12.0 * np.log2(max(raw_frequency, 1e-9) / max(last_raw, 1e-9)))
+                    if dt_jump < 0.15 and semi_jump >= 4.0:
+                        is_note_jump = True
             except Exception:
                 pass
             if is_note_jump:
                 setattr(self, fs_name, raw_frequency)
                 setattr(self, ls_name, raw_frequency)
-                # 清空振荡历史防止跨音符残余
                 try:
                     setattr(self, '_pitch_osc_history', [])
                 except Exception:
@@ -4147,11 +4300,48 @@ class IntegratedAudioProcessor(QThread):
     ) -> float:
         # 线程安全的显示模式检查：用缓存的纯字符串属性代替 Qt GUI 调用。
         cached_mode = getattr(self, '_cached_display_mode', '普通模式')
+        # 🎯 练声模式：跳过激进谐波下拉修正，直接信任 smooth_frequency
+        # 状态机的 onset_like / harmonic_like 修正逻辑在训练模式下容易误判：
+        # 用户按固定旋律换音时，频率变化被当作"谐波跳变"拉到低八度，
+        # 一旦拉错，_display_pitch_prev 被污染，后续帧恶性循环。
+        # smooth_frequency 已经过 YIN + 中值滤波，训练模式够用。
+        force_full = getattr(self, '_force_full_display_processing', False)
         if not hasattr(self, '_dcf_logged'):
             self._dcf_logged = True
-            print(f"[DCF] _cached_display_mode='{cached_mode}' — "
-                  f"{'完整处理' if cached_mode == '普通模式' else '简化处理'}")
+            print(f"[DCF] _cached_display_mode='{cached_mode}' force_full={force_full} — "
+                  f"{'训练直通' if force_full else ('完整处理' if cached_mode == '普通模式' else '简化处理')}")
+        if force_full:
+            # 训练模式：用 smooth_frequency 直通，同时更新状态历史保持连续性
+            prev_name = '_mon_display_pitch_prev' if preview_only else '_display_pitch_prev'
+            prev_t_name = '_mon_display_pitch_prev_t' if preview_only else '_display_pitch_prev_t'
+            try:
+                now_t = self._current_pitch_analysis_time()
+                setattr(self, prev_name, float(smooth_frequency))
+                setattr(self, prev_t_name, float(now_t))
+            except Exception:
+                pass
+            return float(smooth_frequency)
         if cached_mode != "普通模式":
+            return float(smooth_frequency)
+
+        # ── 速度门限感知：当 smooth_frequency 远低于 raw_frequency 时 ──
+        # _post_process_pitch 的速度门限已检测到 YIN 谐波误锁并压制了 raw。
+        # 速度门限基于物理不变性（人声无法在 8ms 内变 >25%），比本函数内
+        # 任何基于频率比/候选搜索的启发式修正更可靠。
+        # 当门限活跃时，跳过本函数所有谐波修正，直接信任 smooth_frequency。
+        _vg_active = (float(smooth_frequency) > 200
+                      and float(raw_frequency) > float(smooth_frequency) * 1.15)
+        if _vg_active:
+            raw_frequency = float(smooth_frequency)
+            # 更新显示历史后直通返回，跳过后续所有修正逻辑
+            prev_name = '_mon_display_pitch_prev' if preview_only else '_display_pitch_prev'
+            prev_t_name = '_mon_display_pitch_prev_t' if preview_only else '_display_pitch_prev_t'
+            try:
+                now_t = self._current_pitch_analysis_time()
+                setattr(self, prev_name, float(smooth_frequency))
+                setattr(self, prev_t_name, float(now_t))
+            except Exception:
+                pass
             return float(smooth_frequency)
 
         try:
@@ -5430,8 +5620,15 @@ class IntegratedAudioProcessor(QThread):
                 # 进入录音时重置录音计时，确保时长准确
                 self.recording_start_time = time.time()
                 
-                # 🔁 统一：在监听基础上转入录音必须重置音高相关状态，保证与“直接录音”一致
-                self._reset_pitch_analysis_state(reason="monitor->record switch")
+                # 🔁 统一：在监听基础上转入录音必须重置音高相关状态，保证与”直接录音”一致
+                # 🎯 练声模式跳过重置：保留状态机历史，避免前几帧识别错误
+                if not getattr(self, '_preserve_pitch_state', False):
+                    self._reset_pitch_analysis_state(reason="monitor->record switch")
+                else:
+                    print("[DCF] 练声模式 - 保留音高状态，跳过 monitor->record 重置")
+                    # 🎯 桥接监听态→录音态：将 _mon_* 的连续历史复制到录音态属性
+                    # 避免 preview_only 切换后使用冷启动/过期状态的 _display_pitch_prev
+                    self._bridge_monitoring_to_recording_state()
 
                 # 🔧 关键一致性：强制以当前实际输入采样率对齐检测器与帧参数
                 try:
@@ -5514,8 +5711,13 @@ class IntegratedAudioProcessor(QThread):
             self.is_monitoring_only = False  # 录音时不是纯监听模式，需要完整音频处理
             self.enable_pitch_visualization = True
             
-            # 统一重置分析状态
-            self._reset_pitch_analysis_state(reason="fresh record start")
+            # 统一重置分析状态（练声模式跳过：保留状态机历史）
+            if not getattr(self, '_preserve_pitch_state', False):
+                self._reset_pitch_analysis_state(reason="fresh record start")
+            else:
+                print("[DCF] 练声模式 - 保留音高状态，跳过 fresh record 重置")
+                # 🎯 桥接监听态→录音态：将 _mon_* 的连续历史复制到录音态属性
+                self._bridge_monitoring_to_recording_state()
 
             # 设置分析器
             if not self.setup_analyzers():
@@ -70188,6 +70390,21 @@ class IntegratedRecordingInterface(QMainWindow):
                     if freq > 10:  # 有效音高阈值
                         self._training.feed_pitch(freq, conf, rms)
                     self._in_training_mode = True
+                    # 🎯 诊断日志：对比 display_frequency vs f0_smooth（每60帧）
+                    if not hasattr(self, '_train_diag_cnt'):
+                        self._train_diag_cnt = 0
+                    self._train_diag_cnt += 1
+                    if self._train_diag_cnt % 60 == 1:
+                        df = pitch_data.get('display_frequency', 0) or 0
+                        fs = pitch_data.get('f0_smooth', 0) or 0
+                        fr = pitch_data.get('f0_raw', 0) or 0
+                        df_midi = 69.0 + 12.0 * np.log2(max(df, 1e-9) / 440.0) if df > 0 else 0
+                        fs_midi = 69.0 + 12.0 * np.log2(max(fs, 1e-9) / 440.0) if fs > 0 else 0
+                        fr_midi = 69.0 + 12.0 * np.log2(max(fr, 1e-9) / 440.0) if fr > 0 else 0
+                        used = "disp" if df > 0 else ("smooth" if fs > 0 else "raw")
+                        print(f"[TrainDiag] #{self._train_diag_cnt} | used={used} freq={freq:.1f}Hz "
+                              f"disp={df:.1f}Hz({df_midi:.1f}) smooth={fs:.1f}Hz({fs_midi:.1f}) raw={fr:.1f}Hz({fr_midi:.1f}) "
+                              f"rms={rms:.4f} conf={conf:.2f}")
                     # 不 return — 让统计和调试代码继续运行
             except Exception:
                 pass

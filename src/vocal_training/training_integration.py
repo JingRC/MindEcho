@@ -79,6 +79,13 @@ class TrainingIntegration:
             self.attach()
         self._active = True
         self._use_lightweight_pipeline = True
+        # 🎯 强制完整音高状态机处理：训练模式需要谐波纠错，不受 display_mode 影响
+        try:
+            ap = getattr(self._main, 'audio_processor', None)
+            if ap is not None:
+                ap._force_full_display_processing = True
+        except Exception:
+            pass
         # 不重置音高分析状态 — 保留普通模式的状态历史，
         # 让 _compute_normal_mode_display_frequency 的谐波纠错和尖峰过滤
         # 有连续的上下文参考，避免训练模式前几帧识别错误。
@@ -94,6 +101,13 @@ class TrainingIntegration:
         """停用练声模式，恢复普通管线。"""
         self._active = False
         self._use_lightweight_pipeline = False
+        # 恢复 display_mode 对音高状态机的控制
+        try:
+            ap = getattr(self._main, 'audio_processor', None)
+            if ap is not None:
+                ap._force_full_display_processing = False
+        except Exception:
+            pass
 
         # 停止由练声模式启动的录音（不影响用户手动启动的录音）
         if getattr(self, '_training_owns_recording', False):
@@ -168,7 +182,18 @@ class TrainingIntegration:
 
         print("[TrainingIntegration] 启动音频输入（录音路径，不保存文件）...")
         try:
+            # 🎯 训练模式：保留音高分析状态机历史，避免前几帧识别错误
+            # _reset_pitch_analysis_state() 在 start_recording() 中会清空状态，
+            # 通过此标志告诉 start_recording 跳过状态重置。
+            try:
+                ap._preserve_pitch_state = True
+            except Exception:
+                pass
             ok = ap.start_recording(filename=None, should_save=False)
+            try:
+                ap._preserve_pitch_state = False
+            except Exception:
+                pass
             if ok:
                 self._training_owns_recording = True
                 print("[TrainingIntegration] 音频输入已启动")
@@ -178,7 +203,15 @@ class TrainingIntegration:
 
         # 回退：monitoring 路径
         try:
+            try:
+                ap._preserve_pitch_state = True
+            except Exception:
+                pass
             ap.start_monitoring()
+            try:
+                ap._preserve_pitch_state = False
+            except Exception:
+                pass
             ap.is_monitoring_only = False
             ap.enable_pitch_visualization = True
             print("[TrainingIntegration] 已通过监听路径启动")
@@ -245,6 +278,8 @@ class TrainingIntegration:
                 max_streak=score.max_streak,
                 tolerance_level=getattr(self._panel, '_auto_level', 'intermediate'),
                 duration_seconds=round(exercise_dur, 1),
+                avg_frame_hit_rate=round(score.avg_frame_hit_rate, 3),
+                avg_transition_time=round(score.avg_transition_time, 3),
                 date=time.strftime("%Y-%m-%dT%H:%M:%S"),
             )
             # 补全练习名称
