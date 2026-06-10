@@ -116,6 +116,16 @@ class PitchDetectionService:
                 self._hann_len = x.size
             x = (x - float(np.mean(x))) * self._hann
 
+            # ── 预加重滤波（方案B）──
+            # y[n] = x[n] - α·x[n-1], α=0.97 (标准语音预加重值)
+            # 作用：补偿声门源 −6dB/oct 滚降，使频谱更平坦。
+            # 平坦频谱 → 各频率对自相关贡献更均匀 → CMNDF 谷更尖锐。
+            # 对假声/气声：减弱低频呼吸噪声对自相关的污染，保留谐波结构。
+            # 注意：此滤波器在加窗后应用，窗边缘衰减避免了滤波器瞬态。
+            _preemphasis_alpha = 0.97
+            x[1:] = x[1:] - _preemphasis_alpha * x[:-1]
+            x[0] *= (1.0 - _preemphasis_alpha)  # 首个样本平滑衰减
+
             N = x.size
             ui_min_f = float(self.cfg.min_frequency)
             ui_max_f = float(self.cfg.max_frequency)
@@ -270,6 +280,21 @@ class PitchDetectionService:
                         candidates.append((_tau_from_spec, float(cmndf[_tau_from_spec])))
                         seen_tau.add(_tau_from_spec)
 
+            # ── 倒谱分析：用于候选验证 ──
+            # 倒谱 (cepstrum) = IFFT(log|spectrum|)。对周期性声源极鲁棒：
+            # 即使基频在量谱中微弱（假声常见），谐波等间距排列在倒谱中
+            # 仍会在真基频周期 τ=T 处形成单峰。CMNDF 在假声高音区常因
+            # 基频太弱而偏好谐波候选（τ=3T/4 等），倒谱峰可独立纠正。
+            # 计算开销：一次 IFFT + 若干索引查表，可忽略。
+            _eps = 1e-10
+            _log_spec = np.log(np.maximum(mag_spec, _eps))
+            _cepst = np.fft.irfft(_log_spec, n=nfft)
+            _cepst_abs = np.abs(_cepst)
+            # 在有效 τ 范围内取最大倒谱值用于归一化
+            _cepst_roi_end = min(tau_max + 1, len(_cepst_abs))
+            _cepst_roi = _cepst_abs[tau_min:_cepst_roi_end]
+            _cepst_max = float(np.max(_cepst_roi)) if len(_cepst_roi) > 0 else 1.0
+
             # ── 谐波一致性验证 + 综合评分 ──
             # mag_spec 已在阶段 D 预计算，此处直接复用。
             if len(candidates) > 1:
@@ -325,7 +350,7 @@ class PitchDetectionService:
                     else:
                         _hps_weight = 0.65  # >420Hz 强假声/头声，CMNDF 最不可靠
                     hps_term = -hps_norm * _hps_weight          # HPS越高越像真基频
-                    tau_term = -(float(cand_tau_i) / float(tau_max)) * 0.12
+                    tau_term = -(float(cand_tau_i) / float(tau_max)) * 0.15
                     # ── 低频谱峰惩罚：防止所有谐波误锁（3/2、4/3、2/1 等）──
                     # 原次谐波检查仅覆盖 f0/2（八度误锁），漏掉了：
                     #   τ=2T/3 → f0=1.5×真基频（D4→A4, 完全五度）
@@ -346,6 +371,16 @@ class PitchDetectionService:
                         if _lower_ratio > 0.25:
                             # 下方有显著谱峰 → 此候选极可能是谐波
                             _lower_peak_penalty = min(_lower_ratio * 0.55, 0.60)
+                    # ── 倒谱验证项 ──
+                    # 真基频周期 τ=T 在倒谱中应有强峰；谐波候选（τ=3T/4 等）
+                    # 在倒谱中则无对应峰（倒谱只反映真实周期）。
+                    # 权重在高音区更高：CMNDF 越不可靠，倒谱越重要。
+                    _cepst_val = float(_cepst_abs[int(cand_tau_i)]) if int(cand_tau_i) < len(_cepst_abs) else 0.0
+                    _cepst_norm = _cepst_val / max(_cepst_max, 1e-12)
+                    _cepst_weight = 0.25 if _f0_for_weight > 420.0 else (
+                        0.08 if _f0_for_weight < 220.0 else (
+                        0.08 + 0.17 * (_f0_for_weight - 220.0) / 200.0))
+                    cepstral_term = -_cepst_norm * _cepst_weight  # 越高越好→取负
                     # 时序先验：接近前帧胜出者获得奖励（变化越小越可信）
                     # ═══════════════════════════════════════════════════════
                     # 关键：根据前帧质量调节先验权重，防止假声"错误锁定"正反馈。
@@ -373,7 +408,7 @@ class PitchDetectionService:
                         elif tau_diff < 0.08:
                             temporal_term = _prior_half  # ±8% 内
                     total = (cmndf_term + ac_term + hps_term + tau_term
-                             + temporal_term + _lower_peak_penalty)
+                             + temporal_term + _lower_peak_penalty + cepstral_term)
                     scored.append((total, cand_tau_i))
 
                 scored.sort(key=lambda x: x[0])

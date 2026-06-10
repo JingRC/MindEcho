@@ -9923,9 +9923,9 @@ class IntegratedAudioProcessor(QThread):
             # 🔥 立即重算帧配置（不再等待下个处理循环，避免过渡窗口期频率计算错误）
             try:
                 min_f = getattr(self, 'min_frequency', 80) or 80
-                desired_window = int(self.sample_rate / min_f * 2.5)
-                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096]
-                self._frame_window = min(4096, next((w for w in allowed_windows if w >= desired_window), 4096))
+                desired_window = int(self.sample_rate / min_f * 4.0)
+                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120]
+                self._frame_window = min(5120, next((w for w in allowed_windows if w >= desired_window), 5120))
                 hop_div = 4
                 try:
                     from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
@@ -10074,11 +10074,12 @@ class IntegratedAudioProcessor(QThread):
         if not hasattr(self, '_frame_config_initialized'):
             # 根据最小频率动态设置窗口（覆盖旧的固定40ms设计）
             min_f = getattr(self, 'min_frequency', 80) or 80
-            # 至少包含 ~2.5 个周期，保证低频分辨率，同时不过大
-            desired_window = int(self.sample_rate / min_f * 2.5)  # ~3000(96k/80*2.5)
+            # 至少包含 ~4.0 个周期（原2.5），假声高音区基频弱，需要更多周期
+            # 来提高自相关对比度，防止 CMNDF 谷浅导致检测质量崩溃
+            desired_window = int(self.sample_rate / min_f * 4.0)  # ~4800(96k/80*4.0)
             # 规范到常见处理长度，利于 FFT / 自相关效率
-            allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096]
-            self._frame_window = min(4096, next((w for w in allowed_windows if w >= desired_window), 4096))
+            allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120]
+            self._frame_window = min(5120, next((w for w in allowed_windows if w >= desired_window), 5120))
             # hop 随性能模式自适应：Quiet=1/4, Balanced≈1/7, High≈1/8（进一步提高时间分辨率）
             hop_div = 4
             try:
@@ -10106,9 +10107,9 @@ class IntegratedAudioProcessor(QThread):
             # 防御：若窗口或hop未设置，立即重新初始化（避免递归）
             if not hasattr(self, '_frame_window') or not hasattr(self, '_frame_hop'):
                 min_f = getattr(self, 'min_frequency', 80) or 80
-                desired_window = int(self.sample_rate / min_f * 2.5)
-                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096]
-                self._frame_window = min(4096, next((w for w in allowed_windows if w >= desired_window), 4096))
+                desired_window = int(self.sample_rate / min_f * 4.0)
+                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120]
+                self._frame_window = min(5120, next((w for w in allowed_windows if w >= desired_window), 5120))
                 # 自适应hop
                 hop_div = 4
                 try:
