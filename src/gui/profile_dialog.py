@@ -320,7 +320,7 @@ class ProfileSelectionDialog(QDialog):
             parts = [f"声部: {vt}", f"性别: {gender}"]
             if t4 > 0:
                 parts.append(f"T4: {t4:.0f} Hz")
-            parts.append(f"练习: {minutes:.0f} 分钟")
+            parts.append(f"练习: {_format_practice_duration(minutes)}")
             sub_text = "  |  ".join(parts)
 
             item = QListWidgetItem()
@@ -414,7 +414,7 @@ class ProfileSelectionDialog(QDialog):
         lines = [
             f"📛 名称：{profile.name}",
             f"🎵 声部：{vt}　　👤 性别：{gender}",
-            f"📊 累计练习：{minutes:.0f} 分钟　　🎯 录音 {profile.usage.total_sessions} 次",
+            f"📊 累计练习：{_format_practice_duration(minutes)}　　🎯 录音 {profile.usage.total_sessions} 次",
         ]
         if p50 > 0:
             lines.append(f"🎶 中位音高：{p50:.0f} Hz")
@@ -1184,7 +1184,7 @@ class UserCenterDialog(QDialog):
         if gender != "不指定":
             detail_parts.append(f"👤 {gender}")
         if mins > 0:
-            detail_parts.append(f"⏱ {mins:.0f}分钟")
+            detail_parts.append(f"⏱ {_format_practice_duration(mins)}")
         if sessions > 0:
             detail_parts.append(f"🎯 {sessions}次")
 
@@ -1281,7 +1281,7 @@ class UserCenterDialog(QDialog):
         mins = p.usage.total_minutes
         sessions = p.usage.total_sessions
         if mins > 0:
-            stats_data.append(("⏱", f"{mins:.0f}分钟"))
+            stats_data.append(("⏱", f"{_format_practice_duration(mins)}"))
         if sessions > 0:
             stats_data.append(("🎯", f"{sessions}次录音"))
         if p.passaggio.t4_hz > 0 and p.passaggio.confidence > 0:
@@ -1678,6 +1678,19 @@ class ProfileEditDialog(QDialog):
 _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
+def _format_practice_duration(minutes: float) -> str:
+    """智能格式化练习时长：小于1分钟显示秒，否则显示分钟或小时"""
+    if minutes <= 0:
+        return "—"
+    total_secs = minutes * 60.0
+    if total_secs < 60.0:
+        return f"{max(1, int(total_secs))} 秒"
+    elif total_secs < 3600.0:
+        return f"{minutes:.1f} 分钟"
+    else:
+        return f"{minutes / 60.0:.1f} 小时"
+
+
 def _hz_to_note_name(hz: float) -> str:
     """将频率转换为音名+八度，如 440.0 → 'A4'"""
     if hz <= 0:
@@ -1687,6 +1700,15 @@ def _hz_to_note_name(hz: float) -> str:
     midi = 69 + 12 * math.log2(hz / 440.0)
     note_idx = int(round(midi)) % 12
     octave = int(round(midi)) // 12 - 1
+    return f"{_NOTE_NAMES[note_idx]}{octave}"
+
+
+def _midi_to_note_name(midi: int) -> str:
+    """将 MIDI 编号转换为音名+八度，如 60 → 'C4'"""
+    if midi <= 0:
+        return "—"
+    note_idx = midi % 12
+    octave = midi // 12 - 1
     return f"{_NOTE_NAMES[note_idx]}{octave}"
 
 
@@ -1749,6 +1771,9 @@ class ProfileDetailDialog(QDialog):
 
         # ── 练习统计 ──
         content_layout.addWidget(self._build_practice_stats())
+
+        # ── 练声训练 ──
+        content_layout.addWidget(self._build_training_section())
 
         # ── 声乐维度概览 ──
         if self._has_any_metric_data():
@@ -1880,6 +1905,190 @@ class ProfileDetailDialog(QDialog):
         layout.addWidget(edit_btn)
 
         return hero
+
+    # ── 练声训练 ────────────────────────────────────────────
+
+    def _build_training_section(self) -> QWidget:
+        """构建练声训练统计区块。"""
+        ts = self._profile.training_stats
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        # ── 空状态 ──
+        if ts.total_sessions <= 0:
+            empty = QLabel("还没有练声记录。切换到练声模式完成练习后，数据会自动显示在这里。")
+            empty.setStyleSheet("color: #484F58; font-size: 12px; background: transparent; padding: 8px 0;")
+            empty.setWordWrap(True)
+            layout.addWidget(empty)
+            return self._build_section("🎵 练声训练", container)
+
+        # ── 等级徽章 + 进度条 ──
+        level_row = QHBoxLayout()
+        level_row.setSpacing(10)
+
+        _level_names = {
+            "beginner": "🐣 小白", "intermediate": "🌟 渐入佳境",
+            "advanced": "🎵 实力唱将", "expert": "🎤 麦霸",
+        }
+        _level_colors = {
+            "beginner": "#8B949E", "intermediate": "#DAA520",
+            "advanced": "#58A6FF", "expert": "#E040FB",
+        }
+        level_name = _level_names.get(ts.level, "🐣 小白")
+        level_color = _level_colors.get(ts.level, "#8B949E")
+
+        level_badge = QLabel(level_name)
+        level_badge.setStyleSheet(f"""
+            QLabel {{
+                color: {level_color}; font-size: 14px; font-weight: bold;
+                background: #161B22; border: 1px solid {level_color};
+                border-radius: 8px; padding: 6px 14px;
+            }}
+        """)
+        level_badge.setToolTip(f"训练等级: {ts.level}\n"
+                               f"进度: {ts.level_progress:.0%}")
+        level_row.addWidget(level_badge)
+
+        # 等级进度条
+        progress_container = QWidget()
+        progress_container.setStyleSheet("background: transparent;")
+        progress_cl = QVBoxLayout(progress_container)
+        progress_cl.setContentsMargins(0, 2, 0, 2)
+        progress_cl.setSpacing(3)
+
+        _next_level_names = {
+            "beginner": "intermediate", "intermediate": "advanced",
+            "advanced": "expert", "expert": "",
+        }
+        next_level = _next_level_names.get(ts.level, "")
+        next_name = _level_names.get(next_level, "已达最高") if next_level else "已达最高"
+
+        progress_lbl = QLabel(f"→ {next_name}" if next_level else "✨ 已达最高等级")
+        progress_lbl.setStyleSheet("color: #8B949E; font-size: 9px; background: transparent;")
+        progress_cl.addWidget(progress_lbl)
+
+        # 进度条
+        pg_bar = QFrame()
+        pg_bar.setFixedHeight(8)
+        pg_bar.setMinimumWidth(120)
+        pg_bar.setStyleSheet("background: #21262D; border-radius: 4px; border: none;")
+        pg_fill = QFrame(pg_bar)
+        pg_fill.setFixedHeight(8)
+        pg_fill_width = max(4, int(180 * ts.level_progress))
+        pg_fill.setFixedWidth(pg_fill_width)
+        pg_fill.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {level_color}, stop:1 {level_color});
+                border-radius: 4px; border: none;
+            }}
+        """)
+        pg_fill.move(0, 0)
+        pg_fill.show()
+        progress_cl.addWidget(pg_bar)
+
+        level_row.addWidget(progress_container, 1)
+        layout.addLayout(level_row)
+
+        # ── 统计卡片 ──
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(10)
+
+        # 格式化练声时长
+        train_mins = ts.total_minutes
+        if train_mins < 1.0:
+            train_dur = f"{max(1, int(train_mins * 60))} 秒"
+        elif train_mins < 60.0:
+            train_dur = f"{train_mins:.1f} 分钟"
+        else:
+            train_dur = f"{train_mins / 60:.1f} 小时"
+
+        score_text = f"{ts.average_score:.0f}" if ts.average_score > 0 else "—"
+        best_text = f"{ts.best_score:.0f}" if ts.best_score > 0 else "—"
+        best_ex = ts.best_exercise[:12] if ts.best_exercise else ""
+
+        cards_data = [
+            ("🎯", f"{ts.total_sessions} 次", "训练次数"),
+            ("⏱", train_dur, "训练时长"),
+            ("📈", score_text, "平均分"),
+            ("🏆", best_text, f"最高分{chr(10)}{best_ex}" if best_ex else "最高分"),
+        ]
+
+        for icon, value, label in cards_data:
+            card = self._stat_card(icon, value, label)
+            cards_row.addWidget(card)
+
+        layout.addLayout(cards_row)
+
+        # ── 练声测得的音域 ──
+        if ts.vocal_range_low_midi > 0 or ts.vocal_range_high_midi > 0:
+            low_note = _midi_to_note_name(ts.vocal_range_low_midi) if ts.vocal_range_low_midi > 0 else "—"
+            high_note = _midi_to_note_name(ts.vocal_range_high_midi) if ts.vocal_range_high_midi > 0 else "—"
+            range_row = QHBoxLayout()
+            range_label = QLabel(f"🎶 练声音域: {low_note} → {high_note}")
+            range_label.setStyleSheet("color: #8B949E; font-size: 11px; background: transparent;")
+            range_row.addWidget(range_label)
+            range_row.addStretch()
+            layout.addLayout(range_row)
+
+        # ── 最近训练记录 ──
+        recent = ts.recent_records[-5:]  # 最近 5 条
+        if recent:
+            recent_label = QLabel("📋 最近练习")
+            recent_label.setStyleSheet("color: #8B949E; font-size: 11px; font-weight: bold; background: transparent;")
+            layout.addWidget(recent_label)
+
+            for rec in reversed(recent):
+                rec_row = QHBoxLayout()
+                rec_row.setSpacing(8)
+
+                # 日期
+                date_str = rec.date[5:10] if len(rec.date) >= 10 else rec.date  # MM-DD
+                date_lbl = QLabel(date_str)
+                date_lbl.setStyleSheet("color: #484F58; font-size: 10px; background: transparent; min-width: 40px;")
+                rec_row.addWidget(date_lbl)
+
+                # 练习名
+                name = rec.exercise_name or rec.exercise_id
+                if len(name) > 18:
+                    name = name[:16] + "…"
+                name_lbl = QLabel(name)
+                name_lbl.setStyleSheet("color: #C9D1D9; font-size: 11px; background: transparent;")
+                name_lbl.setToolTip(f"{rec.exercise_name or rec.exercise_id}\n"
+                                    f"调: {rec.key_selected}  八度: {rec.octave_shift:+d}  BPM: {rec.bpm}\n"
+                                    f"分类: {rec.exercise_category or '—'}")
+                rec_row.addWidget(name_lbl, 1)
+
+                # 分数
+                score_val = rec.total_score
+                if score_val >= 90:
+                    sc_color = "#3FB950"
+                elif score_val >= 75:
+                    sc_color = "#DAA520"
+                elif score_val >= 60:
+                    sc_color = "#F0883E"
+                else:
+                    sc_color = "#F85149"
+                sc_lbl = QLabel(f"{score_val:.0f}")
+                sc_lbl.setStyleSheet(f"color: {sc_color}; font-size: 12px; font-weight: bold; background: transparent;")
+                sc_lbl.setToolTip(f"等级: {rec.level}  音准: {rec.pitch_accuracy:.0f}  稳定: {rec.stability:.0f}\n"
+                                  f"节奏: {rec.timing:.0f}  持续: {rec.hold:.0f}\n"
+                                  f"Perfect: {rec.perfect_count}  Great: {rec.great_count}  Good: {rec.good_count}\n"
+                                  f"OK: {rec.ok_count}  Miss: {rec.miss_count}  连击: {rec.max_streak}")
+                rec_row.addWidget(sc_lbl)
+
+                # 时长
+                dur_lbl = QLabel(f"{rec.duration_seconds:.0f}s")
+                dur_lbl.setStyleSheet("color: #484F58; font-size: 10px; background: transparent;")
+                rec_row.addWidget(dur_lbl)
+
+                layout.addLayout(rec_row)
+
+        return self._build_section("🎵 练声训练", container)
 
     def _has_any_metric_data(self) -> bool:
         """检查是否有任何可展示的声乐指标数据"""
@@ -2049,7 +2258,7 @@ class ProfileDetailDialog(QDialog):
                 pass
 
         cards = [
-            ("⏱", f"{p.usage.total_minutes:.0f} 分钟", "累计练习"),
+            ("⏱", f"{_format_practice_duration(p.usage.total_minutes)}", "累计练习"),
             ("🎯", f"{p.usage.total_sessions} 次", "录音次数"),
             ("📅", f"{active_days} 天", "活跃天数"),
         ]

@@ -312,11 +312,16 @@ class ProfileManager:
         self,
         profile_id: str,
         voiced_frequencies_hz: List[float],
-        session_duration_minutes: float,
+        session_duration_seconds: float,
         technique_counts: Dict[str, int],
         timbre_samples: List[dict],
     ) -> None:
-        """录音结束后更新存档统计数据"""
+        """录音结束后更新存档统计数据
+
+        Args:
+            session_duration_seconds: 本次录音实际时长（秒），
+                普通模式/练声模式的录音都会计入。
+        """
         profile = self.get_profile(profile_id)
         if profile is None:
             return
@@ -327,7 +332,9 @@ class ProfileManager:
 
         # 更新使用统计
         profile.usage.total_sessions += 1
-        profile.usage.total_minutes += round(max(0.0, session_duration_minutes), 1)
+        # 秒→分钟转换，保留完整精度（不round，避免短录音被归零）
+        _added_minutes = max(0.0, float(session_duration_seconds)) / 60.0
+        profile.usage.total_minutes += _added_minutes
         profile.usage.last_active = time.strftime("%Y-%m-%dT%H:%M:%S")
 
         # 更新技巧分布（EMA 合并）
@@ -379,6 +386,11 @@ class ProfileManager:
         if profile is None:
             return
         profile.training_stats.add_record(record)
+        # 同时更新 usage 统计（累计会话数、练习时长、最后活跃时间）
+        profile.usage.total_sessions += 1
+        _added_minutes = max(0.0, float(record.duration_seconds or 0.0)) / 60.0
+        profile.usage.total_minutes += _added_minutes
+        profile.usage.last_active = time.strftime("%Y-%m-%dT%H:%M:%S")
         profile.updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         self.save_profile(profile)
 

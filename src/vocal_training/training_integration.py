@@ -97,6 +97,17 @@ class TrainingIntegration:
         except Exception:
             self._panel.set_auto_level("beginner")
 
+        # 同步用户名称到面板
+        try:
+            profile_mgr = getattr(self._main, '_profile_manager', None)
+            if profile_mgr is not None:
+                active = profile_mgr.get_active_profile()
+                self._panel.set_user_label(active.name if active else "")
+            else:
+                self._panel.set_user_label("")
+        except Exception:
+            self._panel.set_user_label("")
+
     def deactivate(self) -> None:
         """停用练声模式，恢复普通管线。"""
         self._active = False
@@ -258,12 +269,46 @@ class TrainingIntegration:
             if profile_mgr is None:
                 return
 
+            # ── 从面板收集练习元数据 ──
+            panel = self._panel
+            exercise_category = ""
+            key_sel = "C"
+            oct_shift = 0
+            bpm_val = 100
+            range_low = 0
+            range_high = 0
+            try:
+                if panel is not None:
+                    key_sel = getattr(panel, '_key_combo', None)
+                    key_sel = key_sel.currentText() if key_sel is not None else "C"
+                    oct_shift = panel._get_octave_shift() if hasattr(panel, '_get_octave_shift') else 0
+                    bpm_val = getattr(panel, '_tempo_spin', None)
+                    bpm_val = bpm_val.value() if bpm_val is not None else 100
+            except Exception:
+                pass
+
+            # ── 从引擎收集音域数据 ──
+            try:
+                if panel is not None:
+                    engine = getattr(panel, '_engine', None)
+                    if engine is not None:
+                        freq_samples = getattr(engine, '_freq_history', []) or []
+                        if freq_samples:
+                            valid = [f for f in freq_samples if f > 50]
+                            if valid:
+                                import numpy as np
+                                range_low = int(69 + 12 * np.log2(min(valid) / 440))
+                                range_high = int(69 + 12 * np.log2(max(valid) / 440))
+            except Exception:
+                pass
+
             from src.profiles.profile_model import TrainingRecord
             # 获取本次练习用时
             exercise_dur = getattr(self._panel, '_current_exercise_duration', 0.0)
             record = TrainingRecord(
                 exercise_id=score.exercise_id,
                 exercise_name=score.exercise_id,  # 可从练习库补全名称
+                exercise_category=exercise_category,
                 total_score=score.total_score,
                 level=score.overall_level.name,
                 pitch_accuracy=score.pitch_accuracy,
@@ -280,14 +325,20 @@ class TrainingIntegration:
                 duration_seconds=round(exercise_dur, 1),
                 avg_frame_hit_rate=round(score.avg_frame_hit_rate, 3),
                 avg_transition_time=round(score.avg_transition_time, 3),
+                key_selected=key_sel,
+                octave_shift=oct_shift,
+                bpm=bpm_val,
+                range_low_midi=range_low,
+                range_high_midi=range_high,
                 date=time.strftime("%Y-%m-%dT%H:%M:%S"),
             )
-            # 补全练习名称
+            # 补全练习名称与分类
             try:
                 from src.vocal_training.exercise_library import get_exercise
                 ex = get_exercise(score.exercise_id)
                 if ex:
                     record.exercise_name = ex.name
+                    record.exercise_category = getattr(ex, 'category', '')
             except Exception:
                 pass
 

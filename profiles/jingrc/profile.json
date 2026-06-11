@@ -39,9 +39,9 @@
     "_ema_alpha": 0.02
   },
   "usage": {
-    "total_sessions": 0,
-    "total_minutes": 0.0,
-    "last_active": "",
+    "total_sessions": 40,
+    "total_minutes": 11.89,
+    "last_active": "2026-06-10T20:34:06",
     "technique_distribution": {}
   },
   "training_stats": {
@@ -436,5 +436,5 @@
     "vocal_range_high_midi": 0
   },
   "created_at": "2026-06-04T12:07:00",
-  "updated_at": "2026-06-10T14:55:43"
+  "updated_at": "2026-06-10T20:34:06"
 }

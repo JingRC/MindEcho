@@ -745,6 +745,12 @@ class AICoachPanel(QWidget):
                 time_big = f"{int(total_minutes)}"
                 time_unit = "min"
                 time_sub = ""
+            elif total_minutes > 0:
+                # <1分钟 → 显示秒数
+                secs = max(1, int(total_minutes * 60))
+                time_big = f"{secs}"
+                time_unit = "s"
+                time_sub = ""
             else:
                 time_big = "—"
                 time_unit = ""
@@ -760,8 +766,11 @@ class AICoachPanel(QWidget):
                 m = int(total_minutes % 60)
                 if h > 0:
                     time_str = f"{h}小时{m}分钟"
-                else:
+                elif m > 0:
                     time_str = f"{m}分钟"
+                else:
+                    secs = max(1, int(total_minutes * 60))
+                    time_str = f"{secs}秒"
                 desc = f"共 {total} 次练习，累计 {time_str}。继续加油，每一遍都在进步！"
 
             # 时长标签: 数字+单位在一行

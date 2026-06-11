@@ -260,6 +260,16 @@ class TrainingPanel(QWidget):
                                       "容差随等级自动收紧，无需手动设置")
         ctrl_row.addWidget(self._level_label)
 
+        # 当前用户标签
+        self._user_label = QLabel("👤 访客")
+        self._user_label.setStyleSheet(
+            "color: #58A6FF; font-weight: bold; font-size: 12px; "
+            "background-color: #21262D; border: 1px solid #30363D; "
+            "border-radius: 4px; padding: 4px 10px;"
+        )
+        self._user_label.setToolTip("当前练声数据将记录到此用户存档")
+        ctrl_row.addWidget(self._user_label)
+
         # 速度
         ctrl_row.addWidget(QLabel("BPM:"))
         self._tempo_spin = QSpinBox()
@@ -596,6 +606,17 @@ class TrainingPanel(QWidget):
         }
         self._auto_level = profile_level
         self._level_label.setText(_names.get(profile_level, "🐣 小白"))
+
+    def set_user_label(self, name: str) -> None:
+        """更新面板上的当前用户标识。"""
+        display = name if name else "访客"
+        if len(display) > 6:
+            display = display[:5] + "…"
+        self._user_label.setText(f"👤 {display}")
+        self._user_label.setToolTip(
+            f"当前用户: {name}\n练声数据将记录到此用户存档"
+            if name else "访客模式 — 练声数据不会保存"
+        )
 
     def _on_exercise_completed(self, score: ExerciseScore):
         """引擎评分完成回调 — 仅更新 UI 评分展示和发信号保存结果。

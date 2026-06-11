@@ -117,12 +117,14 @@ class PitchDetectionService:
             x = (x - float(np.mean(x))) * self._hann
 
             # ── 预加重滤波（方案B）──
-            # y[n] = x[n] - α·x[n-1], α=0.97 (标准语音预加重值)
+            # y[n] = x[n] - α·x[n-1], α=0.95 (语音标准范围 0.95-0.97)
             # 作用：补偿声门源 −6dB/oct 滚降，使频谱更平坦。
             # 平坦频谱 → 各频率对自相关贡献更均匀 → CMNDF 谷更尖锐。
             # 对假声/气声：减弱低频呼吸噪声对自相关的污染，保留谐波结构。
+            # α=0.95 (非 0.97)：假声谐波已极强，较低 α 避免过度提升
+            # 谐波 → 减少 T/2、T/3 等短 τ 伪周期对 CMNDF 的贡献。
             # 注意：此滤波器在加窗后应用，窗边缘衰减避免了滤波器瞬态。
-            _preemphasis_alpha = 0.97
+            _preemphasis_alpha = 0.95
             x[1:] = x[1:] - _preemphasis_alpha * x[:-1]
             x[0] *= (1.0 - _preemphasis_alpha)  # 首个样本平滑衰减
 
@@ -377,9 +379,9 @@ class PitchDetectionService:
                     # 权重在高音区更高：CMNDF 越不可靠，倒谱越重要。
                     _cepst_val = float(_cepst_abs[int(cand_tau_i)]) if int(cand_tau_i) < len(_cepst_abs) else 0.0
                     _cepst_norm = _cepst_val / max(_cepst_max, 1e-12)
-                    _cepst_weight = 0.25 if _f0_for_weight > 420.0 else (
-                        0.08 if _f0_for_weight < 220.0 else (
-                        0.08 + 0.17 * (_f0_for_weight - 220.0) / 200.0))
+                    _cepst_weight = 0.35 if _f0_for_weight > 420.0 else (
+                        0.12 if _f0_for_weight < 220.0 else (
+                        0.12 + 0.23 * (_f0_for_weight - 220.0) / 200.0))
                     cepstral_term = -_cepst_norm * _cepst_weight  # 越高越好→取负
                     # 时序先验：接近前帧胜出者获得奖励（变化越小越可信）
                     # ═══════════════════════════════════════════════════════
@@ -463,7 +465,24 @@ class PitchDetectionService:
             #   cmndf < 0.20 → 高置信 → 全量时序先验
             #   cmndf < 0.35 → 中置信 → 减半时序先验（防止错误锁定）
             #   cmndf >=0.35 → 低置信 → 零时序先验（假声弱基频常见）
-            self._yin_prev_cmndf_quality = float(cmndf[cand_tau])
+            #
+            # ═══ 倒谱质量门（v9.5 关键修复） ═══
+            # 假声谐波候选在 CMNDF 中常表现为深谷 [HI]（如 τ=3T/4），
+            # 但倒谱在此 τ 处无峰。若直接存储原始 CMNDF [HI] 标记，
+            # 下帧强时序先验会把谐波候选锁定，形成正反馈循环。
+            # 门控：胜出者倒谱峰弱（< 最大峰的 35%）→ 人工提升
+            # quality 到 ≥0.35（即 [LO]），确保下帧不使用强时序先验。
+            _cmndf_quality = float(cmndf[cand_tau])
+            _cepst_at_choice = float(_cepst_abs[int(cand_tau)]) if int(cand_tau) < len(_cepst_abs) else 0.0
+            _cepst_ratio_at_choice = _cepst_at_choice / max(_cepst_max, 1e-12)
+            if _cepst_ratio_at_choice < 0.30:
+                # 倒谱不支持此候选 → 极可能是谐波误锁
+                # 将质量标记强制提升到 ≥0.38 → 下帧时序先验归零
+                _cmndf_quality = max(_cmndf_quality, 0.38)
+            elif _cepst_ratio_at_choice < 0.50:
+                # 倒谱支持偏弱 → 降至中等置信
+                _cmndf_quality = max(_cmndf_quality, 0.25)
+            self._yin_prev_cmndf_quality = _cmndf_quality
             # ── 诊断：每 40 帧输出（含候选质量信息）──
             if not hasattr(self, '_yin_diag_counter'):
                 self._yin_diag_counter = 0

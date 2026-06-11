@@ -3883,19 +3883,26 @@ class IntegratedAudioProcessor(QThread):
             if ratio > 1.25:
                 # ── 检测到物理不可能的向上跳变 → 阻挡 ──
                 # 收紧 pending 容忍窗：高音区用 4% (原 6%)
-                _pending_tol = 0.04 if _vg_high_register else 0.06
-                if abs(raw_frequency - _vg_pending) < raw_frequency * _pending_tol:
-                    _vg_confirm_cnt += 1
-                    if _vg_confirm_cnt >= _vg_required_confirm:
-                        # 长时间一致性验证通过，接受新的频率
-                        _vg_confirmed = raw_frequency
-                        _vg_confirm_cnt = 0
-                        _vg_pending = 0.0
-                        # 清除下行计数器
-                        _vg_down_cnt = 0
+                # ═══ 置信度门控：低置信帧不计数 ═══
+                # 假声谐波误锁 (CMNDF≈0.9) 的 YIN 置信度极低 (<0.25)，
+                # 不应计入确认计数器。仅 CMNDF<0.50 (conf>0.50) 才计数。
+                if float(confidence) >= 0.50:
+                    _pending_tol = 0.04 if _vg_high_register else 0.06
+                    if abs(raw_frequency - _vg_pending) < raw_frequency * _pending_tol:
+                        _vg_confirm_cnt += 1
+                        if _vg_confirm_cnt >= _vg_required_confirm:
+                            # 长时间一致性验证通过，接受新的频率
+                            _vg_confirmed = raw_frequency
+                            _vg_confirm_cnt = 0
+                            _vg_pending = 0.0
+                            # 清除下行计数器
+                            _vg_down_cnt = 0
+                    else:
+                        _vg_pending = raw_frequency
+                        _vg_confirm_cnt = 1
                 else:
-                    _vg_pending = raw_frequency
-                    _vg_confirm_cnt = 1
+                    # 低置信度帧 → 不计数，直接阻挡
+                    pass
                 raw_frequency = _vg_confirmed  # 保持门限值
             elif ratio < 0.82:
                 # ── 向下跳跃 ≥3.5 半音 → 立即跟随 ──
@@ -9923,9 +9930,9 @@ class IntegratedAudioProcessor(QThread):
             # 🔥 立即重算帧配置（不再等待下个处理循环，避免过渡窗口期频率计算错误）
             try:
                 min_f = getattr(self, 'min_frequency', 80) or 80
-                desired_window = int(self.sample_rate / min_f * 4.0)
-                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120]
-                self._frame_window = min(5120, next((w for w in allowed_windows if w >= desired_window), 5120))
+                desired_window = int(self.sample_rate / min_f * 5.5)
+                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120, 6144]
+                self._frame_window = min(6144, next((w for w in allowed_windows if w >= desired_window), 6144))
                 hop_div = 4
                 try:
                     from src.audio_processing.performance_manager import get_performance_manager, PerformanceMode
@@ -10074,12 +10081,12 @@ class IntegratedAudioProcessor(QThread):
         if not hasattr(self, '_frame_config_initialized'):
             # 根据最小频率动态设置窗口（覆盖旧的固定40ms设计）
             min_f = getattr(self, 'min_frequency', 80) or 80
-            # 至少包含 ~4.0 个周期（原2.5），假声高音区基频弱，需要更多周期
+            # 至少包含 ~5.5 个周期（原4.0），假声高音区基频弱，需要更多周期
             # 来提高自相关对比度，防止 CMNDF 谷浅导致检测质量崩溃
-            desired_window = int(self.sample_rate / min_f * 4.0)  # ~4800(96k/80*4.0)
+            desired_window = int(self.sample_rate / min_f * 5.5)  # ~6600(96k/80*5.5)
             # 规范到常见处理长度，利于 FFT / 自相关效率
-            allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120]
-            self._frame_window = min(5120, next((w for w in allowed_windows if w >= desired_window), 5120))
+            allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120, 6144]
+            self._frame_window = min(6144, next((w for w in allowed_windows if w >= desired_window), 6144))
             # hop 随性能模式自适应：Quiet=1/4, Balanced≈1/7, High≈1/8（进一步提高时间分辨率）
             hop_div = 4
             try:
@@ -10107,9 +10114,9 @@ class IntegratedAudioProcessor(QThread):
             # 防御：若窗口或hop未设置，立即重新初始化（避免递归）
             if not hasattr(self, '_frame_window') or not hasattr(self, '_frame_hop'):
                 min_f = getattr(self, 'min_frequency', 80) or 80
-                desired_window = int(self.sample_rate / min_f * 4.0)
-                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120]
-                self._frame_window = min(5120, next((w for w in allowed_windows if w >= desired_window), 5120))
+                desired_window = int(self.sample_rate / min_f * 5.5)
+                allowed_windows = [1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120, 6144]
+                self._frame_window = min(6144, next((w for w in allowed_windows if w >= desired_window), 6144))
                 # 自适应hop
                 hop_div = 4
                 try:
@@ -11007,7 +11014,15 @@ class IntegratedAudioProcessor(QThread):
                     lead_bias_enabled = True
             except Exception:
                 lead_bias_enabled = False
-            if raw_frequency > 0 and true_candidates and lead_bias_enabled:
+            # ── YIN 置信度门控：高置信时信任 YIN，跳过候选重选 ──
+            # _select_lead_vocal_frequency 的 near_boost + continuity 评分
+            # 在 last_stable 漂移后会把谐波候选推赢真基频，形成锁定循环。
+            # 当 YIN 自身置信度高（CMNDF<0.25）时，直接信任 YIN 输出。
+            try:
+                _yin_conf = float(conf)
+            except Exception:
+                _yin_conf = 0.0
+            if raw_frequency > 0 and true_candidates and lead_bias_enabled and _yin_conf < 0.75:
                 raw_before_bias = float(raw_frequency)
                 try:
                     raw_frequency = float(self._select_lead_vocal_frequency(
@@ -37655,9 +37670,14 @@ class ECGStylePitchVisualizer(QWidget):
                             })
                     except Exception:
                         continue
+                # 优先使用录音实际时长（current_duration），而非事件结束时间。
+                # 普通模式下若无技法事件触发，事件时长=0，导致练习时间不累计。
+                _actual_duration_sec = float(getattr(self, 'current_duration', 0.0) or 0.0)
+                if _actual_duration_sec <= 0.0 and duration > 0:
+                    _actual_duration_sec = float(duration)  # 回退：事件时长（已在秒级）
                 self._update_profile_after_session(
                     voiced_frequencies_hz=voiced_hz,
-                    session_duration_minutes=float(duration) / 60.0 if duration > 0 else 0.0,
+                    session_duration_seconds=max(0.0, _actual_duration_sec),
                     technique_counts=dict(counts),
                     timbre_samples=timbre_samples[:500],  # 采样500帧，避免过大
                 )
@@ -54753,6 +54773,13 @@ class IntegratedRecordingInterface(QMainWindow):
         active = not self._training.is_active
 
         if active:
+            # ── 练声模式需要用户存档记录数据 ──
+            if not self._ensure_profile_selected():
+                print("[练声] 用户取消存档选择，取消进入练声模式")
+                # 恢复按钮状态（Qt 已自动 toggle，我们需要回退）
+                self.training_btn.setChecked(False)
+                return
+
             # 首次激活：将 TrainingPanel 加入 QStackedWidget
             if self._mode_stack.count() < 2:
                 panel = self._training.panel
@@ -54780,6 +54807,10 @@ class IntegratedRecordingInterface(QMainWindow):
                 self._training.panel.exercise_completed.connect(
                     lambda score: self._training.save_training_result(score)
                 )
+
+            # 更新面板上的用户名称显示
+            self._update_training_panel_user_label()
+
             self._training.activate()
             self.training_btn.setText("🎤 唱歌模式")
             print("[练声] 练声模式已激活")
@@ -62917,7 +62948,7 @@ class IntegratedRecordingInterface(QMainWindow):
     def _update_profile_after_session(
         self,
         voiced_frequencies_hz: list,
-        session_duration_minutes: float,
+        session_duration_seconds: float,
         technique_counts: dict,
         timbre_samples: list,
     ) -> None:
@@ -62930,7 +62961,7 @@ class IntegratedRecordingInterface(QMainWindow):
             _mgr.update_profile_from_session(
                 profile_id=_active.id,
                 voiced_frequencies_hz=voiced_frequencies_hz,
-                session_duration_minutes=session_duration_minutes,
+                session_duration_seconds=session_duration_seconds,
                 technique_counts=technique_counts,
                 timbre_samples=timbre_samples,
             )
@@ -63121,6 +63152,19 @@ class IntegratedRecordingInterface(QMainWindow):
                 greeting = "已切换到访客模式。使用默认参数，数据不会保存。建议创建存档以获得个性化识别。"
 
             cp._append_message("assistant", greeting)
+        except Exception:
+            pass
+
+    def _update_training_panel_user_label(self) -> None:
+        """更新练声面板上的当前用户标识"""
+        try:
+            panel = self._training.panel if self._training else None
+            if panel is None:
+                return
+            name = "访客"
+            if self._active_profile is not None:
+                name = self._active_profile.name
+            panel.set_user_label(name)
         except Exception:
             pass
 

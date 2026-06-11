@@ -234,6 +234,7 @@ class TrainingRecord:
     """一次练声的记录"""
     exercise_id: str = ""           # 练习 ID
     exercise_name: str = ""         # 练习名称
+    exercise_category: str = ""     # 练习分类（warmup/intervals/agility/sustain/range）
     total_score: float = 0.0        # 总分 0-100
     level: str = "D"               # S/A/B/C/D
     pitch_accuracy: float = 0.0     # 音准分
@@ -250,6 +251,11 @@ class TrainingRecord:
     duration_seconds: float = 0.0   # 本次练习用时（秒）
     avg_frame_hit_rate: float = 0.0  # 平均帧命中率 (0-1)
     avg_transition_time: float = 0.0  # 平均过渡耗时（秒）
+    key_selected: str = "C"         # 选择的调性
+    octave_shift: int = 0           # 八度偏移 -1/0/+1
+    bpm: int = 100                  # 练习BPM
+    range_low_midi: int = 0         # 本次练习最低音MIDI
+    range_high_midi: int = 0        # 本次练习最高音MIDI
     date: str = ""                  # ISO 日期
 
     def to_dict(self) -> Dict[str, Any]:
@@ -260,6 +266,7 @@ class TrainingRecord:
         return cls(
             exercise_id=str(d.get("exercise_id", "") or ""),
             exercise_name=str(d.get("exercise_name", "") or ""),
+            exercise_category=str(d.get("exercise_category", "") or ""),
             total_score=float(d.get("total_score", 0.0) or 0.0),
             level=str(d.get("level", "D") or "D"),
             pitch_accuracy=float(d.get("pitch_accuracy", 0.0) or 0.0),
@@ -276,6 +283,11 @@ class TrainingRecord:
             duration_seconds=float(d.get("duration_seconds", 0.0) or 0.0),
             avg_frame_hit_rate=float(d.get("avg_frame_hit_rate", 0.0) or 0.0),
             avg_transition_time=float(d.get("avg_transition_time", 0.0) or 0.0),
+            key_selected=str(d.get("key_selected", "C") or "C"),
+            octave_shift=int(d.get("octave_shift", 0) or 0),
+            bpm=int(d.get("bpm", 100) or 100),
+            range_low_midi=int(d.get("range_low_midi", 0) or 0),
+            range_high_midi=int(d.get("range_high_midi", 0) or 0),
             date=str(d.get("date", "") or ""),
         )
 
@@ -352,6 +364,14 @@ class TrainingStats:
         if record.total_score > self.best_score:
             self.best_score = record.total_score
             self.best_exercise = record.exercise_name
+
+        # 更新练声中测得的音域
+        if record.range_low_midi > 0:
+            if self.vocal_range_low_midi <= 0 or record.range_low_midi < self.vocal_range_low_midi:
+                self.vocal_range_low_midi = record.range_low_midi
+        if record.range_high_midi > 0:
+            if record.range_high_midi > self.vocal_range_high_midi:
+                self.vocal_range_high_midi = record.range_high_midi
 
         # 等级晋升检查
         self._update_level()
