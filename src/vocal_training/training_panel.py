@@ -179,6 +179,7 @@ class TrainingPanel(QWidget):
         # ── 练声时长追踪 ──
         self._session_duration: float = 0.0            # 本次会话累计练声时长（秒）
         self._current_exercise_duration: float = 0.0   # 当前练习已用时间（秒）
+        self._last_exercise_duration_sec: float = 0.0  # 上次练习完成时的时长快照（防归零竞态）
         # session_duration_changed 信号在类级别声明
 
         # 伴奏音频流 (练声模式)
@@ -528,6 +529,7 @@ class TrainingPanel(QWidget):
         self._exercise_start_time = time.time()
         self._last_pitch_time = 0.0
         self._current_exercise_duration = 0.0
+        self._last_exercise_duration_sec = 0.0  # 新练习重置快照，避免旧值泄漏
         self._is_running = True
 
         self._engine.start(countdown_beats=2)
@@ -553,7 +555,8 @@ class TrainingPanel(QWidget):
             except Exception:
                 pass
         # 累加本次练习时长到会话总时长
-        self._session_duration += max(0.0, self._current_exercise_duration)
+        self._last_exercise_duration_sec = max(0.0, self._current_exercise_duration)
+        self._session_duration += self._last_exercise_duration_sec
         self._current_exercise_duration = 0.0
         self.session_duration_changed.emit(self._session_duration)
         # 重置状态标志（为下一次练习或预览准备）
@@ -625,6 +628,10 @@ class TrainingPanel(QWidget):
         伴奏尾巴和音高线的最后一段由 _update_ui_tick 检测伴奏结束后
         统一调用 _stop_exercise 来完全停止。
         """
+        # 🔥 在发信号前拍快照：防止 _stop_exercise 归零导致 save_training_result 读到 0
+        # 仅在当前 duration > 0 时覆盖（避免覆盖 _stop_exercise 提前拍好的快照）
+        if self._current_exercise_duration > 0:
+            self._last_exercise_duration_sec = max(0.0, self._current_exercise_duration)
         self._viz.on_exercise_completed(score)
         # 练习结束 — 展示完整评语
         self._state_label.setText(

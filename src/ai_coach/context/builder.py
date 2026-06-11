@@ -183,6 +183,28 @@ class ContextBuilder:
                 if t is not None and t > 1000000000:
                     ev[key] = t - t0
 
+    @staticmethod
+    def _extract_cents(p: dict) -> Optional[float]:
+        """从 pitch 条目安全提取音分偏差（cents）。
+
+        兼容多种 note_info 格式，缺失时从 frequency 推导。
+        返回 None 表示无法提取（无频率参考）。
+        """
+        ni = p.get("note_info", {}) or {}
+        # 按优先级尝试显式字段
+        for key in ("cents_deviation", "cent_deviation", "cents"):
+            v = ni.get(key)
+            if v is not None:
+                return float(v)
+        # fallback: 从 frequency 推导
+        freq = p.get("frequency", 0) or 0
+        if freq > 0:
+            import numpy as np
+            midi = round(69 + 12 * np.log2(freq / 440))
+            ref = 440 * (2 ** ((midi - 69) / 12))
+            return float(1200 * np.log2(freq / ref))
+        return None
+
     def from_pitch_frames(
         self,
         frames: list[dict],       # PitchFrame.to_dict() 列表
@@ -230,8 +252,7 @@ class ContextBuilder:
             conf = p.get("confidence", 0)
             if conf < self._MIN_VOICED_CONFIDENCE:
                 continue
-            note_info = p.get("note_info", {}) or {}
-            cd = note_info.get("cents_deviation") or note_info.get("cent_deviation") or note_info.get("cents")
+            cd = self._extract_cents(p)
             if cd is not None:
                 cent_devs.append(float(cd))
 
@@ -285,8 +306,7 @@ class ContextBuilder:
                 conf = p.get("confidence", 0)
                 if conf < self._MIN_VOICED_CONFIDENCE:
                     continue
-                ni = p.get("note_info", {}) or {}
-                cd = ni.get("cents_deviation") or ni.get("cent_deviation") or ni.get("cents")
+                cd = self._extract_cents(p)
                 if cd is not None:
                     cent_devs.append(abs(cd))
 
@@ -448,8 +468,7 @@ class ContextBuilder:
             if conf < self._MIN_VOICED_CONFIDENCE:
                 continue
             t = p.get("timestamp", 0)
-            ni = p.get("note_info", {}) or {}
-            cd = ni.get("cents_deviation") or ni.get("cent_deviation") or ni.get("cents")
+            cd = self._extract_cents(p)
             if cd is not None and t is not None:
                 frames.append((float(t), float(cd)))
 
@@ -517,8 +536,7 @@ class ContextBuilder:
             if conf < self._MIN_VOICED_CONFIDENCE:
                 continue
             t = p.get("timestamp", 0)
-            ni = p.get("note_info", {}) or {}
-            cd = ni.get("cents_deviation") or ni.get("cent_deviation") or ni.get("cents")
+            cd = self._extract_cents(p)
             if cd is not None and t is not None:
                 points.append((float(t), float(cd)))
 

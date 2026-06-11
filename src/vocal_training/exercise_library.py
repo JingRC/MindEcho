@@ -60,8 +60,19 @@ class VocalExercise:
 
     @property
     def duration_seconds(self) -> float:
-        """总时长 (秒)"""
-        return sum(n.duration_beats for n in self.notes) * 60.0 / max(self.tempo, 1)
+        """总时长 (秒) — 包含间隙 + 准备时间 + 尾部留白。
+
+        公式：音符总拍数 + 过渡间隙拍数 → 秒 + 5s 固定开销
+        （3s 准备时间 PREPARATION_OFFSET + 2s 尾部留白）
+        """
+        beat_dur = 60.0 / max(self.tempo, 1)
+        # 音符本体
+        total_beats = sum(n.duration_beats for n in self.notes)
+        # 音符间过渡间隙
+        gap_count = max(0, len(self.notes) - 1)
+        total_beats += self.transition_gap_beats * gap_count
+        # 转为秒 + 5s 固定开销
+        return total_beats * beat_dur + 5.0
 
     @property
     def midi_range(self) -> tuple:

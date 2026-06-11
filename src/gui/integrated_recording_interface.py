@@ -5604,6 +5604,10 @@ class IntegratedAudioProcessor(QThread):
             self.is_paused = False
             self._pause_started_at = None
             self._total_paused_time = 0.0
+            # 重置存档写入标志：新一轮录音允许再次写入 SingerProfile
+            _host = getattr(self, '_host_interface', None)
+            if _host is not None:
+                _host._profile_session_recorded = False
             # 🎯 检查全局监听状态 - 如果已有监听运行，不要干扰
             if self.is_global_monitoring_active:
                 print("🎯 检测到全局监听模式已激活，录音将与监听共享音频流")
@@ -6438,6 +6442,39 @@ class IntegratedAudioProcessor(QThread):
                     minutes_delta=float(getattr(self, 'current_duration', 0)) / 60.0
                 )
 
+            # 🔥 同步更新 SingerProfile 的 usage 统计 — 不依赖 should_save
+            # should_save 只控制 WAV 文件是否存盘，练习时长和录音次数应无条件累计。
+            _host = getattr(self, '_host_interface', None)
+            print(f"[存档-诊断] stop_recording: should_save={self.should_save}, _host={_host is not None}, _active_profile={getattr(_host, '_active_profile', None).name if _host and getattr(_host, '_active_profile', None) else 'N/A'}, duration={float(getattr(self, 'current_duration', 0)):.1f}s")
+            if _host is not None and getattr(_host, '_active_profile', None) is not None:
+                try:
+                    # 从本地 pitch_history 提取有声帧频率
+                    _voiced = []
+                    _ph = getattr(self, 'pitch_history', None) or []
+                    for _p in _ph:
+                        try:
+                            _freq = float(_p.get('frequency', 0.0) or 0.0)
+                            _conf = float(_p.get('confidence', 0.0) or 0.0)
+                            if _freq > 0 and _conf >= 0.34:
+                                _voiced.append(_freq)
+                        except Exception:
+                            continue
+                    print(f"[存档-诊断] stop_recording: 提取到 {len(_voiced)} 个有声帧, 调用 _host._update_profile_after_session...")
+                    _host._update_profile_after_session(
+                        voiced_frequencies_hz=_voiced,
+                        session_duration_seconds=float(getattr(self, 'current_duration', 0)),
+                        technique_counts={},
+                        timbre_samples=[],
+                    )
+                    _host._profile_session_recorded = True
+                    print(f"[存档-诊断] stop_recording: _update_profile_after_session 完成")
+                except Exception as _e:
+                    import traceback
+                    print(f"[存档-诊断] stop_recording: 更新存档失败: {_e}")
+                    traceback.print_exc()
+            else:
+                print(f"[存档-诊断] stop_recording: 跳过存档更新 (_host=None 或 _active_profile=None)")
+
             # 🎯 如果全局监听模式激活，不要停止音频流，只停止录音
             if self.is_global_monitoring_active:
                 print("🎯 全局监听模式激活中，只停止录音功能，保持监听")
@@ -6665,6 +6702,8 @@ class IntegratedAudioProcessor(QThread):
                             serialized_events.append(d)
                     except Exception:
                         pass
+            # 压缩 pitch_data：降采样 + 精简 note_info
+            compact_pitch = self._compact_pitch_for_save(pitch_history, float(duration))
             analysis_data = {
                 'recording_info': {
                     'filename': filename,
@@ -6676,16 +6715,51 @@ class IntegratedAudioProcessor(QThread):
                 'pitch_analysis': {
                     'total_detections': len(pitch_history),
                     'detection_rate': (len(pitch_history) / max(float(duration), 1.0)),
-                    'pitch_data': list(pitch_history)
+                    'pitch_data': compact_pitch,
                 },
                 'technique_events': serialized_events
             }
             with open(analysis_path, 'w', encoding='utf-8') as f:
-                json.dump(analysis_data, f, indent=2, ensure_ascii=False)
+                json.dump(analysis_data, f, separators=(',', ':'), ensure_ascii=False)
+            _size_kb = analysis_path.stat().st_size / 1024
+            print(f"✅ 录制分析JSON已保存: {analysis_path} ({len(compact_pitch)}帧/{_size_kb:.0f}KB)")
             return str(output_path)
         except Exception as e:
             self.error_occurred.emit(f"保存录音失败: {e}")
             return ""
+
+    def _compact_pitch_for_save(self, pitch_history: list, duration: float) -> list:
+        """压缩 pitch 数据用于存档：降采样到 ~10Hz + 精简 note_info 只保留 cents。
+
+        不影响内存中的 pitch_history。与 AI Coach 读取侧保持兼容：
+        frequency / timestamp / confidence 键名不变，note_info.cents 保留。
+        """
+        if not pitch_history:
+            return []
+        # 降采样到 ~10Hz（均匀抽取）
+        # 先转 list，因为 pitch_history 可能是 deque 或其他不支持切片的序列
+        src = list(pitch_history)
+        target_hz = 10.0
+        target_count = max(100, int(duration * target_hz))
+        step = max(1, len(src) // target_count) if target_count > 0 else 1
+        if step > 1:
+            src = src[::step]
+        compact = []
+        for entry in src:
+            try:
+                ni = entry.get('note_info')
+                cents = 0.0
+                if isinstance(ni, dict):
+                    cents = float(ni.get('cents', 0.0) or 0.0)
+                compact.append({
+                    'frequency': round(float(entry.get('frequency', 0) or 0), 2),
+                    'timestamp': round(float(entry.get('timestamp', 0) or 0), 3),
+                    'confidence': round(float(entry.get('confidence', 0) or 0), 3),
+                    'note_info': {'cents': round(float(cents), 1)},
+                })
+            except Exception:
+                compact.append(entry)
+        return compact
 
     def _save_analysis_json_only(self, pitch_history: list, duration: float,
                                  technique_events: list | None = None,
@@ -6715,6 +6789,9 @@ class IntegratedAudioProcessor(QThread):
                     except Exception:
                         pass
 
+            # 压缩 pitch_data：降采样 + 精简 note_info
+            compact_pitch = self._compact_pitch_for_save(pitch_history, float(duration))
+
             analysis_data = {
                 'recording_info': {
                     'filename': f"analysis_{ts}",
@@ -6726,13 +6803,14 @@ class IntegratedAudioProcessor(QThread):
                 'pitch_analysis': {
                     'total_detections': len(pitch_history),
                     'detection_rate': (len(pitch_history) / max(float(duration), 1.0)),
-                    'pitch_data': list(pitch_history),
+                    'pitch_data': compact_pitch,
                 },
                 'technique_events': serialized_events,
             }
             with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(analysis_data, f, indent=2, ensure_ascii=False)
-            print(f"✅ 分析JSON已保存: {json_path}")
+                json.dump(analysis_data, f, separators=(',', ':'), ensure_ascii=False)
+            _size_kb = json_path.stat().st_size / 1024
+            print(f"✅ 分析JSON已保存: {json_path} ({len(compact_pitch)}帧/{_size_kb:.0f}KB)")
             return str(json_path)
         except Exception as e:
             print(f"⚠ 保存分析JSON失败: {e}")
@@ -37650,37 +37728,45 @@ class ECGStylePitchVisualizer(QWidget):
             pass
 
         # Phase 1: 更新存档统计数据
+        # 若 stop_recording 已写过 session+time，这里仅补充技法分布和音色指纹
+        _host = getattr(self, '_host_interface', None)
+        _already_recorded = bool(getattr(_host, '_profile_session_recorded', False)) if _host is not None else False
         try:
-            if self._profile_manager is not None and self._active_profile is not None:
-                voiced_hz = []
-                timbre_samples = []
-                for f in (frames or []):
-                    try:
-                        if getattr(f, 'has_pitch', False) and float(getattr(f, 'confidence', 0.0) or 0.0) >= 0.34:
-                            pitch = float(getattr(f, 'pitch_hz', 0.0) or 0.0)
-                            if pitch > 0:
-                                voiced_hz.append(pitch)
-                        if getattr(f, 'has_pitch', False):
-                            timbre_samples.append({
-                                'spectral_tilt': float(getattr(f, 'spectral_tilt', 0.0) or 0.0),
-                                'hm_over_hh': float(getattr(f, 'hm_over_hh', 0.0) or 0.0),
-                                'mid_high_ratio': float(getattr(f, 'mid_high_ratio', 0.0) or 0.0),
-                                'zcr': float(getattr(f, 'zcr_once', 0.0) or 0.0),
-                                'rms': float(getattr(f, 'rms', 0.0) or 0.0),
-                            })
-                    except Exception:
-                        continue
-                # 优先使用录音实际时长（current_duration），而非事件结束时间。
-                # 普通模式下若无技法事件触发，事件时长=0，导致练习时间不累计。
-                _actual_duration_sec = float(getattr(self, 'current_duration', 0.0) or 0.0)
-                if _actual_duration_sec <= 0.0 and duration > 0:
-                    _actual_duration_sec = float(duration)  # 回退：事件时长（已在秒级）
-                self._update_profile_after_session(
-                    voiced_frequencies_hz=voiced_hz,
-                    session_duration_seconds=max(0.0, _actual_duration_sec),
-                    technique_counts=dict(counts),
-                    timbre_samples=timbre_samples[:500],  # 采样500帧，避免过大
-                )
+            if _host is not None:
+                _mgr = getattr(_host, '_profile_manager', None)
+                _active = getattr(_host, '_active_profile', None)
+                if _mgr is not None and _active is not None:
+                    voiced_hz = []
+                    timbre_samples = []
+                    for f in (frames or []):
+                        try:
+                            if getattr(f, 'has_pitch', False) and float(getattr(f, 'confidence', 0.0) or 0.0) >= 0.34:
+                                pitch = float(getattr(f, 'pitch_hz', 0.0) or 0.0)
+                                if pitch > 0:
+                                    voiced_hz.append(pitch)
+                            if getattr(f, 'has_pitch', False):
+                                timbre_samples.append({
+                                    'spectral_tilt': float(getattr(f, 'spectral_tilt', 0.0) or 0.0),
+                                    'hm_over_hh': float(getattr(f, 'hm_over_hh', 0.0) or 0.0),
+                                    'mid_high_ratio': float(getattr(f, 'mid_high_ratio', 0.0) or 0.0),
+                                    'zcr': float(getattr(f, 'zcr_once', 0.0) or 0.0),
+                                    'rms': float(getattr(f, 'rms', 0.0) or 0.0),
+                                })
+                        except Exception:
+                            continue
+                    # 优先使用录音实际时长（current_duration），而非事件结束时间。
+                    # 普通模式下若无技法事件触发，事件时长=0，导致练习时间不累计。
+                    _ap = getattr(_host, 'audio_processor', None)
+                    _actual_duration_sec = float(getattr(_ap, 'current_duration', 0.0) or 0.0) if _ap is not None else 0.0
+                    if _actual_duration_sec <= 0.0 and duration > 0:
+                        _actual_duration_sec = float(duration)  # 回退：事件时长（已在秒级）
+                    _host._update_profile_after_session(
+                        voiced_frequencies_hz=voiced_hz,
+                        session_duration_seconds=max(0.0, _actual_duration_sec),
+                        technique_counts=dict(counts),
+                        timbre_samples=timbre_samples[:500],  # 采样500帧，避免过大
+                        skip_session_increment=_already_recorded,
+                    )
         except Exception:
             pass
 
@@ -54063,6 +54149,7 @@ class IntegratedRecordingInterface(QMainWindow):
         self._profile_manager: Optional[ProfileManager] = None
         self._active_profile: Optional[SingerProfile] = None
         self._session_remember_profile: bool = False
+        self._profile_session_recorded: bool = False  # 防重复：stop_recording 已写入时跳过 analyze_technique_frames 的写入
         # ① 创建 ProfileManager
         if ProfileManager is not None:
             try:
@@ -62951,11 +63038,19 @@ class IntegratedRecordingInterface(QMainWindow):
         session_duration_seconds: float,
         technique_counts: dict,
         timbre_samples: list,
+        skip_session_increment: bool = False,
     ) -> None:
-        """录音结束后将统计数据写入活跃存档"""
+        """录音结束后将统计数据写入活跃存档
+
+        Args:
+            skip_session_increment: True 时仅更新技法分布和音色指纹，
+                不再累加 sessions/minutes（用于技巧分析的补充写入）。
+        """
         _mgr = getattr(self, '_profile_manager', None)
         _active = getattr(self, '_active_profile', None)
+        print(f"[存档-诊断] _update_profile_after_session: _mgr={_mgr is not None}, _active={_active.name if _active else None}, dur={session_duration_seconds:.1f}s, skip={skip_session_increment}")
         if _mgr is None or _active is None:
+            print(f"[存档-诊断] _update_profile_after_session: 跳过 (_mgr is None or _active is None)")
             return
         try:
             _mgr.update_profile_from_session(
@@ -62964,9 +63059,35 @@ class IntegratedRecordingInterface(QMainWindow):
                 session_duration_seconds=session_duration_seconds,
                 technique_counts=technique_counts,
                 timbre_samples=timbre_samples,
+                skip_session_increment=skip_session_increment,
             )
+            # 刷新内存中的 _active_profile，确保用户中心等 UI 读到最新数据
+            _fresh = _mgr.get_profile(_active.id)
+            if _fresh is not None:
+                self._active_profile = _fresh
         except Exception:
             pass
+
+    def _collect_voiced_frequencies_from_pitch_history(self) -> list:
+        """从 pitch_history 中提取有声帧的频率列表（conf ≥ 0.34 且 freq > 0）。
+
+        用于 stop_recording 中在技巧分析尚未运行时也能给 SingerProfile
+        提供音域数据。
+        """
+        voiced = []
+        try:
+            ph = getattr(self, 'pitch_history', None) or []
+            for p in ph:
+                try:
+                    freq = float(p.get('frequency', 0.0) or 0.0)
+                    conf = float(p.get('confidence', 0.0) or 0.0)
+                    if freq > 0 and conf >= 0.34:
+                        voiced.append(freq)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return voiced
 
     def _open_user_center(self) -> None:
         """打开用户中心 —— 管理歌手存档"""
@@ -76316,13 +76437,14 @@ def _save_local_file_analysis(self):
             'pitch_analysis': {
                 'total_detections': len(pitches),
                 'detection_rate': (len(pitches) / max(duration, 1.0)),
-                'pitch_data': pitches
+                'pitch_data': self.audio_processor._compact_pitch_for_save(pitches, duration)
             },
             'technique_events': serialized_events
         }
         with open(analysis_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"[本地文件分析] 已保存分析 JSON: {analysis_path}")
+            json.dump(data, f, separators=(',', ':'), ensure_ascii=False)
+        _size_kb = analysis_path.stat().st_size / 1024
+        print(f"[本地文件分析] 已保存分析 JSON: {analysis_path} ({_size_kb:.0f}KB)")
     except Exception as e:
         print(f"[本地文件分析] 保存分析 JSON 失败: {e}")
 

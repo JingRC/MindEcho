@@ -203,6 +203,7 @@ class ProfileManager:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(profile.to_json())
         os.replace(tmp, str(profile_json))
+        print(f"[存档-诊断] save_profile: 已写入 {profile_json} (sessions={profile.usage.total_sessions}, minutes={profile.usage.total_minutes:.1f})")
 
         self._update_index_entry(profile)
 
@@ -315,27 +316,32 @@ class ProfileManager:
         session_duration_seconds: float,
         technique_counts: Dict[str, int],
         timbre_samples: List[dict],
+        skip_session_increment: bool = False,
     ) -> None:
         """录音结束后更新存档统计数据
 
         Args:
             session_duration_seconds: 本次录音实际时长（秒），
                 普通模式/练声模式的录音都会计入。
+            skip_session_increment: True 时跳过 sessions+1 和 minutes 累加，
+                仅更新技法分布和音色指纹（用于技巧分析补充写入）。
         """
         profile = self.get_profile(profile_id)
         if profile is None:
             return
 
-        # 更新音域统计
-        if voiced_frequencies_hz:
+        # 更新音域统计（仅在非补充写入时更新，避免重复累积帧数）
+        if voiced_frequencies_hz and not skip_session_increment:
             profile.pitch_stats.update_from_frequencies(voiced_frequencies_hz)
 
         # 更新使用统计
-        profile.usage.total_sessions += 1
-        # 秒→分钟转换，保留完整精度（不round，避免短录音被归零）
-        _added_minutes = max(0.0, float(session_duration_seconds)) / 60.0
-        profile.usage.total_minutes += _added_minutes
-        profile.usage.last_active = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if not skip_session_increment:
+            profile.usage.total_sessions += 1
+            # 秒→分钟转换，保留完整精度（不round，避免短录音被归零）
+            _added_minutes = max(0.0, float(session_duration_seconds)) / 60.0
+            profile.usage.total_minutes += _added_minutes
+            profile.usage.last_active = time.strftime("%Y-%m-%dT%H:%M:%S")
+            print(f"[存档-诊断] update_profile_from_session: sessions={profile.usage.total_sessions}, minutes={profile.usage.total_minutes:.1f} (+{_added_minutes:.2f}), profile_id={profile_id}")
 
         # 更新技巧分布（EMA 合并）
         if technique_counts:
@@ -369,7 +375,9 @@ class ProfileManager:
         self._auto_estimate_passaggio(profile)
 
         # 保存
+        print(f"[存档-诊断] update_profile_from_session: 准备保存, total_sessions={profile.usage.total_sessions}, total_minutes={profile.usage.total_minutes:.1f}")
         self.save_profile(profile)
+        print(f"[存档-诊断] update_profile_from_session: 保存完成")
 
     def add_training_record(
         self,

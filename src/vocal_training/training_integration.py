@@ -303,8 +303,11 @@ class TrainingIntegration:
                 pass
 
             from src.profiles.profile_model import TrainingRecord
-            # 获取本次练习用时
-            exercise_dur = getattr(self._panel, '_current_exercise_duration', 0.0)
+            # 获取本次练习用时：优先取快照（_stop_exercise 归零前拍的），
+            # 回退到当前值（引擎自然完成路径中仍在累积中）
+            _snap = getattr(self._panel, '_last_exercise_duration_sec', 0.0)
+            _curr = getattr(self._panel, '_current_exercise_duration', 0.0)
+            exercise_dur = _snap if _snap > 0 else max(0.0, _curr)
             record = TrainingRecord(
                 exercise_id=score.exercise_id,
                 exercise_name=score.exercise_id,  # 可从练习库补全名称
