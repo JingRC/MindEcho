@@ -1,3 +1,0 @@
-epoch,stage,train_loss,train_acc,val_loss,val_acc,lr
-1,head,0.673412,0.626392,0.629534,0.635171,0.001
-2,finetune,0.663942,0.626392,0.638846,0.629921,0.0002

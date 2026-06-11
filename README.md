@@ -1,387 +1,329 @@
-# MindEcho - 智能音频录制与分析系统
+<div align="center">
 
-## 🎵 项目简介
+<img src="img/MindEcho.png" alt="MindEcho · 铭心" width="600">
 
-MindEcho 是一个集成了实时音高检测和五线谱可视化的智能音频录制系统。系统支持多种GUI框架，提供从基础录音到高级音乐分析的完整功能。
+# MindEcho · 铭心
 
-## ⭐ 核心功能
+> **不平则鸣，心有所感则鸣于声**
 
-### �️ 录音功能
-- 多格式录音支持 (WAV, MP3)
-- 可调采样率和通道数
-- 实时录音监控
-- 文件自动管理
+*AI 驱动的中文歌唱训练系统 — 实时音高检测 · 五线谱可视化 · 声乐教练 · ML 发声分析*
 
-### 🎯 音高检测
-- **YIN算法** - 高精度音高检测
-- **自相关法** - 经典频率分析
-- **FFT分析** - 频谱基音检测
-- 实时音符识别
-- 音准偏差计算 (cents)
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![PyQt](https://img.shields.io/badge/GUI-PyQt6-green.svg)](https://www.riverbankcomputing.com/software/pyqt/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 
-### � 五线谱可视化
-- 实时五线谱显示
-- 音符自动定位
-- 音高曲线绘制
-- 升降号支持
-- 多八度显示
+</div>
 
-### 🚀 多模式启动
-- **增强版** - 完整功能 (音高检测 + 可视化)
-- **标准版** - 基础录音 (PyQt界面)
-- **简化版** - 轻量级 (tkinter界面)
+---
+
+## 📖 简介
+
+**铭心（MindEcho）** 是一套面向声乐学习者的中文智能音频分析系统。它将麦克风输入送入实时音频管线，经多级降噪和 YIN 音高检测后渲染为 ECG 曲线与五线谱；同时集成了多后端 LLM 驱动的 AI 声乐教练、基于 SqueezeNet/EfficientNet 的发声技术分类器，以及 Demucs/Spleeter 人声伴奏分离引擎。
+
+从练声打分到歌唱分析，从气息检测到换声点估算，铭心试图把计算机听觉的前沿能力带给每一个想唱得更好的人。
+
+---
+
+## ✨ 核心功能
+
+### 🎤 实时音频管线
+
+```
+麦克风 → 多模式降噪 → YIN 音高检测 → 可视化渲染
+```
+
+- **YIN / 自相关 / FFT** 三种基频检测算法，默认 YIN 为主引擎
+- **三级降噪**：频谱减法 + 50/60Hz 陷波滤波 + 音乐谐波保护
+- **三档性能模式**：QUIET / BALANCED / HIGH_PERFORMANCE，适应不同硬件
+- 频率 → MIDI 音符名 → cents 偏差实时换算
+- 窗口参数可调（hop size、阈值），兼顾精度与感知延迟
+
+<p align="center">
+  <img src="img/音高识别.png" alt="音高识别" width="45%">
+  <img src="img/音高详情.png" alt="音高详情" width="45%">
+</p>
+<p align="center"><em>左：实时音高追踪与五线谱渲染 | 右：频率曲线与音符偏差详情</em></p>
+
+---
+
+### 🤖 AI 声乐教练
+
+集成了多后端 LLM 的智能声乐教练，具备演唱分析、问答、练习计划生成、联网搜索增强等能力。
+
+| 能力 | 说明 |
+|------|------|
+| **多后端** | DeepSeek / Anthropic Claude / OpenAI / Ollama 本地模型，统一适配层 |
+| **知识库** | YAML 结构化声乐课程 (基础/技巧/健康) + ChromaDB 向量语义检索 |
+| **记忆系统** | 基于艾宾浩斯遗忘曲线的长期记忆，自动调度知识点复习 |
+| **上下文构建** | 将音高统计、技术分布、声部分析 → LLM-readable 结构化上下文 |
+| **教练人格** | 5 种教练角色 × 20 种主题配色，含 SVG 矢量吉祥物 |
+| **报告生成** | 演唱后自动生成 Markdown / HTML 分析报告 |
+
+<p align="center">
+  <img src="img/agent.png" alt="AI 声乐教练" width="70%">
+</p>
+<p align="center"><em>AI 声乐教练对话界面 — 支持多轮问答、演唱分析和练习建议</em></p>
+
+---
+
+### 🏋️ 练声模式
+
+专为日常音准训练设计的交互式打分系统。
+
+- **实时命中判定**：Perfect / Great / Good / OK / Miss 五级评分
+- **连击追踪**：连续命中 streak 统计，激励持续练习
+- **丰富曲目库**：哼鸣暖声、C 大调单音匹配、音阶上下行、音程跳跃
+- **自适应难度**：根据历史表现动态调整容差等级
+- **训练统计**：音准准确率、稳定性、节奏、保持力四维评分
+
+<p align="center">
+  <img src="img/练声模式.png" alt="练声模式" width="45%">
+  <img src="img/练声项目.png" alt="练声项目" width="45%">
+</p>
+<p align="center"><em>左：练声模式实时打分 | 右：练习曲目库</em></p>
+
+---
+
+### 🎧 人声 / 伴奏分离
+
+基于深度学习的音频源分离，支持主唱与和声的内部二次分离。
+
+- **双引擎**：Demucs（PyTorch）/ Spleeter（TensorFlow）可切换
+- **声纹嵌入**：自动识别并锁定主唱声纹，分离和声轨
+- **近实时调度**：分块处理 + 重叠拼接，降低等待延迟
+- **Opt-in 模式**：默认 pass-through，用户主动开启
+
+---
+
+### 🧠 ML 发声技术分类
+
+轻量级神经网络实时识别歌唱发声方式。
+
+| 模型 | 任务 | 架构 |
+|------|------|------|
+| 胸声 / 假声分类 | 二分类 & 四分类 | SqueezeNet, mel-spectrogram @22050Hz |
+| 多技术分类 | 混声、气息、颤音等 | EfficientNet/SqueezeNet, late fusion |
+
+<p align="center">
+  <img src="img/技巧识别.png" alt="发声技巧识别" width="70%">
+</p>
+<p align="center"><em>ML 实时发声技术分类 — 胸声 / 假声 / 混声 / 气息检测</em></p>
+
+---
+
+### 🎵 歌曲音高解析
+
+导入参考音频或专业歌手版本，与自己的录音做逐帧音高对比。
+
+- **差异可视化**：你的音高曲线 vs 原唱 / 标准音高，偏差一目了然
+- **段落标记**：按主歌/副歌等段落结构组织对比视图
+- **技术分布**：自动统计各段落的发声技术使用比例
+
+<p align="center">
+  <img src="img/歌曲音高解析.png" alt="歌曲音高解析" width="45%">
+  <img src="img/歌曲解析详情.png" alt="歌曲解析详情" width="45%">
+</p>
+<p align="center"><em>左：音高曲线逐帧对比 | 右：分段分析详情报告</em></p>
+
+---
+
+### 👤 多用户系统
+
+- 独立的用户配置文件，互不干扰
+- 自动推断声部类型（男高音/男中音/女高音等）
+- **换声点估算**：基于音高分布自动估计 passaggio，支持手动校准
+- 训练历史追踪、进度可视化、等级评定
+
+<p align="center">
+  <img src="img/用户界面.png" alt="用户管理" width="45%">
+  <img src="img/用户详情.png" alt="用户详情" width="45%">
+</p>
+<p align="center"><em>左：多用户选择与切换 | 右：声乐档案与训练统计</em></p>
+
+---
+
+### 🎛️ 录音工作流
+
+<p align="center">
+  <img src="img/界面.png" alt="主界面" width="70%">
+</p>
+<p align="center"><em>主录音界面 — ECG 音高曲线 + 实时五线谱 + 控制面板</em></p>
+
+- **耳返监听**：低延迟麦克风回放，可调音量/混音比例
+
+<p align="center">
+  <img src="img/耳返功能.png" alt="耳返功能" width="60%">
+</p>
+
+- **选区重录**：在已录音频上框选段落，只重录选中区域
+
+<p align="center">
+  <img src="img/选区重录.png" alt="选区重录" width="60%">
+</p>
+
+- **录音回放**：历史录音列表、波形预览、与参考音高叠加对比
+
+<p align="center">
+  <img src="img/回听功能.png" alt="回听功能" width="60%">
+</p>
+
+---
 
 ## 📋 系统要求
 
-### Python版本
-- Python 3.7+
+| 项目 | 最低 | 推荐 |
+|------|------|------|
+| **Python** | 3.9 | 3.11+ |
+| **操作系统** | Windows 10 / macOS 11 / Ubuntu 20.04 | Windows 11 |
+| **内存** | 4 GB | 8 GB+ |
+| **音频设备** | 支持 WASAPI/CoreAudio/ALSA 的麦克风 | 外置声卡 + 电容麦 |
 
-### 核心依赖
+---
+
+## 🛠️ 快速开始
+
+### 1. 克隆仓库
+
 ```bash
-numpy          # 数值计算
-scipy          # 信号处理  
-sounddevice    # 音频录制
-matplotlib     # 图形绘制
-```
-
-### GUI框架 (任选其一)
-```bash
-PyQt6          # 推荐 - 现代界面
-PyQt5          # 兼容 - 稳定支持
-tkinter        # 内置 - 基础界面
-```
-
-## �️ 安装指南
-
-### 1. 克隆项目
-```bash
-git clone <repository-url>
+git clone https://github.com/JingRC/MindEcho.git
 cd MindEcho
 ```
 
-### 2. 安装依赖
-```bash
-# 基础依赖
-pip install numpy scipy sounddevice matplotlib
+### 2. 安装核心依赖
 
-# GUI框架 (选择一个)
-pip install PyQt6          # 推荐
-# 或
-pip install PyQt5          # 兼容
-# tkinter 通常已预装
+```bash
+pip install numpy scipy sounddevice matplotlib PyQt6
 ```
 
-### 3. 启动应用
+### 3. 启动
+
 ```bash
-# 使用增强版启动器
+# 直接启动主界面（推荐）
+python main.py
+
+# 或使用菜单式启动器
 python run_enhanced.py
-
-# 或使用原版启动器
-python run_mindecho.py
 ```
 
-## 🎮 使用指南
+### 4. 可选：安装 ML / AI Coach 扩展
 
-### 启动模式选择
-
-#### 1. 🚀 增强版模式
 ```bash
-python run_enhanced.py
-选择: 1. 增强版
-```
-- 完整的音高检测功能
-- 实时五线谱可视化
-- 音符识别和显示
-- 音高曲线分析
-
-#### 2. 📱 标准版模式
-```bash
-python run_enhanced.py
-选择: 2. 标准版
-```
-- 基础录音功能
-- 文件格式选择
-- 播放和管理
-
-#### 3. 🔧 简化版模式
-```bash
-python run_enhanced.py
-选择: 3. 简化版
-```
-- 轻量级录音
-- 简洁界面
-
-### 音高检测使用
-
-1. **开始音高分析**
-   - 在增强版中点击"开始音高分析"
-   - 系统将实时检测麦克风输入的音高
-
-2. **查看实时信息**
-   - 当前频率显示
-   - 音符名称 (如 A4, C#5)
-   - 音准偏差 (cents)
-
-3. **五线谱可视化**
-   - 实时显示检测到的音符
-   - 音高曲线绘制
-   - 历史音符显示
-
-### 录音功能使用
-
-1. **设置录音参数**
-   - 采样率: 44100Hz (标准) / 48000Hz / 96000Hz
-   - 声道: 单声道/立体声
-
-2. **开始录音**
-   - 点击"开始录音"按钮
-   - 录音文件自动保存到 `recordings/` 目录
-
-3. **文件管理**
-   - 点击"打开录音文件夹"查看文件
-   - 支持WAV格式录音
-
-## 🔧 功能测试
-
-### 运行测试工具
-```bash
-python test_mindecho.py
+# AI Coach + 人声分离（需要 PyTorch 或 TensorFlow）
+pip install -r requirements-optional.txt
 ```
 
-测试项目包括:
-- ✅ 录音功能测试
-- ✅ 音高检测算法测试
-- ✅ 五线谱渲染测试
-- ✅ GUI组件测试
-- ✅ 综合功能测试
+---
+
+## 🔧 配置
+
+首次启动后，在 AI Coach 设置面板中配置 LLM 后端。也可以直接编辑 `~/.mindecho/config.json`：
+
+```json
+{
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "你的 API Key",
+    "model": "deepseek-chat",
+    "max_tokens": 4096,
+    "temperature": 0.7
+  }
+}
+```
+
+项目提供 [config.template.json](config.template.json) 作为配置参考模板。
+**⚠️ 请勿将含真实 API Key 的配置文件提交到 Git。**
+
+---
 
 ## 📁 项目结构
 
 ```
 MindEcho/
 ├── src/
-│   ├── audio_processing/
-│   │   └── recorder.py          # 录音核心模块
-│   ├── analysis/
-│   │   ├── pitch_detection.py   # 音高检测算法
-│   │   ├── realtime_analyzer.py # 实时分析器
-│   │   └── staff_visualizer.py  # 五线谱可视化
-│   └── gui/
-│       ├── enhanced_main_window.py  # 增强版GUI
-│       ├── pyqt6_main_window.py     # 标准版GUI
-│       └── simple_gui.py            # 简化版GUI
-├── recordings/              # 录音文件目录
-├── run_enhanced.py         # 增强版启动器
-├── run_mindecho.py         # 原版启动器
-├── test_mindecho.py        # 功能测试工具
-└── README.md
+│   ├── audio_processing/          # 音频管线核心
+│   │   ├── recorder.py            # 非阻塞音频流捕获
+│   │   ├── pitch_service.py       # 音高检测统一入口 (YIN)
+│   │   ├── noise_reduction.py     # 多模式降噪处理器
+│   │   ├── performance_manager.py # 三档性能调度
+│   │   └── lead_backing/          # 人声/伴奏分离管线
+│   │       ├── lead_backing_pipeline.py  # Demucs/Spleeter 编排
+│   │       ├── singer_embedding.py      # 声纹嵌入与主唱识别
+│   │       └── realtime_chunk_scheduler.py  # 近实时分块调度
+│   │
+│   ├── ai_coach/                  # AI 声乐教练子系统
+│   │   ├── agent.py               # VocalCoachAgent 主编排
+│   │   ├── llm_client.py          # LLM 多后端统一适配
+│   │   ├── config.py              # 配置管理 (密钥安全存储)
+│   │   ├── context/               # 提示工程：音高数据 → LLM 上下文
+│   │   ├── knowledge/             # YAML 知识库 + ChromaDB 向量检索
+│   │   ├── memory/                # 艾宾浩斯遗忘曲线长期记忆
+│   │   ├── session/               # 用户画像与练习历史
+│   │   ├── analysis/              # 音高对比 + 报告生成
+│   │   ├── identity.py            # 教练人格与吉祥物配色
+│   │   ├── search.py              # 联网搜索增强
+│   │   └── gui/                   # Coach UI 组件
+│   │
+│   ├── analysis/                  # 音高检测与乐理
+│   │   ├── pitch_detection.py     # YIN/自相关/FFT 算法 + MIDI 转换
+│   │   └── staff_visualizer.py    # 五线谱渲染引擎
+│   │
+│   └── gui/                       # 图形界面
+│       └── integrated_recording_interface.py  # 主界面巨石组件
+│
+├── ml_dl_models/                  # ML 模型（仅代码，不含权重）
+│   ├── chest_falsetto/            # 胸声/假声分类 (SqueezeNet)
+│   └── gtsinger_multitech/        # 多技术分类 (EfficientNet)
+│
+├── main.py                        # 主启动入口
+├── run_enhanced.py                # 菜单式启动器
+├── CLAUDE.md                      # 项目架构文档（面向 AI 工具）
+├── config.template.json           # 配置参考模板
+└── img/                           # 界面截图与 Logo
 ```
-
-## 🎼 音乐理论支持
-
-### 音高检测算法
-
-1. **YIN算法**
-   - 基于AMDF (Average Magnitude Difference Function)
-   - 高精度基音检测
-   - 适合人声和乐器
-
-2. **自相关法**
-   - 经典时域分析方法
-   - 计算信号的周期性
-   - 稳定可靠
-
-3. **FFT分析**
-   - 频域分析方法
-   - 基于谱峰检测
-   - 快速计算
-
-### 音符系统
-- 12平均律音高系统
-- MIDI音符编号对应
-- 音名表示 (C, D, E, F, G, A, B)
-- 升降号支持 (#, b)
-- 八度标记 (C4 = 中央C)
-
-### 五线谱显示
-- 高音谱号显示
-- 标准五线谱布局
-- 加线音符支持
-- 实时音符定位
-
-## 🔍 故障排除
-
-### 常见问题
-
-1. **无法启动GUI**
-   ```bash
-   # 安装GUI框架
-   pip install PyQt6
-   # 或
-   pip install PyQt5
-   ```
-
-2. **音频设备错误**
-   - 检查麦克风权限
-   - 确认音频设备连接
-   - 尝试不同的音频设备
-
-3. **依赖包缺失**
-   ```bash
-   # 自动安装
-   python run_enhanced.py
-   # 选择自动安装选项
-   ```
-
-4. **音高检测不准确**
-   - 确保环境安静
-   - 调整音量大小
-   - 尝试不同的检测算法
-
-### 性能优化
-
-1. **降低延迟**
-   - 减小chunk_size
-   - 使用较低采样率
-
-2. **提高精度**
-   - 增加chunk_size
-   - 使用YIN算法
-   - 环境降噪
-
-## 🤝 开发贡献
-
-### 代码结构
-- 模块化设计
-- 清晰的接口定义
-- 完整的错误处理
-- 详细的文档注释
-
-### 扩展功能
-- 可以添加更多音高检测算法
-- 扩展可视化效果
-- 支持更多音频格式
-- 添加音乐理论分析
-
-## 🎉 致谢
-
-感谢所有为开源音频处理和音乐理论做出贡献的开发者们！
 
 ---
 
-**享受使用 MindEcho 进行音频录制和音乐分析吧！** 🎵
-- **Python版本**: 3.7 或更高
-- **音频设备**: 支持音频输入的设备（麦克风、声卡等）
-
-### 必需依赖
-- `sounddevice`: 音频录制和播放
-- `numpy`: 数值计算
-- `scipy`: 科学计算（音频文件I/O）
-
-### 可选依赖
-- `PyQt5`: 现代化GUI界面（推荐）
-- `pandas`: 数据处理和分析
-- `matplotlib`: 图表和可视化
-
-## 项目结构
+## 🏗️ 架构概览
 
 ```
-MindEcho/
-├── src/                          # 源代码目录
-│   ├── audio_processing/         # 音频处理模块
-│   │   └── recorder.py          # 核心录音器类
-│   ├── gui/                      # 图形界面模块
-│   │   ├── main_window.py       # PyQt5主界面
-│   │   └── simple_gui.py        # tkinter简化界面
-│   ├── analysis/                 # 音频分析模块（预留）
-│   ├── data/                     # 数据存储
-│   └── utils/                    # 工具函数
-├── recordings/                   # 默认录音保存目录
-├── docs/                         # 文档
-├── tests/                        # 测试文件
-├── requirements.txt              # Python依赖列表
-├── install_dependencies.bat      # Windows安装脚本
-└── run_mindecho.py              # 主启动脚本
+┌──────────────────────────────────────────────────────────┐
+│                     MindEcho · 铭心                        │
+├──────────────────────────────────────────────────────────┤
+│  GUI Layer (PyQt6)                                        │
+│  ┌──────────┬──────────┬──────────┬──────────────────┐   │
+│  │ ECG 可视化 │ 五线谱    │ Coach UI │ 练声模式 / 用户管理 │   │
+│  └──────────┴──────────┴──────────┴──────────────────┘   │
+├──────────────────────────────────────────────────────────┤
+│  Audio Pipeline                                           │
+│  Mic → NoiseReduction → PitchDetection → Visual Render   │
+├──────────────────────────────────────────────────────────┤
+│  AI Coach Subsystem                                       │
+│  LLM Client ← Context Builder ← Pitch Stats              │
+│       ↓                                                   │
+│  Knowledge Retriever (YAML + ChromaDB)                    │
+│  Memory Manager (Ebbinghaus Scheduler)                    │
+├──────────────────────────────────────────────────────────┤
+│  ML Inference (opt-in)                                    │
+│  Chest/Falsetto ← SqueezeNet · Multi-tech ← EfficientNet │
+│  Lead/Backing ← Demucs / Spleeter                         │
+└──────────────────────────────────────────────────────────┘
 ```
-
-## 使用说明
-
-### 录音操作
-
-1. **启动应用**: 运行 `python run_mindecho.py`
-2. **查询设备**: 点击"查询设备"按钮查看可用的音频输入设备
-3. **设置参数**: 根据需要调整采样率、声道数等参数
-4. **开始录音**: 点击"开始录音"按钮
-5. **停止录音**: 点击"停止录音"按钮自动保存文件
-6. **查看文件**: 点击"打开文件夹"查看保存的录音文件
-
-### 参数建议
-
-| 用途 | 采样率 | 声道 | 数据类型 | 说明 |
-|------|--------|------|----------|------|
-| 语音录制 | 16000 Hz | 单声道 | int16 | 适合语音识别和处理 |
-| 音乐录制 | 44100 Hz | 立体声 | int16 | CD质量，适合音乐 |
-| 高精度分析 | 48000 Hz | 单声道 | float32 | 专业音频分析 |
-
-### 录音文件命名
-
-录音文件自动按时间戳命名，格式为：
-- `recording_YYYYMMDD_HHMMSS.wav`
-- 例如：`recording_20250121_143052.wav`
-
-## 故障排除
-
-### 常见问题
-
-1. **"无法启动录音"错误**:
-   - 检查麦克风是否连接并启用
-   - 确认应用有麦克风使用权限
-   - 尝试查询设备确认音频设备状态
-
-2. **"模块导入失败"错误**:
-   - 运行 `install_dependencies.bat` 安装依赖
-   - 手动安装: `pip install sounddevice numpy scipy`
-
-3. **GUI启动失败**:
-   - 系统会自动降级到tkinter版本
-   - 如需PyQt5版本，手动安装: `pip install PyQt5`
-
-4. **录音质量问题**:
-   - 调整采样率和数据类型设置
-   - 检查麦克风距离和环境噪音
-   - 尝试不同的音频设备
-
-### 性能优化
-
-- **内存使用**: 长时间录音可能消耗较多内存
-- **CPU使用**: 高采样率会增加CPU负担
-- **存储空间**: 44100Hz立体声每分钟约10MB
-
-## 开发信息
-
-### 核心技术
-
-- **音频处理**: sounddevice + numpy
-- **GUI框架**: PyQt5 (主要) + tkinter (备选)
-- **文件格式**: WAV (scipy.io.wavfile)
-- **多线程**: 非阻塞录音和UI响应
-
-### 扩展计划
-
-- [ ] 音频可视化（波形图、频谱图）
-- [ ] 实时音频分析
-- [ ] 音频格式转换
-- [ ] 云端集成
-- [ ] 语音识别集成
-
-## 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
-## 贡献
-
-欢迎提交问题报告、功能请求和代码贡献！
 
 ---
 
-**MindEcho Team** - 让录音更智能，让分析更简单
+## 📄 许可证
+
+本项目采用 [MIT License](LICENSE) 开源。
+
+**注意**：项目仓库中**不包含**预训练模型权重、用户数据、测试脚本和 ML 训练中间产物。如需模型权重，请通过 GitHub Releases 或 Issue 联系获取。
+
+---
+
+<div align="center">
+
+**铭心** — 每一次发声，都值得被听见、被理解、被回应。
+
+[提交 Issue](https://github.com/JingRC/MindEcho/issues) · [功能请求](https://github.com/JingRC/MindEcho/issues/new)
+
+</div>

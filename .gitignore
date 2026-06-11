@@ -60,3 +60,46 @@ _github_release/
 .claude/settings.local.json
 .claude/settings.*.json
 .claude/worktrees/
+
+# ──────────────────────────────────────────
+# 以下为 MindEcho 项目规范：不提交的数据
+# ──────────────────────────────────────────
+
+# 测试脚本（独立调试用，非正式测试框架）
+test_*.py
+test_*.bat
+
+# 调试脚本
+debug_*.py
+direct_test_*.py
+
+# ML 诊断与临时实验数据
+_tmp_*
+
+# ML 模型运行时测试数据
+guarded_mix_runtime_*/
+
+# 用户个人数据（含隐私信息：声纹、训练记录等）
+profiles/
+
+# 音频测试输出
+audio_test_results_*.json
+_yin_test_output.txt
+
+# 测试截图
+test_pitch_curve.png
+test_staff.png
+
+# ML 训练历史产物（保留训练代码，排除 artifacts 和 reference_model）
+ml_dl_models/**/artifacts/
+ml_dl_models/**/reference_model/
+ml_dl_models/evaluation/results/
+ml_dl_models/evaluation/*.png
+ml_dl_models/evaluation/*.jpg
+
+# 回归测试集（测试代码 + 数据）
+regression_tests/
+
+# ML 数据集 manifest 文件
+ml_dl_models/**/dataset/curated/*.csv
+ml_dl_models/**/dataset/curated/**/*.csv

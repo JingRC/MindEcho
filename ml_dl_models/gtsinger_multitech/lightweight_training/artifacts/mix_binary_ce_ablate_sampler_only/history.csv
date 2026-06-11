@@ -1,3 +1,0 @@
-epoch,stage,train_loss,train_acc,val_loss,val_acc,val_balanced_acc,val_macro_f1,val_mix_f1,val_mix_precision,val_mix_recall,val_threshold,lr
-1,head,0.714204,0.55239,0.68422,0.632546,0.630807,0.62153,0.556962,0.502857,0.624113,0.525,0.001
-2,finetune,0.697076,0.534054,0.687991,0.585302,0.597695,0.580443,0.535294,0.457286,0.64539,0.5,0.0002
